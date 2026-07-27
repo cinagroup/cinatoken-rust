@@ -628,6 +628,25 @@ describe("container runtime WORM lifecycle collector", () => {
       ],
       [
         (value) => {
+          value.authority.selfVerifiedAt = value.target.lockCapturedAt;
+          value.authority.remainingLifetimeSeconds = 1_739;
+        },
+        "revoke facts are invalid",
+      ],
+      [
+        (value) => {
+          value.facts.deletedAt = value.authority.selfVerifiedAt;
+        },
+        "revoke facts are invalid",
+      ],
+      [
+        (value) => {
+          value.facts.deletedAt = value.facts.operatorReadbackAt;
+        },
+        "revoke facts are invalid",
+      ],
+      [
+        (value) => {
           value.target.targetCredentialIdSha256 = "a".repeat(64);
         },
         "revoke facts are invalid",
@@ -675,6 +694,69 @@ describe("container runtime WORM lifecycle collector", () => {
           receiptText: canonicalText(changed),
         }),
       ).toThrow(error);
+    }
+  });
+
+  test("live lifecycle phases reject equal chronology boundaries", async () => {
+    const revokeTimes = [
+      [
+        "2026-07-27T00:01:01.000Z",
+        "2026-07-27T00:02:01.000Z",
+        "2026-07-27T00:02:02.000Z",
+      ],
+      [
+        "2026-07-27T00:02:00.000Z",
+        "2026-07-27T00:02:00.000Z",
+        "2026-07-27T00:02:02.000Z",
+      ],
+      [
+        "2026-07-27T00:02:00.000Z",
+        "2026-07-27T00:02:01.000Z",
+        "2026-07-27T00:02:01.000Z",
+      ],
+    ];
+    for (const timestamps of revokeTimes) {
+      await expect(
+        revokeLockOperator({
+          target: lockTarget(),
+          credentials: { apiToken: operatorToken, targetTokenId },
+          fetchImpl: sequenceFetch([
+            tokenVerificationResponse(operatorTokenId),
+            deletionResponse(targetTokenId),
+            absenceResponse(),
+          ]),
+          now: sequenceNow(timestamps),
+        }),
+      ).rejects.toThrow("lifecycle chronology is invalid");
+    }
+
+    const { revoke } = await validRevokeReceipt();
+    const verifyTarget = normalizeRevokePredecessor({
+      accountId,
+      receipt: revoke,
+      receiptText: canonicalText(revoke),
+    });
+    for (const timestamps of [
+      [
+        "2026-07-27T00:02:02.000Z",
+        "2026-07-27T00:03:01.000Z",
+      ],
+      [
+        "2026-07-27T00:03:00.000Z",
+        "2026-07-27T00:03:00.000Z",
+      ],
+    ]) {
+      await expect(
+        verifyLockOperatorRevocation({
+          target: verifyTarget,
+          credentials: { apiToken: verifierToken, targetTokenId },
+          fetchImpl: sequenceFetch([
+            tokenVerificationResponse(verifierTokenId),
+            absenceResponse("ray-independent"),
+          ]),
+          now: sequenceNow(timestamps),
+        }),
+      ).rejects.toThrow("lifecycle chronology is invalid");
     }
   });
 

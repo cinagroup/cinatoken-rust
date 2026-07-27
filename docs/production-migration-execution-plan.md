@@ -1097,6 +1097,38 @@ Compiled capability state alone cannot satisfy this gate. No remote evidence is
 currently archived, so Go/VPS remains authoritative and production is
 **NO-GO**.
 
+### B4 create-only publication and independent readback foundation
+
+The production packet now contains a two-role B4 data collector:
+
+1. `publish` validates canonical B1 baseline and B3 independent
+   lock-revocation receipts, target equality, provider correlation, and
+   strict chronology before reading the B1-bound publisher credential.
+2. Six exact stable files are SHA-256/MD5 hashed and streamed with
+   `PutObject`, `If-None-Match: *`, exact length/type/metadata, request IDs,
+   and ETags. There are no multipart uploads or S3 Object Lock headers.
+3. `readback` requires a distinct object-verifier credential, exhausts object
+   and multipart pagination, rejects any inventory drift, and gets all six
+   objects with exact ETag `If-Match`.
+4. Readback streams into an empty local directory through bounded partial
+   files, atomic no-overwrite promotion, exact directory verification, and a
+   second stable digest pass.
+
+The focused gate passes 11 tests with 76 expectations; its self-test passes
+two cases and 12 invariants without credentials, network, or file writes.
+The B3 lifecycle gate passes 18 tests with 115 expectations and rejects every
+equal timestamp boundary before B4 admission. All nine container supply-chain
+suites pass 104 tests with 938 expectations. The complete repository gate
+passes with exit code 0 in 604 seconds; 21 existing Rust `dead_code` findings
+remain warnings only.
+
+No live B4 operation was run. The next boundary is B5: provider-response-
+bound overwrite/delete rejection probes, publisher lifecycle revoke plus two
+absence readbacks, post-probe object verification, final lock verification,
+and canonical v2 evidence/signature assembly. B2-B7, S3, R3/C1, P5, customer
+traffic, billing, Go/VPS drain, and cutover remain unauthorized. Go/VPS
+remains authoritative and production remains **NO-GO**.
+
 ## 2026-07-14 Ordinary HTTP Billing Finalization Workstream
 
 This workstream supersedes any plan that treats clone-stream `waitUntil()` plus

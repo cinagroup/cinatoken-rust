@@ -287,9 +287,9 @@ export function normalizeRevokePredecessor(options) {
   );
   requireCondition(
     facts.apiSurface === "cloudflare-account-token-api" &&
-      target.lockCapturedAt <= authority.selfVerifiedAt &&
-      authority.selfVerifiedAt <= deletedAt &&
-      deletedAt <= operatorReadbackAt &&
+      target.lockCapturedAt < authority.selfVerifiedAt &&
+      authority.selfVerifiedAt < deletedAt &&
+      deletedAt < operatorReadbackAt &&
       operatorReadbackAt === capturedAt &&
       capturedAt < authority.expiresAt &&
       facts.deletionHttpStatus === 200 &&
@@ -420,9 +420,9 @@ export async function revokeLockOperator(options) {
     "[revoke] operator readback time",
   );
   requireCondition(
-    target.lockCapturedAt <= selfVerifiedAt &&
-      selfVerifiedAt <= deletedAt &&
-      deletedAt <= operatorReadbackAt &&
+    target.lockCapturedAt < selfVerifiedAt &&
+      selfVerifiedAt < deletedAt &&
+      deletedAt < operatorReadbackAt &&
       operatorReadbackAt < authorityIdentity.expiresAt,
     "[revoke] lifecycle chronology is invalid",
   );
@@ -543,8 +543,8 @@ export async function verifyLockOperatorRevocation(options) {
     "[verify] independent readback time",
   );
   requireCondition(
-    target.revokeCapturedAt <= selfVerifiedAt &&
-      selfVerifiedAt <= independentReadbackAt &&
+    target.revokeCapturedAt < selfVerifiedAt &&
+      selfVerifiedAt < independentReadbackAt &&
       independentReadbackAt < authorityIdentity.expiresAt,
     "[verify] lifecycle chronology is invalid",
   );

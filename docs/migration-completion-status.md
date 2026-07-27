@@ -919,6 +919,31 @@ provider, billing, N/N-1, image, fault, load/cost, canary, and rollback gates
 remain open. No deployment or secret operation occurred. Go/VPS remains
 authoritative and production remains **NO-GO**.
 
+## 2026-07-27 WORM B4 Data Collector Foundation
+
+| Status item | Current value |
+| --- | --- |
+| B1/B3 predecessor binding | Exact canonical single-link receipts and strict chronology |
+| B4 publisher continuity | Access-key digest must equal B1 publisher |
+| Create-only publication | Six `PutObject` requests with `If-None-Match: *` |
+| Artifact integrity | SHA-256 + Content-MD5; 512 MiB each / 768 MiB aggregate |
+| Independent inventory | Complete object and multipart pagination |
+| Independent object readback | Six `GetObject` requests with exact ETag `If-Match` |
+| Local readback files | Empty directory, no-overwrite promotion, second stable digest |
+| Focused gate | 11 tests / 76 expectations |
+| Strict lifecycle chronology gate | 18 tests / 115 expectations |
+| Credential-free self-test | 2 cases / 12 invariants |
+| Nine-suite supply-chain gate | 104 tests / 938 expectations |
+| Complete repository gate | PASS, exit 0 in 604 seconds; 21 existing Rust warnings |
+| Live Cloudflare B4 evidence | **NOT COLLECTED** |
+| B5 probes and publisher lifecycle | **PENDING** |
+| Complete B2-B7 / S3 | **FALSE** |
+
+This is local B4 collector readiness, not retention evidence. No credential
+was read, no provider operation ran, and no collector live phase wrote an
+evidence-output file during verification. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
 ## 2026-07-26 Deterministic Container SBOM Status
 
 S1 is complete for one frozen hosted-job subject. Candidate

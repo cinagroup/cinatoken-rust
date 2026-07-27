@@ -1825,6 +1825,37 @@ edge exact replay, the Linux canary, remote fault/N/N-1 evidence, old-writer
 drain, and enforcement migration 0046. No remote action occurred. Go/VPS
 remains authoritative and production remains **NO-GO**.
 
+## 2026-07-27 WORM B4 Data Collector
+
+Phase 1 now includes a predecessor-bound B4 collector with separate
+`publish` and `readback` roles.
+
+Publication requires the exact B1 empty-baseline and B3 lock-revocation
+verifier receipts, strict chronology, the same target, and the same publisher
+access-key digest recorded by B1. Six exact, stable, single-link artifact
+files are streamed through create-only `PutObject` requests with
+`If-None-Match: *`, `Content-MD5`, exact content type/size, v2
+contract/commit/SHA-256 metadata, provider request IDs, and ETags.
+
+Independent readback uses a distinct read-only credential. It exhausts object
+and multipart pagination, admits exactly six expected objects, downloads each
+with `If-Match` bound to its publication ETag, streams into an empty output
+directory without replacement, and rehashes every committed file.
+
+Focused verification passes 11 tests with 76 expectations. The lifecycle
+gate passes 18 tests with 115 expectations after enforcing strict ordering
+across every B3 revocation timestamp. All nine container supply-chain suites
+pass 104 tests with 938 expectations. The self-test proves only the offline
+contract: no credential, request, local file write, remote mutation, WORM,
+complete S3, P5, traffic, or production authority. The complete repository
+gate passes with exit code 0 in 604 seconds; 21 existing Rust `dead_code`
+findings remain warnings only.
+
+No Cloudflare operation was performed. B5 still requires provider
+overwrite/delete probes, publisher lifecycle revocation and independent
+readback, post-probe object readback, final lock readback, and canonical v2
+assembly. Go/VPS remains authoritative and production remains **NO-GO**.
+
 ## 2026-07-17 Phase 1 Container Reconciliation Operator Read Gate
 
 The Worker now exposes an AdminAuth, no-store aggregate status and a RootAuth,

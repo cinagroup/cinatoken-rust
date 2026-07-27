@@ -21989,3 +21989,57 @@ permission inventories and live signed evidence. Next is predecessor-bound
 B4/B5 create-only publication, independent object readback, provider probes,
 publisher-target lifecycle collection, final lock readback, and canonical v2
 assembly. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.310 WORM B4 Create-Only Publication And Readback (2026-07-27)
+
+The predecessor-bound B4 data plane is now implemented locally under
+`cinatoken-container-runtime-worm-data-phase-receipt-v1`.
+
+The `publish` phase consumes canonical, stable, single-link B1 baseline and B3
+lock-revocation verifier receipts. It requires exact account/bucket/
+jurisdiction/prefix/statement identity, complete provider correlation, and
+strict baseline -> lock -> revoke -> verifier chronology before reading the
+publisher credential. The credential access-key digest must equal the B1
+publisher identity.
+
+The artifact directory contains exactly six regular, single-link objects.
+Open handles are retained across SHA-256/MD5 hashing and streaming upload;
+each object is at most 512 MiB and the set is at most 768 MiB. Each upload
+uses one `PutObject`, `If-None-Match: *`, exact length/type,
+`Content-MD5`, v2 contract/commit/digest metadata, an exact key under the
+statement prefix, a provider request ID, and an ETag. Source snapshots are
+checked again after all uploads.
+
+The independent `readback` phase requires a distinct object-verifier
+credential digest. It completely paginates object and multipart inventories,
+requires exactly the six published keys with no unknown/duplicate/missing
+object or multipart residue, and downloads every object with `If-Match` bound
+to the upload ETag. Bodies stream into a caller-provided empty directory;
+bounded SHA-256 verification precedes atomic no-overwrite promotion and a
+second stable-file hash pass.
+
+Dry-run and self-test remain credential-free, network-free, and write-free.
+The focused gate passes 11 tests with 76 expectations. Negative coverage
+includes baseline/revocation forgery, target and chronology drift, publisher
+identity mismatch, artifact order/digest/bounds, missing provider
+correlation/ETag, unknown objects, multipart residue, verifier reuse,
+metadata/body/ETag drift, receipt condition/order overclaim, canonical-file
+drift, and hard-link predecessors. A cross-module chronology audit also
+requires strict ordering across lock capture, lifecycle preflight, deletion,
+operator readback, verifier preflight, and independent readback; its focused
+gate passes 18 tests with 115 expectations. The nine-suite supply-chain
+aggregate passes 104 tests with 938 expectations. The complete repository gate
+passes with exit code 0 in 604 seconds; 21 existing Rust `dead_code` findings
+remain warnings only.
+
+Cloudflare's current official S3 table documents conditional `PutObject` and
+`GetObject`, complete listing APIs, and deletion support; its Bucket Lock
+documentation states that retained objects cannot be overwritten or deleted.
+No live R2 operation was performed here, so those provider semantics remain
+unproven for this ceremony. B4 has local collector readiness only.
+
+Next is B5 raw-response-bound overwrite/delete probes, publisher-target
+lifecycle revocation and independent readback, post-probe object readback,
+final lock readback, and canonical v2 assembly/signing. WORM, complete S3,
+R3/C1, P5, traffic, billing, drain, and cutover authority remain false.
+Go/VPS remains authoritative and production remains **NO-GO**.

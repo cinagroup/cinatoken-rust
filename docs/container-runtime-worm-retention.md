@@ -20,9 +20,13 @@ Current decision:
 - Final retention policy/trust/manifest/evidence verifier v2: implemented and
   locally tested with six identities and two complete writer-revocation
   evidence records.
+- B4 create-only six-object publication and independent full readback
+  collector: implemented and locally tested; not executed against Cloudflare.
 - B2 credential issuance, revocation, and independent revocation readback:
   incomplete until real permission inventories, live receipts, canonical v2
   evidence assembly, and approval exist.
+- B5 overwrite/delete probes, publisher lifecycle revocation, post-probe
+  readback, final lock readback, and v2 assembly: not yet implemented.
 - Real R2 bucket-lock evidence: not collected.
 - `wormRetentionVerified`: false.
 - `s3Complete`: false.
@@ -465,13 +469,56 @@ eight-suite container supply-chain set passes 92 tests with 854 expectations.
 The complete repository gate passes with exit code 0 in 611.2 seconds; 21
 existing Rust `dead_code` findings remain warnings only.
 
+## B4 Data Collector Boundary
+
+`tools/collect_container_runtime_worm_data.mjs` implements two isolated
+phases under contract
+`cinatoken-container-runtime-worm-data-phase-receipt-v1`:
+
+1. `publish` accepts one canonical, single-link B1 baseline receipt and one
+   canonical, single-link B3 lock-revocation verifier receipt. It requires
+   exact target equality and strict baseline -> lock -> revoke -> independent
+   readback ordering before it reads the publisher credential.
+2. The artifact directory must contain exactly the six retained object
+   filenames. Each regular, single-link file is held open, bounded to 512 MiB
+   with a 768 MiB aggregate limit, SHA-256/MD5 hashed, and re-statted after
+   publication.
+3. Every upload is a single `PutObject` with `If-None-Match: *`, exact content
+   length/type, `Content-MD5`, v2 contract/commit/SHA-256 metadata, one
+   provider request ID, and one ETag. No S3 Object Lock header is used.
+4. `readback` requires a canonical publish receipt and a distinct
+   object-verifier access-key digest. It exhausts `ListObjectsV2` and
+   `ListMultipartUploads`, rejects missing/extra/duplicate objects or any
+   multipart residue, then downloads each object with its exact ETag in
+   `If-Match`.
+5. Download bodies are streamed into an operator-supplied empty directory.
+   Each `.partial` file is bounded and SHA-256 checked before an atomic
+   no-overwrite hard-link promotion, directory-set verification, and a second
+   stable-file digest pass.
+
+The official R2 S3 compatibility table currently marks `PutObject`
+`If-None-Match`, `GetObject` `If-Match`, `ListObjectsV2`,
+`ListMultipartUploads`, and `DeleteObject` as implemented. Cloudflare's
+Bucket Lock documentation states that matching rules prevent both overwrite
+and deletion. The collector nevertheless treats these as protocol
+assumptions to be proven by real provider receipts; local fixtures cannot
+establish provider behavior.
+
+Both dry-run and self-test read no credentials, make no request, write no
+file, and keep every downstream authority false. The focused B4 gate passes
+11 tests with 76 expectations. The lifecycle gate passes 18 tests with 115
+expectations after all B3-to-B4 chronology boundaries were made strictly
+ordered. The nine-suite container supply-chain aggregate passes 104 tests
+with 938 expectations. The complete repository gate passes with exit code 0
+in 604 seconds; 21 existing Rust `dead_code` findings remain warnings only.
+
 ## Next Execution Unit
 
-The next implementation builds the predecessor-bound B4/B5 data-plane
-collectors: six create-only uploads, complete independent object pagination
-and content readback, provider overwrite/delete probes, then publisher-target
-lifecycle revoke and independent readback using the same v2 evidence
-contract. Final lock readback and canonical evidence assembly follow.
+The next implementation starts from the B4 readback receipt and builds the B5
+provider boundary: raw-response-bound different-content overwrite and delete
+probes, publisher-target lifecycle revoke/operator readback/independent
+readback, object-verifier post-probe `If-Match` readback, final lock readback,
+and canonical v2 evidence/signature assembly.
 
 Collector self-tests and dry-runs are not real evidence. The lock phase must
 not be run until the dedicated bucket, four ephemeral R2 credentials,

@@ -11011,3 +11011,44 @@ focused suite passed 16 tests with 110 expectations. The complete eight-suite
 container supply-chain run passed 92 tests with 854 expectations. The complete
 repository gate passed with exit code 0 in 611.2 seconds; 21 existing Rust
 `dead_code` findings remained warnings only.
+
+## 2026-07-27 WORM B4 Data Collector Verification
+
+The B4 publisher/readback collector was verified locally:
+
+```powershell
+node --check tools/lib/container_runtime_worm_data.mjs
+node --check tools/collect_container_runtime_worm_data.mjs
+node --check tests/container-runtime-worm-data-collector.test.mjs
+npx.cmd --yes bun run check:container-runtime:worm-data-collector
+```
+
+The focused gate passed 11 tests with 76 expectations. The credential-free
+self-test passed two cases and 12 invariants. The lifecycle gate passed 18
+tests with 115 expectations after strict ordering was enforced for every
+lock/revoke/readback timestamp. The nine-suite container supply-chain
+aggregate passed 104 tests with 938 expectations. The complete repository
+gate passed with exit code 0 in 604 seconds; 21 existing Rust `dead_code`
+findings remained warnings only.
+
+Coverage proves:
+
+- exact canonical, single-link B1/B3 predecessor parsing and chronology;
+- six exact stable artifact files with 512 MiB per-object and 768 MiB
+  aggregate bounds;
+- `PutObject` `If-None-Match: *`, `Content-MD5`, metadata, request-ID, and
+  ETag binding;
+- publisher identity continuity from B1;
+- distinct object-verifier identity;
+- complete object and multipart pagination with exact-set admission;
+- `GetObject` `If-Match` ETag binding, streamed digest/size verification, and
+  sink commit/abort behavior;
+- fail-closed target, receipt, operation, metadata, body, ETag, pagination,
+  multipart, credential, chronology, hard-link, and downstream-authority
+  negatives;
+- CLI dry-run behavior over real canonical receipt and artifact files.
+
+The collector did not contact Cloudflare or read a credential. B5 probes,
+publisher revocation, post-probe/final-lock readback, signed assembly, WORM,
+complete S3, registry, deployment, traffic, and production authority remain
+unverified and false.

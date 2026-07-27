@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "contract": "cinatoken-container-runtime-provenance-policy-v1",
+  "repository": "cinagroup/cinatoken-rust",
+  "sourceBranch": "main",
+  "sourceRef": "refs/heads/main",
+  "sourceWorkflowName": "container-runtime-oci",
+  "sourceWorkflowPath": ".github/workflows/container-runtime-oci.yml",
+  "allowedSourceEvents": [
+    "push",
+    "workflow_dispatch"
+  ],
+  "provenanceWorkflowName": "container-runtime-provenance",
+  "provenanceWorkflowPath": ".github/workflows/container-runtime-provenance.yml",
+  "certificateIdentity": "https://github.com/cinagroup/cinatoken-rust/.github/workflows/container-runtime-provenance.yml@refs/heads/main",
+  "certificateOidcIssuer": "https://token.actions.githubusercontent.com",
+  "statementType": "https://in-toto.io/Statement/v1",
+  "predicateType": "https://slsa.dev/provenance/v1",
+  "buildType": "https://github.com/cinagroup/cinatoken-rust/blob/main/docs/container-runtime-provenance-build-type-v1.md",
+  "builderId": "https://github.com/actions/runner/github-hosted",
+  "checkoutAction": "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+  "downloadArtifactAction": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+  "uploadArtifactAction": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+  "cosignInstallerAction": "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6",
+  "cosignVersion": "v3.1.2",
+  "cosignLinuxAmd64Sha256": "f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf",
+  "runner": "ubuntu-24.04",
+  "artifactRetentionDays": 90
+}

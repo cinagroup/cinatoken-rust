@@ -1,0 +1,156 @@
+name: container-runtime-provenance
+
+on:
+  workflow_run:
+    workflows: ["container-runtime-oci"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: container-runtime-provenance-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  attest-accepted-main-subject:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.status == 'completed' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_sha == github.sha &&
+      (github.event.workflow_run.event == 'push' ||
+       github.event.workflow_run.event == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      SOURCE_EVIDENCE_DIR: /tmp/container-runtime-oci
+      PROVENANCE_EVIDENCE_DIR: /tmp/container-runtime-provenance
+      PROVENANCE_STATEMENT: /tmp/container-runtime-provenance/container-runtime.provenance.slsa.json
+      PROVENANCE_BUNDLE: /tmp/container-runtime-provenance/container-runtime.provenance.sigstore.json
+      PROVENANCE_PRE_SIGN_REPORT: /tmp/container-runtime-provenance/container-runtime-provenance-pre-signing.json
+      PROVENANCE_REPORT: /tmp/container-runtime-provenance/container-runtime-provenance-verification.json
+      COSIGN_VERSION: v3.1.2
+      COSIGN_LINUX_AMD64_SHA256: f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf
+    steps:
+      - name: Check out exact accepted source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+
+      - name: Download exact source evidence artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: container-runtime-oci-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: /tmp/container-runtime-oci
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+          digest-mismatch: error
+
+      - name: Revalidate source evidence and generate canonical SLSA statement
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${PROVENANCE_EVIDENCE_DIR}"
+          node tools/verify_container_runtime_provenance.mjs \
+            --generate \
+            --evidence-dir "${SOURCE_EVIDENCE_DIR}" \
+            --event "${GITHUB_EVENT_PATH}" \
+            --statement "${PROVENANCE_STATEMENT}" \
+            --report "${PROVENANCE_PRE_SIGN_REPORT}" \
+            --json \
+            2> >(tee "${PROVENANCE_EVIDENCE_DIR}/container-runtime-provenance-pre-signing.log" >&2) \
+            | tee "${PROVENANCE_EVIDENCE_DIR}/container-runtime-provenance-pre-signing.stdout.json"
+
+      - name: Install verified Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.1.2
+
+      - name: Verify installed Cosign identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          COSIGN_PATH="$(command -v cosign)"
+          echo "${COSIGN_LINUX_AMD64_SHA256}  ${COSIGN_PATH}" \
+            | sha256sum --check --strict -
+          cosign version \
+            | tee "${PROVENANCE_EVIDENCE_DIR}/cosign-version.log"
+
+      - name: Keyless-sign exact provenance statement
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cosign attest-blob \
+            --yes \
+            --oidc-provider github-actions \
+            --statement "${PROVENANCE_STATEMENT}" \
+            --type slsaprovenance1 \
+            --bundle "${PROVENANCE_BUNDLE}" \
+            "${SOURCE_EVIDENCE_DIR}/container-runtime-a.tar" \
+            2>&1 \
+            | tee "${PROVENANCE_EVIDENCE_DIR}/cosign-attest.log"
+
+      - name: Verify signer policy, subject, SCT, transparency and timestamp
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          cosign verify-blob-attestation \
+            --bundle "${PROVENANCE_BUNDLE}" \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --certificate-github-workflow-trigger workflow_run \
+            --certificate-github-workflow-sha "${GITHUB_SHA}" \
+            --certificate-github-workflow-name "${GITHUB_WORKFLOW}" \
+            --certificate-github-workflow-repository "${GITHUB_REPOSITORY}" \
+            --certificate-github-workflow-ref refs/heads/main \
+            --type slsaprovenance1 \
+            --use-signed-timestamps \
+            "${SOURCE_EVIDENCE_DIR}/container-runtime-a.tar" \
+            2>&1 \
+            | tee "${PROVENANCE_EVIDENCE_DIR}/cosign-verification.log"
+
+      - name: Verify exact DSSE payload and emit fail-closed S3 report
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tools/verify_container_runtime_provenance.mjs \
+            --verify \
+            --evidence-dir "${SOURCE_EVIDENCE_DIR}" \
+            --event "${GITHUB_EVENT_PATH}" \
+            --statement "${PROVENANCE_STATEMENT}" \
+            --bundle "${PROVENANCE_BUNDLE}" \
+            --cosign-verification-log "${PROVENANCE_EVIDENCE_DIR}/cosign-verification.log" \
+            --report "${PROVENANCE_REPORT}" \
+            --json \
+            2> >(tee "${PROVENANCE_EVIDENCE_DIR}/container-runtime-provenance-verification.log" >&2) \
+            | tee "${PROVENANCE_EVIDENCE_DIR}/container-runtime-provenance-verification.stdout.json"
+
+      - name: Retain S3 cryptographic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: container-runtime-provenance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/container-runtime-provenance/container-runtime.provenance.slsa.json
+            /tmp/container-runtime-provenance/container-runtime.provenance.sigstore.json
+            /tmp/container-runtime-provenance/container-runtime-provenance-pre-signing.json
+            /tmp/container-runtime-provenance/container-runtime-provenance-pre-signing.log
+            /tmp/container-runtime-provenance/container-runtime-provenance-pre-signing.stdout.json
+            /tmp/container-runtime-provenance/cosign-version.log
+            /tmp/container-runtime-provenance/cosign-attest.log
+            /tmp/container-runtime-provenance/cosign-verification.log
+            /tmp/container-runtime-provenance/container-runtime-provenance-verification.json
+            /tmp/container-runtime-provenance/container-runtime-provenance-verification.log
+            /tmp/container-runtime-provenance/container-runtime-provenance-verification.stdout.json
+          if-no-files-found: warn
+          retention-days: 90
+          compression-level: 9

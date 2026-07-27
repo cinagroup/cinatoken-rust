@@ -766,6 +766,12 @@ export async function validateAcceptedVulnerabilityEvidence(
   const databaseB = { ...databaseA };
   const importAFingerprint = fingerprints.get("grype-db-a/6/import.json");
   const importBFingerprint = fingerprints.get("grype-db-b/6/import.json");
+  const importFacts = {
+    ...importFactsA,
+    sha256: importAFingerprint.sha256,
+    bytes: importAFingerprint.bytes,
+    exactIndependentMatch: true,
+  };
   validateIndependentEvidenceBindings({
     sbomA,
     sbomB,
@@ -791,7 +797,7 @@ export async function validateAcceptedVulnerabilityEvidence(
     approvalsBytes,
     databaseArchive: fingerprints.get("grype-db.tar.zst"),
     dbStatusA,
-    importFactsA,
+    importFacts,
     inputSnapshot,
     listingFacts,
     metadata,
@@ -853,19 +859,30 @@ export function validateAcceptedVulnerabilityReport(reportValue, facts) {
     "vulnerability scanner identity drifted",
   );
   requireCondition(
-    database.archiveUrl === GRYPE_DB_ARCHIVE_URL &&
+    database.provider === facts.metadata.provider &&
+      database.sourceLatestUrl === facts.metadata.sourceLatestUrl &&
+      database.listingObservedAt === facts.metadata.listingObservedAt &&
+      database.listingSha256 === facts.metadata.listingSha256 &&
+      database.archiveUrl === GRYPE_DB_ARCHIVE_URL &&
       database.archiveSha256 === GRYPE_DB_ARCHIVE_SHA256 &&
       database.archiveSha256 === facts.databaseArchive.sha256 &&
       database.archiveBytes === facts.databaseArchive.bytes &&
+      database.schemaVersion === facts.metadata.schemaVersion &&
+      database.built === facts.metadata.built &&
+      database.ageSeconds === facts.dbStatusA.ageSeconds &&
+      database.maximumCandidateAgeSeconds ===
+        facts.metadata.maximumCandidateAgeSeconds &&
       database.importedFileSha256 === GRYPE_DB_FILE_SHA256 &&
       database.importedFileBytes === GRYPE_DB_FILE_BYTES &&
       database.importedFileXxh64 === GRYPE_DB_FILE_XXH64 &&
+      database.expectedImportedFileSha256 === GRYPE_DB_FILE_SHA256 &&
+      database.expectedImportedFileBytes === GRYPE_DB_FILE_BYTES &&
       database.valid === true &&
       database.exactIndependentStatusMatch === true &&
       database.exactIndependentFileMatch === true &&
       canonicalJson(database.listing) === canonicalJson(facts.listingFacts) &&
       canonicalJson(database.importMetadata) ===
-        canonicalJson(facts.importFactsA),
+        canonicalJson(facts.importFacts),
     "vulnerability database report drifted",
   );
   requireCondition(

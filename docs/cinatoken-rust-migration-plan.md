@@ -21535,3 +21535,48 @@ The next mandatory order is:
    Controller, DO, shard generation, runtime build, and policy identities.
 
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.304 Static-musl S2 Acceptance And Reproducible DB Contract (2026-07-27)
+
+The static-musl release subject has now passed the credential-free R2/S1/S2
+path. Candidate `162cad5b9515309b40addcde52fcb66fc753d3b3`, tree
+`b5fc2e792bf82e6cea0e0697ca28049277e54a9d`, passed
+[run 30229751845](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845)
+and
+[job 89866237796](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845/job/89866237796).
+All OCI, SBOM, vulnerability-decision, retention, and cleanup steps completed;
+none was skipped.
+
+| Accepted S2 identity | Frozen value |
+| --- | --- |
+| OCI archive / index | `sha256:7089fef231ff3365e154d80f6d31de99ebaf1a0317718af60c4eda62568b8ca1` / `sha256:ad706ef69fd8f954828ebd00756af1112d4598f032d89e2a1fd62b6bb5c3943a` |
+| Manifest / config | `sha256:21a453f455eef730d0e2251cdcadb27fe99feb8633c15037f2ddf09d59a39203` / `sha256:6feab2131885f5c3d025befc01f140699e6d7067cd224bd3ba7e0775f276d067` |
+| Runtime / SBOM | binary `01fa7759baa1e27c4169835853b9dd85a8d36c44767de5d7b1fc6cdef054c274`; SBOM 665,849 bytes at `76aa5ae7bc8f849f0bd5af8dd3bb257be191a0e37639f28e858748bc9064ab9c` |
+| Frozen DB archive | 137,741,137 bytes at `766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc` |
+| Extracted DB A/B | 1,475,883,008 bytes at `5e1fd5545a3c4188cb9542003fd3717753c60730c17dcecde14f45e7ee691b50`; xxh64 `d8a8cef5bc65efe7` |
+| Grype result | 0 matches, 0 ignored, 0 Unknown, 0 High, 0 Critical; exact A/B scan SHA-256 `62c9c6e8feca90edc0ff740703f7d594fd26b79057d9f85b0bd0b3201d28c95f` |
+| Retained packet | [artifact 8639704084](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845/artifacts/8639704084), 144,729,887 bytes, `sha256:29a2f64564298f6b1ed77f6b920be8fcd3d3a93fd882edd80db558884e54d05b`, expires `2026-08-26T01:27:29Z` |
+
+Vulnerability contract v3 replaces nondeterministic `grype db import`
+hydration with two independent extractions of one SHA-256-pinned archive. It
+requires an exact one-member `vulnerability.db` archive, non-owner/non-mode
+preserving extraction, an exact regular-file inventory, fixed SHA-256/size,
+fixed xxh64, deterministic import metadata, pre/post input fingerprints, and
+read-only network-disabled Grype validation. The earlier glibc S2 rejection and
+the two divergent hydrated SQLite identities remain historical negative
+calibration; they are not overwritten by this acceptance.
+
+Database evidence now has two required lanes. A release-candidate refresh must
+capture and review a new upstream listing/archive identity and must satisfy the
+48-hour freshness policy before changing the frozen contract. Historical
+replay must verify the immutable recorded archive, extracted DB, import
+metadata, scanner, SBOM, and decision without pretending the old database is a
+current candidate. A scheduled refresh may propose reviewable metadata and
+evidence, but it must not mutate `main` or authorize production.
+
+S2 acceptance applies only to this local static-musl OCI subject. Signed
+provenance and signature policy, transparency/WORM retention, registry
+publication/readback, canonical P5 digest selection, isolated Cloudflare
+staging, managed Container lifecycle, P5 completion, remote mutation, customer
+traffic, and cutover remain false. Go/VPS remains the traffic, scheduler, and
+financial authority; production remains **NO-GO**.

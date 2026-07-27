@@ -4140,3 +4140,45 @@ restore, external signed immutable anchoring and isolated Cloudflare lifecycle
 rehearsal. The accepted soak is not remote replacement, long-duration load or
 production deployment evidence. No credential or remote authority was used.
 Go/VPS remains all production authority and production remains **NO-GO**.
+
+## 2026-07-27 Static-musl S2 Promotion Checkpoint
+
+The S2 remediation loop is closed for candidate
+`162cad5b9515309b40addcde52fcb66fc753d3b3`.
+[Run 30229751845](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845),
+[job 89866237796](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845/job/89866237796),
+and
+[artifact 8639704084](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845/artifacts/8639704084)
+bind one exact static-musl OCI subject to a byte-identical 665,849-byte SBOM,
+two byte-identical frozen DB extractions, two byte-identical Grype scans, and a
+zero-blocker policy result.
+
+| Checkpoint | Accepted result |
+| --- | --- |
+| R2 subject | Archive `7089fef2...`; index `ad706ef6...`; manifest `21a453f4...`; config `6feab213...`; runtime `01fa7759...` |
+| S1 | 4 packages; 665,849 bytes; `sha256:76aa5ae7bc8f849f0bd5af8dd3bb257be191a0e37639f28e858748bc9064ab9c` |
+| S2 DB | Archive `766bec0e...`; A/B raw DB 1,475,883,008 bytes at `5e1fd554...`; xxh64 `d8a8cef5bc65efe7`; deterministic metadata `303e1b7f...` |
+| S2 decision | 0 matches, 0 ignored, 0 Unknown/Critical/High; exact A/B scan `62c9c6e...`; zero approvals |
+| Retention | 144,729,887-byte GitHub packet, `sha256:29a2f64564298f6b1ed77f6b920be8fcd3d3a93fd882edd80db558884e54d05b`, 30-day expiry |
+
+### Database evidence lanes
+
+1. **Candidate refresh:** fetch `latest.json` in a credential-free scheduled or
+   manual job, verify transport and schema, download the proposed archive,
+   derive archive/raw-DB/import identities, run the exact current subject, and
+   emit a reviewable candidate packet. Do not commit, push, deploy, or alter the
+   active policy automatically.
+2. **Candidate adoption:** a human-reviewed commit freezes the complete listing,
+   archive, DB, import metadata, scanner, policy, and approval identities. The
+   release run must observe the database within 48 hours of `built`.
+3. **Historical replay:** select a previously frozen contract and retained
+   archive by digest, re-run immutable extraction and policy checks, and report
+   historical validity separately. Freshness must not be reinterpreted as a
+   current release claim.
+
+The next promotion boundary is S3: generate subject-bound provenance, verify
+signature/signer policy and transparency inclusion, and retain the packet in
+approved immutable storage. Only then may registry publication/readback and
+isolated Cloudflare staging begin. All registry, Cloudflare, P5, production,
+traffic, billing, and Go/VPS shutdown authorities remain false. Production
+remains **NO-GO**.

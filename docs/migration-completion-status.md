@@ -2121,3 +2121,40 @@ provenance, transparency/WORM retention, runtime deployment join, and P5
 remain open. Unknown vulnerability counts remain null, not zero.
 `p5Eligible` and `productionCutoverAuthorized` remain false; Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-27 Static-musl S2 Accepted
+
+The prior glibc rejection remains valid historical evidence, but its remediation
+is now complete for one frozen static-musl subject. Commit
+`162cad5b9515309b40addcde52fcb66fc753d3b3` passed
+[run 30229751845](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845)
+and
+[job 89866237796](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845/job/89866237796).
+The exact OCI archive/index/manifest/config are `7089fef2...`, `ad706ef6...`,
+`21a453f4...`, and `6feab213...`; the static runtime binary is `01fa7759...`.
+
+The 665,849-byte SBOM is byte-identical across A/B at
+`sha256:76aa5ae7bc8f849f0bd5af8dd3bb257be191a0e37639f28e858748bc9064ab9c`.
+Vulnerability contract v3 independently extracted the frozen database twice.
+Both 1,475,883,008-byte files are
+`sha256:5e1fd5545a3c4188cb9542003fd3717753c60730c17dcecde14f45e7ee691b50`
+with xxh64 `d8a8cef5bc65efe7`; both deterministic 109-byte import records are
+`sha256:303e1b7f0192f60b76198859b1896504a2f857e56aa89deca93b43562d6c119c`.
+Pre/post input snapshots matched exactly.
+
+Pinned Grype 0.116.0 ran twice nonroot, offline, and against read-only DB/SBOM
+mounts. The exact A/B report is 15,691 bytes at
+`sha256:62c9c6e8feca90edc0ff740703f7d594fd26b79057d9f85b0bd0b3201d28c95f`:
+0 matches, 0 ignored, and 0 Unknown/Critical/High findings. No approval or
+exception was added.
+
+[Artifact 8639704084](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845/artifacts/8639704084)
+is 144,729,887 bytes,
+`sha256:29a2f64564298f6b1ed77f6b920be8fcd3d3a93fd882edd80db558884e54d05b`,
+and expires `2026-08-26T01:27:29Z`.
+
+R2/S1/S2 are accepted for this subject only. S3 provenance/signature,
+transparency/WORM retention, registry and Cloudflare digest readback, isolated
+staging, managed lifecycle, P5, remote mutation, traffic, and cutover remain
+open and unauthorized. Go/VPS remains authoritative and production remains
+**NO-GO**.

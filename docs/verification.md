@@ -10659,3 +10659,49 @@ readback, Cloudflare deployment digest, independent-runner reproduction,
 transparency/WORM, P5 eligibility, remote mutation, customer traffic and
 production cutover as false. This is OCI reproduction evidence only. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-27 Static-musl S2 And Database V3 Verification
+
+Local credential-free checks:
+
+```powershell
+node --check tools/verify_container_runtime_vulnerabilities.mjs
+node --check tests/container-runtime-vulnerability-gate.test.mjs
+npx.cmd --yes yaml-lint .github/workflows/container-runtime-oci.yml
+npx.cmd --yes bun run check:container-runtime:linux-contract
+npx.cmd --yes bun run check:container-runtime:oci-contract
+npx.cmd --yes bun run check:container-runtime:sbom-contract
+npx.cmd --yes bun run check:container-runtime:vulnerabilities-contract
+git diff --check
+```
+
+The four focused suites passed 40 tests. Vulnerability v3 passed 14/14 tests
+and 99 expectations, including negative mutations for archive-member count,
+member selection, owner/mode preservation, source identity, symlink/type
+checks, exact inventory, DB SHA-256/size/xxh64, import metadata, Docker
+isolation, and pre/post input snapshots. The complete repository `bun run
+check` exceeded the local command window in later unrelated suites; it is not
+recorded as a completed verification.
+
+Linux execution passed for candidate
+`162cad5b9515309b40addcde52fcb66fc753d3b3` in
+[run 30229751845](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845)
+and
+[job 89866237796](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845/job/89866237796).
+Every build, OCI, SBOM, vulnerability, upload, and cleanup step completed.
+
+| Evidence | Verified value |
+| --- | --- |
+| OCI subject | archive `7089fef231ff3365e154d80f6d31de99ebaf1a0317718af60c4eda62568b8ca1`; index `ad706ef69fd8f954828ebd00756af1112d4598f032d89e2a1fd62b6bb5c3943a`; manifest `21a453f455eef730d0e2251cdcadb27fe99feb8633c15037f2ddf09d59a39203`; config `6feab2131885f5c3d025befc01f140699e6d7067cd224bd3ba7e0775f276d067` |
+| Runtime / SBOM | runtime `01fa7759baa1e27c4169835853b9dd85a8d36c44767de5d7b1fc6cdef054c274`; SBOM 665,849 bytes at `76aa5ae7bc8f849f0bd5af8dd3bb257be191a0e37639f28e858748bc9064ab9c` |
+| Frozen archive | 137,741,137 bytes at `766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc` |
+| DB A/B | 1,475,883,008 bytes at `5e1fd5545a3c4188cb9542003fd3717753c60730c17dcecde14f45e7ee691b50`; xxh64 `d8a8cef5bc65efe7` |
+| Import A/B | 109 bytes at `303e1b7f0192f60b76198859b1896504a2f857e56aa89deca93b43562d6c119c`; source `frozen archive extraction`; client `v6.1.9` |
+| Scan A/B | 15,691 bytes at `62c9c6e8feca90edc0ff740703f7d594fd26b79057d9f85b0bd0b3201d28c95f`; 0 matches, 0 ignored, all severities zero |
+| Input snapshot | 476 bytes at `cfad2b510a017aae7194957034171fc010289a99d511ac8d5b8fd4fdd670b6a3`; exact before/after match |
+| Artifact | [8639704084](https://github.com/cinagroup/cinatoken-rust/actions/runs/30229751845/artifacts/8639704084), 144,729,887 bytes, `sha256:29a2f64564298f6b1ed77f6b920be8fcd3d3a93fd882edd80db558884e54d05b`, expires `2026-08-26T01:27:29Z` |
+
+This verifies R2/S1/S2 only for the frozen local subject. Provenance/signature,
+registry readback, Cloudflare deployment digest, transparency/WORM, P5,
+remote mutation, customer traffic, production cutover, and Go/VPS drain remain
+false. Go/VPS remains authoritative and production remains **NO-GO**.

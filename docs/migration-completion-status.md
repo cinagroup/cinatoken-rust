@@ -2198,3 +2198,31 @@ isolated Cloudflare staging begin.
 
 Go/VPS remains the traffic, scheduler, provider, and financial authority.
 Production remains **NO-GO**.
+
+## 2026-07-27 R2 Retention Contract Implemented
+
+The next S3 implementation layer is now present locally. A fail-closed offline
+verifier binds the exact source/provenance packets, statement, Sigstore bundle,
+report, Cosign log, Cloudflare R2 target, bucket-lock rule, object readbacks,
+provider overwrite/delete rejection, writer-credential revocation, and
+independent operations/security signatures.
+
+The authority model reflects Cloudflare's real permission surface. The
+publisher uses bucket-scoped object read/write; the lock operator necessarily
+has R2 Admin Read & Write, including object authority; object and lock
+readbacks use distinct read-only credentials. The lock operator must be
+revoked before upload and the publisher after probes, leaving no active writer
+at decision time.
+
+The focused local suite passes 10/10 tests, including layout, authority, lock,
+object, probe, freshness, signature, provenance, and policy weakening
+negatives.
+Credential-free self-test passes but correctly reports no remote evidence and
+no storage mutation. The complete repository aggregate check also passes.
+
+This is contract readiness, not S3 completion. No real R2 bucket-lock bundle
+has been collected, so approved immutable/WORM retention is still
+**PENDING**, complete S3 is **FALSE**, and R3 registry/C1 Cloudflare staging
+remain blocked. Cloudflare lock-rule mutability is an explicit limitation;
+regulatory non-bypassable retention would require a separately approved
+control. Go/VPS remains authoritative and production remains **NO-GO**.

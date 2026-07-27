@@ -10791,3 +10791,62 @@ No immutable bucket, registry, or Cloudflare runtime mutation was performed.
 `cloudflareDeploymentDigestVerified`, `p5Eligible`, customer traffic, and
 production cutover remain false. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-27 R2 Retention Evidence Contract Verification
+
+The new offline contract was verified without Cloudflare credentials:
+
+```powershell
+node --check tools/verify_container_runtime_worm_retention.mjs
+node --check tests/container-runtime-worm-retention-gate.test.mjs
+npx.cmd --yes bun test --path-ignore-patterns="target/**" `
+  tests/container-runtime-worm-retention-gate.test.mjs
+node tools/verify_container_runtime_worm_retention.mjs --self-test --json
+npx.cmd --yes bun run check
+```
+
+The focused suite passed all 10 tests with 142 expectations. Its exact
+positive fixture includes:
+
+- an external trust policy and independent operations/security Ed25519 keys;
+- four distinct Cloudflare/R2 credentials with platform-accurate
+  capabilities;
+- lock-operator revocation before upload and publisher revocation after
+  provider-side probes;
+- an empty, fully paginated baseline and six exact create-only retained
+  objects;
+- content-addressed object keys, digest/size/metadata readback, and zero
+  unknown or multipart objects;
+- provider 4xx overwrite/delete rejection followed by unchanged-object
+  readback;
+- a qualifying exact-prefix R2 bucket-lock rule read back after the probes;
+- retained SLSA/Sigstore/Cosign evidence for the exact seven frozen subjects.
+
+Negative mutations cover shared credential identities, capability escalation,
+non-R2 account permission, unconfirmed or misordered writer revocation,
+disabled/wrong/short lock rules, object and provenance drift, client-only or
+transient probe outcomes, stale evidence, forged approvals, and weakened
+protocol/trust policy.
+
+The self-test reports a repository-contract pass only. It explicitly keeps
+`remoteEvidenceVerified=false`, `evidenceStorageMutationPerformed=false`,
+`wormRetentionVerified=false`, `s3Complete=false`, registry/Cloudflare/P5/
+traffic authority false, and `productionCutoverAuthorized=false`.
+
+Cloudflare official documentation refreshed on 2026-07-27 confirms that R2
+bucket locks cover Age, Date, or Indefinite retention, apply to existing and
+new objects, use the strictest matching rule, and override lifecycle deletion.
+It also confirms lock rules can be removed and R2 Admin Read & Write includes
+object as well as configuration authority. The contract models those
+limitations rather than treating configuration or a local self-test as WORM
+proof.
+
+The complete repository aggregate also passed after the WORM contract was
+inserted immediately after the provenance contract. It completed all existing
+Bun/Vitest, Wrangler type/dry-run, frontend, Rust workspace, formatting, and
+wasm32 checks. Rust emitted existing `dead_code` warnings but no test or check
+failure.
+
+No bucket, object, token, registry, Cloudflare deployment, provider, billing,
+traffic, or Go/VPS mutation occurred. Real R2 evidence is still pending and
+production remains **NO-GO**.

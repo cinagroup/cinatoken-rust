@@ -4219,7 +4219,7 @@ capability and permission verification.
 | Phase | Required action | Acceptance evidence | Abort condition |
 | --- | --- | --- | --- |
 | B1 isolate | Create a dedicated non-application evidence bucket and content-addressed release prefix | Account, bucket, jurisdiction, prefix, creation time, owner, and empty baseline | Existing unknown object, shared customer data, or placeholder identity |
-| B2 separate authority | Issue separate publisher, lock-operator, and read-only verifier identities | Redacted token IDs, permission inventory, expiry/revocation owner; no secret output | Broad account token, one identity can publish and alter locks, or secret in argv/file/log |
+| B2 separate authority | Issue distinct publisher, lock-operator, object-verifier, and lock-verifier identities; record the platform's real R2 Admin capability expansion | Redacted credential digests, exact permission inventory, expiry/revocation owner; no secret output | Non-R2 account permission, shared credential, inaccurate capability claim, or secret in argv/file/log |
 | B3 lock | Apply reviewed age/date/indefinite bucket-lock rule and read it back | Canonical lock JSON digest, prefix, retention deadline, API request ID, independent review | Disabled/wrong prefix, shorter retention, unreadable configuration, or lifecycle conflict |
 | B4 publish | Create-only upload source packet, statement, bundle, final report, and canonical manifest | Provider metadata plus local/upload/readback SHA-256 equality for every member | Overwrite, multipart residue, digest mismatch, or missing member |
 | B5 enforce | Attempt overwrite and delete through the publisher path | Both provider operations fail; original object still reads back identically | Success, ambiguous timeout, client-only denial, or object drift |
@@ -4272,3 +4272,24 @@ contains one signature, Rekor inclusion promise/proof at index `2256863846`,
 and one verified RFC3161 timestamp. The OCI/runtime/SBOM/scan subject is
 unchanged and the decision remains
 `cryptographic-subgate-passed-worm-pending`.
+
+### Retention verifier contract
+
+The credential-free implementation is now specified in
+`docs/container-runtime-worm-retention.md`. The protocol policy requires one
+year of remaining retention, content-addressed keys, four evidence envelopes,
+six exact retained objects, two independent Ed25519 approvals, and complete
+time/identity binding.
+
+Cloudflare's current R2 permission model prevents a lock writer from being
+lock-only: Admin Read & Write also grants object read/write. The ceremony now
+records that capability honestly, revokes the lock operator before the first
+upload, revokes the publisher after provider-side overwrite/delete probes,
+and performs final object and lock readback using separate read-only
+identities. No write credential may remain active at decision time.
+
+The local contract and negative fixtures do not constitute live R2 evidence.
+Until a dedicated staging bucket produces a complete independently signed
+bundle and the offline verifier accepts it, `wormRetentionVerified=false`,
+`s3Complete=false`, R3/C1 remain blocked, Go/VPS remains authoritative, and
+production remains **NO-GO**.

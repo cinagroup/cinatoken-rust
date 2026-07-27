@@ -21735,3 +21735,41 @@ one signature, inclusion promise/proof, one RFC3161 timestamp, and Rekor index
 `2256863846`. All seven portable subject identities remain unchanged. The
 successor still correctly reports `wormRetentionVerified=false`,
 `s3Complete=false`, and production not authorized.
+
+## 22.306 Fail-Closed R2 Retention Evidence Contract (2026-07-27)
+
+The repository now has a credential-free verifier contract for the remaining
+S3 immutable-retention subgate:
+
+- `config/container-runtime-worm-retention-policy.json` pins the staging R2
+  provider, one-year floor, time bounds, evidence/object inventories, signer,
+  builder, Cosign identity, and Cloudflare capability references.
+- `tools/verify_container_runtime_worm_retention.mjs` validates a canonical
+  external trust policy, evidence bundle, retained provenance, provider
+  readbacks, bucket-lock rule, overwrite/delete rejection, writer revocation,
+  and two independent Ed25519 approvals.
+- `tests/container-runtime-worm-retention-gate.test.mjs` covers the exact pass
+  fixture and fails closed for authority overlap, capability drift, weak lock,
+  object drift, provenance overclaim, ambiguous probes, stale evidence,
+  forged approvals, and protocol/trust weakening.
+- `docs/container-runtime-worm-retention.md` defines the production ceremony,
+  schemas, authority model, commands, non-claims, and R3 handoff.
+
+The authority model was corrected against Cloudflare's current R2 permission
+documentation. Object-only credentials are bucket-scopeable, but R2 Admin
+Read & Write includes both bucket-configuration and object authority. The
+contract therefore uses four distinct credentials and does not claim the lock
+operator is lock-only. It requires provider-confirmed lock-operator revocation
+before upload and publisher revocation after enforcement probes, followed by
+separate read-only object and lock readbacks.
+
+Cloudflare permits bucket-lock rule update/removal, and its S3 compatibility
+surface does not provide AWS Object Lock/legal-hold semantics. A future pass
+therefore means only the bounded contract-specific R2 ceremony was verified;
+it is not a regulatory-compliance claim. An external provider/control remains
+required if policy demands non-bypassable legal retention.
+
+This increment performed no R2 mutation and collected no remote retention
+evidence. The self-test must and does leave `wormRetentionVerified=false`,
+`s3Complete=false`, all downstream authority false, Go/VPS authoritative, and
+production **NO-GO**.

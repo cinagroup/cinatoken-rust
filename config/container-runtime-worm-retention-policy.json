@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "contract": "cinatoken-container-runtime-worm-retention-protocol-policy-v1",
+  "repository": "cinagroup/cinatoken-rust",
+  "environment": "staging",
+  "provider": "cloudflare-r2",
+  "prefixRoot": "container-runtime/s3/v1/",
+  "minimumRetentionSeconds": 31536000,
+  "maximumClockSkewSeconds": 300,
+  "maximumManifestLifetimeSeconds": 1800,
+  "maximumEvidenceAgeSeconds": 3600,
+  "requiredApprovalRoles": [
+    "operations",
+    "security"
+  ],
+  "requiredEvidenceKinds": [
+    "authority-boundary",
+    "object-readback",
+    "enforcement-probes",
+    "lock-readback"
+  ],
+  "requiredObjectKinds": [
+    "source-evidence-packet",
+    "provenance-evidence-packet",
+    "provenance-statement",
+    "sigstore-bundle",
+    "provenance-report",
+    "cosign-verification-log"
+  ],
+  "supportedJurisdictions": [
+    "default",
+    "eu",
+    "fedramp"
+  ],
+  "sourceWorkflow": ".github/workflows/container-runtime-oci.yml",
+  "provenanceWorkflow": ".github/workflows/container-runtime-provenance.yml",
+  "provenanceCertificateIdentity": "https://github.com/cinagroup/cinatoken-rust/.github/workflows/container-runtime-provenance.yml@refs/heads/main",
+  "provenanceOidcIssuer": "https://token.actions.githubusercontent.com",
+  "provenanceBuilderId": "https://github.com/actions/runner/github-hosted",
+  "cosignVersion": "v3.1.2",
+  "cosignLinuxAmd64Sha256": "f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf",
+  "cloudflareBucketLockDocs": "https://developers.cloudflare.com/r2/buckets/bucket-locks/",
+  "cloudflareR2TokenDocs": "https://developers.cloudflare.com/r2/api/tokens/",
+  "cloudflareS3ApiDocs": "https://developers.cloudflare.com/r2/api/s3/api/"
+}

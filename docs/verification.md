@@ -6064,7 +6064,7 @@ Bun tests with 258 expectations. Clean source identity:
   `6fe6f610a4835faa860d56076009cb8a70cff80fa6036919c0968c1bbb2b3222`.
 
 Failure-only trace retention is pinned to
-`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02`
+`actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a`
 for seven days. The successful run skipped that artifact as designed; its
 verifier JSON is retained in the job log. The prior zero-job outage attempts
 remain historical evidence and no longer block this exact candidate.

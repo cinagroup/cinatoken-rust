@@ -1157,7 +1157,7 @@ jobs:
 
       - name: Retain syscall verification summaries
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ring-transition-syscall-summaries-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -1171,7 +1171,7 @@ jobs:
 
       - name: Retain successful syscall traces
         if: success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ring-transition-successful-syscall-traces-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ring-transition-syscall-traces/*.strace
@@ -1180,7 +1180,7 @@ jobs:
 
       - name: Retain failed syscall traces
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ring-transition-syscall-traces-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ring-transition-syscall-traces

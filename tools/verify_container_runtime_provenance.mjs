@@ -352,7 +352,7 @@ export function validateProvenancePolicy(value) {
       policy.downloadArtifactAction ===
         "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" &&
       policy.uploadArtifactAction ===
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" &&
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" &&
       policy.cosignInstallerAction ===
         "sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6" &&
       policy.cosignVersion === "v3.1.2" &&

@@ -4449,3 +4449,54 @@ overwrite/delete probes, publisher-target lifecycle collection, final lock
 readback, and canonical v2 evidence/signature production. No live operation
 was performed; Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+### B5 enforcement collector foundation
+
+The B5 collector is locally implemented and deliberately split into five
+positive and two emergency, separately credentialed invocations. The
+production execution order is:
+
+1. operations/security approve the exact six-role permission inventories,
+   token expiries, revocation ownership, frozen B4 object, and abort path;
+2. calibrate the repository's expected Bucket Lock rejection tuple in a
+   disposable non-evidence prefix using the exact publisher permission shape;
+3. archive and review calibration evidence; change repository policy only
+   through an ordinary reviewed commit before the ceremony;
+4. run the five positive B5 dry-runs plus both emergency dry-runs over
+   canonical B3/B4 receipts and inspect each request plan without exposing
+   secrets;
+5. run `probe` with explicit staging, preflight, overwrite, and delete
+   confirmations; stop immediately on any tuple, transport, response, target,
+   or chronology drift;
+6. regardless of an ambiguous or unsafe probe result, enter incident/abort
+   handling and revoke the publisher through the independently authorized
+   `emergency-revoke` phase, bind the retained incident artifact digest, then
+   run `emergency-verify`; do not assemble passing evidence from a failed
+   chain because both receipts are permanently non-promotable;
+7. for a valid chain, run publisher revoke, independent revocation readback,
+   post-probe object readback, and final lock readback in strict order;
+8. transfer only canonical redacted receipts to the offline B6/B7 assembler;
+   no collector receipt may authorize WORM, S3, registry, Cloudflare staging,
+   P5, traffic, billing, drain, or cutover.
+
+Probe transport sends one manually signed request per operation, disables
+redirect following and retries, bounds/validates/hashes raw XML responses,
+correlates body/header request IDs, and records response completion. The
+create-only `412 PreconditionFailed` preflight is only publisher/key
+admission. The unconditional overwrite and delete currently require exact
+`403 AccessDenied`. Cloudflare does not document that tuple as stable, so
+calibration is a hard prerequisite and runtime allowlist widening is
+forbidden.
+
+Local gates pass: B5 18/91 with self-test 7/22, B4 11/78, lifecycle 18/115,
+final verifier 11/274, staging 16/110, and the ten-suite supply-chain
+aggregate 122/1088.
+The complete repository gate passes with exit code 0 in 629.4 seconds; 21
+existing Rust `dead_code` findings remain warnings only. No live request or
+credential read occurred.
+
+The next implementation unit is B6/B7 canonical evidence assembly, reviewed
+permission-inventory ingestion, operations/security signatures, and
+clean-host replay. Until a real bundle passes, complete S3, R3/C1, P5,
+customer traffic, financial authority, Go/VPS drain, and cutover remain
+blocked. Go/VPS remains authoritative and production remains **NO-GO**.

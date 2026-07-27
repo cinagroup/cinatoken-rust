@@ -500,6 +500,17 @@ export function normalizeReadbackPredecessor(options) {
       receipt.providerMutationPerformed === true,
     "[predecessor] publish authority is invalid",
   );
+  exactKeys(
+    receipt.target,
+    [
+      "accountIdSha256",
+      "bucketName",
+      "jurisdiction",
+      "prefix",
+      "statementSha256",
+    ],
+    "[predecessor] publish target",
+  );
   const target = normalizePublicTarget(receipt.target, accountId);
   const capturedAt = requireCanonicalTimestamp(
     receipt.capturedAt,
@@ -595,6 +606,230 @@ export function normalizeReadbackPredecessor(options) {
       predecessors.lockRevocationReceiptSha256,
     publishCapturedAt: capturedAt,
     publishReceiptSha256: sha256Text(receiptText),
+    objects,
+  };
+}
+
+export function normalizeEnforcementPredecessors(options) {
+  const publishTarget = normalizeReadbackPredecessor({
+    accountId: options.accountId,
+    publishReceipt: options.publishReceipt,
+    publishReceiptText: options.publishReceiptText,
+  });
+  const lockRevocationText = requireCanonicalReceipt(
+    options.lockRevocationReceipt,
+    options.lockRevocationReceiptText,
+    "lock revocation receipt",
+  );
+  const lockRevocation = normalizeLockRevocationReceipt(
+    options.lockRevocationReceipt,
+    publishTarget.accountId,
+  );
+  requireSameTarget(
+    publishTarget,
+    lockRevocation,
+    "lock revocation/readback",
+  );
+  requireCondition(
+    sha256Text(lockRevocationText) ===
+        publishTarget.lockRevocationReceiptSha256 &&
+      lockRevocation.capturedAt ===
+        publishTarget.lockRevocationObservedAt,
+    "[predecessor] lock revocation receipt digest drifted",
+  );
+  const receiptText = requireCanonicalReceipt(
+    options.readbackReceipt,
+    options.readbackReceiptText,
+    "readback receipt",
+  );
+  const receipt = requireObject(
+    options.readbackReceipt,
+    "[predecessor] readback receipt",
+  );
+  exactKeys(
+    receipt,
+    [
+      "schemaVersion",
+      "contract",
+      "source",
+      "environment",
+      "phase",
+      "mode",
+      "ok",
+      "capturedAt",
+      "networkRequests",
+      "credentialsRead",
+      "writesFiles",
+      "providerMutationConfirmed",
+      "providerMutationPerformed",
+      "target",
+      "predecessors",
+      "credential",
+      "facts",
+      "providerOperations",
+      "limits",
+      "downstreamAuthority",
+    ],
+    "[predecessor] readback receipt",
+  );
+  requireCondition(
+    receipt.schemaVersion === WORM_DATA_SCHEMA_VERSION &&
+      receipt.contract === WORM_DATA_RECEIPT_CONTRACT &&
+      receipt.source ===
+        "cinatoken-container-runtime-worm-data-collector" &&
+      receipt.environment === "staging" &&
+      receipt.phase === "readback" &&
+      receipt.mode === "live" &&
+      receipt.ok === true &&
+      receipt.networkRequests === true &&
+      receipt.credentialsRead === true &&
+      receipt.writesFiles === true &&
+      receipt.providerMutationConfirmed === false &&
+      receipt.providerMutationPerformed === false,
+    "[predecessor] readback authority is invalid",
+  );
+  exactKeys(
+    receipt.target,
+    [
+      "accountIdSha256",
+      "bucketName",
+      "jurisdiction",
+      "prefix",
+      "statementSha256",
+    ],
+    "[predecessor] readback target",
+  );
+  const target = normalizePublicTarget(
+    receipt.target,
+    publishTarget.accountId,
+  );
+  requireSameTarget(
+    publishTarget,
+    target,
+    "publish/readback",
+  );
+  const capturedAt = requireCanonicalTimestamp(
+    receipt.capturedAt,
+    "[predecessor] readback capture time",
+  );
+  const predecessors = requireObject(
+    receipt.predecessors,
+    "[predecessor] readback predecessors",
+  );
+  exactKeys(
+    predecessors,
+    [
+      "baselineReceiptSha256",
+      "lockRevocationReceiptSha256",
+      "publishReceiptSha256",
+    ],
+    "[predecessor] readback predecessors",
+  );
+  requireCondition(
+    predecessors.baselineReceiptSha256 ===
+        publishTarget.baselineReceiptSha256 &&
+      predecessors.lockRevocationReceiptSha256 ===
+        publishTarget.lockRevocationReceiptSha256 &&
+      predecessors.publishReceiptSha256 ===
+        publishTarget.publishReceiptSha256,
+    "[predecessor] readback receipt chain drifted",
+  );
+  const credential = requireObject(
+    receipt.credential,
+    "[predecessor] readback credential",
+  );
+  exactKeys(
+    credential,
+    ["role", "credentialType", "credentialIdSha256"],
+    "[predecessor] readback credential",
+  );
+  requireCondition(
+    credential.role === "object-verifier" &&
+      credential.credentialType === "r2-object-read-api-token" &&
+      SHA256_PATTERN.test(credential.credentialIdSha256) &&
+      credential.credentialIdSha256 !==
+        publishTarget.publisherCredentialIdSha256,
+    "[predecessor] object verifier identity drifted",
+  );
+  const facts = requireObject(
+    receipt.facts,
+    "[predecessor] readback facts",
+  );
+  exactKeys(
+    facts,
+    [
+      "accountIdSha256",
+      "bucketName",
+      "jurisdiction",
+      "prefix",
+      "baselineObservedAt",
+      "baselinePaginationComplete",
+      "preexistingObjectCount",
+      "multipartUploadCount",
+      "unknownObjectCount",
+      "finalPaginationComplete",
+      "createOnlyWritesVerified",
+      "awsS3ObjectLockHeadersUsed",
+      "objects",
+    ],
+    "[predecessor] readback facts",
+  );
+  requireCondition(
+    facts.accountIdSha256 === target.accountIdSha256 &&
+      facts.bucketName === target.bucketName &&
+      facts.jurisdiction === target.jurisdiction &&
+      facts.prefix === target.prefix &&
+      facts.baselineObservedAt ===
+        publishTarget.baselineObservedAt &&
+      facts.baselinePaginationComplete === true &&
+      facts.preexistingObjectCount === 0 &&
+      facts.multipartUploadCount === 0 &&
+      facts.unknownObjectCount === 0 &&
+      facts.finalPaginationComplete === true &&
+      facts.createOnlyWritesVerified === true &&
+      facts.awsS3ObjectLockHeadersUsed === false &&
+      Array.isArray(facts.objects) &&
+      facts.objects.length === WORM_OBJECTS.length,
+    "[predecessor] readback facts are incomplete",
+  );
+  const objects = normalizeReadbackObjects(
+    facts.objects,
+    publishTarget.objects,
+    capturedAt,
+  );
+  validateReadbackOperations(receipt.providerOperations, objects);
+  validateCollectorLimits(
+    receipt.limits,
+    "[predecessor] readback limits",
+  );
+  requireAllDownstreamFalse(
+    receipt.downstreamAuthority,
+    "[predecessor] readback downstream authority",
+  );
+  requireCondition(
+    publishTarget.publishCapturedAt < objects[0].readBackAt &&
+      new Set([
+        publishTarget.publisherCredentialIdSha256,
+        lockRevocation.targetCredentialIdSha256,
+        credential.credentialIdSha256,
+        lockRevocation.lifecycleOperatorCredentialIdSha256,
+        lockRevocation.lifecycleVerifierCredentialIdSha256,
+      ]).size === 5,
+    "[predecessor] B4 chronology or authority separation drifted",
+  );
+  return {
+    ...publishTarget,
+    lockOperatorCredentialIdSha256:
+      lockRevocation.targetCredentialIdSha256,
+    lockReceiptSha256: lockRevocation.lockReceiptSha256,
+    lifecycleOperatorCredentialIdSha256:
+      lockRevocation.lifecycleOperatorCredentialIdSha256,
+    lifecycleVerifierCredentialIdSha256:
+      lockRevocation.lifecycleVerifierCredentialIdSha256,
+    objectVerifierCredentialIdSha256:
+      credential.credentialIdSha256,
+    objectReadbackCapturedAt: capturedAt,
+    objectReadbackReceiptSha256: sha256Text(receiptText),
     objects,
   };
 }
@@ -1351,6 +1586,11 @@ function normalizeLockRevocationReceipt(receipt, accountId) {
   return {
     ...normalizedTarget,
     targetCredentialIdSha256: target.targetCredentialIdSha256,
+    lockReceiptSha256: target.lockReceiptSha256,
+    lifecycleOperatorCredentialIdSha256:
+      target.lifecycleOperatorCredentialIdSha256,
+    lifecycleVerifierCredentialIdSha256:
+      authority.credentialIdSha256,
     lockCapturedAt,
     revokeCapturedAt,
     verifierSelfVerifiedAt: authority.selfVerifiedAt,
@@ -1470,6 +1710,174 @@ function normalizePublishedObjects(
     objects.push({ ...object, uploadedAt });
   }
   return objects;
+}
+
+function normalizeReadbackObjects(values, published, capturedAt) {
+  const objects = [];
+  let previousReadBackAt = null;
+  for (let index = 0; index < published.length; index += 1) {
+    const expected = published[index];
+    const object = requireObject(
+      values[index],
+      `[predecessor] ${expected.kind} readback`,
+    );
+    exactKeys(
+      object,
+      [
+        "kind",
+        "path",
+        "key",
+        "bytes",
+        "sha256",
+        "etag",
+        "contentType",
+        "uploadedAt",
+        "uploadHttpStatus",
+        "uploadRequestId",
+        "readBackAt",
+        "httpStatus",
+        "providerRequestId",
+        "customMetadata",
+      ],
+      `[predecessor] ${expected.kind} readback`,
+    );
+    const readBackAt = requireCanonicalTimestamp(
+      object.readBackAt,
+      `[predecessor] ${expected.kind} readback time`,
+    );
+    requireCondition(
+      object.kind === expected.kind &&
+        object.path === `objects/${expected.fileName}` &&
+        object.key === expected.key &&
+        object.bytes === expected.bytes &&
+        object.sha256 === expected.sha256 &&
+        object.etag === expected.etag &&
+        object.contentType === expected.contentType &&
+        object.uploadedAt === expected.uploadedAt &&
+        object.uploadHttpStatus === expected.uploadHttpStatus &&
+        object.uploadRequestId === expected.uploadRequestId &&
+        object.httpStatus === 200 &&
+        validProviderId(object.providerRequestId) &&
+        canonicalJson(object.customMetadata) ===
+          canonicalJson(expected.customMetadata) &&
+        expected.uploadedAt < readBackAt &&
+        (previousReadBackAt === null ||
+          previousReadBackAt <= readBackAt) &&
+        readBackAt <= capturedAt,
+      `[predecessor] ${expected.kind} readback drifted`,
+    );
+    previousReadBackAt = readBackAt;
+    objects.push({ ...object, readBackAt });
+  }
+  requireCondition(
+    previousReadBackAt === capturedAt,
+    "[predecessor] readback capture does not match the final object",
+  );
+  return objects;
+}
+
+function validateReadbackOperations(values, objects) {
+  requireCondition(
+    Array.isArray(values) && values.length >= objects.length + 2,
+    "[predecessor] readback operations are incomplete",
+  );
+  const requestIds = new Set();
+  let index = 0;
+  index = validatePagedReadbackOperations(
+    values,
+    index,
+    "ListObjectsV2",
+    requestIds,
+  );
+  index = validatePagedReadbackOperations(
+    values,
+    index,
+    "ListMultipartUploads",
+    requestIds,
+  );
+  requireCondition(
+    values.length - index === objects.length,
+    "[predecessor] readback GET operation count drifted",
+  );
+  for (const object of objects) {
+    const operation = requireObject(
+      values[index],
+      "[predecessor] readback GET operation",
+    );
+    exactKeys(
+      operation,
+      [
+        "operation",
+        "kind",
+        "key",
+        "httpStatus",
+        "providerRequestId",
+        "etag",
+        "bytes",
+        "sha256",
+      ],
+      "[predecessor] readback GET operation",
+    );
+    requireCondition(
+      operation.operation === "GetObject" &&
+        operation.kind === object.kind &&
+        operation.key === object.key &&
+        operation.httpStatus === 200 &&
+        operation.providerRequestId === object.providerRequestId &&
+        operation.etag === object.etag &&
+        operation.bytes === object.bytes &&
+        operation.sha256 === object.sha256 &&
+        !requestIds.has(operation.providerRequestId),
+      "[predecessor] readback GET operation drifted",
+    );
+    requestIds.add(operation.providerRequestId);
+    index += 1;
+  }
+}
+
+function validatePagedReadbackOperations(
+  values,
+  start,
+  operationName,
+  requestIds,
+) {
+  let index = start;
+  let page = 1;
+  while (
+    index < values.length &&
+    values[index]?.operation === operationName
+  ) {
+    const operation = requireObject(
+      values[index],
+      `[predecessor] ${operationName} operation`,
+    );
+    exactKeys(
+      operation,
+      [
+        "operation",
+        "page",
+        "httpStatus",
+        "providerRequestId",
+      ],
+      `[predecessor] ${operationName} operation`,
+    );
+    requireCondition(
+      operation.page === page &&
+        page <= MAX_LIST_PAGES &&
+        operation.httpStatus === 200 &&
+        validProviderId(operation.providerRequestId) &&
+        !requestIds.has(operation.providerRequestId),
+      `[predecessor] ${operationName} operation drifted`,
+    );
+    requestIds.add(operation.providerRequestId);
+    index += 1;
+    page += 1;
+  }
+  requireCondition(
+    page > 1,
+    `[predecessor] ${operationName} operation is absent`,
+  );
+  return index;
 }
 
 function validatePublishOperations(values, objects) {

@@ -38,6 +38,9 @@ import {
   normalizeWormPolicy,
   r2S3Endpoint,
 } from "./lib/container_runtime_worm_staging.mjs";
+import {
+  readCanonicalReceiptFile,
+} from "./lib/container_runtime_worm_receipt_file.mjs";
 
 const policyUrl = new URL(
   "../config/container-runtime-worm-retention-policy.json",
@@ -409,65 +412,11 @@ function requirePolicyTarget(target, policy) {
 }
 
 async function readCanonicalReceipt(file, label) {
-  if (typeof file !== "string" || file.length === 0) {
-    throw new WormDataCollectorError(`[predecessor] ${label} path is required`);
-  }
-  const resolved = path.resolve(file);
-  const initial = await lstat(resolved, { bigint: true }).catch(() => null);
-  if (
-    !initial ||
-    !initial.isFile() ||
-    initial.isSymbolicLink() ||
-    initial.nlink !== 1n ||
-    initial.size <= 0n ||
-    initial.size > BigInt(MAX_RECEIPT_BYTES)
-  ) {
-    throw new WormDataCollectorError(
-      `[predecessor] ${label} is outside its file bound`,
-    );
-  }
-  const handle = await open(
-    resolved,
-    fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
-  ).catch(() => null);
-  if (!handle) {
-    throw new WormDataCollectorError(
-      `[predecessor] ${label} could not be opened`,
-    );
-  }
-  try {
-    const opened = await handle.stat({ bigint: true });
-    const actualPath = await realpath(resolved);
-    if (!sameSnapshot(initial, opened) || !samePath(resolved, actualPath)) {
-      throw new WormDataCollectorError(
-        `[predecessor] ${label} changed before read`,
-      );
-    }
-    const bytes = await handle.readFile();
-    const after = await handle.stat({ bigint: true });
-    if (!sameSnapshot(opened, after)) {
-      throw new WormDataCollectorError(
-        `[predecessor] ${label} changed during read`,
-      );
-    }
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    let value;
-    try {
-      value = JSON.parse(text);
-    } catch {
-      throw new WormDataCollectorError(
-        `[predecessor] ${label} must be JSON`,
-      );
-    }
-    if (text !== `${canonicalJson(value)}\n`) {
-      throw new WormDataCollectorError(
-        `[predecessor] ${label} must be canonical JSON plus one newline`,
-      );
-    }
-    return { text, value };
-  } finally {
-    await handle.close();
-  }
+  return readCanonicalReceiptFile(file, {
+    label,
+    maxBytes: MAX_RECEIPT_BYTES,
+    errorFactory: (message) => new WormDataCollectorError(message),
+  });
 }
 
 async function openArtifactSet(directory, target) {

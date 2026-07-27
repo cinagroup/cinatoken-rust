@@ -236,7 +236,7 @@ const PROVENANCE_SUBJECTS = Object.freeze([
   ],
 ]);
 
-const TRANSIENT_PROBE_STATUSES = new Set([408, 425, 429]);
+const MAX_RESPONSE_BYTES = 1024 * 1024;
 const PROHIBITED_FIELD_NAMES = new Set([
   "accesskey",
   "accesskeyid",
@@ -415,6 +415,7 @@ export function validateProtocolPolicy(value) {
       "contract",
       "repository",
       "environment",
+      "enforcementProbePolicy",
       "provider",
       "prefixRoot",
       "minimumRetentionSeconds",
@@ -448,6 +449,7 @@ export function validateProtocolPolicy(value) {
       policy.environment === "staging" &&
       policy.provider === "cloudflare-r2" &&
       policy.prefixRoot === "container-runtime/s3/v1/" &&
+      validEnforcementProbePolicy(policy.enforcementProbePolicy) &&
       policy.minimumRetentionSeconds === MINIMUM_RETENTION_SECONDS &&
       policy.maximumClockSkewSeconds === 300 &&
       policy.maximumManifestLifetimeSeconds === 1800 &&
@@ -489,6 +491,59 @@ export function validateProtocolPolicy(value) {
     "protocol policy identity drifted",
   );
   return policy;
+}
+
+function validEnforcementProbePolicy(value) {
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  ) {
+    return false;
+  }
+  try {
+    exactKeys(
+      value,
+      [
+        "publisherPreflight",
+        "overwrite",
+        "delete",
+        "responseContentTypes",
+        "requestIdSources",
+      ],
+      "enforcement probe policy",
+    );
+    for (const [name, status, code] of [
+      ["publisherPreflight", 412, "PreconditionFailed"],
+      ["overwrite", 403, "AccessDenied"],
+      ["delete", 403, "AccessDenied"],
+    ]) {
+      const tuple = requireObject(
+        value[name],
+        `${name} probe policy`,
+      );
+      exactKeys(
+        tuple,
+        ["httpStatus", "errorCodes"],
+        `${name} probe policy`,
+      );
+      if (
+        tuple.httpStatus !== status ||
+        !sameJson(tuple.errorCodes, [code])
+      ) {
+        return false;
+      }
+    }
+    return (
+      sameJson(value.responseContentTypes, ["application/xml"]) &&
+      sameJson(value.requestIdSources, [
+        "cf-ray",
+        "x-amz-request-id",
+      ])
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function verifyWormRetentionBundle({
@@ -560,11 +615,14 @@ export async function verifyWormRetentionBundle({
     evidence.get("object-readback"),
     manifestRoot,
     manifest.subject,
+    authority,
   );
   const probes = validateEnforcementProbes(
     evidence.get("enforcement-probes"),
     manifest.subject,
     objects,
+    authority,
+    protocolPolicy.enforcementProbePolicy,
   );
   const publisherRevocation = validateLifecycleRevocation(
     evidence.get("publisher-revocation"),
@@ -578,6 +636,7 @@ export async function verifyWormRetentionBundle({
     trust,
     objects,
     probes,
+    authority,
   );
   validateEvidenceOrdering(
     evidence,
@@ -1423,6 +1482,7 @@ async function validateObjectReadback(
   evidence,
   manifestRoot,
   subject,
+  authority,
 ) {
   const facts = evidence.facts;
   exactKeys(
@@ -1432,6 +1492,7 @@ async function validateObjectReadback(
       "bucketName",
       "jurisdiction",
       "prefix",
+      "objectVerifierCredentialIdSha256",
       "baselineObservedAt",
       "baselinePaginationComplete",
       "preexistingObjectCount",
@@ -1445,8 +1506,12 @@ async function validateObjectReadback(
     "object-readback facts",
   );
   requireTarget(facts, subject, "object-readback", true);
+  const objectVerifier = authority.byRole.get("object-verifier");
   requireCondition(
-    facts.baselinePaginationComplete === true &&
+    objectVerifier !== undefined &&
+      facts.objectVerifierCredentialIdSha256 ===
+        objectVerifier.credentialIdSha256 &&
+      facts.baselinePaginationComplete === true &&
       facts.preexistingObjectCount === 0 &&
       facts.multipartUploadCount === 0 &&
       facts.unknownObjectCount === 0 &&
@@ -1580,6 +1645,8 @@ export function validateEnforcementProbes(
   evidence,
   subject,
   objects,
+  authority,
+  policy,
 ) {
   const facts = evidence.facts;
   exactKeys(
@@ -1589,10 +1656,13 @@ export function validateEnforcementProbes(
       "bucketName",
       "jurisdiction",
       "prefix",
+      "publisherCredentialIdSha256",
+      "objectVerifierCredentialIdSha256",
       "targetObjectKind",
       "targetKey",
       "originalSha256",
       "originalBytes",
+      "publisherPreflight",
       "overwrite",
       "delete",
       "finalReadback",
@@ -1600,6 +1670,17 @@ export function validateEnforcementProbes(
     "enforcement-probes facts",
   );
   requireTarget(facts, subject, "enforcement-probes", true);
+  const publisher = authority.byRole.get("publisher");
+  const objectVerifier = authority.byRole.get("object-verifier");
+  requireCondition(
+    publisher !== undefined &&
+      objectVerifier !== undefined &&
+      facts.publisherCredentialIdSha256 ===
+        publisher.credentialIdSha256 &&
+      facts.objectVerifierCredentialIdSha256 ===
+        objectVerifier.credentialIdSha256,
+    "enforcement probe credential binding drifted",
+  );
   const target = objects.byKind.get("provenance-evidence-packet");
   requireCondition(
     facts.targetObjectKind === "provenance-evidence-packet" &&
@@ -1608,19 +1689,35 @@ export function validateEnforcementProbes(
       facts.originalBytes === target.bytes,
     "enforcement probe target drifted",
   );
+  const publisherPreflight = validateProbeOperation(
+    facts.publisherPreflight,
+    "put-object-create-only-preflight",
+    target,
+    policy.publisherPreflight,
+    policy,
+    "If-None-Match:*",
+  );
   const overwrite = validateProbeOperation(
     facts.overwrite,
     "put-object",
     target,
+    policy.overwrite,
+    policy,
   );
   const deletion = validateProbeOperation(
     facts.delete,
     "delete-object",
     target,
+    policy.delete,
+    policy,
   );
   requireCondition(
-    overwrite.attemptedSha256 !== target.sha256 &&
-      overwrite.attemptedBytes > 0,
+    publisherPreflight.attemptedBytes > 0 &&
+      publisherPreflight.completedAtDate <
+        overwrite.attemptedAtDate &&
+      overwrite.attemptedSha256 !== target.sha256 &&
+      overwrite.attemptedBytes > 0 &&
+      overwrite.completedAtDate < deletion.attemptedAtDate,
     "overwrite probe did not attempt different content",
   );
   const finalReadback = requireObject(
@@ -1643,30 +1740,51 @@ export function validateEnforcementProbes(
     finalReadback.readBackAt,
     "post-probe readback time",
   );
+  const capturedAt = requireTimestamp(
+    evidence.capturedAt,
+    "enforcement probe evidence time",
+  );
   requireCondition(
     finalReadback.httpStatus === 200 &&
       OPAQUE_ID_PATTERN.test(finalReadback.providerRequestId) &&
       finalReadback.bytes === target.bytes &&
       finalReadback.sha256 === target.sha256 &&
       finalReadback.etag === target.etag &&
-      readBackAt >= overwrite.attemptedAtDate &&
-      readBackAt >= deletion.attemptedAtDate,
+      readBackAt > overwrite.completedAtDate &&
+      readBackAt > deletion.completedAtDate &&
+      capturedAt >= readBackAt &&
+      new Set([
+        publisherPreflight.providerRequestId,
+        overwrite.providerRequestId,
+        deletion.providerRequestId,
+        finalReadback.providerRequestId,
+      ]).size === 4,
     "post-probe object readback drifted",
   );
   return {
+    publisherPreflight,
     overwrite,
     deletion,
     finalReadback: { ...finalReadback, readBackAtDate: readBackAt },
   };
 }
 
-function validateProbeOperation(value, expectedOperation, target) {
+function validateProbeOperation(
+  value,
+  expectedOperation,
+  target,
+  rejectionPolicy,
+  policy,
+  condition = null,
+) {
   const probe = requireObject(value, `${expectedOperation} probe`);
   exactKeys(
     probe,
     [
       "operation",
+      ...(condition === null ? [] : ["condition"]),
       "attemptedAt",
+      "completedAt",
       "attemptedBytes",
       "attemptedSha256",
       "transportCompleted",
@@ -1676,6 +1794,9 @@ function validateProbeOperation(value, expectedOperation, target) {
       "httpStatus",
       "errorCode",
       "providerRequestId",
+      "requestIdSource",
+      "responseContentType",
+      "responseBytes",
       "responseBodySha256",
     ],
     `${expectedOperation} probe`,
@@ -1684,21 +1805,30 @@ function validateProbeOperation(value, expectedOperation, target) {
     probe.attemptedAt,
     `${expectedOperation} attemptedAt`,
   );
+  const completedAtDate = requireTimestamp(
+    probe.completedAt,
+    `${expectedOperation} completedAt`,
+  );
   requireCondition(
     probe.operation === expectedOperation &&
+      (condition === null || probe.condition === condition) &&
       Number.isSafeInteger(probe.attemptedBytes) &&
       probe.attemptedBytes >= 0 &&
+      attemptedAtDate < completedAtDate &&
       probe.transportCompleted === true &&
       probe.timedOut === false &&
       probe.clientSideOnly === false &&
       probe.providerRejected === true &&
-      Number.isSafeInteger(probe.httpStatus) &&
-      probe.httpStatus >= 400 &&
-      probe.httpStatus <= 499 &&
-      !TRANSIENT_PROBE_STATUSES.has(probe.httpStatus) &&
-      probe.httpStatus !== 404 &&
-      OPAQUE_ID_PATTERN.test(probe.errorCode) &&
+      probe.httpStatus === rejectionPolicy.httpStatus &&
+      rejectionPolicy.errorCodes.includes(probe.errorCode) &&
       OPAQUE_ID_PATTERN.test(probe.providerRequestId) &&
+      policy.requestIdSources.includes(probe.requestIdSource) &&
+      policy.responseContentTypes.includes(
+        probe.responseContentType,
+      ) &&
+      Number.isSafeInteger(probe.responseBytes) &&
+      probe.responseBytes > 0 &&
+      probe.responseBytes <= MAX_RESPONSE_BYTES &&
       attemptedAtDate >= target.readBackAtDate,
     `${expectedOperation} was not an unambiguous provider rejection`,
   );
@@ -1717,7 +1847,7 @@ function validateProbeOperation(value, expectedOperation, target) {
       "delete probe target binding drifted",
     );
   }
-  return { ...probe, attemptedAtDate };
+  return { ...probe, attemptedAtDate, completedAtDate };
 }
 
 export function validateLockReadback(
@@ -1726,6 +1856,7 @@ export function validateLockReadback(
   trust,
   objects,
   probes,
+  authority,
 ) {
   const facts = evidence.facts;
   exactKeys(
@@ -1737,6 +1868,7 @@ export function validateLockReadback(
       "bucketName",
       "jurisdiction",
       "prefix",
+      "lockVerifierCredentialIdSha256",
       "configuredAt",
       "configurationRequestId",
       "observedAt",
@@ -1748,6 +1880,7 @@ export function validateLockReadback(
     "lock-readback facts",
   );
   requireTarget(facts, subject, "lock-readback", true);
+  const lockVerifier = authority.byRole.get("lock-verifier");
   const configuredAt = requireTimestamp(
     facts.configuredAt,
     "lock configuredAt",
@@ -1757,10 +1890,14 @@ export function validateLockReadback(
     "lock observedAt",
   );
   requireCondition(
-    facts.mechanism === "cloudflare-r2-bucket-lock-api" &&
+    lockVerifier !== undefined &&
+      facts.lockVerifierCredentialIdSha256 ===
+        lockVerifier.credentialIdSha256 &&
+      facts.mechanism === "cloudflare-r2-bucket-lock-api" &&
       facts.awsS3ObjectLockHeadersUsed === false &&
       OPAQUE_ID_PATTERN.test(facts.configurationRequestId) &&
       OPAQUE_ID_PATTERN.test(facts.readbackRequestId) &&
+      facts.configurationRequestId !== facts.readbackRequestId &&
       facts.httpStatus === 200 &&
       RULE_ID_PATTERN.test(facts.selectedRuleId) &&
       facts.observedAt === evidence.capturedAt &&
@@ -1917,9 +2054,9 @@ function validateEvidenceOrdering(
       requireTimestamp(lock.configuredAt, "lock configuredAt") &&
       lockOperatorRevocation.independentReadbackAt < earliestUpload &&
       publisherRevocation.operatorSelfVerifiedAt >
-        probes.overwrite.attemptedAtDate &&
+        probes.overwrite.completedAtDate &&
       publisherRevocation.operatorSelfVerifiedAt >
-        probes.deletion.attemptedAtDate &&
+        probes.deletion.completedAtDate &&
       publisherRevocation.independentReadbackAt <
         probes.finalReadback.readBackAtDate &&
       authority.capturedAtDate >= lockTime &&

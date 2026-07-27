@@ -10,6 +10,33 @@
   "maximumManifestLifetimeSeconds": 1800,
   "maximumEvidenceAgeSeconds": 3600,
   "maximumCredentialRemainingSeconds": 3600,
+  "enforcementProbePolicy": {
+    "publisherPreflight": {
+      "httpStatus": 412,
+      "errorCodes": [
+        "PreconditionFailed"
+      ]
+    },
+    "overwrite": {
+      "httpStatus": 403,
+      "errorCodes": [
+        "AccessDenied"
+      ]
+    },
+    "delete": {
+      "httpStatus": 403,
+      "errorCodes": [
+        "AccessDenied"
+      ]
+    },
+    "responseContentTypes": [
+      "application/xml"
+    ],
+    "requestIdSources": [
+      "cf-ray",
+      "x-amz-request-id"
+    ]
+  },
   "requiredApprovalRoles": [
     "operations",
     "security"

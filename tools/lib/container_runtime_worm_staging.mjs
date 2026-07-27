@@ -94,6 +94,7 @@ export function normalizeWormPolicy(value) {
       "cosignLinuxAmd64Sha256",
       "cosignVersion",
       "environment",
+      "enforcementProbePolicy",
       "maximumClockSkewSeconds",
       "maximumEvidenceAgeSeconds",
       "maximumCredentialRemainingSeconds",
@@ -124,6 +125,7 @@ export function normalizeWormPolicy(value) {
       policy.environment === "staging" &&
       policy.provider === "cloudflare-r2" &&
       policy.prefixRoot === "container-runtime/s3/v1/" &&
+      validEnforcementProbePolicy(policy.enforcementProbePolicy) &&
       Number.isSafeInteger(policy.minimumRetentionSeconds) &&
       policy.minimumRetentionSeconds >= 365 * 24 * 60 * 60 &&
       policy.maximumCredentialRemainingSeconds ===
@@ -145,6 +147,53 @@ export function normalizeWormPolicy(value) {
     "[policy] WORM protocol policy drifted",
   );
   return policy;
+}
+
+function validEnforcementProbePolicy(value) {
+  if (!isObject(value)) return false;
+  try {
+    exactKeys(
+      value,
+      [
+        "publisherPreflight",
+        "overwrite",
+        "delete",
+        "responseContentTypes",
+        "requestIdSources",
+      ],
+      "[policy] enforcement probe policy",
+    );
+    for (const [name, status, code] of [
+      ["publisherPreflight", 412, "PreconditionFailed"],
+      ["overwrite", 403, "AccessDenied"],
+      ["delete", 403, "AccessDenied"],
+    ]) {
+      const tuple = requireObject(
+        value[name],
+        `[policy] ${name} probe tuple`,
+      );
+      exactKeys(
+        tuple,
+        ["httpStatus", "errorCodes"],
+        `[policy] ${name} probe tuple`,
+      );
+      if (
+        tuple.httpStatus !== status ||
+        !sameJson(tuple.errorCodes, [code])
+      ) {
+        return false;
+      }
+    }
+    return (
+      sameJson(value.responseContentTypes, ["application/xml"]) &&
+      sameJson(value.requestIdSources, [
+        "cf-ray",
+        "x-amz-request-id",
+      ])
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function normalizeTarget(input, rawPolicy) {

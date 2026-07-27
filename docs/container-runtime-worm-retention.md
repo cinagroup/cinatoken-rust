@@ -26,7 +26,10 @@ Current decision:
   incomplete until real permission inventories, live receipts, canonical v2
   evidence assembly, and approval exist.
 - B5 overwrite/delete probes, publisher lifecycle revocation, post-probe
-  readback, final lock readback, and v2 assembly: not yet implemented.
+  readback, and final lock readback collector: implemented and locally
+  tested; not executed against Cloudflare.
+- Canonical v2 evidence assembly and operations/security approval: not yet
+  implemented.
 - Real R2 bucket-lock evidence: not collected.
 - `wormRetentionVerified`: false.
 - `s3Complete`: false.
@@ -68,6 +71,12 @@ manifest. Every downstream authority remains false.
 | `tools/lib/container_runtime_worm_lifecycle.mjs` | Injectable account-token revoke and independent readback state machine |
 | `tools/collect_container_runtime_worm_lifecycle.mjs` | Default-dry-run, predecessor-bound lifecycle CLI |
 | `tests/container-runtime-worm-lifecycle-collector.test.mjs` | Receipt-chain, identity separation, DELETE/404, file, drift, and redaction tests |
+| `tools/lib/container_runtime_worm_data.mjs` | B4 publication/readback plus B5 predecessor normalization |
+| `tools/collect_container_runtime_worm_data.mjs` | Default-dry-run create-only publication and full readback CLI |
+| `tools/lib/container_runtime_worm_receipt_file.mjs` | Shared stable, bounded, canonical, single-link receipt reader |
+| `tools/lib/container_runtime_worm_enforcement.mjs` | Injectable five-phase positive B5 state machine plus two non-promotable emergency revocation phases |
+| `tools/collect_container_runtime_worm_enforcement.mjs` | Default-dry-run SigV4 probe and lifecycle/readback CLI |
+| `tests/container-runtime-worm-enforcement-collector.test.mjs` | Role isolation, raw response, chronology, lifecycle, readback, and file-boundary tests |
 | `package.json` | Focused and aggregate verification entry points |
 
 The protocol pins the repository, staging environment, Cloudflare R2 provider,
@@ -236,9 +245,13 @@ signatures fail closed.
    preexisting key or unresolved multipart upload.
 8. Use the object verifier to list all pages and download every object.
    Recompute every digest and byte count.
-9. Use the publisher to attempt different-content overwrite and deletion of
-   the retained provenance packet. Both requests must reach Cloudflare and
-   receive non-transient 4xx rejection with provider request IDs.
+9. Use the publisher first for a create-only preflight against the retained
+   key. Exact `412 PreconditionFailed` proves that the B4 publisher identity
+   is still accepted and that the key already exists; it is not retention
+   evidence. Then send an unconditional different-content overwrite and an
+   unconditional deletion. The reviewed staging policy currently requires
+   exact `403 AccessDenied` for both operations, XML response media, raw-body
+   hashes, byte counts, completion times, and provider request IDs.
 10. Revoke the publisher after both probes through the lifecycle control
     plane, independently verify revocation of its provider token ID, and use
     the object verifier to prove the original object remains byte-identical.
@@ -348,18 +361,32 @@ evidence assembly, or independent approvals.
 
 Overwrite and delete probes are evidence only when:
 
+- the same B4 publisher first receives the pinned create-only preflight tuple;
+- overwrite and delete carry no conditional request guard;
 - the transport completed;
 - the provider, rather than a client guard, rejected the operation;
-- the result is a non-transient 4xx other than 404;
-- a provider request ID, error code, response-body SHA-256, and time exist;
+- each result exactly matches the reviewed operation-level status/error tuple;
+- a provider request ID and source, error code, response-body SHA-256, response
+  bytes, content type, attempt time, and completion time exist;
+- an XML `RequestId`, when present, matches the `x-amz-request-id` header;
 - overwrite attempted different non-empty content;
 - delete targeted the exact original object;
 - a later readback matches the original SHA-256, bytes, and ETag;
 - the final lock readback occurs after the probes and final object readback.
 
-Timeouts, 408, 425, 429, 404, local policy denial, missing request IDs,
-successful writes/deletes, stale lock reads, and object drift are ambiguous
-and fail closed.
+Authentication/signature errors, permission drift, 409/412 on the actual
+overwrite, timeouts, 408, 425, 429, 404, 5xx, redirects, retries, local policy
+denial, missing or conflicting request IDs, malformed/unsafe XML, successful
+writes/deletes, stale lock reads, and object drift are ambiguous and fail
+closed.
+
+Cloudflare documents the lock outcome, not a stable failure tuple. The
+repository's `403 AccessDenied` tuple is therefore a reviewed ceremony policy,
+not a platform guarantee. Before the first live run, operations/security must
+calibrate it in a disposable non-evidence prefix using the exact publisher
+permission shape and archive the approved result. Any provider drift requires
+a policy/code review; operators must not widen the allowlist during a
+ceremony.
 
 ## Retained Provenance Revalidation
 
@@ -388,12 +415,18 @@ Credential-free contract audit:
 ```powershell
 npx.cmd --yes bun run check:container-runtime:worm-retention-contract
 npx.cmd --yes bun run check:container-runtime:worm-staging-collector
+npx.cmd --yes bun run check:container-runtime:worm-lifecycle-collector
+npx.cmd --yes bun run check:container-runtime:worm-data-collector
+npx.cmd --yes bun run check:container-runtime:worm-enforcement-collector
 ```
 
 Collector description and credential-free dry-run:
 
 ```powershell
 node tools/collect_container_runtime_worm_staging.mjs
+node tools/collect_container_runtime_worm_lifecycle.mjs
+node tools/collect_container_runtime_worm_data.mjs
+node tools/collect_container_runtime_worm_enforcement.mjs
 
 node tools/collect_container_runtime_worm_staging.mjs `
   --phase baseline `
@@ -512,13 +545,61 @@ ordered. The nine-suite container supply-chain aggregate passes 104 tests
 with 938 expectations. The complete repository gate passes with exit code 0
 in 604 seconds; 21 existing Rust `dead_code` findings remain warnings only.
 
+## B5 Enforcement Collector Boundary
+
+`tools/collect_container_runtime_worm_enforcement.mjs` consumes the exact B4
+publish/readback and B3 lock-revocation chain through five independently
+credentialed positive phases plus two independently credentialed emergency
+phases:
+
+| Phase | Credential | Required provider behavior |
+| --- | --- | --- |
+| `probe` | B4 publisher R2 key | Create-only preflight, one unconditional overwrite, then one unconditional delete through raw SigV4 fetch |
+| `revoke` | Lifecycle operator | Self-verify, delete the exact B4 publisher token, operator-side exact-resource `404` |
+| `verify-revocation` | Lifecycle verifier | Independent self-verify and exact-resource `404` |
+| `object-readback` | B4 object verifier | `GetObject` with the original ETag in `If-Match`, streamed digest/size proof |
+| `lock-readback` | Sixth, independent lock verifier | Self-verify and read the complete original rule set after object readback |
+| `emergency-revoke` | Lifecycle operator | Bind an incident-artifact SHA-256, revoke the B4 publisher without a positive probe receipt, then operator-side exact-resource `404` |
+| `emergency-verify` | Lifecycle verifier | Independently verify exact-resource `404`; receipt is permanently ineligible for positive evidence |
+
+Each invocation reads only its role's environment variables. The probe
+transport is raw SigV4 rather than the AWS SDK error abstraction: it sends
+exactly one request per operation, forbids redirects, bounds each response to
+1 MiB, validates strict UTF-8/XML with DTD/entity rejection, binds the parsed
+error to the raw body and provider request header, and records start plus
+completion times. Predecessors use the shared stable canonical receipt reader
+with no-follow, single-link, exact-length, front/back stat, path/inode, JSON
+shape, and canonical-LF checks.
+
+The complete known identity set is distinct before mutation, and the final
+lock phase proves all six provider-ID digests are distinct. Publisher
+revocation begins only after all probe responses complete; post-probe object
+readback follows independent revocation verification; final lock readback
+follows object readback. Every B5 receipt remains non-authoritative.
+
+An ambiguous or unsafe probe chain cannot produce the positive predecessor
+required by `revoke`. The emergency pair instead starts directly from the
+canonical B3/B4 chain and an operator-retained incident-artifact digest. Both
+receipts set `emergency=true`, `positiveEvidenceEligible=false`, and every
+downstream flag false; positive normalizers reject them.
+
+The focused B5 gate passes 18 tests with 91 expectations. Its credential-free
+self-test passes seven cases with 22 invariants. B4 passes 11 tests
+with 78 expectations, B3 passes 18 tests with 115 expectations, final
+verifier v2 passes 11 tests with 274 expectations, and staging passes 16 tests
+with 110 expectations. The ten-suite container supply-chain aggregate passes
+122 tests with 1088 expectations. The complete repository gate passes with
+exit code 0 in 629.4 seconds; 21 existing Rust `dead_code` findings remain
+warnings only.
+
 ## Next Execution Unit
 
-The next implementation starts from the B4 readback receipt and builds the B5
-provider boundary: raw-response-bound different-content overwrite and delete
-probes, publisher-target lifecycle revoke/operator readback/independent
-readback, object-verifier post-probe `If-Match` readback, final lock readback,
-and canonical v2 evidence/signature assembly.
+The next implementation is B6/B7 offline assembly: consume the complete
+B1-B5 receipt chain, independently revalidate all receipt bytes/digests and
+reviewed permission inventories, emit the six canonical v2 evidence records
+plus manifest, then require separate operations/security signatures and a
+clean-host verifier replay. B6/B7 tooling must remain credential-free and
+must not infer authority from a collector receipt.
 
 Collector self-tests and dry-runs are not real evidence. The lock phase must
 not be run until the dedicated bucket, four ephemeral R2 credentials,

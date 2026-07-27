@@ -2338,3 +2338,48 @@ This is local contract readiness. No Cloudflare token, bucket, object,
 registry, deployment, traffic, billing, or VPS mutation occurred. B4-B7,
 R3/C1, P5, Go/VPS drain, and cutover remain blocked. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-27 WORM B5 Enforcement Collector Foundation
+
+| Status item | Current value |
+| --- | --- |
+| B4/B3 predecessor and five-identity binding | PASS locally |
+| Publisher create-only credential preflight | PASS with provider-shaped fixtures |
+| Unconditional overwrite/delete raw-response binding | PASS with provider-shaped fixtures |
+| Publisher DELETE `200` plus operator/independent `404` | PASS with provider-shaped fixtures |
+| Failed-probe emergency DELETE plus independent `404` | PASS; permanently non-promotable |
+| Post-probe object-verifier `If-Match` readback | PASS with provider-shaped fixtures |
+| Sixth-identity final lock readback | PASS with provider-shaped fixtures |
+| Stable canonical receipt-file boundary | PASS locally |
+| Focused B5 gate | 18 tests / 91 expectations; self-test 7 cases / 22 invariants |
+| Ten-suite container supply-chain gate | 122 tests / 1088 expectations |
+| Complete repository gate | PASS, exit 0 in 629.4 seconds; 21 existing Rust warnings |
+| Live Cloudflare B5 evidence | **NOT COLLECTED** |
+| Reviewed real permission inventories | **PENDING** |
+| Canonical v2 assembly and approval | **PENDING (B6/B7)** |
+| Complete B2 / S3 | **FALSE** |
+
+The five positive B5 phases and two emergency phases each read only one role's
+environment credentials and emit canonical redacted receipts with every
+downstream authority false. Raw SigV4
+probe transport sends one request, forbids redirects/retries, bounds and
+hashes the complete XML error response, correlates body/header request IDs,
+and records both attempt and completion time. Publisher revocation starts
+only after both enforcement responses complete; independent absence precedes
+object readback; final lock readback uses a sixth provider identity.
+If a probe is unsafe or ambiguous and cannot produce a positive predecessor,
+the emergency operator/verifier pair starts from B3/B4 plus a retained
+incident digest, revokes the publisher, and marks both receipts permanently
+ineligible for positive evidence.
+
+The pinned `412 PreconditionFailed` preflight proves publisher usability and
+key existence only. The actual overwrite/delete policy requires exact
+`403 AccessDenied`, but Cloudflare does not document a stable Bucket Lock
+error tuple. A disposable-prefix calibration and operations/security review
+are mandatory before live use; any tuple drift fails closed.
+
+This is local collector readiness, not retention evidence. No credential,
+Cloudflare request, token deletion, object mutation, registry action,
+deployment, traffic, billing mutation, or VPS drain occurred. B6/B7 assembly,
+real permission review, signatures, and clean-host replay remain open.
+Go/VPS remains authoritative and production remains **NO-GO**.

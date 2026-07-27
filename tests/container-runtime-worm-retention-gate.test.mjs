@@ -371,6 +371,12 @@ describe("container runtime WORM retention gate", () => {
         facts.observedAt = "2026-07-27T04:57:00Z";
       },
       (facts) => {
+        facts.lockVerifierCredentialIdSha256 = "2".repeat(64);
+      },
+      (facts) => {
+        facts.readbackRequestId = facts.configurationRequestId;
+      },
+      (facts) => {
         facts.rules[0].condition = {
           type: "Date",
           date: "2027-02-30T00:00:00Z",
@@ -423,6 +429,22 @@ describe("container runtime WORM retention gate", () => {
       await driftedMetadata.cleanup();
     }
 
+    const driftedVerifier = await createFixture();
+    try {
+      await driftedVerifier.updateEvidence(
+        "object-readback",
+        (evidence) => {
+          evidence.facts.objectVerifierCredentialIdSha256 =
+            "2".repeat(64);
+        },
+      );
+      await expect(driftedVerifier.verify()).rejects.toThrow(
+        /object readback inventory/i,
+      );
+    } finally {
+      await driftedVerifier.cleanup();
+    }
+
     const overclaim = await createFixture();
     try {
       const reportRecord =
@@ -447,10 +469,28 @@ describe("container runtime WORM retention gate", () => {
   test("rejects ambiguous enforcement probes", async () => {
     for (const mutate of [
       (facts) => {
+        facts.publisherPreflight.httpStatus = 403;
+      },
+      (facts) => {
         facts.overwrite.httpStatus = 429;
       },
       (facts) => {
+        facts.overwrite.errorCode = "SignatureDoesNotMatch";
+      },
+      (facts) => {
         facts.overwrite.providerRejected = false;
+      },
+      (facts) => {
+        facts.overwrite.completedAt = facts.overwrite.attemptedAt;
+      },
+      (facts) => {
+        facts.overwrite.responseBytes = 0;
+      },
+      (facts) => {
+        facts.overwrite.responseContentType = "text/html";
+      },
+      (facts) => {
+        facts.overwrite.requestIdSource = "server";
       },
       (facts) => {
         facts.delete.timedOut = true;
@@ -464,14 +504,30 @@ describe("container runtime WORM retention gate", () => {
       (facts) => {
         facts.finalReadback.readBackAt = "2026-07-27T04:57:30Z";
       },
+      (facts) => {
+        facts.publisherCredentialIdSha256 = "4".repeat(64);
+      },
+      (facts) => {
+        facts.objectVerifierCredentialIdSha256 = "2".repeat(64);
+      },
+      (facts) => {
+        facts.delete.providerRequestId =
+          facts.overwrite.providerRequestId;
+      },
+      (facts) => {
+        facts.delete.attemptedAt = facts.overwrite.completedAt;
+      },
+      (_facts, evidence) => {
+        evidence.capturedAt = "2026-07-27T04:58:10Z";
+      },
     ]) {
       const fixture = await createFixture();
       try {
         await fixture.updateEvidence("enforcement-probes", (evidence) => {
-          mutate(evidence.facts);
+          mutate(evidence.facts, evidence);
         });
         await expect(fixture.verify()).rejects.toThrow(
-          /provider rejection|post-probe|readback/i,
+          /credential binding|provider rejection|response|chronology|different content|post-probe|readback/i,
         );
       } finally {
         await fixture.cleanup();
@@ -545,6 +601,9 @@ describe("container runtime WORM retention gate", () => {
       },
       (value) => {
         value.requiredRevocationTargetRoles.pop();
+      },
+      (value) => {
+        value.enforcementProbePolicy.overwrite.httpStatus = 409;
       },
       (value) => {
         value.supportedJurisdictions.push("attacker");
@@ -894,6 +953,7 @@ async function createFixture() {
         bucketName: BUCKET_NAME,
         jurisdiction: "default",
         prefix,
+        objectVerifierCredentialIdSha256: "4".repeat(64),
         baselineObservedAt: "2026-07-27T04:55:30Z",
         baselinePaginationComplete: true,
         preexistingObjectCount: 0,
@@ -918,13 +978,35 @@ async function createFixture() {
         bucketName: BUCKET_NAME,
         jurisdiction: "default",
         prefix,
+        publisherCredentialIdSha256: "2".repeat(64),
+        objectVerifierCredentialIdSha256: "4".repeat(64),
         targetObjectKind: probeTarget.kind,
         targetKey: probeTarget.key,
         originalSha256: probeTarget.sha256,
         originalBytes: probeTarget.bytes,
+        publisherPreflight: {
+          operation: "put-object-create-only-preflight",
+          condition: "If-None-Match:*",
+          attemptedAt: "2026-07-27T04:57:55Z",
+          completedAt: "2026-07-27T04:57:56Z",
+          attemptedBytes: probeTarget.bytes + 1,
+          attemptedSha256: "5".repeat(64),
+          transportCompleted: true,
+          timedOut: false,
+          clientSideOnly: false,
+          providerRejected: true,
+          httpStatus: 412,
+          errorCode: "PreconditionFailed",
+          providerRequestId: "preflight-request-1",
+          requestIdSource: "cf-ray",
+          responseContentType: "application/xml",
+          responseBytes: 64,
+          responseBodySha256: "5".repeat(64),
+        },
         overwrite: {
           operation: "put-object",
           attemptedAt: "2026-07-27T04:58:00Z",
+          completedAt: "2026-07-27T04:58:01Z",
           attemptedBytes: probeTarget.bytes + 1,
           attemptedSha256: "5".repeat(64),
           transportCompleted: true,
@@ -934,11 +1016,15 @@ async function createFixture() {
           httpStatus: 403,
           errorCode: "AccessDenied",
           providerRequestId: "overwrite-request-1",
+          requestIdSource: "cf-ray",
+          responseContentType: "application/xml",
+          responseBytes: 64,
           responseBodySha256: "6".repeat(64),
         },
         delete: {
           operation: "delete-object",
           attemptedAt: "2026-07-27T04:58:05Z",
+          completedAt: "2026-07-27T04:58:06Z",
           attemptedBytes: 0,
           attemptedSha256: probeTarget.sha256,
           transportCompleted: true,
@@ -948,6 +1034,9 @@ async function createFixture() {
           httpStatus: 403,
           errorCode: "AccessDenied",
           providerRequestId: "delete-request-1",
+          requestIdSource: "cf-ray",
+          responseContentType: "application/xml",
+          responseBytes: 64,
           responseBodySha256: "7".repeat(64),
         },
         finalReadback: {
@@ -971,7 +1060,7 @@ async function createFixture() {
         targetRole: "publisher",
         targetCredentialIdSha256: "2".repeat(64),
         prefix,
-        operatorSelfVerifiedAt: "2026-07-27T04:58:06Z",
+        operatorSelfVerifiedAt: "2026-07-27T04:58:07Z",
         deletedAt: "2026-07-27T04:58:10Z",
         operatorReadbackAt: "2026-07-27T04:58:11Z",
         verifierSelfVerifiedAt: "2026-07-27T04:58:12Z",
@@ -993,6 +1082,7 @@ async function createFixture() {
         bucketName: BUCKET_NAME,
         jurisdiction: "default",
         prefix,
+        lockVerifierCredentialIdSha256: "5".repeat(64),
         configuredAt: "2026-07-27T04:56:00Z",
         configurationRequestId: "lock-configuration-request-1",
         observedAt: "2026-07-27T04:59:00Z",

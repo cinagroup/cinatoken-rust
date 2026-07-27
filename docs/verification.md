@@ -11052,3 +11052,64 @@ The collector did not contact Cloudflare or read a credential. B5 probes,
 publisher revocation, post-probe/final-lock readback, signed assembly, WORM,
 complete S3, registry, deployment, traffic, and production authority remain
 unverified and false.
+
+## 2026-07-27 WORM B5 Enforcement Collector Verification
+
+The B5 collector and the strengthened final v2 contract were verified without
+reading credentials or contacting Cloudflare:
+
+```powershell
+node --check tools/lib/container_runtime_worm_receipt_file.mjs
+node --check tools/lib/container_runtime_worm_enforcement.mjs
+node --check tools/collect_container_runtime_worm_enforcement.mjs
+npx.cmd --yes bun run check:container-runtime:worm-enforcement-collector
+npx.cmd --yes bun run check:container-runtime:worm-data-collector
+npx.cmd --yes bun run check:container-runtime:worm-lifecycle-collector
+npx.cmd --yes bun run check:container-runtime:worm-retention-contract
+npx.cmd --yes bun run check:container-runtime:worm-staging-collector
+```
+
+Focused results:
+
+| Gate | Tests | Expectations |
+| --- | ---: | ---: |
+| B5 enforcement collector | 18 | 91 |
+| B4 data collector | 11 | 78 |
+| B3 lifecycle collector | 18 | 115 |
+| Final retention verifier v2 | 11 | 274 |
+| Staging collector | 16 | 110 |
+| Ten-suite container supply-chain aggregate | 122 | 1088 |
+
+The complete repository gate passed with exit code 0 in 629.4 seconds. Its 21
+existing Rust `dead_code` findings remained warnings only.
+
+Coverage includes one conditional publisher/key preflight followed by
+unconditional overwrite/delete, one raw SigV4 request per operation,
+redirect/retry denial, exact status/error policy, response completion times,
+bounded strict XML, body/header request-ID correlation, raw-body
+bytes/media/hash, five positive plus two emergency phase credential isolation,
+publisher DELETE/operator
+`404`/independent `404`, object-verifier `If-Match`, sixth-identity lock
+readback, all identity/request/time uniqueness, stable canonical predecessor
+files, and downstream-authority denial.
+
+Negative cases reject authentication and signature errors, conditional
+overwrite, wrong/empty/unsafe/truncated responses, request-ID mismatch,
+transient or unsupported status, target/credential overlap, equal or reversed
+times, wrong lifecycle target/result, object drift, lock rule drift, hard
+links, noncanonical JSON, mixed CLI modes, and missing phase confirmations.
+The seven-case/22-invariant self-test also proves that failed-probe emergency
+revoke/independent-verify receipts remain downstream-false and
+`positiveEvidenceEligible=false`, and that the positive revoke normalizer
+rejects them.
+
+The repository policy pins preflight to `412 PreconditionFailed` and actual
+overwrite/delete to `403 AccessDenied`. Local fixtures only prove the
+collector's fail-closed behavior. Cloudflare documents Bucket Lock
+enforcement but not a stable error tuple, so disposable-prefix calibration
+and independent review are required before any live evidence run.
+
+No B5 live receipt exists. B6/B7 canonical assembly, reviewed permission
+inventories, operations/security signatures, and clean-host verifier replay
+remain pending. WORM, complete S3, registry, deployment, P5, traffic,
+financial, drain, and production authority remain false.

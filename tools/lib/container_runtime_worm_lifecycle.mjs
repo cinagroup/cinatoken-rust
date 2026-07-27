@@ -186,6 +186,10 @@ export function normalizeLockPredecessor(options) {
     targetCredentialIdSha256: credential.credentialIdSha256,
     lockReceiptSha256: sha256(receiptText),
     lockCapturedAt: capturedAt,
+    lockConfiguredAt: facts.configuredAt,
+    lockConfigurationRequestId: facts.configurationRequestId,
+    lockSelectedRuleId: facts.selectedRuleId,
+    lockRules: facts.rules,
   };
 }
 

@@ -22043,3 +22043,77 @@ lifecycle revocation and independent readback, post-probe object readback,
 final lock readback, and canonical v2 assembly/signing. WORM, complete S3,
 R3/C1, P5, traffic, billing, drain, and cutover authority remain false.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.311 WORM B5 Enforcement And Publisher Revocation (2026-07-27)
+
+The B5 provider-enforcement boundary is now implemented locally under
+`cinatoken-container-runtime-worm-enforcement-phase-receipt-v1`. It consumes
+the complete B4 publish/readback and B3 lock-revocation chain, revalidates
+their canonical bytes, targets, operations, chronology, and five known
+provider identities, then separates the positive work into five processes:
+
+1. `probe` reads only the B4 publisher R2 credential. It first sends a
+   create-only `If-None-Match: *` preflight to prove that the same publisher
+   is still accepted and that the object exists. It then sends an
+   unconditional different-content overwrite and an unconditional delete.
+2. `revoke` reads only the lifecycle-operator token and exact publisher token
+   ID. It requires operator self-verification, exact DELETE `200`, then
+   operator-side exact-resource `404`.
+3. `verify-revocation` reads only the independent lifecycle-verifier token
+   and requires a second exact-resource `404`.
+4. `object-readback` reads only the original object-verifier key and streams
+   `GetObject` with the original ETag in `If-Match`.
+5. `lock-readback` reads only a sixth, distinct lock-verifier token and
+   requires the complete original lock rule set after object readback.
+
+Two additional incident-only processes close the unsafe-probe path:
+
+6. `emergency-revoke` starts directly from canonical B3/B4 receipts plus the
+   SHA-256 of the retained incident artifact. It revokes the exact B4
+   publisher without requiring a positive probe receipt.
+7. `emergency-verify` uses the independent lifecycle verifier to prove the
+   exact publisher target remains absent. Both emergency receipts set
+   `positiveEvidenceEligible=false` and cannot enter the positive B6 chain.
+
+The probe path uses raw Smithy SigV4 plus one `fetch` per operation so evidence
+is not reduced to an SDK exception. Redirects and retries are forbidden.
+Responses are bounded to 1 MiB, length checked, strict-UTF-8 decoded, and
+parsed as XML with DTD/entities disabled. The receipt binds exact
+status/error tuple, request-ID source/value, raw-body SHA-256, response byte
+count and media type, plus request start and response completion times. An XML
+`RequestId`, when present, must equal the `x-amz-request-id` header.
+
+The repository policy currently pins create-only preflight to
+`412 PreconditionFailed` and the two actual enforcement operations to
+`403 AccessDenied`. Cloudflare documents that Bucket Lock prevents matching
+object overwrite and deletion, but it does not promise that error tuple.
+Operations/security must therefore calibrate the tuple in a disposable
+non-evidence prefix with the exact role permissions before any ceremony.
+Authentication, signature, permission, conditional-request, throttling,
+server, redirect, timeout, malformed-body, and provider-drift outcomes fail
+closed; widening the tuple during a ceremony is forbidden.
+
+The B4 file reader was also replaced with a shared no-follow, single-link,
+fixed-length, stable path/inode/stat, bounded JSON-shape, canonical-LF reader.
+B4 predecessor normalization now proves exact pagination limits, six objects,
+all expected operations, five-identity separation, revocation-time equality,
+and strict publish/readback ordering. Final verifier v2 now explicitly binds
+publisher, object-verifier, and lock-verifier digests, all probe and lock
+request-ID uniqueness, response completion metadata, and final capture
+chronology.
+
+Focused gates pass: B5 18 tests / 91 expectations with a seven-case/
+22-invariant self-test; B4 11 / 78; lifecycle
+18 / 115; final verifier 11 / 274; staging 16 / 110. The ten-suite container
+supply-chain aggregate passes 122 tests with 1088 expectations. The complete
+repository gate passes with exit code 0 in 629.4 seconds; its 21 existing Rust
+`dead_code` findings remain warnings only. All collectors remain
+default-dry-run, secret-free in stdout/stderr, and keep every downstream
+authority false.
+
+This closes local B5 collector readiness, not B5 evidence. No Cloudflare
+request or credential read occurred. B2 still lacks real reviewed permission
+inventories, and B6/B7 canonical v2 evidence assembly, operations/security
+signing, and clean-host verification are not implemented. R3/C1, P5,
+customer traffic, billing authority, Go/VPS drain, and cutover remain blocked.
+Go/VPS remains authoritative and production remains **NO-GO**.

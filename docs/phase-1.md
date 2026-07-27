@@ -3642,3 +3642,49 @@ No live evidence was collected. Next is B4/B5 create-only upload, complete
 independent object readback, enforcement probes, publisher lifecycle
 collection, final lock readback, and canonical v2 evidence assembly. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-27 WORM B5 Enforcement Collector
+
+Phase 1 now contains five positive B5 processes plus two incident-only
+publisher-revocation processes:
+
+- publisher create-only credential preflight followed by one unconditional
+  different-content overwrite and one unconditional delete;
+- lifecycle-operator exact publisher-token DELETE plus operator readback;
+- independent lifecycle-verifier absence readback;
+- object-verifier post-probe `If-Match` readback of the original bytes;
+- sixth-identity lock-verifier readback of the complete original rule set.
+- emergency lifecycle-operator revoke directly from B3/B4 plus an incident
+  digest when no positive probe receipt can exist;
+- independent emergency revocation verification, with both receipts
+  permanently marked `positiveEvidenceEligible=false`.
+
+The probe transport signs raw S3 requests with SigV4 and never delegates
+error evidence to an SDK retry/exception path. It forbids redirects, performs
+one request per operation, bounds XML responses to 1 MiB, validates strict
+UTF-8 and XML without DTD/entities, binds request-ID source/value to the raw
+body, and records response bytes, media type, hash, attempt time, and
+completion time. Publisher revocation cannot start before both probe
+responses complete.
+
+Receipt ingestion is now shared across B4/B5 through a no-follow,
+single-link, fixed-length, path/inode/stat-stable, canonical JSON reader.
+Predecessor parsing proves exact six-object inventory, bounded pagination,
+all five prior identities distinct, exact target/operation chains, and strict
+chronology before a mutation credential can be read. Final verifier v2 also
+binds all three actor digests and distinct request IDs.
+
+The focused B5 suite passes 18 tests with 91 expectations, and its
+credential-free self-test passes seven cases with 22 invariants. The synchronized
+B4, lifecycle, final verifier, and staging suites pass 11/78, 18/115, 11/274,
+and 16/110 respectively. The ten-suite container supply-chain aggregate
+passes 122 tests with 1088 expectations. The complete repository gate passes
+with exit code 0 in 629.4 seconds; 21 existing Rust `dead_code` findings
+remain warnings only.
+
+No live phase was run. The fixed staging tuples require independent
+disposable-prefix calibration because Cloudflare documents Bucket Lock
+enforcement but not a stable error response tuple. Next is credential-free
+B6/B7 canonical evidence assembly, independent operations/security approval,
+and clean-host verifier replay. B2 permission inventories remain incomplete.
+Go/VPS remains authoritative and production remains **NO-GO**.

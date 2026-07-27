@@ -21,6 +21,7 @@ import {
   collectIndependentReadback,
   describeDataCollector,
   normalizeArtifactDescriptors,
+  normalizeEnforcementPredecessors,
   normalizePublishPredecessors,
   normalizeReadbackPredecessor,
   publishCreateOnlyObjects,
@@ -308,6 +309,29 @@ describe("container runtime WORM data collector", () => {
       expect(sink.values.get(kind)).toEqual(bytes);
     }
     expect(receipt.downstreamAuthority.wormRetentionVerified).toBe(false);
+    const enforcement = normalizeEnforcementPredecessors({
+      accountId,
+      publishReceipt: publish,
+      publishReceiptText: canonicalText(publish),
+      readbackReceipt: receipt,
+      readbackReceiptText: canonicalText(receipt),
+      lockRevocationReceipt: fixture.lockRevocation,
+      lockRevocationReceiptText: canonicalText(
+        fixture.lockRevocation,
+      ),
+    });
+    expect(enforcement.objectReadbackReceiptSha256).toBe(
+      sha256(canonicalText(receipt)),
+    );
+    expect(
+      new Set([
+        enforcement.publisherCredentialIdSha256,
+        enforcement.lockOperatorCredentialIdSha256,
+        enforcement.objectVerifierCredentialIdSha256,
+        enforcement.lifecycleOperatorCredentialIdSha256,
+        enforcement.lifecycleVerifierCredentialIdSha256,
+      ]).size,
+    ).toBe(5);
   });
 
   test("readback rejects publisher reuse, unknown objects and multipart residue", async () => {

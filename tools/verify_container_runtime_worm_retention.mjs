@@ -20,17 +20,17 @@ import {
   validateSigstoreBundle,
 } from "./verify_container_runtime_provenance.mjs";
 
-export const WORM_RETENTION_CONTRACT_VERSION = 1;
+export const WORM_RETENTION_CONTRACT_VERSION = 2;
 export const PROTOCOL_POLICY_CONTRACT =
-  "cinatoken-container-runtime-worm-retention-protocol-policy-v1";
+  "cinatoken-container-runtime-worm-retention-protocol-policy-v2";
 export const TRUST_POLICY_CONTRACT =
-  "cinatoken-container-runtime-worm-retention-trust-policy-v1";
+  "cinatoken-container-runtime-worm-retention-trust-policy-v2";
 export const MANIFEST_CONTRACT =
-  "cinatoken-container-runtime-worm-retention-manifest-v1";
+  "cinatoken-container-runtime-worm-retention-manifest-v2";
 export const EVIDENCE_CONTRACT =
-  "cinatoken-container-runtime-worm-retention-evidence-v1";
+  "cinatoken-container-runtime-worm-retention-evidence-v2";
 export const ANCHOR_DOMAIN =
-  "cinatoken-container-runtime-worm-retention-anchor-v1";
+  "cinatoken-container-runtime-worm-retention-anchor-v2";
 
 export const REQUIRED_APPROVAL_ROLES = Object.freeze([
   "operations",
@@ -38,9 +38,23 @@ export const REQUIRED_APPROVAL_ROLES = Object.freeze([
 ]);
 export const REQUIRED_EVIDENCE_KINDS = Object.freeze([
   "authority-boundary",
+  "lock-operator-revocation",
   "object-readback",
   "enforcement-probes",
+  "publisher-revocation",
   "lock-readback",
+]);
+export const REQUIRED_AUTHORITY_ROLES = Object.freeze([
+  "publisher",
+  "lock-operator",
+  "object-verifier",
+  "lock-verifier",
+  "lifecycle-operator",
+  "lifecycle-verifier",
+]);
+export const REQUIRED_REVOCATION_TARGET_ROLES = Object.freeze([
+  "lock-operator",
+  "publisher",
 ]);
 export const REQUIRED_OBJECT_KINDS = Object.freeze([
   "source-evidence-packet",
@@ -49,6 +63,93 @@ export const REQUIRED_OBJECT_KINDS = Object.freeze([
   "sigstore-bundle",
   "provenance-report",
   "cosign-verification-log",
+]);
+
+const EXPECTED_AUTHORITIES = Object.freeze([
+  {
+    role: "publisher",
+    credentialType: "r2-object-read-write-api-token",
+    scopeType: "r2-bucket-prefix",
+    permissions: ["r2-object-read", "r2-object-write"],
+    capabilities: {
+      r2ObjectRead: true,
+      r2ObjectWrite: true,
+      r2LockRead: false,
+      r2LockWrite: false,
+      accountTokenRead: false,
+      accountTokenEdit: false,
+    },
+  },
+  {
+    role: "lock-operator",
+    credentialType: "cloudflare-r2-admin-read-write-api-token",
+    scopeType: "r2-bucket-prefix",
+    permissions: ["r2-admin-read-write"],
+    capabilities: {
+      r2ObjectRead: true,
+      r2ObjectWrite: true,
+      r2LockRead: true,
+      r2LockWrite: true,
+      accountTokenRead: false,
+      accountTokenEdit: false,
+    },
+  },
+  {
+    role: "object-verifier",
+    credentialType: "r2-object-read-api-token",
+    scopeType: "r2-bucket-prefix",
+    permissions: ["r2-object-read"],
+    capabilities: {
+      r2ObjectRead: true,
+      r2ObjectWrite: false,
+      r2LockRead: false,
+      r2LockWrite: false,
+      accountTokenRead: false,
+      accountTokenEdit: false,
+    },
+  },
+  {
+    role: "lock-verifier",
+    credentialType: "cloudflare-r2-admin-read-api-token",
+    scopeType: "r2-bucket-prefix",
+    permissions: ["r2-admin-read"],
+    capabilities: {
+      r2ObjectRead: true,
+      r2ObjectWrite: false,
+      r2LockRead: true,
+      r2LockWrite: false,
+      accountTokenRead: false,
+      accountTokenEdit: false,
+    },
+  },
+  {
+    role: "lifecycle-operator",
+    credentialType: "cloudflare-account-api-token-read-edit",
+    scopeType: "cloudflare-account",
+    permissions: ["account-api-token-read", "account-api-token-edit"],
+    capabilities: {
+      r2ObjectRead: false,
+      r2ObjectWrite: false,
+      r2LockRead: false,
+      r2LockWrite: false,
+      accountTokenRead: true,
+      accountTokenEdit: true,
+    },
+  },
+  {
+    role: "lifecycle-verifier",
+    credentialType: "cloudflare-account-api-token-read",
+    scopeType: "cloudflare-account",
+    permissions: ["account-api-token-read"],
+    capabilities: {
+      r2ObjectRead: false,
+      r2ObjectWrite: false,
+      r2LockRead: false,
+      r2LockWrite: false,
+      accountTokenRead: true,
+      accountTokenEdit: false,
+    },
+  },
 ]);
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -70,6 +171,7 @@ const BUILD_TYPE =
   "https://github.com/cinagroup/cinatoken-rust/blob/main/docs/container-runtime-provenance-build-type-v1.md";
 const BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json";
 const MINIMUM_RETENTION_SECONDS = 365 * 24 * 60 * 60;
+const MAXIMUM_CREDENTIAL_REMAINING_SECONDS = 3_600;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_TRUST_POLICY_BYTES = 256 * 1024;
 const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024;
@@ -246,6 +348,7 @@ export async function auditRepositoryContract() {
   for (const fragment of [
     "verifyWormRetentionBundle",
     "validateProtocolPolicy",
+    "validateLifecycleRevocation",
     "validateLockReadback",
     "validateEnforcementProbes",
     "verifyAnchorApprovals",
@@ -260,6 +363,7 @@ export async function auditRepositoryContract() {
   }
   for (const fragment of [
     "rejects authority overlap",
+    "rejects incomplete or ambiguous lifecycle revocation evidence",
     "rejects weak or mismatched lock evidence",
     "rejects ambiguous enforcement probes",
     "rejects stale evidence and forged approvals",
@@ -279,8 +383,13 @@ export async function auditRepositoryContract() {
       provider: policy.provider,
       prefixRoot: policy.prefixRoot,
       minimumRetentionSeconds: policy.minimumRetentionSeconds,
+      maximumCredentialRemainingSeconds:
+        policy.maximumCredentialRemainingSeconds,
       requiredApprovalRoles: policy.requiredApprovalRoles,
       requiredEvidenceKinds: policy.requiredEvidenceKinds,
+      requiredAuthorityRoles: policy.requiredAuthorityRoles,
+      requiredRevocationTargetRoles:
+        policy.requiredRevocationTargetRoles,
       requiredObjectKinds: policy.requiredObjectKinds,
     },
     credentialFree: true,
@@ -312,8 +421,11 @@ export function validateProtocolPolicy(value) {
       "maximumClockSkewSeconds",
       "maximumManifestLifetimeSeconds",
       "maximumEvidenceAgeSeconds",
+      "maximumCredentialRemainingSeconds",
       "requiredApprovalRoles",
       "requiredEvidenceKinds",
+      "requiredAuthorityRoles",
+      "requiredRevocationTargetRoles",
       "requiredObjectKinds",
       "supportedJurisdictions",
       "sourceWorkflow",
@@ -330,7 +442,7 @@ export function validateProtocolPolicy(value) {
     "protocol policy",
   );
   requireCondition(
-    policy.schemaVersion === 1 &&
+    policy.schemaVersion === 2 &&
       policy.contract === PROTOCOL_POLICY_CONTRACT &&
       policy.repository === "cinagroup/cinatoken-rust" &&
       policy.environment === "staging" &&
@@ -340,8 +452,15 @@ export function validateProtocolPolicy(value) {
       policy.maximumClockSkewSeconds === 300 &&
       policy.maximumManifestLifetimeSeconds === 1800 &&
       policy.maximumEvidenceAgeSeconds === 3600 &&
+      policy.maximumCredentialRemainingSeconds ===
+        MAXIMUM_CREDENTIAL_REMAINING_SECONDS &&
       sameJson(policy.requiredApprovalRoles, REQUIRED_APPROVAL_ROLES) &&
       sameJson(policy.requiredEvidenceKinds, REQUIRED_EVIDENCE_KINDS) &&
+      sameJson(policy.requiredAuthorityRoles, REQUIRED_AUTHORITY_ROLES) &&
+      sameJson(
+        policy.requiredRevocationTargetRoles,
+        REQUIRED_REVOCATION_TARGET_ROLES,
+      ) &&
       sameJson(policy.requiredObjectKinds, REQUIRED_OBJECT_KINDS) &&
       sameJson(policy.supportedJurisdictions, [
         "default",
@@ -431,6 +550,12 @@ export async function verifyWormRetentionBundle({
     evidence.get("authority-boundary"),
     manifest.subject,
   );
+  const lockOperatorRevocation = validateLifecycleRevocation(
+    evidence.get("lock-operator-revocation"),
+    manifest.subject,
+    authority,
+    "lock-operator",
+  );
   const objects = await validateObjectReadback(
     evidence.get("object-readback"),
     manifestRoot,
@@ -440,6 +565,12 @@ export async function verifyWormRetentionBundle({
     evidence.get("enforcement-probes"),
     manifest.subject,
     objects,
+  );
+  const publisherRevocation = validateLifecycleRevocation(
+    evidence.get("publisher-revocation"),
+    manifest.subject,
+    authority,
+    "publisher",
   );
   const lock = validateLockReadback(
     evidence.get("lock-readback"),
@@ -451,8 +582,10 @@ export async function verifyWormRetentionBundle({
   validateEvidenceOrdering(
     evidence,
     authority,
+    lockOperatorRevocation,
     objects,
     probes,
+    publisherRevocation,
     lock,
     manifest.subject,
   );
@@ -519,7 +652,10 @@ export async function verifyWormRetentionBundle({
     authority: {
       separated: true,
       secretMaterialCaptured: false,
-      nonR2AccountPermissionUsed: false,
+      permissionInventoriesReviewed: true,
+      lifecycleAuthoritySeparatedFromR2: true,
+      lockOperatorRevocationVerified: true,
+      publisherRevocationVerified: true,
       writeCredentialsRevokedBeforeDecision: true,
       approvalRoles,
     },
@@ -566,7 +702,7 @@ export function validateTrustPolicy(
     "trust policy",
   );
   requireCondition(
-    policy.schemaVersion === 1 &&
+    policy.schemaVersion === 2 &&
       policy.contract === TRUST_POLICY_CONTRACT &&
       POLICY_ID_PATTERN.test(policy.policyId) &&
       policy.protocolPolicySha256 === protocolPolicySha256 &&
@@ -694,7 +830,7 @@ function validateManifestEnvelope(value, protocol, trust, now) {
     "retention manifest",
   );
   requireCondition(
-    manifest.schemaVersion === 1 && manifest.contract === MANIFEST_CONTRACT,
+    manifest.schemaVersion === 2 && manifest.contract === MANIFEST_CONTRACT,
     "retention manifest identity drifted",
   );
   const subject = validateManifestSubject(
@@ -925,7 +1061,7 @@ function validateEvidenceEnvelope(value, expectedKind, subject, trust, now) {
     `${expectedKind} evidence`,
   );
   requireCondition(
-    evidence.schemaVersion === 1 &&
+    evidence.schemaVersion === 2 &&
       evidence.contract === EVIDENCE_CONTRACT &&
       evidence.kind === expectedKind &&
       evidence.ceremonyId === subject.ceremonyId &&
@@ -970,67 +1106,29 @@ function validateAuthorityBoundary(evidence, subject) {
       "accountIdSha256",
       "bucketName",
       "prefix",
-      "nonR2AccountPermissionUsed",
       "secretMaterialCaptured",
       "allCredentialIdsDistinct",
+      "permissionInventoriesReviewed",
       "authorities",
     ],
     "authority-boundary facts",
   );
   requireTarget(facts, subject, "authority-boundary");
   requireCondition(
-    facts.nonR2AccountPermissionUsed === false &&
-      facts.secretMaterialCaptured === false &&
+    facts.secretMaterialCaptured === false &&
       facts.allCredentialIdsDistinct === true &&
+      facts.permissionInventoriesReviewed === true &&
       Array.isArray(facts.authorities) &&
-      facts.authorities.length === 4,
+      facts.authorities.length === EXPECTED_AUTHORITIES.length,
     "authority boundary is not least privilege",
   );
-  const expected = [
-    {
-      role: "publisher",
-      credentialType: "r2-object-read-write-api-token",
-      capabilities: {
-        objectRead: true,
-        objectWrite: true,
-        lockRead: false,
-        lockWrite: false,
-      },
-    },
-    {
-      role: "lock-operator",
-      credentialType: "cloudflare-r2-admin-read-write-api-token",
-      capabilities: {
-        objectRead: true,
-        objectWrite: true,
-        lockRead: true,
-        lockWrite: true,
-      },
-    },
-    {
-      role: "object-verifier",
-      credentialType: "r2-object-read-api-token",
-      capabilities: {
-        objectRead: true,
-        objectWrite: false,
-        lockRead: false,
-        lockWrite: false,
-      },
-    },
-    {
-      role: "lock-verifier",
-      credentialType: "cloudflare-r2-admin-read-api-token",
-      capabilities: {
-        objectRead: true,
-        objectWrite: false,
-        lockRead: true,
-        lockWrite: false,
-      },
-    },
-  ];
+  const capturedAtDate = requireTimestamp(
+    evidence.capturedAt,
+    "authority evidence time",
+  );
   const credentialIds = new Set();
   const byRole = new Map();
-  for (let index = 0; index < expected.length; index += 1) {
+  for (let index = 0; index < EXPECTED_AUTHORITIES.length; index += 1) {
     const authority = requireObject(
       facts.authorities[index],
       "authority identity",
@@ -1041,24 +1139,28 @@ function validateAuthorityBoundary(evidence, subject) {
         "role",
         "credentialType",
         "credentialIdSha256",
+        "scopeType",
         "accountIdSha256",
         "bucketName",
         "prefix",
+        "permissions",
         "capabilities",
         "expiresAt",
-        "revokedAt",
-        "revocationHttpStatus",
-        "revocationRequestId",
       ],
       "authority identity",
     );
-    const wanted = expected[index];
+    const wanted = EXPECTED_AUTHORITIES[index];
+    const r2Scoped = wanted.scopeType === "r2-bucket-prefix";
     requireCondition(
       authority.role === wanted.role &&
         authority.credentialType === wanted.credentialType &&
+        authority.scopeType === wanted.scopeType &&
         authority.accountIdSha256 === subject.accountIdSha256 &&
-        authority.bucketName === subject.bucketName &&
-        authority.prefix === subject.prefix &&
+        (r2Scoped
+          ? authority.bucketName === subject.bucketName &&
+            authority.prefix === subject.prefix
+          : authority.bucketName === null && authority.prefix === null) &&
+        sameJson(authority.permissions, wanted.permissions) &&
         sameJson(authority.capabilities, wanted.capabilities),
       `authority ${wanted.role} capability drifted`,
     );
@@ -1076,45 +1178,245 @@ function validateAuthorityBoundary(evidence, subject) {
       `${wanted.role} credential expiry`,
     );
     requireCondition(
-      expiresAt >= requireTimestamp(subject.expiresAt, "manifest expiry"),
-      `${wanted.role} credential expires before the ceremony decision`,
+      expiresAt >=
+        requireTimestamp(subject.expiresAt, "manifest expiry") &&
+        expiresAt > capturedAtDate &&
+        expiresAt.getTime() - capturedAtDate.getTime() <=
+          MAXIMUM_CREDENTIAL_REMAINING_SECONDS * 1_000,
+      `${wanted.role} credential lifetime is invalid`,
     );
-    const mutable =
-      wanted.capabilities.objectWrite || wanted.capabilities.lockWrite;
-    let revokedAtDate = null;
-    if (mutable) {
-      revokedAtDate = requireTimestamp(
-        authority.revokedAt,
-        `${wanted.role} revokedAt`,
-      );
-      requireCondition(
-        Number.isSafeInteger(authority.revocationHttpStatus) &&
-          authority.revocationHttpStatus >= 200 &&
-          authority.revocationHttpStatus <= 299 &&
-          OPAQUE_ID_PATTERN.test(authority.revocationRequestId),
-        `${wanted.role} revocation was not provider-confirmed`,
-      );
-    } else {
-      requireCondition(
-        authority.revokedAt === null &&
-          authority.revocationHttpStatus === null &&
-          authority.revocationRequestId === null,
-        `${wanted.role} read-only credential revocation fields drifted`,
-      );
-    }
     byRole.set(wanted.role, {
       ...authority,
       expiresAtDate: expiresAt,
-      revokedAtDate,
     });
   }
   return {
     byRole,
-    capturedAtDate: requireTimestamp(
-      evidence.capturedAt,
-      "authority evidence time",
-    ),
+    capturedAtDate,
   };
+}
+
+function validateLifecycleRevocation(
+  evidence,
+  subject,
+  authority,
+  targetRole,
+) {
+  const expectedKind = `${targetRole}-revocation`;
+  requireCondition(
+    evidence.kind === expectedKind,
+    `${targetRole} lifecycle evidence kind drifted`,
+  );
+  const facts = evidence.facts;
+  exactKeys(
+    facts,
+    [
+      "accountIdSha256",
+      "bucketName",
+      "prefix",
+      "targetRole",
+      "targetCredentialIdSha256",
+      "lifecycleOperatorCredentialIdSha256",
+      "lifecycleVerifierCredentialIdSha256",
+      "apiSurface",
+      "targetBindingSha256",
+      "predecessorReceiptFileSha256",
+      "revokeReceiptFileSha256",
+      "verifyReceiptFileSha256",
+      "operatorSelfVerifiedAt",
+      "deletion",
+      "operatorReadback",
+      "verifierSelfVerifiedAt",
+      "independentReadback",
+      "targetAbsenceIndependentlyObserved",
+    ],
+    `${targetRole} lifecycle facts`,
+  );
+  requireTarget(facts, subject, `${targetRole} lifecycle`);
+  const targetAuthority = authority.byRole.get(targetRole);
+  const lifecycleOperator = authority.byRole.get("lifecycle-operator");
+  const lifecycleVerifier = authority.byRole.get("lifecycle-verifier");
+  requireCondition(
+    targetAuthority !== undefined &&
+      lifecycleOperator !== undefined &&
+      lifecycleVerifier !== undefined &&
+      facts.targetRole === targetRole &&
+      facts.targetCredentialIdSha256 ===
+        targetAuthority.credentialIdSha256 &&
+      facts.lifecycleOperatorCredentialIdSha256 ===
+        lifecycleOperator.credentialIdSha256 &&
+      facts.lifecycleVerifierCredentialIdSha256 ===
+        lifecycleVerifier.credentialIdSha256 &&
+      facts.apiSurface === "cloudflare-account-token-api" &&
+      facts.targetAbsenceIndependentlyObserved === true,
+    `${targetRole} lifecycle authority binding drifted`,
+  );
+  const targetBindingSha256 = sha256Hex(
+    Buffer.from(
+      canonicalJson({
+        apiSurface: facts.apiSurface,
+        accountIdSha256: subject.accountIdSha256,
+        targetCredentialIdSha256:
+          targetAuthority.credentialIdSha256,
+      }),
+      "utf8",
+    ),
+  );
+  requireCondition(
+    facts.targetBindingSha256 === targetBindingSha256,
+    `${targetRole} lifecycle target binding drifted`,
+  );
+  const receiptDigests = [
+    facts.predecessorReceiptFileSha256,
+    facts.revokeReceiptFileSha256,
+    facts.verifyReceiptFileSha256,
+  ];
+  for (const [index, digest] of receiptDigests.entries()) {
+    requireSha256(
+      digest,
+      `${targetRole} lifecycle receipt digest ${index}`,
+    );
+  }
+  requireCondition(
+    new Set(receiptDigests).size === receiptDigests.length,
+    `${targetRole} lifecycle receipt digests are not distinct`,
+  );
+
+  const deletion = requireObject(
+    facts.deletion,
+    `${targetRole} deletion`,
+  );
+  exactKeys(
+    deletion,
+    [
+      "at",
+      "httpStatus",
+      "providerRequestId",
+      "responseBodySha256",
+      "resultIdSha256",
+    ],
+    `${targetRole} deletion`,
+  );
+  const operatorReadback = requireObject(
+    facts.operatorReadback,
+    `${targetRole} operator readback`,
+  );
+  exactKeys(
+    operatorReadback,
+    [
+      "at",
+      "httpStatus",
+      "providerRequestId",
+      "responseBodySha256",
+      "errorCodes",
+    ],
+    `${targetRole} operator readback`,
+  );
+  const independentReadback = requireObject(
+    facts.independentReadback,
+    `${targetRole} independent readback`,
+  );
+  exactKeys(
+    independentReadback,
+    [
+      "at",
+      "httpStatus",
+      "providerRequestId",
+      "responseBodySha256",
+      "errorCodes",
+    ],
+    `${targetRole} independent readback`,
+  );
+  const operatorSelfVerifiedAt = requireTimestamp(
+    facts.operatorSelfVerifiedAt,
+    `${targetRole} lifecycle operator verification`,
+  );
+  const deletedAt = requireTimestamp(
+    deletion.at,
+    `${targetRole} deletion time`,
+  );
+  const operatorReadbackAt = requireTimestamp(
+    operatorReadback.at,
+    `${targetRole} operator readback time`,
+  );
+  const verifierSelfVerifiedAt = requireTimestamp(
+    facts.verifierSelfVerifiedAt,
+    `${targetRole} lifecycle verifier verification`,
+  );
+  const independentReadbackAt = requireTimestamp(
+    independentReadback.at,
+    `${targetRole} independent readback time`,
+  );
+  const capturedAt = requireTimestamp(
+    evidence.capturedAt,
+    `${targetRole} lifecycle evidence time`,
+  );
+  requireCondition(
+    operatorSelfVerifiedAt < deletedAt &&
+      deletedAt < operatorReadbackAt &&
+      operatorReadbackAt < verifierSelfVerifiedAt &&
+      verifierSelfVerifiedAt < independentReadbackAt &&
+      independentReadbackAt.getTime() === capturedAt.getTime() &&
+      operatorReadbackAt < lifecycleOperator.expiresAtDate &&
+      independentReadbackAt < lifecycleVerifier.expiresAtDate &&
+      lifecycleOperator.expiresAtDate.getTime() -
+        operatorSelfVerifiedAt.getTime() <=
+        MAXIMUM_CREDENTIAL_REMAINING_SECONDS * 1_000 &&
+      lifecycleVerifier.expiresAtDate.getTime() -
+        verifierSelfVerifiedAt.getTime() <=
+        MAXIMUM_CREDENTIAL_REMAINING_SECONDS * 1_000,
+    `${targetRole} lifecycle chronology is invalid`,
+  );
+  requireCondition(
+    deletion.httpStatus === 200 &&
+      deletion.resultIdSha256 ===
+        targetAuthority.credentialIdSha256 &&
+      OPAQUE_ID_PATTERN.test(deletion.providerRequestId) &&
+      SHA256_PATTERN.test(deletion.responseBodySha256) &&
+      operatorReadback.httpStatus === 404 &&
+      OPAQUE_ID_PATTERN.test(operatorReadback.providerRequestId) &&
+      SHA256_PATTERN.test(operatorReadback.responseBodySha256) &&
+      independentReadback.httpStatus === 404 &&
+      OPAQUE_ID_PATTERN.test(
+        independentReadback.providerRequestId,
+      ) &&
+      SHA256_PATTERN.test(
+        independentReadback.responseBodySha256,
+      ) &&
+      validLifecycleErrorCodes(operatorReadback.errorCodes) &&
+      validLifecycleErrorCodes(independentReadback.errorCodes) &&
+      sameJson(
+        operatorReadback.errorCodes,
+        independentReadback.errorCodes,
+      ) &&
+      new Set([
+        deletion.providerRequestId,
+        operatorReadback.providerRequestId,
+        independentReadback.providerRequestId,
+      ]).size === 3,
+    `${targetRole} lifecycle provider evidence is invalid`,
+  );
+  return {
+    targetRole,
+    operatorSelfVerifiedAt,
+    deletedAt,
+    operatorReadbackAt,
+    verifierSelfVerifiedAt,
+    independentReadbackAt,
+    capturedAt,
+  };
+}
+
+function validLifecycleErrorCodes(value) {
+  return (
+    Array.isArray(value) &&
+    value.length > 0 &&
+    value.length <= 32 &&
+    value.every(
+      (entry) => Number.isSafeInteger(entry) && entry >= 0,
+    ) &&
+    new Set(value).size === value.length
+  );
 }
 
 async function validateObjectReadback(
@@ -1580,8 +1882,10 @@ function validateLockRule(value) {
 function validateEvidenceOrdering(
   evidence,
   authority,
+  lockOperatorRevocation,
   objects,
   probes,
+  publisherRevocation,
   lock,
   subject,
 ) {
@@ -1608,17 +1912,20 @@ function validateEvidenceOrdering(
       ),
     ),
   );
-  const lockOperator = authority.byRole.get("lock-operator");
-  const publisher = authority.byRole.get("publisher");
   requireCondition(
-    lockOperator.revokedAtDate >=
+    lockOperatorRevocation.operatorSelfVerifiedAt >=
       requireTimestamp(lock.configuredAt, "lock configuredAt") &&
-      lockOperator.revokedAtDate < earliestUpload &&
-      publisher.revokedAtDate > probes.overwrite.attemptedAtDate &&
-      publisher.revokedAtDate > probes.deletion.attemptedAtDate &&
-      publisher.revokedAtDate <
+      lockOperatorRevocation.independentReadbackAt < earliestUpload &&
+      publisherRevocation.operatorSelfVerifiedAt >
+        probes.overwrite.attemptedAtDate &&
+      publisherRevocation.operatorSelfVerifiedAt >
+        probes.deletion.attemptedAtDate &&
+      publisherRevocation.independentReadbackAt <
         probes.finalReadback.readBackAtDate &&
       authority.capturedAtDate >= lockTime &&
+      authority.capturedAtDate >=
+        lockOperatorRevocation.capturedAt &&
+      authority.capturedAtDate >= publisherRevocation.capturedAt &&
       authority.capturedAtDate <= generatedAt,
     "mutable ceremony credentials were not revoked in order",
   );

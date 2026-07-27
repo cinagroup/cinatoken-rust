@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "contract": "cinatoken-container-runtime-worm-retention-protocol-policy-v1",
+  "schemaVersion": 2,
+  "contract": "cinatoken-container-runtime-worm-retention-protocol-policy-v2",
   "repository": "cinagroup/cinatoken-rust",
   "environment": "staging",
   "provider": "cloudflare-r2",
@@ -9,15 +9,30 @@
   "maximumClockSkewSeconds": 300,
   "maximumManifestLifetimeSeconds": 1800,
   "maximumEvidenceAgeSeconds": 3600,
+  "maximumCredentialRemainingSeconds": 3600,
   "requiredApprovalRoles": [
     "operations",
     "security"
   ],
   "requiredEvidenceKinds": [
     "authority-boundary",
+    "lock-operator-revocation",
     "object-readback",
     "enforcement-probes",
+    "publisher-revocation",
     "lock-readback"
+  ],
+  "requiredAuthorityRoles": [
+    "publisher",
+    "lock-operator",
+    "object-verifier",
+    "lock-verifier",
+    "lifecycle-operator",
+    "lifecycle-verifier"
+  ],
+  "requiredRevocationTargetRoles": [
+    "lock-operator",
+    "publisher"
   ],
   "requiredObjectKinds": [
     "source-evidence-packet",

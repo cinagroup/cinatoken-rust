@@ -21936,3 +21936,56 @@ must consume both lifecycle receipts, exact permission inventories, operation
 digests, and chronology before B2 can pass. B4-B7, R3/C1, P5, G1-G8, customer
 traffic, and production cutover remain blocked. Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## 22.309 WORM Final Evidence Contract V2 (2026-07-27)
+
+The offline retention decision contract now consumes the full six-role,
+double-readback lifecycle model instead of accepting four R2 roles and one
+generic 2xx revocation:
+
+- protocol policy, trust policy, manifest, evidence envelopes, and anchor
+  domain are all version 2; every v1 form fails closed;
+- required evidence expands from four to six canonical records by adding
+  `lock-operator-revocation` and `publisher-revocation`;
+- authority evidence requires publisher, lock operator, object verifier, lock
+  verifier, lifecycle operator, and lifecycle verifier in exact order;
+- every role has an exact credential type, scope, normalized permission
+  inventory, capability matrix, provider-ID digest, and expiry;
+- lifecycle roles are account-only and have zero R2 capability; R2 roles have
+  zero account-token lifecycle capability;
+- all six credentials must be distinct, outlive the bounded decision, and
+  have no more than 3600 seconds remaining at authority capture.
+
+Each writer revocation evidence record binds the target, lifecycle operator,
+and lifecycle verifier identities; account-token API surface; canonical
+target-binding digest; distinct predecessor/revoke/verify receipt-file
+digests; DELETE `200` result/body/request evidence; operator GET `404`;
+independent verifier GET `404`; matching bounded error-code sequences; and
+strict timestamps. Lock-operator independent absence must precede the first
+upload. Publisher lifecycle verification must follow both provider probes and
+precede the post-probe object readback.
+
+Only the exact positive v2 fixture may produce
+`lockOperatorRevocationVerified=true`,
+`publisherRevocationVerified=true`, `wormRetentionVerified=true`, and
+`s3Complete=true`; registry, Cloudflare runtime, P5, traffic, and production
+remain false. Repository self-test remains credential-free and always reports
+remote evidence and S3 completion false.
+
+The focused verifier suite passes 11 tests with 217 expectations. Negative
+coverage includes permission/scope escalation, all identity overlaps,
+overlong credentials, DELETE/404/status/request/body/error-code drift,
+receipt-digest collision, lifecycle chronology, pre-upload/post-probe order,
+stale evidence, forged approvals, and v1 policy/trust/manifest/evidence
+downgrade. The policy-v2 staging integration suite passes 16 tests with 110
+expectations, and the complete eight-suite container supply-chain set passes
+92 tests with 854 expectations. The complete repository gate passes with exit
+code 0 in 611.2 seconds; 21 existing Rust `dead_code` findings remain
+warnings only.
+
+No live bucket, token, object, provider, registry, deployment, traffic,
+billing, or VPS operation occurred. B2 still requires real reviewed
+permission inventories and live signed evidence. Next is predecessor-bound
+B4/B5 create-only publication, independent object readback, provider probes,
+publisher-target lifecycle collection, final lock readback, and canonical v2
+assembly. Go/VPS remains authoritative and production remains **NO-GO**.

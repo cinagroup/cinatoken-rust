@@ -4370,13 +4370,50 @@ suite container supply-chain set passes 91 tests with 775 expectations. The
 complete repository gate passes with exit code 0 in 635.0 seconds; 21 existing
 Rust `dead_code` findings remain warnings only.
 
-This collector does not inspect the provider permission inventory and the
-current final WORM verifier still has the older four-R2-role/single-revocation
-schema. The next P1 contract upgrade must add both lifecycle authorities,
-their exact reviewed permission inventories, DELETE `200`, operator `404`,
-independent `404`, complete predecessor digests, and strict chronology before
-`lockOperatorRevocationVerified` can become true.
+This collector does not inspect the provider permission inventory and cannot
+independently authorize a final decision. Final verifier v2 below requires
+both lifecycle authorities, exact reviewed permission inventories, DELETE
+`200`, operator `404`, independent `404`, complete predecessor digests, strict
+chronology, and independent approvals before either writer-revocation fact can
+become true.
 
 No Cloudflare lifecycle request was made. Every lifecycle receipt keeps B2,
 B4-B7, R3/C1, P5, traffic, billing, drain, and cutover authority false.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+### B2 final verifier v2 foundation
+
+The offline production decision contract now rejects the older
+four-R2-role/single-2xx model:
+
+- protocol policy, external trust policy, manifest, evidence envelopes, and
+  approval anchor are all v2; every v1 form is rejected;
+- exact authority order is publisher, lock operator, object verifier, lock
+  verifier, lifecycle operator, lifecycle verifier;
+- every role has an exact provider-ID digest, scope, permission inventory,
+  capability matrix, expiry, and no more than 3600 seconds remaining;
+- lifecycle roles are account-only with zero R2 permissions and R2 roles have
+  zero account-token permissions;
+- `lock-operator-revocation` and `publisher-revocation` are mandatory,
+  separately hashed evidence records;
+- each lifecycle record requires target/actor identity binding, distinct
+  predecessor/revoke/verify file digests, DELETE `200`, operator GET `404`,
+  independent GET `404`, matching bounded error codes, three distinct provider
+  request IDs, response hashes, and strict timestamps;
+- lock revocation completes before B4 upload; publisher revocation begins
+  after both B5 probes and completes before post-probe object readback.
+
+The focused contract passes 11 tests with 217 expectations. The synchronized
+staging policy-v2 parser passes 16 tests with 110 expectations, and all eight
+container supply-chain suites pass 92 tests with 854 expectations. The
+self-test is credential-free and retains remote evidence, WORM, complete S3,
+R3/C1, P5, traffic, billing, drain, and cutover authority as false. The
+complete repository gate passes with exit code 0 in 611.2 seconds; 21 existing
+Rust `dead_code` findings remain warnings only.
+
+The next implementation boundary is B4/B5 collection and assembly: create-only
+six-object publication, exhaustive independent object readback, provider
+overwrite/delete probes, publisher-target lifecycle collection, final lock
+readback, and canonical v2 evidence/signature production. No live operation
+was performed; Go/VPS remains authoritative and production remains
+**NO-GO**.

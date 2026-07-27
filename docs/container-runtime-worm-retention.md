@@ -17,9 +17,12 @@ Current decision:
   locally tested; not executed against Cloudflare.
 - Lock-operator lifecycle revoke/operator-readback/independent-readback
   collector: implemented and locally tested; not executed against Cloudflare.
+- Final retention policy/trust/manifest/evidence verifier v2: implemented and
+  locally tested with six identities and two complete writer-revocation
+  evidence records.
 - B2 credential issuance, revocation, and independent revocation readback:
-  incomplete until real permission inventory, live receipts, final contract
-  v2 consumption, and approval exist.
+  incomplete until real permission inventories, live receipts, canonical v2
+  evidence assembly, and approval exist.
 - Real R2 bucket-lock evidence: not collected.
 - `wormRetentionVerified`: false.
 - `s3Complete`: false.
@@ -88,10 +91,11 @@ identities:
 | Object verifier | R2 Object Read only, scoped to the evidence bucket | Object read/list only | Read-only during the decision |
 | Lock verifier | R2 Admin Read only | Object read/list and lock read; no writes | Read-only during the decision |
 
-Every credential is represented only by a SHA-256 identifier, permission
-facts, expiry, and redacted provider revocation receipt. Secret values, raw
-access key IDs, Authorization headers, request/response bodies, cookies, and
-private keys are prohibited from the bundle.
+Every credential is represented only by a SHA-256 identifier, exact permission
+facts, bounded expiry, and, for writers, a separate redacted lifecycle evidence
+record. Secret values, raw access key IDs, Authorization headers, raw
+request/response bodies, cookies, and private keys are prohibited from the
+bundle.
 
 Credential identity is provider-derived, not secret-derived. Cloudflare
 documents that an R2 S3 Access Key ID is the API token ID, while the Secret
@@ -108,12 +112,10 @@ This semantic change is encoded as staging phase receipt schema/contract v2.
 Version 1 receipts used a different lock credential digest meaning and must
 not be mixed with or upgraded implicitly to v2.
 
-Token lifecycle is a separate control plane. `API Tokens::Edit` is a non-R2
-permission and must not be granted to the publisher, lock operator, object
-verifier, or lock verifier. A future lifecycle process must use separately
-reviewed authority to revoke mutable credentials, and a separate readback
-must prove the targeted provider token ID is no longer usable. The current
-lifecycle collector models two additional identities:
+Token lifecycle is a separate control plane. Account-token read/edit is
+non-R2 authority and must not be granted to the publisher, lock operator,
+object verifier, or lock verifier. The lifecycle process uses two additional
+reviewed identities:
 
 | Role | Intended permission shape | Runtime process |
 | --- | --- | --- |
@@ -122,9 +124,12 @@ lifecycle collector models two additional identities:
 
 The collector cannot infer permission policy from token self-verification.
 Real permission inventory and independent review therefore remain mandatory.
-The current final verifier still has the older four-role authority schema and
-cannot consume lifecycle receipts. Neither local collector success nor two
-404 responses may be interpreted as B2 completion.
+Final verifier v2 requires all six identities in exact order, exact normalized
+permission inventories and capability matrices, account-only scope for both
+lifecycle roles, zero lifecycle authority in every R2 role, and no R2
+authority in either lifecycle role. Each credential must expire after the
+decision but within 3600 seconds of authority capture. Local fixture success
+or two synthetic 404 responses are not B2 completion.
 
 The lock operator's unavoidable object authority is bounded by ceremony
 ordering: configure and read back the lock, revoke the operator, then publish.
@@ -141,8 +146,10 @@ The bundle root contains:
 manifest.json
 evidence/
   authority-boundary.json
+  lock-operator-revocation.json
   object-readback.json
   enforcement-probes.json
+  publisher-revocation.json
   lock-readback.json
 objects/
   container-runtime-source-evidence.zip
@@ -190,7 +197,7 @@ The manifest subject is canonicalized and hashed. Both roles sign the exact
 message:
 
 ```text
-cinatoken-container-runtime-worm-retention-anchor-v1
+cinatoken-container-runtime-worm-retention-anchor-v2
 <policy-id>
 <manifest-subject-sha256>
 ```
@@ -207,10 +214,9 @@ signatures fail closed.
 2. Create or select the dedicated staging evidence bucket and verify the
    exact account, bucket, jurisdiction, owner, and empty content-addressed
    prefix.
-3. Issue the four distinct short-lived R2 credentials with the permission
-   shapes above. Keep all values in approved secret channels only. Provision
-   separately reviewed token-lifecycle authority; do not add `API
-   Tokens::Edit` to an R2 ceremony role.
+3. Issue four distinct short-lived R2 credentials plus separate lifecycle
+   operator and lifecycle verifier credentials with the exact permission
+   inventories above. Keep all values in approved secret channels only.
 4. Use `GET /accounts/{account_id}/tokens/verify` to bind the lock operator to
    its provider token ID, require active status, require an already-active
    validity window, and require no more than 3600 seconds of remaining
@@ -234,8 +240,8 @@ signatures fail closed.
     the object verifier to prove the original object remains byte-identical.
 11. Use the lock verifier to read the complete lock configuration after the
     probes and writer revocations.
-12. Build the four canonical evidence documents and manifest. Operations and
-    security independently inspect and sign the subject digest.
+12. Build the six canonical evidence documents and v2 manifest. Operations
+    and security independently inspect and sign the subject digest.
 13. Run the offline verifier from a clean host with the trust policy supplied
     separately. Preserve its JSON output as the S3 decision receipt.
 
@@ -293,8 +299,8 @@ Self-verification is identity and lifetime evidence only. It is not issuance
 review, least-privilege proof, revocation, or independent revocation readback.
 The lifecycle collector below can collect the revoke/readback sequence, but
 it cannot prove the reviewed account-token read/edit permission inventory or
-authorize the current final verifier. B2 remains incomplete and no staging
-receipt can authorize production.
+independently assemble and sign the final v2 evidence bundle. B2 remains
+incomplete and no collector receipt can authorize production.
 
 ## Lifecycle Collector Boundary
 
@@ -331,8 +337,8 @@ time reversal, or credential overlap fails closed.
 
 This is still collection substrate. The receipt intentionally retains every
 downstream authority flag as false because it does not prove the reviewed
-permission inventory, signer custody, live staging ownership, or the final
-verifier v2 authority graph.
+permission inventory, signer custody, live staging ownership, canonical v2
+evidence assembly, or independent approvals.
 
 ## Provider Enforcement Requirements
 
@@ -429,21 +435,43 @@ legal/compliance determination. If that stronger property is required, select
 an external storage provider/control that supplies non-bypassable retention
 and keep this R2 receipt as a secondary operational record.
 
+## Final Verifier V2 Boundary
+
+Verifier v2 rejects every v1 protocol policy, trust policy, manifest, and
+evidence envelope. Its authority evidence requires six distinct provider-ID
+digests, exact permission inventories, exact scope/capability matrices, and a
+maximum 3600-second credential lifetime at decision capture.
+
+Two separate lifecycle evidence records are mandatory:
+
+- `lock-operator-revocation` must follow lock configuration and complete
+  before the first upload;
+- `publisher-revocation` must follow both enforcement probes and complete
+  before the post-probe object readback.
+
+Each record binds the target, lifecycle operator and lifecycle verifier
+provider-ID digests; account-token API surface; canonical target-binding
+digest; distinct predecessor/revoke/verify receipt-file digests; exact DELETE
+`200`; operator GET `404`; independent verifier GET `404`; three distinct
+provider request IDs; response-body hashes; matching bounded error-code
+sequences; credential expiry; and strict timestamps. Only a complete signed
+bundle may set `lockOperatorRevocationVerified=true`,
+`publisherRevocationVerified=true`, `wormRetentionVerified=true`, and
+`s3Complete=true` for its exact subject.
+
+The focused verifier passes 11 tests with 217 expectations. The staging
+policy-v2 integration passes 16 tests with 110 expectations, and the complete
+eight-suite container supply-chain set passes 92 tests with 854 expectations.
+The complete repository gate passes with exit code 0 in 611.2 seconds; 21
+existing Rust `dead_code` findings remain warnings only.
+
 ## Next Execution Unit
 
-The next implementation upgrades the final retention evidence and verifier
-contract. It must add lifecycle operator and lifecycle verifier authorities,
-exact DELETE plus operator/independent absence receipts, complete permission
-inventory, and cross-receipt digest/time ordering. The current verifier's
-single 2xx revocation fields are insufficient and must not accept a production
-bundle as equivalent to this chain.
-
-After that contract is fail-closed, the same provider-ID bridge must bind the
-publisher S3 Access Key ID to its later revocation receipt. Create-only
-six-object publication, independent object readback, provider overwrite/delete
-probes, publisher revocation, final object/lock readbacks, canonical evidence
-assembly, and operations/security approval then follow. Each phase must retain
-the single-role process boundary and consume a canonical predecessor.
+The next implementation builds the predecessor-bound B4/B5 data-plane
+collectors: six create-only uploads, complete independent object pagination
+and content readback, provider overwrite/delete probes, then publisher-target
+lifecycle revoke and independent readback using the same v2 evidence
+contract. Final lock readback and canonical evidence assembly follow.
 
 Collector self-tests and dry-runs are not real evidence. The lock phase must
 not be run until the dedicated bucket, four ephemeral R2 credentials,
@@ -451,9 +479,9 @@ separate lifecycle authority and independent revocation-readback owner,
 approval keys, artifact packet, and abort/cleanup runbook have independent
 review. The identity-preflight and lifecycle implementations have passed
 focused and aggregate local verification; the complete repository gate passes
-with exit code 0 in 635.0 seconds. No lifecycle phase has run against
+with exit code 0 in 611.2 seconds. No lifecycle phase has run against
 Cloudflare. Registry R3 remains blocked until a complete real bundle passes
-the upgraded offline verifier. B2 is not complete, Go/VPS remains
+verifier v2. B2 is not complete, Go/VPS remains
 authoritative, and production remains **NO-GO**.
 
 Primary references:

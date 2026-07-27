@@ -2286,3 +2286,30 @@ verifier cannot consume the lifecycle chain, and no real bucket/token/object
 operation occurred. B4-B7, R3 registry, C1 staging, P5, traffic, financial
 authority, Go/VPS drain, and cutover remain blocked. Go/VPS stays authoritative
 and production remains **NO-GO**.
+
+## 2026-07-27 WORM Final Verifier V2 Foundation
+
+| Status item | Current value |
+| --- | --- |
+| Protocol/trust/manifest/evidence/anchor contract | v2; v1 rejected |
+| Authority model | 6 exact distinct roles with reviewed permission inventory required |
+| Lock-operator lifecycle evidence | DELETE `200` + operator `404` + independent `404` required |
+| Publisher lifecycle evidence | DELETE `200` + operator `404` + independent `404` required |
+| Credential lifetime | Maximum 3600 seconds remaining |
+| Focused verifier gate | 11 tests / 217 expectations |
+| Staging policy-v2 integration gate | 16 tests / 110 expectations |
+| Eight-suite supply-chain gate | 92 tests / 854 expectations |
+| Complete repository gate | PASS, exit 0 in 611.2 seconds; 21 existing Rust warnings |
+| Credential-free self-test | PASS; all remote/downstream facts false |
+| Real permission inventories and live receipts | **NOT COLLECTED** |
+| Complete B2 / S3 | **FALSE** |
+
+The old four-role/single-2xx revocation evidence is no longer accepted.
+Passing v2 requires both writer lifecycles, distinct receipt-file digests,
+provider correlation and response hashes, strict phase ordering, and
+operations/security signatures.
+
+This is local contract readiness. No Cloudflare token, bucket, object,
+registry, deployment, traffic, billing, or VPS mutation occurred. B4-B7,
+R3/C1, P5, Go/VPS drain, and cutover remain blocked. Go/VPS remains
+authoritative and production remains **NO-GO**.

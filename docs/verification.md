@@ -10967,3 +10967,47 @@ double-`404` chain. Final verifier v2, reviewed lifecycle permission
 inventories, live receipts, independent approval, and the remaining B4-B7
 ceremony are required. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-27 WORM Final Verifier V2 Verification
+
+The final offline retention contract was upgraded and verified without
+credentials or provider mutation:
+
+```powershell
+node --check tools/verify_container_runtime_worm_retention.mjs
+node --check tests/container-runtime-worm-retention-gate.test.mjs
+npx.cmd --yes bun run check:container-runtime:worm-retention-contract
+```
+
+The focused suite passed 11 tests with 217 expectations. The self-test emits
+contract version 2 and confirms the exact policy floor:
+
+- six ordered authority roles and two required writer-revocation targets;
+- six evidence records, including lock-operator and publisher lifecycle
+  evidence;
+- exact permission/scope/capability matrices and all-six provider-ID
+  separation;
+- maximum 3600-second remaining credential lifetime;
+- target-bound DELETE `200`, operator `404`, independent verifier `404`;
+- matching bounded absence codes, three distinct request IDs, body hashes,
+  and three distinct receipt-file hashes;
+- lock revocation before first upload and publisher revocation after probes
+  but before post-probe readback;
+- exact operations/security Ed25519 signatures over the v2 anchor domain.
+
+Negative fixtures reject lifecycle/R2 permission crossover, credential
+overlap, overlong expiry, target and result mismatch, status/error/request/
+body drift, receipt digest collision, chronology/order violations, stale
+evidence, forged approvals, and every v1 policy/trust/manifest/evidence form.
+
+The positive fixture proves only that the v2 verifier can accept a complete
+provider-shaped and independently signed bundle. Self-test still reports
+`remoteEvidenceVerified=false`, `evidenceStorageMutationPerformed=false`,
+`wormRetentionVerified=false`, `s3Complete=false`, and every downstream
+authority false. No Cloudflare call was made; production remains **NO-GO**.
+
+The staging collector's exact policy parser was also upgraded to v2. Its
+focused suite passed 16 tests with 110 expectations. The complete eight-suite
+container supply-chain run passed 92 tests with 854 expectations. The complete
+repository gate passed with exit code 0 in 611.2 seconds; 21 existing Rust
+`dead_code` findings remained warnings only.

@@ -3575,3 +3575,39 @@ distinct roles, exact permission inventories, DELETE/operator-readback/
 independent-readback bindings, predecessor digests, and strict time ordering.
 Only then can a predecessor-bound create-only B4 publisher be implemented.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-27 WORM Final Verifier V2
+
+Phase 1 now has the fail-closed final evidence shape required by the
+lifecycle collector. Protocol/trust/manifest/evidence/anchor contracts are
+version 2 and reject all v1 predecessors.
+
+The authority boundary requires four exact R2 roles plus separate
+account-token read/edit operator and read-only verifier roles. Scope,
+permission arrays, capability matrices, provider-ID digests, expiry, and
+all-six identity separation are exact. Lifecycle roles cannot carry R2
+authority, R2 roles cannot carry account-token authority, and every credential
+has at most 3600 seconds remaining at authority capture.
+
+Two independent evidence envelopes bind lock-operator and publisher
+revocation. Both require a target-bound DELETE `200`, operator GET `404`, and
+independent verifier GET `404`; matching bounded error codes; distinct
+provider request IDs; response-body and predecessor/revoke/verify file
+digests; and strict chronology. Lock revocation completes before upload.
+Publisher revocation starts after both provider probes and completes before
+the final object readback.
+
+Focused verification passes 11 tests with 217 expectations, including v1
+downgrade, authority escalation, receipt collision, status/error/request/body
+drift, and ordering negatives. The credential-free self-test reports contract
+version 2 while retaining all remote, S3, registry, P5, traffic, and
+production facts as false. The synchronized staging collector passes 16 tests
+with 110 expectations, and all eight container supply-chain suites pass 92
+tests with 854 expectations. The complete repository gate passes with exit
+code 0 in 611.2 seconds; 21 existing Rust `dead_code` findings remain
+warnings only.
+
+No live evidence was collected. Next is B4/B5 create-only upload, complete
+independent object readback, enforcement probes, publisher lifecycle
+collection, final lock readback, and canonical v2 evidence assembly. Go/VPS
+remains authoritative and production remains **NO-GO**.

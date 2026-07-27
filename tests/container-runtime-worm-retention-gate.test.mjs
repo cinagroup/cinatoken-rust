@@ -20,8 +20,10 @@ import {
   MANIFEST_CONTRACT,
   PROTOCOL_POLICY_CONTRACT,
   REQUIRED_APPROVAL_ROLES,
+  REQUIRED_AUTHORITY_ROLES,
   REQUIRED_EVIDENCE_KINDS,
   REQUIRED_OBJECT_KINDS,
+  REQUIRED_REVOCATION_TARGET_ROLES,
   TRUST_POLICY_CONTRACT,
   auditRepositoryContract,
   parseArgs,
@@ -117,6 +119,13 @@ describe("container runtime WORM retention gate", () => {
     const policy = await loadProtocolPolicy();
     expect(validateProtocolPolicy(policy)).toEqual(policy);
     expect(policy.minimumRetentionSeconds).toBe(365 * 24 * 60 * 60);
+    expect(policy.maximumCredentialRemainingSeconds).toBe(3_600);
+    expect(policy.requiredAuthorityRoles).toEqual(
+      REQUIRED_AUTHORITY_ROLES,
+    );
+    expect(policy.requiredRevocationTargetRoles).toEqual(
+      REQUIRED_REVOCATION_TARGET_ROLES,
+    );
   });
 
   test("rejects unknown retention bundle members", async () => {
@@ -165,6 +174,11 @@ describe("container runtime WORM retention gate", () => {
         },
         authority: {
           separated: true,
+          permissionInventoriesReviewed: true,
+          lifecycleAuthoritySeparatedFromR2: true,
+          lockOperatorRevocationVerified: true,
+          publisherRevocationVerified: true,
+          writeCredentialsRevokedBeforeDecision: true,
           approvalRoles: REQUIRED_APPROVAL_ROLES,
         },
         wormRetentionVerified: true,
@@ -187,27 +201,29 @@ describe("container runtime WORM retention gate", () => {
           facts.authorities[0].credentialIdSha256;
       },
       (facts) => {
-        facts.authorities[0].capabilities.lockWrite = true;
+        facts.authorities[0].capabilities.r2LockWrite = true;
       },
       (facts) => {
-        facts.nonR2AccountPermissionUsed = true;
+        facts.authorities[4].permissions.push("r2-object-read");
+      },
+      (facts) => {
+        facts.authorities[4].capabilities.r2ObjectRead = true;
+      },
+      (facts) => {
+        facts.authorities[4].bucketName = BUCKET_NAME;
+      },
+      (facts) => {
+        facts.authorities[0].expiresAt =
+          "2026-07-27T07:00:00Z";
+      },
+      (facts) => {
+        facts.permissionInventoriesReviewed = false;
       },
       (facts) => {
         facts.secretMaterialCaptured = true;
       },
       (facts) => {
         facts.apiToken = "not-a-real-secret";
-      },
-      (facts) => {
-        facts.authorities[1].revokedAt =
-          "2026-07-27T04:57:31Z";
-      },
-      (facts) => {
-        facts.authorities[0].revokedAt =
-          "2026-07-27T04:57:59Z";
-      },
-      (facts) => {
-        facts.authorities[1].revocationHttpStatus = 500;
       },
     ]) {
       const fixture = await createFixture();
@@ -217,6 +233,116 @@ describe("container runtime WORM retention gate", () => {
         });
         await expect(fixture.verify()).rejects.toThrow(
           /authority|least privilege|distinct|capability|credential|revocation|revoked|order/i,
+        );
+      } finally {
+        await fixture.cleanup();
+      }
+    }
+  });
+
+  test("rejects incomplete or ambiguous lifecycle revocation evidence", async () => {
+    const cases = [
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.deletion.at = facts.operatorSelfVerifiedAt;
+        },
+      ],
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.operatorReadback.at = facts.deletion.at;
+        },
+      ],
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.independentReadback.at =
+            facts.verifierSelfVerifiedAt;
+        },
+      ],
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.deletion.httpStatus = 204;
+        },
+      ],
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.operatorReadback.httpStatus = 200;
+        },
+      ],
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.independentReadback.errorCodes = [1001];
+        },
+      ],
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.lifecycleVerifierCredentialIdSha256 =
+            facts.lifecycleOperatorCredentialIdSha256;
+        },
+      ],
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.targetBindingSha256 = "9".repeat(64);
+        },
+      ],
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.verifyReceiptFileSha256 =
+            facts.revokeReceiptFileSha256;
+        },
+      ],
+      [
+        "lock-operator-revocation",
+        (facts) => {
+          facts.verifierSelfVerifiedAt =
+            "2026-07-27T04:56:20Z";
+        },
+      ],
+      [
+        "publisher-revocation",
+        (facts) => {
+          facts.deletion.resultIdSha256 =
+            "9".repeat(64);
+        },
+      ],
+      [
+        "publisher-revocation",
+        (facts) => {
+          facts.operatorSelfVerifiedAt =
+            "2026-07-27T04:57:59Z";
+        },
+      ],
+      [
+        "publisher-revocation",
+        (facts) => {
+          facts.independentReadback.at =
+            "2026-07-27T04:58:21Z";
+        },
+      ],
+    ];
+    for (const [kind, mutate] of cases) {
+      const fixture = await createFixture();
+      try {
+        await fixture.updateEvidence(kind, (evidence) => {
+          mutate(evidence.facts);
+          if (
+            kind.endsWith("-revocation") &&
+            evidence.facts.independentReadback?.at
+          ) {
+            evidence.capturedAt =
+              evidence.facts.independentReadback.at;
+          }
+        });
+        await expect(fixture.verify()).rejects.toThrow(
+          /lifecycle|revocation|authority|receipt|provider|chronology|order|binding/i,
         );
       } finally {
         await fixture.cleanup();
@@ -401,10 +527,24 @@ describe("container runtime WORM retention gate", () => {
     const policy = await loadProtocolPolicy();
     for (const mutate of [
       (value) => {
+        value.schemaVersion = 1;
+        value.contract =
+          "cinatoken-container-runtime-worm-retention-protocol-policy-v1";
+      },
+      (value) => {
         value.minimumRetentionSeconds -= 1;
       },
       (value) => {
+        value.maximumCredentialRemainingSeconds += 1;
+      },
+      (value) => {
         value.requiredApprovalRoles.pop();
+      },
+      (value) => {
+        value.requiredAuthorityRoles.pop();
+      },
+      (value) => {
+        value.requiredRevocationTargetRoles.pop();
       },
       (value) => {
         value.supportedJurisdictions.push("attacker");
@@ -429,6 +569,50 @@ describe("container runtime WORM retention gate", () => {
     } finally {
       await fixture.cleanup();
     }
+
+    const oldTrust = await createFixture();
+    try {
+      oldTrust.trustPolicy.schemaVersion = 1;
+      oldTrust.trustPolicy.contract =
+        "cinatoken-container-runtime-worm-retention-trust-policy-v1";
+      await oldTrust.writeTrustPolicy();
+      await expect(oldTrust.verify()).rejects.toThrow(
+        /trust policy (?:identity|boundary)/i,
+      );
+    } finally {
+      await oldTrust.cleanup();
+    }
+
+    const oldManifest = await createFixture();
+    try {
+      await oldManifest.updateManifest((manifest) => {
+        manifest.schemaVersion = 1;
+        manifest.contract =
+          "cinatoken-container-runtime-worm-retention-manifest-v1";
+      });
+      await expect(oldManifest.verify()).rejects.toThrow(
+        /manifest identity/i,
+      );
+    } finally {
+      await oldManifest.cleanup();
+    }
+
+    const oldEvidence = await createFixture();
+    try {
+      await oldEvidence.updateEvidence(
+        "authority-boundary",
+        (evidence) => {
+          evidence.schemaVersion = 1;
+          evidence.contract =
+            "cinatoken-container-runtime-worm-retention-evidence-v1";
+        },
+      );
+      await expect(oldEvidence.verify()).rejects.toThrow(
+        /evidence identity/i,
+      );
+    } finally {
+      await oldEvidence.cleanup();
+    }
   });
 });
 
@@ -447,7 +631,7 @@ async function createFixture() {
   const keyPairs = new Map();
   const keys = REQUIRED_APPROVAL_ROLES.map((role) => {
     const pair = generateKeyPairSync("ed25519");
-    const keyId = `${role}-retention-v1`;
+    const keyId = `${role}-retention-v2`;
     keyPairs.set(keyId, pair);
     return {
       keyId,
@@ -461,9 +645,9 @@ async function createFixture() {
     };
   });
   const trustPolicy = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contract: TRUST_POLICY_CONTRACT,
-    policyId: "staging-r2-retention-v1",
+    policyId: "staging-r2-retention-v2",
     protocolPolicySha256,
     repository: protocol.repository,
     environment: protocol.environment,
@@ -576,25 +760,24 @@ async function createFixture() {
         accountIdSha256: ACCOUNT_ID_SHA256,
         bucketName: BUCKET_NAME,
         prefix,
-        nonR2AccountPermissionUsed: false,
         secretMaterialCaptured: false,
         allCredentialIdsDistinct: true,
+        permissionInventoriesReviewed: true,
         authorities: [
           authorityFixture(
             "publisher",
             "r2-object-read-write-api-token",
             "2".repeat(64),
             prefix,
+            "r2-bucket-prefix",
+            ["r2-object-read", "r2-object-write"],
             {
-              objectRead: true,
-              objectWrite: true,
-              lockRead: false,
-              lockWrite: false,
-            },
-            {
-              revokedAt: "2026-07-27T04:58:15Z",
-              revocationHttpStatus: 200,
-              revocationRequestId: "revoke-publisher-request",
+              r2ObjectRead: true,
+              r2ObjectWrite: true,
+              r2LockRead: false,
+              r2LockWrite: false,
+              accountTokenRead: false,
+              accountTokenEdit: false,
             },
           ),
           authorityFixture(
@@ -602,16 +785,15 @@ async function createFixture() {
             "cloudflare-r2-admin-read-write-api-token",
             "3".repeat(64),
             prefix,
+            "r2-bucket-prefix",
+            ["r2-admin-read-write"],
             {
-              objectRead: true,
-              objectWrite: true,
-              lockRead: true,
-              lockWrite: true,
-            },
-            {
-              revokedAt: "2026-07-27T04:56:29Z",
-              revocationHttpStatus: 200,
-              revocationRequestId: "revoke-lock-operator-request",
+              r2ObjectRead: true,
+              r2ObjectWrite: true,
+              r2LockRead: true,
+              r2LockWrite: true,
+              accountTokenRead: false,
+              accountTokenEdit: false,
             },
           ),
           authorityFixture(
@@ -619,11 +801,15 @@ async function createFixture() {
             "r2-object-read-api-token",
             "4".repeat(64),
             prefix,
+            "r2-bucket-prefix",
+            ["r2-object-read"],
             {
-              objectRead: true,
-              objectWrite: false,
-              lockRead: false,
-              lockWrite: false,
+              r2ObjectRead: true,
+              r2ObjectWrite: false,
+              r2LockRead: false,
+              r2LockWrite: false,
+              accountTokenRead: false,
+              accountTokenEdit: false,
             },
           ),
           authorityFixture(
@@ -631,15 +817,70 @@ async function createFixture() {
             "cloudflare-r2-admin-read-api-token",
             "5".repeat(64),
             prefix,
+            "r2-bucket-prefix",
+            ["r2-admin-read"],
             {
-              objectRead: true,
-              objectWrite: false,
-              lockRead: true,
-              lockWrite: false,
+              r2ObjectRead: true,
+              r2ObjectWrite: false,
+              r2LockRead: true,
+              r2LockWrite: false,
+              accountTokenRead: false,
+              accountTokenEdit: false,
+            },
+          ),
+          authorityFixture(
+            "lifecycle-operator",
+            "cloudflare-account-api-token-read-edit",
+            "6".repeat(64),
+            prefix,
+            "cloudflare-account",
+            ["account-api-token-read", "account-api-token-edit"],
+            {
+              r2ObjectRead: false,
+              r2ObjectWrite: false,
+              r2LockRead: false,
+              r2LockWrite: false,
+              accountTokenRead: true,
+              accountTokenEdit: true,
+            },
+          ),
+          authorityFixture(
+            "lifecycle-verifier",
+            "cloudflare-account-api-token-read",
+            "7".repeat(64),
+            prefix,
+            "cloudflare-account",
+            ["account-api-token-read"],
+            {
+              r2ObjectRead: false,
+              r2ObjectWrite: false,
+              r2LockRead: false,
+              r2LockWrite: false,
+              accountTokenRead: true,
+              accountTokenEdit: false,
             },
           ),
         ],
       },
+    ),
+  );
+  evidenceValues.set(
+    "lock-operator-revocation",
+    evidenceEnvelope(
+      "lock-operator-revocation",
+      ceremonyId,
+      "2026-07-27T04:56:23Z",
+      lifecycleRevocationFixture({
+        targetRole: "lock-operator",
+        targetCredentialIdSha256: "3".repeat(64),
+        prefix,
+        operatorSelfVerifiedAt: "2026-07-27T04:56:10Z",
+        deletedAt: "2026-07-27T04:56:20Z",
+        operatorReadbackAt: "2026-07-27T04:56:21Z",
+        verifierSelfVerifiedAt: "2026-07-27T04:56:22Z",
+        independentReadbackAt: "2026-07-27T04:56:23Z",
+        digestFills: ["8", "9", "a"],
+      }),
     ),
   );
   evidenceValues.set(
@@ -721,6 +962,25 @@ async function createFixture() {
     ),
   );
   evidenceValues.set(
+    "publisher-revocation",
+    evidenceEnvelope(
+      "publisher-revocation",
+      ceremonyId,
+      "2026-07-27T04:58:13Z",
+      lifecycleRevocationFixture({
+        targetRole: "publisher",
+        targetCredentialIdSha256: "2".repeat(64),
+        prefix,
+        operatorSelfVerifiedAt: "2026-07-27T04:58:06Z",
+        deletedAt: "2026-07-27T04:58:10Z",
+        operatorReadbackAt: "2026-07-27T04:58:11Z",
+        verifierSelfVerifiedAt: "2026-07-27T04:58:12Z",
+        independentReadbackAt: "2026-07-27T04:58:13Z",
+        digestFills: ["b", "c", "d"],
+      }),
+    ),
+  );
+  evidenceValues.set(
     "lock-readback",
     evidenceEnvelope(
       "lock-readback",
@@ -771,7 +1031,7 @@ async function createFixture() {
   }
 
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contract: MANIFEST_CONTRACT,
     subject: {
       environment: protocol.environment,
@@ -876,7 +1136,7 @@ async function createFixture() {
 
 function evidenceEnvelope(kind, ceremonyId, capturedAt, facts) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contract: EVIDENCE_CONTRACT,
     kind,
     ceremonyId,
@@ -892,21 +1152,90 @@ function authorityFixture(
   credentialType,
   credentialIdSha256,
   prefix,
+  scopeType,
+  permissions,
   capabilities,
-  revocation = {},
 ) {
+  const r2Scoped = scopeType === "r2-bucket-prefix";
   return {
     role,
     credentialType,
     credentialIdSha256,
+    scopeType,
+    accountIdSha256: ACCOUNT_ID_SHA256,
+    bucketName: r2Scoped ? BUCKET_NAME : null,
+    prefix: r2Scoped ? prefix : null,
+    permissions,
+    capabilities,
+    expiresAt: "2026-07-27T05:45:00Z",
+  };
+}
+
+function lifecycleRevocationFixture({
+  targetRole,
+  targetCredentialIdSha256,
+  prefix,
+  operatorSelfVerifiedAt,
+  deletedAt,
+  operatorReadbackAt,
+  verifierSelfVerifiedAt,
+  independentReadbackAt,
+  digestFills,
+}) {
+  const apiSurface = "cloudflare-account-token-api";
+  return {
     accountIdSha256: ACCOUNT_ID_SHA256,
     bucketName: BUCKET_NAME,
     prefix,
-    capabilities,
-    expiresAt: "2026-07-28T00:00:00Z",
-    revokedAt: revocation.revokedAt ?? null,
-    revocationHttpStatus: revocation.revocationHttpStatus ?? null,
-    revocationRequestId: revocation.revocationRequestId ?? null,
+    targetRole,
+    targetCredentialIdSha256,
+    lifecycleOperatorCredentialIdSha256: "6".repeat(64),
+    lifecycleVerifierCredentialIdSha256: "7".repeat(64),
+    apiSurface,
+    targetBindingSha256: sha256(
+      Buffer.from(
+        canonicalJson({
+          apiSurface,
+          accountIdSha256: ACCOUNT_ID_SHA256,
+          targetCredentialIdSha256,
+        }),
+        "utf8",
+      ),
+    ),
+    predecessorReceiptFileSha256: digestFills[0].repeat(64),
+    revokeReceiptFileSha256: digestFills[1].repeat(64),
+    verifyReceiptFileSha256: digestFills[2].repeat(64),
+    operatorSelfVerifiedAt,
+    deletion: {
+      at: deletedAt,
+      httpStatus: 200,
+      providerRequestId: `${targetRole}-delete-request`,
+      responseBodySha256: sha256(
+        Buffer.from(`${targetRole}-delete-response`, "utf8"),
+      ),
+      resultIdSha256: targetCredentialIdSha256,
+    },
+    operatorReadback: {
+      at: operatorReadbackAt,
+      httpStatus: 404,
+      providerRequestId: `${targetRole}-operator-readback-request`,
+      responseBodySha256: sha256(
+        Buffer.from(`${targetRole}-operator-readback`, "utf8"),
+      ),
+      errorCodes: [1000],
+    },
+    verifierSelfVerifiedAt,
+    independentReadback: {
+      at: independentReadbackAt,
+      httpStatus: 404,
+      providerRequestId:
+        `${targetRole}-independent-readback-request`,
+      responseBodySha256: sha256(
+        Buffer.from(`${targetRole}-independent-readback`, "utf8"),
+      ),
+      errorCodes: [1000],
+    },
+    targetAbsenceIndependentlyObserved: true,
   };
 }
 

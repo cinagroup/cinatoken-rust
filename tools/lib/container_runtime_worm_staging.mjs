@@ -4,7 +4,7 @@ export const WORM_STAGING_RECEIPT_CONTRACT =
   "cinatoken-container-runtime-worm-staging-phase-receipt-v2";
 export const WORM_STAGING_SCHEMA_VERSION = 2;
 export const WORM_POLICY_CONTRACT =
-  "cinatoken-container-runtime-worm-retention-protocol-policy-v1";
+  "cinatoken-container-runtime-worm-retention-protocol-policy-v2";
 
 export const PUBLISHER_ACCESS_KEY_ENV =
   "CINATOKEN_WORM_PUBLISHER_R2_ACCESS_KEY_ID";
@@ -28,6 +28,26 @@ const MAX_RESPONSE_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_MUTABLE_CREDENTIAL_REMAINING_SECONDS = 3_600;
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
+const REQUIRED_AUTHORITY_ROLES = [
+  "publisher",
+  "lock-operator",
+  "object-verifier",
+  "lock-verifier",
+  "lifecycle-operator",
+  "lifecycle-verifier",
+];
+const REQUIRED_REVOCATION_TARGET_ROLES = [
+  "lock-operator",
+  "publisher",
+];
+const REQUIRED_EVIDENCE_KINDS = [
+  "authority-boundary",
+  "lock-operator-revocation",
+  "object-readback",
+  "enforcement-probes",
+  "publisher-revocation",
+  "lock-readback",
+];
 
 export class WormStagingCollectorError extends Error {
   constructor(message) {
@@ -76,6 +96,7 @@ export function normalizeWormPolicy(value) {
       "environment",
       "maximumClockSkewSeconds",
       "maximumEvidenceAgeSeconds",
+      "maximumCredentialRemainingSeconds",
       "maximumManifestLifetimeSeconds",
       "minimumRetentionSeconds",
       "prefixRoot",
@@ -86,8 +107,10 @@ export function normalizeWormPolicy(value) {
       "provider",
       "repository",
       "requiredApprovalRoles",
+      "requiredAuthorityRoles",
       "requiredEvidenceKinds",
       "requiredObjectKinds",
+      "requiredRevocationTargetRoles",
       "schemaVersion",
       "sourceWorkflow",
       "supportedJurisdictions",
@@ -95,7 +118,7 @@ export function normalizeWormPolicy(value) {
     "[policy] policy",
   );
   requireCondition(
-    policy.schemaVersion === 1 &&
+    policy.schemaVersion === 2 &&
       policy.contract === WORM_POLICY_CONTRACT &&
       policy.repository === "cinagroup/cinatoken-rust" &&
       policy.environment === "staging" &&
@@ -103,6 +126,17 @@ export function normalizeWormPolicy(value) {
       policy.prefixRoot === "container-runtime/s3/v1/" &&
       Number.isSafeInteger(policy.minimumRetentionSeconds) &&
       policy.minimumRetentionSeconds >= 365 * 24 * 60 * 60 &&
+      policy.maximumCredentialRemainingSeconds ===
+        MAX_MUTABLE_CREDENTIAL_REMAINING_SECONDS &&
+      sameJson(
+        policy.requiredAuthorityRoles,
+        REQUIRED_AUTHORITY_ROLES,
+      ) &&
+      sameJson(policy.requiredEvidenceKinds, REQUIRED_EVIDENCE_KINDS) &&
+      sameJson(
+        policy.requiredRevocationTargetRoles,
+        REQUIRED_REVOCATION_TARGET_ROLES,
+      ) &&
       sameJson(policy.supportedJurisdictions, [
         "default",
         "eu",

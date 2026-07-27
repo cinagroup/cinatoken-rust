@@ -67,6 +67,13 @@ describe("container runtime WORM staging collector", () => {
     expect(description.contract).toBe(
       "cinatoken-container-runtime-worm-staging-phase-receipt-v2",
     );
+    expect(policy.schemaVersion).toBe(2);
+    expect(policy.requiredAuthorityRoles).toHaveLength(6);
+    expect(policy.requiredRevocationTargetRoles).toEqual([
+      "lock-operator",
+      "publisher",
+    ]);
+    expect(policy.maximumCredentialRemainingSeconds).toBe(3_600);
     expect(description.writesFiles).toBe(false);
     expect(description.phases.map((value) => value.credentialRole)).toEqual([
       "publisher",

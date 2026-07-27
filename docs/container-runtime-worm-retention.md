@@ -3,13 +3,18 @@
 ## Status
 
 The repository implements the credential-free, fail-closed verifier contract
-for the container-runtime S3 immutable-retention subgate. It does not yet
-contain a real staging R2 evidence bundle or authorize a remote mutation.
+and the first credentialed staging collector boundary for the container-runtime
+S3 immutable-retention subgate. The collector can prove an empty
+content-addressed prefix and can configure/read back one exact-prefix bucket
+lock, but no live phase has been run. The repository does not yet contain a
+real staging R2 evidence bundle or authorize production mutation.
 
 Current decision:
 
 - S3 cryptographic evidence: accepted for the frozen subject.
 - R2 retention contract: implemented and locally tested.
+- R2 B1/B3 staging collector: implemented and locally tested; not executed
+  against Cloudflare.
 - Real R2 bucket-lock evidence: not collected.
 - `wormRetentionVerified`: false.
 - `s3Complete`: false.
@@ -45,6 +50,9 @@ manifest. Every downstream authority remains false.
 | `config/container-runtime-worm-retention-policy.json` | Immutable repository protocol floor |
 | `tools/verify_container_runtime_worm_retention.mjs` | Offline evidence verifier and credential-free contract audit |
 | `tests/container-runtime-worm-retention-gate.test.mjs` | Positive fixture and fail-closed mutation suite |
+| `tools/lib/container_runtime_worm_staging.mjs` | Injectable baseline/lock collection state machine |
+| `tools/collect_container_runtime_worm_staging.mjs` | Default-dry-run staging CLI and AWS SDK v3/Cloudflare adapters |
+| `tests/container-runtime-worm-staging-collector.test.mjs` | Pagination, authority separation, mutation, redirect, drift, and redaction tests |
 | `package.json` | Focused and aggregate verification entry points |
 
 The protocol pins the repository, staging environment, Cloudflare R2 provider,
@@ -184,6 +192,43 @@ least one year after the manifest decision time. For a Date rule, the date
 must satisfy the same minimum. Indefinite is accepted. The selected rule must
 be enabled and match the exact content-addressed prefix.
 
+## Staging Collector Boundary
+
+The staging collector deliberately exposes two separate live processes:
+
+| Phase | Credential read | Network behavior | Mutation |
+| --- | --- | --- | --- |
+| `baseline` | `CINATOKEN_WORM_PUBLISHER_R2_ACCESS_KEY_ID` and `CINATOKEN_WORM_PUBLISHER_R2_SECRET_ACCESS_KEY` | Exhausts `ListObjectsV2` and `ListMultipartUploads` for the exact prefix | None |
+| `lock` | `CINATOKEN_WORM_LOCK_OPERATOR_API_TOKEN` | `GET` current lock configuration, `PUT` the reviewed rule set, then `GET` final configuration | One bucket-lock configuration update |
+
+One invocation can read only one role's credential variables. Baseline uses
+the pinned AWS SDK v3 R2 S3 endpoint, checks every page and continuation
+marker, rejects prefix escape, common prefixes, existing objects, multipart
+uploads, contradictory pagination, and unbounded inventories. If the SDK does
+not expose a provider request ID, the receipt records `null` and
+`providerRequestIdsComplete=false`; it never invents provider correlation.
+
+The lock phase uses the Cloudflare API directly with manual redirects, bounded
+time/body, exact JSON envelope and rule schemas, and mandatory `cf-ray`
+correlation. It preserves unrelated existing rules, rejects duplicate IDs and
+ambiguous reruns, appends one deterministic Age rule for the statement digest,
+and requires exact `PUT` plus final `GET` equality. A reflected token, redirect,
+unknown field, missing correlation ID, status drift, or readback mismatch fails
+closed.
+
+No invocation writes files. Stdout is one canonical redacted phase receipt.
+Unexpected provider exceptions are converted to controlled messages. Access
+keys, secret keys, API tokens, Authorization headers, and the raw account ID
+are absent from output. Credential values must arrive through the environment
+from an approved secret broker; they are never accepted in argv.
+
+Every dry-run and live phase receipt keeps
+`lockOperatorRevocationVerified=false`,
+`publisherRevocationVerified=false`, `wormRetentionVerified=false`,
+`s3Complete=false`, `formalP5Evidence=false`, customer traffic false, and
+production cutover false. The receipts are inputs to a future ceremony
+assembler, not verifier-compatible final evidence by themselves.
+
 ## Provider Enforcement Requirements
 
 Overwrite and delete probes are evidence only when:
@@ -227,7 +272,27 @@ Credential-free contract audit:
 
 ```powershell
 npx.cmd --yes bun run check:container-runtime:worm-retention-contract
+npx.cmd --yes bun run check:container-runtime:worm-staging-collector
 ```
+
+Collector description and credential-free dry-run:
+
+```powershell
+node tools/collect_container_runtime_worm_staging.mjs
+
+node tools/collect_container_runtime_worm_staging.mjs `
+  --phase baseline `
+  --account-id <32-hex-account-id> `
+  --bucket <dedicated-staging-bucket> `
+  --jurisdiction <default-or-eu-or-fedramp> `
+  --statement-sha256 <statement-sha256>
+```
+
+`--phase lock` produces the lock request plan. A phase remains dry-run unless
+`--live` is explicitly present. Baseline live execution additionally requires
+`--confirm-staging-target --confirm-readonly-baseline`; lock live execution
+requires `--confirm-staging-target --confirm-lock-mutation`. A secret broker
+must inject only the environment variables named for that phase.
 
 Real evidence verification:
 
@@ -261,13 +326,20 @@ and keep this R2 receipt as a secondary operational record.
 
 ## Next Execution Unit
 
-The next implementation is a credentialed staging collector that emits this
-schema without placing secrets in argv, files, logs, workflow artifacts, or
-Git history. It must use a dedicated bucket, ephemeral credentials, bounded
-network operations, complete pagination, create-only writes, provider
-readbacks, and explicit token-revocation receipts. Collector self-tests are
-not real evidence. Registry R3 remains blocked until an independently reviewed
-real bundle passes this verifier.
+The next implementation starts at the authority lifecycle between B3 and B4.
+It must capture provider-confirmed lock-operator revocation before exposing any
+publisher upload capability, then add create-only six-object publication,
+independent object readback, provider overwrite/delete probes, publisher
+revocation, final object/lock readbacks, canonical evidence assembly, and
+operations/security approval. Each later phase must preserve the same
+single-role credential process boundary and consume a predecessor-bound phase
+receipt.
+
+Collector self-tests and dry-runs are not real evidence. The implemented lock
+phase must not be run until the dedicated bucket, four ephemeral credentials,
+revocation owners, approval keys, artifact packet, and abort/cleanup runbook
+have independent review. Registry R3 remains blocked until a complete real
+bundle passes the offline verifier.
 
 Primary references:
 

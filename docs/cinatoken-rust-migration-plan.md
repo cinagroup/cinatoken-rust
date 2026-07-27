@@ -21773,3 +21773,67 @@ This increment performed no R2 mutation and collected no remote retention
 evidence. The self-test must and does leave `wormRetentionVerified=false`,
 `s3Complete=false`, all downstream authority false, Go/VPS authoritative, and
 production **NO-GO**.
+
+## 22.307 R2 Staging Baseline And Lock Collector (2026-07-27)
+
+The next S3 layer is now executable without collapsing Cloudflare authority
+roles into one process. The implementation adds:
+
+- pinned `@aws-sdk/client-s3` 3.1095.0 for the R2 S3 object surface;
+- `tools/lib/container_runtime_worm_staging.mjs`, an injectable state machine
+  for exact target validation, full object/multipart pagination, bucket-lock
+  configuration/readback, canonical receipts, bounds, and redaction;
+- `tools/collect_container_runtime_worm_staging.mjs`, a default-dry-run CLI
+  with explicit `baseline` and `lock` live confirmations;
+- `tests/container-runtime-worm-staging-collector.test.mjs`, covering 14
+  positive and fail-closed cases with 80 expectations;
+- focused and aggregate package entry points immediately after the WORM
+  verifier contract.
+
+### Authority and execution split
+
+| Process | Only credential channel | Permitted action | Explicit non-claim |
+| --- | --- | --- | --- |
+| Baseline | Publisher R2 access-key ID and secret-key environment variables | Fully paginate exact-prefix objects and multipart uploads | No writes, lock access, revocation, or final evidence |
+| Lock | Lock-operator Cloudflare API-token environment variable | Read current rules, preserve them, append deterministic reviewed rule, write once, read back | No publisher credential, upload, revocation, probe, or WORM decision |
+| Dry-run | None | Emit exact request plan | No network and no mutation |
+
+No credential is accepted in argv. One phase cannot read the other phase's
+environment variables. The account is represented in receipts only by
+SHA-256; raw access IDs, secret keys, tokens, Authorization headers, raw
+account ID, and reflected provider errors are excluded. Output is one
+canonical JSON object on stdout and the collector writes no files.
+
+Baseline rejects partial/repeated pagination, wrong-prefix objects, common
+prefixes, existing objects, multipart residue, bad status, and unbounded
+inventories. Missing AWS SDK request IDs are recorded as `null` and make
+`providerRequestIdsComplete=false`; no correlation value is synthesized.
+
+Lock uses the official
+`PUT /accounts/{account}/r2/buckets/{bucket}/lock` surface with bounded fetch,
+manual redirect rejection, exact Cloudflare envelope/rule schemas, mandatory
+`cf-ray`, and exact final readback. It preserves unrelated rules and refuses a
+same-ID rerun so a repeated ceremony cannot silently rewrite history.
+
+### Acceptance boundary and next order
+
+The local collector tests and credential-free self-test passed. The complete
+container supply-chain set passed 72 tests with 642 expectations, and the
+repository aggregate passed in 621.8 seconds. No real Cloudflare request,
+credential read, object write, lock mutation, token revocation, registry
+action, deployment, traffic, billing mutation, or VPS drain was performed.
+
+This implementation does not complete B2 authority issuance or B4-B7. The
+next code unit must consume the lock receipt and provider-confirmed
+lock-operator revocation as predecessors, then implement six create-only
+uploads and independent object readback. Enforcement probes, publisher
+revocation, final readbacks, evidence assembly, Ed25519 approvals, and offline
+verification follow in that order.
+
+All collector receipts deliberately retain
+`lockOperatorRevocationVerified=false`,
+`publisherRevocationVerified=false`, `wormRetentionVerified=false`,
+`s3Complete=false`, `formalP5Evidence=false`,
+`productionCutoverAuthorized=false`, and customer traffic false. R3 registry
+publication and C1 isolated Cloudflare staging remain blocked. Go/VPS remains
+authoritative and production remains **NO-GO**.

@@ -3487,3 +3487,31 @@ operation head, an independent signed/WORM anchor, Linux crash/durability
 proof, the DO shard supervisor/Container adapter, isolated staging, remaining
 Go compatibility, revocation and G1-G8 remain open. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-27 R2 WORM Staging Collector Foundation
+
+Phase 1 now contains the first executable retention staging boundary. The
+collector has separate publisher baseline and lock-operator configuration
+processes, defaults to dry-run, accepts secrets only from phase-specific
+environment variables, writes no files, and emits canonical redacted receipts.
+It fully paginates exact-prefix objects and multipart uploads, or performs one
+bounded bucket-lock `GET -> PUT -> GET` transaction with rule preservation and
+exact readback.
+
+Focused verification passes 14 tests with 80 expectations plus a
+credential-free three-case self-test. The tests reject phase credential
+overlap, shell-like identity input, pagination cycles, prefix escape,
+preexisting objects/uploads, Cloudflare redirects, missing request IDs,
+unknown response fields, credential reflection, ambiguous reruns, and lock
+drift.
+
+All seven container supply-chain suites pass 72 tests with 642 expectations,
+and the complete repository gate passes in 621.8 seconds.
+
+No live phase was run. The next retention boundary is provider-confirmed
+lock-operator revocation followed by predecessor-bound create-only
+publication, independent object readback, enforcement probes, publisher
+revocation, final lock/object readback, approval, and offline verification.
+Until that complete B1-B7 chain exists, `wormRetentionVerified=false`,
+`s3Complete=false`, R3/C1 remain blocked, Go/VPS remains authoritative, and
+production remains **NO-GO**.

@@ -2226,3 +2226,28 @@ has been collected, so approved immutable/WORM retention is still
 remain blocked. Cloudflare lock-rule mutability is an explicit limitation;
 regulatory non-bypassable retention would require a separately approved
 control. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-27 R2 Staging Collector Foundation
+
+The first credentialed retention operations are implemented but have not been
+run. A default-dry-run CLI now separates:
+
+- publisher-only S3 object and multipart empty-prefix baseline collection;
+- lock-operator-only Cloudflare bucket-lock `GET -> PUT -> GET` collection.
+
+The collector pins AWS SDK v3, exhausts pagination, preserves unrelated lock
+rules, requires exact final readback and Cloudflare correlation, emits only a
+canonical redacted stdout receipt, and writes no files. Fourteen focused tests
+with 80 expectations cover credential separation, malformed identity,
+pagination cycles, prefix escape, existing content, redirect, unknown
+response shape, token reflection, ambiguous rerun, and rule drift.
+
+The seven container supply-chain suites pass 72 tests with 642 expectations.
+The full repository aggregate also passes in 621.8 seconds.
+
+This is B1/B3 tooling, not B1-B7 evidence. No dedicated bucket was queried, no
+lock was changed, no credential was read, and no object was uploaded. B2
+independent identity review and provider-confirmed lock-operator revocation
+must precede B4 publication. Complete S3 remains **FALSE**; registry and C1
+remain blocked; Go/VPS remains authoritative and production remains
+**NO-GO**.

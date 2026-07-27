@@ -10850,3 +10850,51 @@ failure.
 No bucket, object, token, registry, Cloudflare deployment, provider, billing,
 traffic, or Go/VPS mutation occurred. Real R2 evidence is still pending and
 production remains **NO-GO**.
+
+## 2026-07-27 R2 Staging Collector Verification
+
+The default-dry-run collector foundation was verified without Cloudflare
+credentials or network mutation:
+
+```powershell
+node --check tools/lib/container_runtime_worm_staging.mjs
+node --check tools/collect_container_runtime_worm_staging.mjs
+npx.cmd --yes bun test --path-ignore-patterns="target/**" `
+  tests/container-runtime-worm-staging-collector.test.mjs
+node tools/collect_container_runtime_worm_staging.mjs --self-test
+npx.cmd --yes bun run check:container-runtime:worm-staging-collector
+```
+
+The focused suite passed 14 tests with 80 expectations. The built-in
+credential-free self-test passed three cases with 12 invariants. Coverage
+includes:
+
+- only the selected phase's environment keys are read;
+- default description and phase dry-runs perform no network or mutation;
+- exact-prefix object and multipart pagination is exhausted;
+- missing AWS request IDs remain `null` rather than fabricated;
+- existing objects/uploads, prefix escape, common-prefix and continuation
+  contradictions fail closed;
+- bucket-lock `GET -> PUT -> GET` preserves unrelated rules and requires exact
+  final equality;
+- redirects, missing `cf-ray`, unknown envelopes, reflected credentials,
+  provider exceptions, rerun ambiguity, and lock drift fail closed;
+- shell-like account/bucket/digest inputs and incomplete live confirmations
+  fail before a credential or provider request.
+
+The complete seven-suite container supply-chain set passed 72 tests with 642
+expectations. The repository aggregate then passed with exit code 0 in 621.8
+seconds, including Worker/Vitest/Bun suites, Wrangler type generation and
+credential-free dry-runs, frontend checks, Rust formatting/workspace tests,
+and Worker/WFP wasm32 checks. Existing Rust `dead_code` warnings remained
+warnings only.
+
+The CLI output is canonical JSON, writes no files, and excludes raw account
+ID, access-key ID, secret key, token, and Authorization values. Both phase
+receipts keep lock/publisher revocation, WORM, complete S3, P5, traffic, and
+production authority false.
+
+No live baseline or lock phase was run. Therefore this verifies only the local
+B1/B3 collection substrate; it does not prove B2 credential review,
+revocation, object retention, enforcement, signed approval, or a complete R2
+bundle. Go/VPS remains authoritative and production remains **NO-GO**.

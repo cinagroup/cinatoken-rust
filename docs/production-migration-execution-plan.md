@@ -4293,3 +4293,47 @@ Until a dedicated staging bucket produces a complete independently signed
 bundle and the offline verifier accepts it, `wormRetentionVerified=false`,
 `s3Complete=false`, R3/C1 remain blocked, Go/VPS remains authoritative, and
 production remains **NO-GO**.
+
+### B1/B3 staging collector foundation
+
+The first credentialed implementation boundary is now local and unexecuted:
+
+- `@aws-sdk/client-s3` 3.1095.0 is pinned for R2 S3 listing.
+- `tools/collect_container_runtime_worm_staging.mjs` defaults to description
+  or dry-run and writes no files.
+- `baseline` exhausts object and multipart pagination for the exact
+  content-addressed prefix using only the publisher S3 credential.
+- `lock` performs bounded Cloudflare `GET -> PUT -> GET` bucket-lock
+  configuration using only the lock-operator API token.
+- `tools/lib/container_runtime_worm_staging.mjs` validates the pinned policy,
+  target, response shapes, rule preservation, correlation IDs, canonical
+  redaction, and all downstream-false state.
+- `tests/container-runtime-worm-staging-collector.test.mjs` covers phase-only
+  credential reads, pagination completion/cycles, prefix escape, existing
+  objects/uploads, shell-like input, redirects, missing correlation, unknown
+  envelopes, token reflection, rerun ambiguity, and readback drift.
+
+This closes only the executable B1 prefix baseline and B3 lock transaction
+substrate. It does not issue or approve the four B2 identities, prove
+lock-operator revocation, upload an object, run enforcement probes, assemble
+the final evidence bundle, or complete B1-B7.
+
+The required staging order is now:
+
+1. independent operations/security review provisions the dedicated bucket,
+   four short-lived role identities, expiry/revocation owners, approval keys,
+   and frozen six-object packet;
+2. run both phase dry-runs and inspect their canonical request plans;
+3. run `baseline` live and reject any non-empty or incompletely paginated
+   prefix;
+4. run `lock` live once and independently inspect the preserved rule set and
+   exact-prefix one-year rule;
+5. revoke the lock operator through a separately authorized control and obtain
+   provider-confirmed time/status/request-ID evidence before any upload;
+6. only a predecessor-bound B4 publisher may then perform create-only uploads.
+
+Stopping after step 4 leaves mutable lock/object authority active and is an
+abort state, not retention evidence. Every emitted receipt still has
+`wormRetentionVerified=false`, `s3Complete=false`, and all registry,
+Cloudflare runtime, traffic, billing, drain, and cutover authority false. No
+collector live phase was run in this increment.

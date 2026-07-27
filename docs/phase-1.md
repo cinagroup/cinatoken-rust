@@ -3534,3 +3534,44 @@ enforcement probes, publisher revocation, final lock/object readback,
 approval, and offline verification. Until that complete B1-B7 chain exists,
 `wormRetentionVerified=false`, `s3Complete=false`, R3/C1 remain blocked,
 Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 2026-07-27 WORM Lock-Operator Lifecycle Collector
+
+Phase 1 now implements the account-token lifecycle boundary that follows a
+successful B3 lock receipt. A default-dry-run CLI has two isolated processes:
+
+- `revoke` consumes a canonical live staging lock receipt v2, self-verifies a
+  distinct short-lived lifecycle operator with account-token read/edit but no
+  R2 authority, deletes the exact lock-operator provider token ID with exact
+  `200`, and reads the same resource back with exact `404`;
+- `verify` consumes the canonical revoke receipt, self-verifies a third
+  short-lived provider identity, and independently observes exact `404` for
+  the same target.
+
+The target token ID is environment-only and must match the predecessor's
+provider-ID hash. Operator, target, and verifier identities must all differ.
+The two absence observations require strict Cloudflare JSON envelopes, valid
+`cf-ray`, bounded body hashes, matching numeric error-code sequences, no
+redirect, and no reflected sensitive input. Raw account/token IDs, API token
+secrets, headers, response messages, and raw bodies are never emitted.
+
+Receipt files must be canonical JSON plus one LF and pass byte, JSON-shape,
+regular-file, single-link, no-follow, realpath, and stable metadata checks.
+The successor hashes the exact canonical predecessor bytes. All live
+confirmation flags are phase-specific; dry-run reads no credentials and
+performs no network operation.
+
+Focused verification passes 17 tests with 107 expectations and the built-in
+credential-free self-test passes four cases with 12 invariants. The complete
+eight-suite container supply-chain set passes 91 tests with 775 expectations.
+The complete repository gate passes with exit code 0 in 635.0 seconds; 21
+existing Rust `dead_code` findings remain warnings only. No live Cloudflare
+call or credential read occurred.
+
+B2 is still incomplete. Self-verification cannot prove the reviewed account
+token permission inventory, and the current final retention verifier cannot
+consume the two lifecycle receipts. Next is verifier contract v2 with six
+distinct roles, exact permission inventories, DELETE/operator-readback/
+independent-readback bindings, predecessor digests, and strict time ordering.
+Only then can a predecessor-bound create-only B4 publisher be implemented.
+Go/VPS remains authoritative and production remains **NO-GO**.

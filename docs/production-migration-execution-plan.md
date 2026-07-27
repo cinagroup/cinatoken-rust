@@ -4219,7 +4219,7 @@ capability and permission verification.
 | Phase | Required action | Acceptance evidence | Abort condition |
 | --- | --- | --- | --- |
 | B1 isolate | Create a dedicated non-application evidence bucket and content-addressed release prefix | Account, bucket, jurisdiction, prefix, creation time, owner, and empty baseline | Existing unknown object, shared customer data, or placeholder identity |
-| B2 separate authority | Issue distinct publisher, lock-operator, object-verifier, and lock-verifier identities; record the platform's real R2 Admin capability expansion | Redacted credential digests, exact permission inventory, expiry/revocation owner; no secret output | Non-R2 account permission, shared credential, inaccurate capability claim, or secret in argv/file/log |
+| B2 separate authority | Issue distinct publisher, lock-operator, object-verifier, lock-verifier, lifecycle-operator, and lifecycle-verifier identities; keep account-token lifecycle authority outside every R2 role | Redacted provider-ID digests, exact R2 and lifecycle permission inventories, expiry/revocation owner, DELETE receipt, operator `404`, independent `404`; no secret output | Shared identity, lifecycle permission in an R2 role, R2 permission in a lifecycle role, unreviewed inventory, response ambiguity, or secret in argv/file/log |
 | B3 lock | Apply reviewed age/date/indefinite bucket-lock rule and read it back | Canonical lock JSON digest, prefix, retention deadline, API request ID, independent review | Disabled/wrong prefix, shorter retention, unreadable configuration, or lifecycle conflict |
 | B4 publish | Create-only upload source packet, statement, bundle, final report, and canonical manifest | Provider metadata plus local/upload/readback SHA-256 equality for every member | Overwrite, multipart residue, digest mismatch, or missing member |
 | B5 enforce | Attempt overwrite and delete through the publisher path | Both provider operations fail; original object still reads back identically | Success, ambiguous timeout, client-only denial, or object drift |
@@ -4314,26 +4314,69 @@ The first credentialed implementation boundary is now local and unexecuted:
   envelopes, token reflection, rerun ambiguity, and readback drift.
 
 This closes only the executable B1 prefix baseline and B3 lock transaction
-substrate. It does not issue or approve the four B2 identities, prove
+substrate. It does not issue or approve the six B2 identities, prove
 lock-operator revocation, upload an object, run enforcement probes, assemble
 the final evidence bundle, or complete B1-B7.
 
 The required staging order is now:
 
 1. independent operations/security review provisions the dedicated bucket,
-   four short-lived role identities, expiry/revocation owners, approval keys,
-   and frozen six-object packet;
+   four short-lived R2 role identities, two short-lived lifecycle identities,
+   exact permission inventories, expiry/revocation owners, approval keys, and
+   frozen six-object packet;
 2. run both phase dry-runs and inspect their canonical request plans;
 3. run `baseline` live and reject any non-empty or incompletely paginated
    prefix;
 4. run `lock` live once and independently inspect the preserved rule set and
    exact-prefix one-year rule;
-5. revoke the lock operator through a separately authorized control and obtain
-   provider-confirmed time/status/request-ID evidence before any upload;
-6. only a predecessor-bound B4 publisher may then perform create-only uploads.
+5. a distinct lifecycle operator self-verifies, deletes the exact provider
+   token ID bound by the lock receipt, and reads that exact resource as `404`;
+6. a distinct lifecycle verifier independently self-verifies and reads the
+   same resource as `404`; both absence envelopes must carry the same bounded
+   error-code sequence and valid provider correlation;
+7. only a predecessor-bound B4 publisher may then perform create-only uploads.
 
 Stopping after step 4 leaves mutable lock/object authority active and is an
 abort state, not retention evidence. Every emitted receipt still has
 `wormRetentionVerified=false`, `s3Complete=false`, and all registry,
 Cloudflare runtime, traffic, billing, drain, and cutover authority false. No
 collector live phase was run in this increment.
+
+### B2 lifecycle collector foundation
+
+The account-token lifecycle boundary is now implemented locally and remains
+unexecuted:
+
+- `tools/collect_container_runtime_worm_lifecycle.mjs` defaults to dry-run,
+  accepts canonical predecessor files, reads credentials only after explicit
+  phase confirmation, writes no files, and emits one canonical redacted
+  receipt.
+- `revoke` consumes a live staging lock receipt v2, self-verifies a distinct
+  lifecycle operator with account-token read/edit but no R2 authority, sends
+  one exact target DELETE requiring `200`, then requires an operator-side
+  exact-resource GET `404`.
+- `verify` consumes the canonical revoke receipt, self-verifies a third
+  provider identity, and requires an independent exact-resource GET `404`.
+- Raw account/token IDs and token secrets are excluded from receipts. The
+  target ID enters only through the environment and must hash to the lock
+  predecessor's provider-ID digest.
+- Canonical predecessor files are byte/shape bounded, regular, single-link,
+  opened with no-follow semantics, stable before/during/after read, and
+  digest-bound including the final LF.
+
+Focused verification passes 17 tests with 107 expectations; the credential-
+free self-test passes four cases with 12 invariants; and the complete eight-
+suite container supply-chain set passes 91 tests with 775 expectations. The
+complete repository gate passes with exit code 0 in 635.0 seconds; 21 existing
+Rust `dead_code` findings remain warnings only.
+
+This collector does not inspect the provider permission inventory and the
+current final WORM verifier still has the older four-R2-role/single-revocation
+schema. The next P1 contract upgrade must add both lifecycle authorities,
+their exact reviewed permission inventories, DELETE `200`, operator `404`,
+independent `404`, complete predecessor digests, and strict chronology before
+`lockOperatorRevocationVerified` can become true.
+
+No Cloudflare lifecycle request was made. Every lifecycle receipt keeps B2,
+B4-B7, R3/C1, P5, traffic, billing, drain, and cutover authority false.
+Go/VPS remains authoritative and production remains **NO-GO**.

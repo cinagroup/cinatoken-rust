@@ -2251,3 +2251,38 @@ independent identity review and provider-confirmed lock-operator revocation
 must precede B4 publication. Complete S3 remains **FALSE**; registry and C1
 remain blocked; Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-27 Lock-Operator Lifecycle Collector Foundation
+
+The local retention substrate now extends through the lock-operator account
+token lifecycle:
+
+| Status item | Current value |
+| --- | --- |
+| Canonical lock-v2 predecessor validation | PASS locally |
+| Lifecycle operator identity separation | PASS locally with provider-shaped fixtures |
+| Exact target DELETE plus operator `404` | PASS locally with provider-shaped fixtures |
+| Independent verifier identity plus second `404` | PASS locally with provider-shaped fixtures |
+| Stable single-link predecessor file boundary | PASS locally, including hard-link rejection |
+| Focused gate | 17 tests / 107 expectations |
+| Credential-free self-test | 4 cases / 12 invariants |
+| Eight-suite container supply-chain gate | 91 tests / 775 expectations |
+| Complete repository gate | PASS, exit 0 in 635.0 seconds; 21 existing Rust warnings |
+| Live Cloudflare lifecycle evidence | **NOT COLLECTED** |
+| Reviewed lifecycle permission inventory | **PENDING** |
+| Final verifier v2 lifecycle consumption | **PENDING (P1)** |
+| Complete B2 / S3 | **FALSE** |
+
+The collector defaults to dry-run, reads only phase-specific environment
+credentials after explicit confirmation, writes no files, and emits canonical
+redacted receipts. It binds the raw target token ID to the lock predecessor's
+provider-ID digest, requires all three lifecycle identities to differ, and
+requires exact DELETE `200`, operator GET `404`, and independent-verifier GET
+`404` with matching absence-code sequences.
+
+This status does not supersede the production blockers. Token
+self-verification does not prove permissions, the current final retention
+verifier cannot consume the lifecycle chain, and no real bucket/token/object
+operation occurred. B4-B7, R3 registry, C1 staging, P5, traffic, financial
+authority, Go/VPS drain, and cutover remain blocked. Go/VPS stays authoritative
+and production remains **NO-GO**.

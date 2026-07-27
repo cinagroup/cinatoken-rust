@@ -10918,3 +10918,52 @@ hidden inside any R2 role. The repository has not implemented a separately
 authorized revoke of the provider token ID plus independent provider readback
 proving that credential is no longer usable. B2 is not complete, Go/VPS
 remains authoritative, and production remains **NO-GO**.
+
+## 2026-07-27 WORM Lifecycle Collector Verification
+
+The default-dry-run account-token lifecycle collector was verified without
+Cloudflare credentials or provider mutation:
+
+```powershell
+node --check tools/lib/container_runtime_worm_lifecycle.mjs
+node --check tools/collect_container_runtime_worm_lifecycle.mjs
+npx.cmd --yes bun test --path-ignore-patterns="target/**" `
+  tests/container-runtime-worm-lifecycle-collector.test.mjs
+node tools/collect_container_runtime_worm_lifecycle.mjs --self-test
+npx.cmd --yes bun run check:container-runtime:worm-lifecycle-collector
+```
+
+The focused suite passed 17 tests with 107 expectations. The credential-free
+self-test passed four cases with 12 invariants. The complete eight-suite
+container supply-chain set passed 91 tests with 775 expectations. The
+complete repository gate passed with exit code 0 in 635.0 seconds; 21 existing
+Rust `dead_code` findings remained warnings only. Coverage includes:
+
+- exact canonical live lock-v2 and revoke-v1 predecessor validation;
+- complete nested target/facts/rules/operations/limits/downstream schemas;
+- operator, target, and verifier provider-ID separation;
+- lifecycle-operator read/edit versus lifecycle-verifier read-only credential
+  type separation, with zero R2 authority claimed by either role;
+- active, already-effective, explicitly expiring lifecycle credentials with
+  exact 1..3600-second remaining lifetime and exact field/time-delta binding;
+- exact DELETE `200`, operator GET `404`, and independent GET `404`;
+- matching absence error-code sequences, mandatory `cf-ray`, and body hashes;
+- redirect, status, envelope, request-ID, chronology, identity, reflection,
+  and permission-overclaim-adjacent ambiguity rejection;
+- bounded stable regular single-link predecessor reads with no-follow and a
+  real hard-link negative test;
+- secret-free canonical stdout and phase-specific confirmation failure before
+  credential or network access.
+
+No Cloudflare request was sent and no credential was read. The test responses
+are deterministic provider-shaped fixtures, not remote evidence. All emitted
+receipts keep lock/publisher revocation, WORM, complete S3, P5, traffic, and
+production authority false.
+
+The existing `tools/verify_container_runtime_worm_retention.mjs` contract is
+still v1 for this authority boundary: it models four R2 credentials and one
+successful revocation observation, so it cannot accept the new DELETE plus
+double-`404` chain. Final verifier v2, reviewed lifecycle permission
+inventories, live receipts, independent approval, and the remaining B4-B7
+ceremony are required. Go/VPS remains authoritative and production remains
+**NO-GO**.

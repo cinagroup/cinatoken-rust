@@ -21868,3 +21868,71 @@ All collector receipts deliberately retain
 `productionCutoverAuthorized=false`, and customer traffic false. R3 registry
 publication and C1 isolated Cloudflare staging remain blocked. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.308 Lock-Operator Lifecycle Revocation Chain (2026-07-27)
+
+The retention ceremony now has a separate account-token lifecycle substrate
+between B3 lock readback and B4 publication:
+
+- `tools/lib/container_runtime_worm_lifecycle.mjs` implements injectable
+  `revoke` and `verify` state machines.
+- `tools/collect_container_runtime_worm_lifecycle.mjs` is a default-dry-run
+  CLI with phase-specific confirmations and environment-only credentials.
+- `tests/container-runtime-worm-lifecycle-collector.test.mjs` covers the
+  canonical receipt chain, provider identity separation, exact status and
+  envelope semantics, redaction, chronology, and hardened predecessor reads.
+- `package.json` places the focused lifecycle gate directly after the staging
+  collector in the aggregate release check.
+
+### Six-role authority model
+
+The four R2 roles remain publisher, lock operator, object verifier, and lock
+verifier. They are joined by two distinct non-R2 identities:
+
+| Lifecycle role | Required action | Forbidden authority |
+| --- | --- | --- |
+| Lifecycle operator | Account-token Read + Edit: self-verify, DELETE the exact lock-operator provider token ID, then GET the same resource as absent | Any R2 permission or final retention decision |
+| Lifecycle verifier | Self-verify independently, then GET the same target as absent | R2 permission, token mutation, or final retention decision |
+
+Token self-verification proves only provider identity, active status,
+effective time, expiry, and a 1..3600-second remaining lifetime. It does not
+prove the permission inventory. Operations/security review must separately
+record that inventory and confirm all six provider identities are distinct.
+
+`revoke` accepts only a canonical live staging lock receipt v2. It validates
+the complete target, lock credential, selected one-year rule, facts,
+operations, limits, chronology, and downstream-false state before reading a
+credential. The raw target token ID is accepted only from
+`CINATOKEN_WORM_LIFECYCLE_TARGET_API_TOKEN_ID` and must hash to the lock
+predecessor provider-ID digest. The operator's DELETE must return exact `200`
+with the same target ID; its subsequent exact-resource GET must return exact
+`404`.
+
+`verify` accepts only the canonical revoke receipt. Its provider ID must
+differ from both the target and lifecycle operator. Its exact-resource GET
+must independently return exact `404`, with the same numeric error-code
+sequence as the operator readback. Both absence responses require valid
+`cf-ray`, bounded JSON bodies, strict envelope/error schemas, and no reflected
+account, target, or credential value.
+
+Predecessor files are regular, single-link, byte/shape bounded, opened with
+no-follow semantics, and checked for stable path/device/inode/size/time/link
+metadata before, during, and after read. They must be exact canonical JSON plus
+one LF; the full bytes including that LF are SHA-256 bound into the successor.
+
+The focused suite passes 17 tests with 107 expectations, including a real
+hard-link rejection and exact lifetime-field/time-delta mutation checks. The
+credential-free self-test passes four cases and 12 invariants. The complete
+eight-suite container supply-chain set passes 91 tests with 775 expectations.
+The complete repository gate passes with exit code 0 in 635.0 seconds; its 21
+Rust `dead_code` findings remain warnings only. No live Cloudflare request,
+credential read, token deletion, bucket/object mutation, registry action,
+deployment, traffic, billing mutation, or VPS drain occurred.
+
+This increment deliberately does not set
+`lockOperatorRevocationVerified=true`. The existing final retention verifier
+still has the older four-R2-role and single-revocation schema. Its v2 upgrade
+must consume both lifecycle receipts, exact permission inventories, operation
+digests, and chronology before B2 can pass. B4-B7, R3/C1, P5, G1-G8, customer
+traffic, and production cutover remain blocked. Go/VPS remains authoritative
+and production remains **NO-GO**.

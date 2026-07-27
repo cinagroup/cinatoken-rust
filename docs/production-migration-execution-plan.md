@@ -4255,3 +4255,20 @@ Then:
 Failure at any point leaves the new registry artifact quarantined, deletes no
 evidence, performs no Go/VPS drain, and preserves Go/VPS as the sole production
 authority. Production remains **NO-GO**.
+
+### Plan successor verification
+
+Commit `022a7ba475bc4570e2eaf81fbfc4874206dff173` replayed this updated plan
+through source [run 30236225467](https://github.com/cinagroup/cinatoken-rust/actions/runs/30236225467)
+and signer [run 30236329194](https://github.com/cinagroup/cinatoken-rust/actions/runs/30236329194).
+The final [artifact 8641740667](https://github.com/cinagroup/cinatoken-rust/actions/runs/30236329194/artifacts/8641740667)
+is 23,635 bytes at
+`sha256:9074ee70246840df3a1b000bef832a19a3dafc6497afab2dd2c51f7f604f45ef`.
+Its DSSE payload exactly equals statement
+`sha256:51523d825b4927ae42682af6de239aa3e7bac611c19cfb5876a05657f0fb5b52`;
+bundle
+`sha256:6ff73a40115ea6c4ef458f1fd24e6f92ec80193c17c45ab9fe7a75e8dd4dc396`
+contains one signature, Rekor inclusion promise/proof at index `2256863846`,
+and one verified RFC3161 timestamp. The OCI/runtime/SBOM/scan subject is
+unchanged and the decision remains
+`cryptographic-subgate-passed-worm-pending`.

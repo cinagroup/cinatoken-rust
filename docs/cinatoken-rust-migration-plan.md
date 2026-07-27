@@ -21706,3 +21706,32 @@ Official capability references:
 No registry write, Cloudflare deployment, provider request, customer traffic,
 billing mutation, or Go/VPS drain occurred. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+### Documentation successor closure
+
+The documentation commit
+`022a7ba475bc4570e2eaf81fbfc4874206dff173` independently replayed the
+complete source and signer chain. Source
+[run 30236225467](https://github.com/cinagroup/cinatoken-rust/actions/runs/30236225467)
+retained
+[artifact 8641736306](https://github.com/cinagroup/cinatoken-rust/actions/runs/30236225467/artifacts/8641736306),
+144,729,887 bytes at
+`sha256:80eb0523d1cf9aa2c1257665125a40748b815798440a424ff2856c6767621e42`.
+Signer
+[run 30236329194](https://github.com/cinagroup/cinatoken-rust/actions/runs/30236329194),
+[job 89884722598](https://github.com/cinagroup/cinatoken-rust/actions/runs/30236329194/job/89884722598),
+retained
+[artifact 8641740667](https://github.com/cinagroup/cinatoken-rust/actions/runs/30236329194/artifacts/8641740667),
+23,635 bytes at
+`sha256:9074ee70246840df3a1b000bef832a19a3dafc6497afab2dd2c51f7f604f45ef`,
+expiring `2026-10-25T04:09:48Z`.
+
+Independent parsing verified a byte-identical DSSE payload and 14,574-byte
+statement at
+`sha256:51523d825b4927ae42682af6de239aa3e7bac611c19cfb5876a05657f0fb5b52`,
+a 30,138-byte bundle at
+`sha256:6ff73a40115ea6c4ef458f1fd24e6f92ec80193c17c45ab9fe7a75e8dd4dc396`,
+one signature, inclusion promise/proof, one RFC3161 timestamp, and Rekor index
+`2256863846`. All seven portable subject identities remain unchanged. The
+successor still correctly reports `wormRetentionVerified=false`,
+`s3Complete=false`, and production not authorized.

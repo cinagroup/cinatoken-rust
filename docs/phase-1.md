@@ -3494,24 +3494,43 @@ Phase 1 now contains the first executable retention staging boundary. The
 collector has separate publisher baseline and lock-operator configuration
 processes, defaults to dry-run, accepts secrets only from phase-specific
 environment variables, writes no files, and emits canonical redacted receipts.
-It fully paginates exact-prefix objects and multipart uploads, or performs one
-bounded bucket-lock `GET -> PUT -> GET` transaction with rule preservation and
-exact readback.
+It fully paginates exact-prefix objects and multipart uploads. The lock path
+first calls
+`GET /accounts/{account_id}/tokens/verify`, then performs the bounded
+bucket-lock `GET -> PUT -> GET` transaction with rule preservation and exact
+readback.
 
-Focused verification passes 14 tests with 80 expectations plus a
-credential-free three-case self-test. The tests reject phase credential
-overlap, shell-like identity input, pagination cycles, prefix escape,
-preexisting objects/uploads, Cloudflare redirects, missing request IDs,
-unknown response fields, credential reflection, ambiguous reruns, and lock
-drift.
+The lock preflight requires an active provider token with an effective
+validity window, an explicit expiry, and no more than 3600 seconds of remaining
+lifetime. Its `credentialIdSha256` is SHA-256 of the provider token ID, never
+of the API token secret. Cloudflare defines the R2 S3 Access Key ID as that API
+token ID, so the publisher baseline hash and lock preflight hash share one
+provider-ID domain for later revocation and authority-separation evidence.
+The staging phase receipt is therefore versioned as schema/contract v2; v1
+lock receipts have different digest semantics and are not interchangeable.
 
-All seven container supply-chain suites pass 72 tests with 642 expectations,
-and the complete repository gate passes in 621.8 seconds.
+The collector passed 16 focused tests with 106 expectations plus a
+credential-free three-case/19-invariant self-test. The tests reject phase
+credential overlap, shell-like identity input, pagination cycles, prefix
+escape, preexisting objects/uploads, Cloudflare redirects, missing request
+IDs, unknown response fields, credential reflection, ambiguous reruns, lock
+drift, inactive or expired tokens, missing expiry, overlong lifetime,
+future-effective tokens, and malformed provider identity.
 
-No live phase was run. The next retention boundary is provider-confirmed
-lock-operator revocation followed by predecessor-bound create-only
-publication, independent object readback, enforcement probes, publisher
-revocation, final lock/object readback, approval, and offline verification.
-Until that complete B1-B7 chain exists, `wormRetentionVerified=false`,
-`s3Complete=false`, R3/C1 remain blocked, Go/VPS remains authoritative, and
-production remains **NO-GO**.
+All seven container supply-chain suites passed 74 tests with 668
+expectations. The complete repository gate passed with exit code 0 in 601.6
+seconds; only the existing Rust `dead_code` warnings remained.
+
+No live phase was run. Token self-verification is not revocation evidence.
+`API Tokens::Edit` is a separate non-R2 lifecycle permission and must remain
+outside all four R2 ceremony roles. The repository has not implemented the
+complete provider revoke plus independent readback needed to prove the exact
+lock-operator or publisher token ID is no longer usable; B2 therefore remains
+incomplete.
+
+The next retention boundary is that lifecycle revoke/readback chain, followed
+by predecessor-bound create-only publication, independent object readback,
+enforcement probes, publisher revocation, final lock/object readback,
+approval, and offline verification. Until that complete B1-B7 chain exists,
+`wormRetentionVerified=false`, `s3Complete=false`, R3/C1 remain blocked,
+Go/VPS remains authoritative, and production remains **NO-GO**.

@@ -13,8 +13,10 @@ Current decision:
 
 - S3 cryptographic evidence: accepted for the frozen subject.
 - R2 retention contract: implemented and locally tested.
-- R2 B1/B3 staging collector: implemented and locally tested; not executed
-  against Cloudflare.
+- R2 B1/B3 staging collector and lock identity preflight: implemented and
+  locally tested; not executed against Cloudflare.
+- B2 credential issuance, revocation, and independent revocation readback:
+  incomplete.
 - Real R2 bucket-lock evidence: not collected.
 - `wormRetentionVerified`: false.
 - `s3Complete`: false.
@@ -70,7 +72,8 @@ configuration requires R2 Admin permissions. R2 Admin Read & Write also
 includes object read/write; the lock operator therefore cannot truthfully be
 modeled as lock-only.
 
-The evidence contract requires four distinct credential identities:
+The retention data-plane contract requires four distinct R2 credential
+identities:
 
 | Role | Cloudflare permission shape | Required capability evidence | Revocation |
 | --- | --- | --- | --- |
@@ -80,9 +83,33 @@ The evidence contract requires four distinct credential identities:
 | Lock verifier | R2 Admin Read only | Object read/list and lock read; no writes | Read-only during the decision |
 
 Every credential is represented only by a SHA-256 identifier, permission
-facts, expiry, and redacted provider revocation receipt. Secret values, access
-key IDs, Authorization headers, request/response bodies, cookies, private
-keys, and non-R2 account permissions are prohibited from the bundle.
+facts, expiry, and redacted provider revocation receipt. Secret values, raw
+access key IDs, Authorization headers, request/response bodies, cookies, and
+private keys are prohibited from the bundle.
+
+Credential identity is provider-derived, not secret-derived. Cloudflare
+documents that an R2 S3 Access Key ID is the API token ID, while the Secret
+Access Key is derived from the token value. The baseline receipt therefore
+hashes the publisher Access Key ID. Before any lock read or mutation, the lock
+phase calls `GET /accounts/{account_id}/tokens/verify` with the lock-operator
+token and hashes the returned provider token ID. `credentialIdSha256` must
+never be a hash of the API token secret. This common provider-ID domain is the
+cross-phase identity bridge needed to join S3 observations, Cloudflare token
+lifecycle receipts, and authority-separation checks without disclosing a raw
+credential identifier.
+
+This semantic change is encoded as staging phase receipt schema/contract v2.
+Version 1 receipts used a different lock credential digest meaning and must
+not be mixed with or upgraded implicitly to v2.
+
+Token lifecycle is a separate control plane. `API Tokens::Edit` is a non-R2
+permission and must not be granted to the publisher, lock operator, object
+verifier, or lock verifier. A future lifecycle process must use separately
+reviewed authority to revoke mutable credentials, and a separate readback
+must prove the targeted provider token ID is no longer usable. The current
+collector and final verifier do not implement that complete revoke/readback
+chain. Their four-role R2 model and prohibition on non-R2 authority inside
+those roles must not be interpreted as B2 completion.
 
 The lock operator's unavoidable object authority is bounded by ceremony
 ordering: configure and read back the lock, revoke the operator, then publish.
@@ -165,26 +192,36 @@ signatures fail closed.
 2. Create or select the dedicated staging evidence bucket and verify the
    exact account, bucket, jurisdiction, owner, and empty content-addressed
    prefix.
-3. Issue the four distinct short-lived credentials with the permission shapes
-   above. Keep all values in approved secret channels only.
-4. Use the lock operator to set an exact-prefix Age, Date, or Indefinite rule
-   through `PUT /accounts/{account}/r2/buckets/{bucket}/lock`.
-5. Read the rule back, record the canonical response facts, and revoke the
-   lock operator before uploading any object.
-6. Upload the six exact objects with create-only semantics. Reject a
+3. Issue the four distinct short-lived R2 credentials with the permission
+   shapes above. Keep all values in approved secret channels only. Provision
+   separately reviewed token-lifecycle authority; do not add `API
+   Tokens::Edit` to an R2 ceremony role.
+4. Use `GET /accounts/{account_id}/tokens/verify` to bind the lock operator to
+   its provider token ID, require active status, require an already-active
+   validity window, and require no more than 3600 seconds of remaining
+   lifetime.
+5. Use the verified lock operator to set an exact-prefix Age, Date, or
+   Indefinite rule through
+   `PUT /accounts/{account}/r2/buckets/{bucket}/lock`, then read the complete
+   configuration back.
+6. Revoke the lock operator through the independent lifecycle control plane
+   and independently read back provider state proving that exact token ID is
+   no longer usable before uploading any object.
+7. Upload the six exact objects with create-only semantics. Reject a
    preexisting key or unresolved multipart upload.
-7. Use the object verifier to list all pages and download every object.
+8. Use the object verifier to list all pages and download every object.
    Recompute every digest and byte count.
-8. Use the publisher to attempt different-content overwrite and deletion of
+9. Use the publisher to attempt different-content overwrite and deletion of
    the retained provenance packet. Both requests must reach Cloudflare and
    receive non-transient 4xx rejection with provider request IDs.
-9. Revoke the publisher after both probes. Use the object verifier to prove
-   the original object remains byte-identical.
-10. Use the lock verifier to read the complete lock configuration after the
+10. Revoke the publisher after both probes through the lifecycle control
+    plane, independently verify revocation of its provider token ID, and use
+    the object verifier to prove the original object remains byte-identical.
+11. Use the lock verifier to read the complete lock configuration after the
     probes and writer revocations.
-11. Build the four canonical evidence documents and manifest. Operations and
+12. Build the four canonical evidence documents and manifest. Operations and
     security independently inspect and sign the subject digest.
-12. Run the offline verifier from a clean host with the trust policy supplied
+13. Run the offline verifier from a clean host with the trust policy supplied
     separately. Preserve its JSON output as the S3 decision receipt.
 
 For an Age rule, the earliest per-object retention deadline must still be at
@@ -199,7 +236,7 @@ The staging collector deliberately exposes two separate live processes:
 | Phase | Credential read | Network behavior | Mutation |
 | --- | --- | --- | --- |
 | `baseline` | `CINATOKEN_WORM_PUBLISHER_R2_ACCESS_KEY_ID` and `CINATOKEN_WORM_PUBLISHER_R2_SECRET_ACCESS_KEY` | Exhausts `ListObjectsV2` and `ListMultipartUploads` for the exact prefix | None |
-| `lock` | `CINATOKEN_WORM_LOCK_OPERATOR_API_TOKEN` | `GET` current lock configuration, `PUT` the reviewed rule set, then `GET` final configuration | One bucket-lock configuration update |
+| `lock` | `CINATOKEN_WORM_LOCK_OPERATOR_API_TOKEN` | `GET` token self-verification first, then `GET` current lock configuration, `PUT` the reviewed rule set, and `GET` final configuration | One bucket-lock configuration update; no token revocation |
 
 One invocation can read only one role's credential variables. Baseline uses
 the pinned AWS SDK v3 R2 S3 endpoint, checks every page and continuation
@@ -210,11 +247,19 @@ not expose a provider request ID, the receipt records `null` and
 
 The lock phase uses the Cloudflare API directly with manual redirects, bounded
 time/body, exact JSON envelope and rule schemas, and mandatory `cf-ray`
-correlation. It preserves unrelated existing rules, rejects duplicate IDs and
-ambiguous reruns, appends one deterministic Age rule for the statement digest,
-and requires exact `PUT` plus final `GET` equality. A reflected token, redirect,
-unknown field, missing correlation ID, status drift, or readback mismatch fails
-closed.
+correlation. Its first request is
+`GET /accounts/{account_id}/tokens/verify`. The response must contain a valid
+provider token ID, active status, an expiry, an effective `not_before` when
+present, and a remaining lifetime from 1 through 3600 seconds. The receipt
+stores SHA-256 of that provider token ID plus the verification time, expiry,
+and remaining lifetime; it never hashes or emits the token secret as
+`credentialIdSha256`.
+
+After preflight, the phase preserves unrelated existing lock rules, rejects
+duplicate IDs and ambiguous reruns, appends one deterministic Age rule for the
+statement digest, and requires exact `PUT` plus final `GET` equality. A
+reflected token, redirect, unknown field, missing correlation ID, inactive or
+overlong credential, status drift, or readback mismatch fails closed.
 
 No invocation writes files. Stdout is one canonical redacted phase receipt.
 Unexpected provider exceptions are converted to controlled messages. Access
@@ -228,6 +273,12 @@ Every dry-run and live phase receipt keeps
 `s3Complete=false`, `formalP5Evidence=false`, customer traffic false, and
 production cutover false. The receipts are inputs to a future ceremony
 assembler, not verifier-compatible final evidence by themselves.
+
+Self-verification is identity and lifetime evidence only. It is not issuance
+review, least-privilege proof, revocation, or independent revocation readback.
+Because `API Tokens::Edit` is not an R2 permission and no lifecycle
+revoke/readback collector exists, B2 remains incomplete and no staging
+receipt can authorize production.
 
 ## Provider Enforcement Requirements
 
@@ -327,23 +378,32 @@ and keep this R2 receipt as a secondary operational record.
 ## Next Execution Unit
 
 The next implementation starts at the authority lifecycle between B3 and B4.
-It must capture provider-confirmed lock-operator revocation before exposing any
-publisher upload capability, then add create-only six-object publication,
-independent object readback, provider overwrite/delete probes, publisher
-revocation, final object/lock readbacks, canonical evidence assembly, and
-operations/security approval. Each later phase must preserve the same
-single-role credential process boundary and consume a predecessor-bound phase
-receipt.
+It must add a separate non-R2 lifecycle authority boundary for `API
+Tokens::Edit`, revoke the provider token ID established by lock preflight, and
+capture an independent provider readback proving that exact lock-operator
+credential is no longer usable before exposing publisher upload capability.
+The same provider-ID bridge must later bind publisher S3 Access Key ID to its
+revocation receipt. Create-only six-object publication, independent object
+readback, provider overwrite/delete probes, publisher revocation, final
+object/lock readbacks, canonical evidence assembly, and operations/security
+approval then follow. Each later phase must preserve single-role process
+boundaries and consume a predecessor-bound phase receipt.
 
-Collector self-tests and dry-runs are not real evidence. The implemented lock
-phase must not be run until the dedicated bucket, four ephemeral credentials,
-revocation owners, approval keys, artifact packet, and abort/cleanup runbook
-have independent review. Registry R3 remains blocked until a complete real
-bundle passes the offline verifier.
+Collector self-tests and dry-runs are not real evidence. The lock phase must
+not be run until the dedicated bucket, four ephemeral R2 credentials,
+separate lifecycle authority and independent revocation-readback owner,
+approval keys, artifact packet, and abort/cleanup runbook have independent
+review. The preflight implementation has passed focused and container
+supply-chain verification, but that local evidence does not authorize live
+use. Registry R3 remains blocked until a complete real bundle passes the
+offline verifier. B2 is not complete, Go/VPS remains authoritative, and
+production remains **NO-GO**.
 
 Primary references:
 
 - [Cloudflare R2 bucket locks](https://developers.cloudflare.com/r2/buckets/bucket-locks/)
 - [Cloudflare R2 authentication and permissions](https://developers.cloudflare.com/r2/api/tokens/)
 - [Cloudflare R2 S3 compatibility](https://developers.cloudflare.com/r2/api/s3/api/)
+- [Cloudflare account-owned API tokens](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/)
+- [Cloudflare API-token lifecycle permissions](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/)
 - [Cloudflare TypeScript bucket-lock API at audited commit](https://github.com/cloudflare/cloudflare-typescript/blob/3583affb5cea551858ed4c4b6c0fc326a306d3bd/src/resources/r2/buckets/locks.ts)

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -320,25 +321,44 @@ async function runSelfTest() {
     now: () => new Date("2026-07-27T00:00:00.000Z"),
   });
   const lockToken = "self-test-lock-operator-token";
+  const lockTokenId = "dddddddddddddddddddddddddddddddd";
+  const lockCredentialIdSha256 = createHash("sha256")
+    .update(lockTokenId)
+    .digest("hex");
   const lock = await collectAndConfigureLock({
     target,
-    credentials: {
-      apiToken: lockToken,
-      credentialIdSha256:
-        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-    },
-    fetchImpl: selfTestLockFetch(target, lockToken),
+    credentials: { apiToken: lockToken },
+    fetchImpl: selfTestLockFetch(target, lockToken, lockTokenId),
     now: sequenceNow([
+      "2026-07-27T00:00:30.000Z",
       "2026-07-27T00:01:00.000Z",
       "2026-07-27T00:01:01.000Z",
     ]),
   });
   const dryRun = buildDryRunReceipt("lock", target);
+  const serializedReceipts = canonicalJson([baseline, lock, dryRun]);
   if (
     baseline.downstreamAuthority.wormRetentionVerified !== false ||
     lock.downstreamAuthority.s3Complete !== false ||
     dryRun.networkRequests !== false ||
-    canonicalJson([baseline, lock, dryRun]).includes(lockToken)
+    lock.credential.credentialIdSha256 !== lockCredentialIdSha256 ||
+    lock.credential.selfVerifiedAt !== "2026-07-27T00:00:30.000Z" ||
+    lock.credential.expiresAt !== "2026-07-27T00:30:00.000Z" ||
+    lock.credential.remainingLifetimeSeconds !== 1_770 ||
+    canonicalJson(
+      lock.providerOperations.map(({ method, operation }) => ({
+        method,
+        operation,
+      })),
+    ) !==
+      canonicalJson([
+        { method: "GET", operation: "credential-preflight" },
+        { method: "GET", operation: "lock-before" },
+        { method: "PUT", operation: "lock-configure" },
+        { method: "GET", operation: "lock-after" },
+      ]) ||
+    serializedReceipts.includes(lockToken) ||
+    serializedReceipts.includes(lockTokenId)
   ) {
     throw new WormStagingCollectorError("[self-test] invariant failed");
   }
@@ -347,7 +367,7 @@ async function runSelfTest() {
     schemaVersion: WORM_STAGING_SCHEMA_VERSION,
     contract: WORM_STAGING_RECEIPT_CONTRACT,
     cases: 3,
-    expectations: 12,
+    expectations: 19,
     networkRequests: false,
     credentialsRead: false,
     writesFiles: false,
@@ -355,7 +375,7 @@ async function runSelfTest() {
   };
 }
 
-function selfTestLockFetch(target, token) {
+function selfTestLockFetch(target, token, tokenId) {
   const expectedRule = {
     id: `cinatoken-s3-${target.statementSha256.slice(0, 24)}`,
     condition: {
@@ -366,18 +386,66 @@ function selfTestLockFetch(target, token) {
     prefix: target.prefix,
   };
   const responses = [
+    tokenVerificationResponse(tokenId, "self-test-credential"),
     lockResponse([], "self-test-before"),
     lockResponse([expectedRule], "self-test-configure"),
     lockResponse([expectedRule], "self-test-after"),
   ];
-  return async (_url, init) => {
+  const requests = [
+    {
+      method: "GET",
+      url: `https://api.cloudflare.com/client/v4/accounts/${target.accountId}/tokens/verify`,
+    },
+    {
+      method: "GET",
+      url: `https://api.cloudflare.com/client/v4/accounts/${target.accountId}/r2/buckets/${target.bucketName}/lock`,
+    },
+    {
+      method: "PUT",
+      url: `https://api.cloudflare.com/client/v4/accounts/${target.accountId}/r2/buckets/${target.bucketName}/lock`,
+    },
+    {
+      method: "GET",
+      url: `https://api.cloudflare.com/client/v4/accounts/${target.accountId}/r2/buckets/${target.bucketName}/lock`,
+    },
+  ];
+  return async (url, init) => {
     if (init.headers.Authorization !== `Bearer ${token}`) {
       throw new Error("unexpected authorization");
+    }
+    const request = requests.shift();
+    if (
+      !request ||
+      init.method !== request.method ||
+      url !== request.url
+    ) {
+      throw new Error("unexpected request");
     }
     const response = responses.shift();
     if (!response) throw new Error("unexpected request");
     return response;
   };
+}
+
+function tokenVerificationResponse(tokenId, ray) {
+  const body = canonicalJson({
+    success: true,
+    errors: [],
+    messages: [],
+    result: {
+      id: tokenId,
+      status: "active",
+      expires_on: "2026-07-27T00:30:00.000Z",
+      not_before: "2026-07-27T00:00:00.000Z",
+    },
+  });
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "cf-ray": ray,
+    },
+  });
 }
 
 function lockResponse(rules, ray) {

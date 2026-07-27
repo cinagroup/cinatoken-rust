@@ -10865,8 +10865,8 @@ node tools/collect_container_runtime_worm_staging.mjs --self-test
 npx.cmd --yes bun run check:container-runtime:worm-staging-collector
 ```
 
-The focused suite passed 14 tests with 80 expectations. The built-in
-credential-free self-test passed three cases with 12 invariants. Coverage
+The focused suite passed 16 tests with 106 expectations. The built-in
+credential-free self-test passed three cases with 19 invariants. Coverage
 includes:
 
 - only the selected phase's environment keys are read;
@@ -10875,26 +10875,46 @@ includes:
 - missing AWS request IDs remain `null` rather than fabricated;
 - existing objects/uploads, prefix escape, common-prefix and continuation
   contradictions fail closed;
-- bucket-lock `GET -> PUT -> GET` preserves unrelated rules and requires exact
-  final equality;
+- token self-verification binds the active, already-effective, short-lived
+  credential to a provider token ID without emitting that ID or the secret;
+- exact millisecond comparison rejects any remaining lifetime beyond 3600
+  seconds;
+- the bucket-lock `GET -> PUT -> GET` path preserves unrelated rules and
+  requires exact final equality;
 - redirects, missing `cf-ray`, unknown envelopes, reflected credentials,
   provider exceptions, rerun ambiguity, and lock drift fail closed;
 - shell-like account/bucket/digest inputs and incomplete live confirmations
   fail before a credential or provider request.
 
-The complete seven-suite container supply-chain set passed 72 tests with 642
-expectations. The repository aggregate then passed with exit code 0 in 621.8
-seconds, including Worker/Vitest/Bun suites, Wrangler type generation and
-credential-free dry-runs, frontend checks, Rust formatting/workspace tests,
-and Worker/WFP wasm32 checks. Existing Rust `dead_code` warnings remained
-warnings only.
+The complete seven-suite container supply-chain set passed 74 tests with 668
+expectations. The complete repository aggregate then passed with exit code 0
+in 601.6 seconds, covering Worker/Vitest/Bun suites, Wrangler type generation
+and credential-free dry-runs, frontend checks, Rust formatting/workspace
+tests, and Worker/WFP wasm32 checks. Existing Rust `dead_code` findings
+remained warnings only.
+
+The lock design adds
+`GET /accounts/{account_id}/tokens/verify` before bucket-lock access. It
+requires active status, an effective validity window, an expiry, and remaining
+lifetime from 1 through 3600 seconds. It sets `credentialIdSha256` to SHA-256
+of the returned provider token ID, not the API token secret. Cloudflare's
+definition that an R2 S3 Access Key ID equals the API token ID provides the
+identity bridge to baseline and future revocation receipts.
+The receipt contract is schema v2 because the lock credential digest meaning
+and receipt shape changed; v1 lock receipts are not treated as equivalent.
 
 The CLI output is canonical JSON, writes no files, and excludes raw account
 ID, access-key ID, secret key, token, and Authorization values. Both phase
 receipts keep lock/publisher revocation, WORM, complete S3, P5, traffic, and
 production authority false.
 
-No live baseline or lock phase was run. Therefore this verifies only the local
-B1/B3 collection substrate; it does not prove B2 credential review,
-revocation, object retention, enforcement, signed approval, or a complete R2
-bundle. Go/VPS remains authoritative and production remains **NO-GO**.
+No live baseline or lock phase was run. Therefore the recorded verification
+covers only the local B1/B3 collection substrate and identity preflight; it
+does not prove B2 credential review, revocation, object retention,
+enforcement, signed approval, or a complete R2 bundle.
+
+`API Tokens::Edit` is a separate non-R2 lifecycle permission and cannot be
+hidden inside any R2 role. The repository has not implemented a separately
+authorized revoke of the provider token ID plus independent provider readback
+proving that credential is no longer usable. B2 is not complete, Go/VPS
+remains authoritative, and production remains **NO-GO**.

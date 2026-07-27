@@ -21785,8 +21785,8 @@ roles into one process. The implementation adds:
   configuration/readback, canonical receipts, bounds, and redaction;
 - `tools/collect_container_runtime_worm_staging.mjs`, a default-dry-run CLI
   with explicit `baseline` and `lock` live confirmations;
-- `tests/container-runtime-worm-staging-collector.test.mjs`, covering 14
-  positive and fail-closed cases with 80 expectations;
+- `tests/container-runtime-worm-staging-collector.test.mjs`, covering 16
+  positive and fail-closed cases with 106 expectations;
 - focused and aggregate package entry points immediately after the WORM
   verifier contract.
 
@@ -21795,7 +21795,7 @@ roles into one process. The implementation adds:
 | Process | Only credential channel | Permitted action | Explicit non-claim |
 | --- | --- | --- | --- |
 | Baseline | Publisher R2 access-key ID and secret-key environment variables | Fully paginate exact-prefix objects and multipart uploads | No writes, lock access, revocation, or final evidence |
-| Lock | Lock-operator Cloudflare API-token environment variable | Read current rules, preserve them, append deterministic reviewed rule, write once, read back | No publisher credential, upload, revocation, probe, or WORM decision |
+| Lock | Lock-operator Cloudflare API-token environment variable | Self-verify the token, read current rules, preserve them, append deterministic reviewed rule, write once, read back | No publisher credential, token revocation, upload, probe, or WORM decision |
 | Dry-run | None | Emit exact request plan | No network and no mutation |
 
 No credential is accepted in argv. One phase cannot read the other phase's
@@ -21804,31 +21804,62 @@ SHA-256; raw access IDs, secret keys, tokens, Authorization headers, raw
 account ID, and reflected provider errors are excluded. Output is one
 canonical JSON object on stdout and the collector writes no files.
 
+Cloudflare's provider identity model supplies the cross-phase bridge: an R2
+S3 Access Key ID is the API token ID. Baseline therefore hashes the publisher
+Access Key ID. Lock first calls
+`GET /accounts/{account_id}/tokens/verify` and hashes the returned provider
+token ID for the lock operator. In both cases `credentialIdSha256` identifies
+the provider token ID; it is never a hash of the secret key or API token
+value. The lock preflight requires active status, an effective validity
+window, an expiry, and at most 3600 seconds of remaining mutable-credential
+lifetime.
+
+Because this changes credential digest semantics and receipt shape, the
+staging phase receipt contract is explicitly v2. V1 lock receipts are not
+accepted as equivalent identity evidence and must not be silently upgraded.
+
 Baseline rejects partial/repeated pagination, wrong-prefix objects, common
 prefixes, existing objects, multipart residue, bad status, and unbounded
 inventories. Missing AWS SDK request IDs are recorded as `null` and make
 `providerRequestIdsComplete=false`; no correlation value is synthesized.
 
-Lock uses the official
-`PUT /accounts/{account}/r2/buckets/{bucket}/lock` surface with bounded fetch,
-manual redirect rejection, exact Cloudflare envelope/rule schemas, mandatory
+Lock first uses the official
+`GET /accounts/{account_id}/tokens/verify` surface, then uses
+`PUT /accounts/{account}/r2/buckets/{bucket}/lock` with bounded fetch, manual
+redirect rejection, exact Cloudflare envelope/rule schemas, mandatory
 `cf-ray`, and exact final readback. It preserves unrelated rules and refuses a
 same-ID rerun so a repeated ceremony cannot silently rewrite history.
 
+The preflight delta passed the focused 16-test/106-expectation suite. Its
+negative cases cover inactive and expired tokens, missing expiry, exact
+millisecond enforcement beyond the 3600-second ceiling, future
+`not_before`, malformed provider IDs, unknown verification fields, secret
+reflection, redirects, missing correlation, and provider failures.
+
 ### Acceptance boundary and next order
 
-The local collector tests and credential-free self-test passed. The complete
-container supply-chain set passed 72 tests with 642 expectations, and the
-repository aggregate passed in 621.8 seconds. No real Cloudflare request,
-credential read, object write, lock mutation, token revocation, registry
-action, deployment, traffic, billing mutation, or VPS drain was performed.
+The focused collector suite passed 16 tests with 106 expectations and its
+credential-free three-case self-test passed 19 invariants. The complete seven
+suite container supply-chain set passed 74 tests with 668 expectations. The
+complete repository aggregate passed with exit code 0 in 601.6 seconds;
+existing Rust `dead_code` findings remained warnings only. No real Cloudflare
+request, credential read, object write, lock mutation, token revocation,
+registry action, deployment, traffic, billing mutation, or VPS drain was
+performed.
 
-This implementation does not complete B2 authority issuance or B4-B7. The
-next code unit must consume the lock receipt and provider-confirmed
-lock-operator revocation as predecessors, then implement six create-only
-uploads and independent object readback. Enforcement probes, publisher
-revocation, final readbacks, evidence assembly, Ed25519 approvals, and offline
-verification follow in that order.
+This implementation does not complete B2 authority issuance or B4-B7.
+`API Tokens::Edit` is an independent non-R2 lifecycle permission. It must not
+be folded into publisher, lock-operator, object-verifier, or lock-verifier R2
+roles. The repository does not yet implement the complete lifecycle sequence:
+a separately authorized revoke of the exact provider token ID followed by an
+independent provider readback proving that credential is no longer usable.
+
+The next code unit must consume the lock receipt, revoke the provider token ID
+bound by its preflight, and independently verify lock-operator revocation as
+predecessors. It can then implement six create-only uploads and independent
+object readback. Enforcement probes, publisher revocation bound through the
+Access-Key-ID/API-token-ID bridge, final readbacks, evidence assembly,
+Ed25519 approvals, and offline verification follow in that order.
 
 All collector receipts deliberately retain
 `lockOperatorRevocationVerified=false`,

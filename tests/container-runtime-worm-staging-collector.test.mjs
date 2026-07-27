@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -52,9 +53,8 @@ const publisherCredentials = {
 };
 const lockCredentials = {
   apiToken: "lock-operator-token-for-tests",
-  credentialIdSha256:
-    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 };
+const lockProviderTokenId = "d".repeat(32);
 
 describe("container runtime WORM staging collector", () => {
   test("describe and phase dry-runs remain credential-free and deny downstream authority", () => {
@@ -63,6 +63,10 @@ describe("container runtime WORM staging collector", () => {
     const lock = buildDryRunReceipt("lock", target);
 
     expect(description.defaultMode).toBe("dry-run");
+    expect(description.schemaVersion).toBe(2);
+    expect(description.contract).toBe(
+      "cinatoken-container-runtime-worm-staging-phase-receipt-v2",
+    );
     expect(description.writesFiles).toBe(false);
     expect(description.phases.map((value) => value.credentialRole)).toEqual([
       "publisher",
@@ -338,6 +342,7 @@ describe("container runtime WORM staging collector", () => {
     const wanted = expectedLockRule(target);
     const calls = [];
     const responses = [
+      tokenVerificationResponse("ray-credential"),
       cloudflareResponse([existing], "ray-before"),
       cloudflareResponse([existing, wanted], "ray-configure"),
       cloudflareResponse([wanted, existing], "ray-after"),
@@ -350,6 +355,7 @@ describe("container runtime WORM staging collector", () => {
         return responses.shift();
       },
       now: sequenceNow([
+        "2026-07-27T01:59:59.000Z",
         "2026-07-27T02:00:00.000Z",
         "2026-07-27T02:00:01.000Z",
       ]),
@@ -357,12 +363,29 @@ describe("container runtime WORM staging collector", () => {
 
     expect(calls.map((call) => call.init.method)).toEqual([
       "GET",
+      "GET",
       "PUT",
       "GET",
     ]);
-    expect(JSON.parse(calls[1].init.body)).toEqual({
+    expect(calls[0].url).toContain("/tokens/verify");
+    expect(JSON.parse(calls[2].init.body)).toEqual({
       rules: [existing, wanted],
     });
+    expect(receipt.credential.credentialIdSha256).toBe(
+      sha256(lockProviderTokenId),
+    );
+    expect(receipt.credential.credentialIdSha256).not.toBe(
+      sha256(lockCredentials.apiToken),
+    );
+    expect(receipt.credential.remainingLifetimeSeconds).toBe(1_801);
+    expect(
+      receipt.providerOperations.map((value) => value.operation),
+    ).toEqual([
+      "credential-preflight",
+      "lock-before",
+      "lock-configure",
+      "lock-after",
+    ]);
     expect(receipt.facts.unrelatedRulesPreserved).toBe(true);
     expect(receipt.facts.selectedRuleId).toBe(wanted.id);
     expect(receipt.facts.configurationRequestId).toBe("ray-configure");
@@ -372,25 +395,28 @@ describe("container runtime WORM staging collector", () => {
     );
     expect(receipt.downstreamAuthority.wormRetentionVerified).toBe(false);
     expect(canonicalJson(receipt)).not.toContain(lockCredentials.apiToken);
+    expect(canonicalJson(receipt)).not.toContain(lockProviderTokenId);
     expect(canonicalJson(receipt)).not.toContain(target.accountId);
   });
 
   test("lock phase refuses ambiguous reruns before mutation", async () => {
     const calls = [];
+    const responses = [
+      tokenVerificationResponse(),
+      cloudflareResponse([expectedLockRule(target)], "ray-before"),
+    ];
     await expect(
       collectAndConfigureLock({
         target,
         credentials: lockCredentials,
         fetchImpl: async (_url, init) => {
           calls.push(init.method);
-          return cloudflareResponse(
-            [expectedLockRule(target)],
-            "ray-before",
-          );
+          return responses.shift();
         },
+        now: () => new Date("2026-07-27T02:00:00.000Z"),
       }),
     ).rejects.toThrow("selected rule already exists");
-    expect(calls).toEqual(["GET"]);
+    expect(calls).toEqual(["GET", "GET"]);
   });
 
   test("lock phase rejects redirect, absent correlation, and unknown envelopes", async () => {
@@ -465,7 +491,9 @@ describe("container runtime WORM staging collector", () => {
     } catch (error) {
       message = error.message;
     }
-    expect(message).toBe("[lock-before] provider request failed");
+    expect(message).toBe(
+      "[credential-preflight] provider request failed",
+    );
     expect(message).not.toContain(lockCredentials.apiToken);
 
     const bodyFailure = {
@@ -488,7 +516,93 @@ describe("container runtime WORM staging collector", () => {
         credentials: lockCredentials,
         fetchImpl: async () => bodyFailure,
       }),
-    ).rejects.toThrow("[lock-before] response body read failed");
+    ).rejects.toThrow(
+      "[credential-preflight] response body read failed",
+    );
+  });
+
+  test("lock phase rejects unusable or overlong mutable credentials", async () => {
+    const cases = [
+      {
+        result: { status: "disabled" },
+        error: "token identity, status, or expiry is invalid",
+      },
+      {
+        result: { status: "expired" },
+        error: "token identity, status, or expiry is invalid",
+      },
+      {
+        result: { expires_on: undefined },
+        error: "token identity, status, or expiry is invalid",
+      },
+      {
+        result: { expires_on: "2026-07-27T03:00:01.000Z" },
+        error: "mutable credential lifetime is outside the bound",
+      },
+      {
+        result: { expires_on: "2026-07-27T03:00:00.001Z" },
+        error: "mutable credential lifetime is outside the bound",
+      },
+      {
+        result: { expires_on: "2026-07-27T01:59:59.000Z" },
+        error: "mutable credential lifetime is outside the bound",
+      },
+      {
+        result: { expires_on: "2026-07-27T02:00:00.999Z" },
+        error: "mutable credential lifetime is outside the bound",
+      },
+      {
+        result: { not_before: "2026-07-27T02:00:01.000Z" },
+        error: "token is not active yet",
+      },
+    ];
+
+    for (const value of cases) {
+      const calls = [];
+      await expect(
+        collectAndConfigureLock({
+          target,
+          credentials: lockCredentials,
+          fetchImpl: async () => {
+            calls.push("GET");
+            return tokenVerificationResponse(
+              "ray-credential",
+              value.result,
+            );
+          },
+          now: () => new Date("2026-07-27T02:00:00.000Z"),
+        }),
+      ).rejects.toThrow(value.error);
+      expect(calls).toEqual(["GET"]);
+    }
+  });
+
+  test("lock phase rejects token identity and verification field drift", async () => {
+    const cases = [
+      {
+        result: { id: "not-a-provider-token-id" },
+        error: "token identity, status, or expiry is invalid",
+      },
+      {
+        result: { unexpected: true },
+        error: "token verification fields drifted",
+      },
+    ];
+
+    for (const value of cases) {
+      await expect(
+        collectAndConfigureLock({
+          target,
+          credentials: lockCredentials,
+          fetchImpl: async () =>
+            tokenVerificationResponse(
+              "ray-credential",
+              value.result,
+            ),
+          now: () => new Date("2026-07-27T02:00:00.000Z"),
+        }),
+      ).rejects.toThrow(value.error);
+    }
   });
 
   test("lock phase rejects post-mutation rule drift", async () => {
@@ -496,6 +610,7 @@ describe("container runtime WORM staging collector", () => {
     const drifted = structuredClone(wanted);
     drifted.condition.maxAgeSeconds -= 1;
     const responses = [
+      tokenVerificationResponse(),
       cloudflareResponse([], "ray-before"),
       cloudflareResponse([drifted], "ray-configure"),
     ];
@@ -505,7 +620,10 @@ describe("container runtime WORM staging collector", () => {
         target,
         credentials: lockCredentials,
         fetchImpl: async () => responses.shift(),
-        now: () => new Date("2026-07-27T02:10:00.000Z"),
+        now: sequenceNow([
+          "2026-07-27T02:09:59.000Z",
+          "2026-07-27T02:10:00.000Z",
+        ]),
       }),
     ).rejects.toThrow("provider lock rule set drifted");
   });
@@ -663,6 +781,28 @@ function cloudflareResponse(rules, ray) {
   );
 }
 
+function tokenVerificationResponse(ray = "ray-credential", overrides = {}) {
+  const result = {
+    id: lockProviderTokenId,
+    status: "active",
+    expires_on: "2026-07-27T02:30:00.000Z",
+    not_before: "2026-07-27T01:00:00.000Z",
+    ...overrides,
+  };
+  for (const key of Object.keys(result)) {
+    if (result[key] === undefined) delete result[key];
+  }
+  return jsonResponse(
+    {
+      success: true,
+      errors: [],
+      messages: [],
+      result,
+    },
+    ray,
+  );
+}
+
 function jsonResponse(value, ray) {
   const headers = { "content-type": "application/json" };
   if (ray !== null) headers["cf-ray"] = ray;
@@ -670,6 +810,10 @@ function jsonResponse(value, ray) {
     status: 200,
     headers,
   });
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function sequenceNow(values) {

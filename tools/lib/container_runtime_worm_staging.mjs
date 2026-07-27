@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
 export const WORM_STAGING_RECEIPT_CONTRACT =
-  "cinatoken-container-runtime-worm-staging-phase-receipt-v1";
-export const WORM_STAGING_SCHEMA_VERSION = 1;
+  "cinatoken-container-runtime-worm-staging-phase-receipt-v2";
+export const WORM_STAGING_SCHEMA_VERSION = 2;
 export const WORM_POLICY_CONTRACT =
   "cinatoken-container-runtime-worm-retention-protocol-policy-v1";
 
@@ -14,6 +14,7 @@ export const LOCK_OPERATOR_TOKEN_ENV =
   "CINATOKEN_WORM_LOCK_OPERATOR_API_TOKEN";
 
 const ACCOUNT_ID_PATTERN = /^[a-f0-9]{32}$/;
+const TOKEN_ID_PATTERN = /^[a-f0-9]{32}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const BUCKET_PATTERN =
   /^(?=.{3,63}$)(?!.*\.\.)(?!\d{1,3}(?:\.\d{1,3}){3}$)[a-z0-9](?:[a-z0-9.-]*[a-z0-9])$/;
@@ -25,6 +26,7 @@ const MAX_LIST_ITEMS = 10_000;
 const MAX_LOCK_RULES = 1_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
+const MAX_MUTABLE_CREDENTIAL_REMAINING_SECONDS = 3_600;
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
 export class WormStagingCollectorError extends Error {
@@ -188,10 +190,7 @@ export function readPhaseCredentials(phase, env) {
       env[LOCK_OPERATOR_TOKEN_ENV],
       LOCK_OPERATOR_TOKEN_ENV,
     );
-    return {
-      apiToken,
-      credentialIdSha256: sha256(apiToken),
-    };
+    return { apiToken };
   }
   throw new WormStagingCollectorError(
     "[credentials] unsupported collector phase",
@@ -222,7 +221,12 @@ export function describeCollector() {
         mutation: true,
         credentialRole: "lock-operator",
         credentialEnvironment: [LOCK_OPERATOR_TOKEN_ENV],
-        requests: ["GET lock-before", "PUT lock", "GET lock-after"],
+        requests: [
+          "GET token-verify",
+          "GET lock-before",
+          "PUT lock",
+          "GET lock-after",
+        ],
       },
     ],
     downstreamAuthority: downstreamAuthority(),
@@ -249,7 +253,12 @@ export function buildDryRunReceipt(phase, target) {
     requestPlan:
       phase === "baseline"
         ? ["ListObjectsV2", "ListMultipartUploads"]
-        : ["GET lock-before", "PUT lock", "GET lock-after"],
+        : [
+            "GET token-verify",
+            "GET lock-before",
+            "PUT lock",
+            "GET lock-after",
+          ],
     limits: collectorLimits(),
     downstreamAuthority: downstreamAuthority(),
   };
@@ -562,8 +571,23 @@ export async function collectAndConfigureLock(options) {
     "[lock] fetch implementation is unavailable",
   );
   const wanted = expectedLockRule(target);
+  const credentialPreflight = await fetchCloudflareJson({
+    url: tokenVerificationUrl(target),
+    token: credentials.apiToken,
+    method: "GET",
+    label: "credential-preflight",
+    fetchImpl,
+  });
+  const credentialVerifiedAt = requireTimestamp(
+    now(),
+    "[credential-preflight] observed time",
+  );
+  const credentialIdentity = validateTokenVerification(
+    credentialPreflight.result,
+    credentialVerifiedAt,
+  );
   const url = lockConfigurationUrl(target);
-  const before = await fetchLockConfiguration({
+  const before = await fetchCloudflareJson({
     url,
     token: credentials.apiToken,
     method: "GET",
@@ -583,7 +607,7 @@ export async function collectAndConfigureLock(options) {
     "[lock] selected rule already exists; refusing an ambiguous rerun",
   );
   const desiredRules = [...beforeRules, wanted];
-  const configured = await fetchLockConfiguration({
+  const configured = await fetchCloudflareJson({
     url,
     token: credentials.apiToken,
     method: "PUT",
@@ -597,7 +621,7 @@ export async function collectAndConfigureLock(options) {
     "lock-configure",
   );
   requireRuleSet(desiredRules, configuredRules, "lock-configure");
-  const readback = await fetchLockConfiguration({
+  const readback = await fetchCloudflareJson({
     url,
     token: credentials.apiToken,
     method: "GET",
@@ -634,7 +658,11 @@ export async function collectAndConfigureLock(options) {
     credential: {
       role: "lock-operator",
       credentialType: "cloudflare-r2-admin-read-write-api-token",
-      credentialIdSha256: credentials.credentialIdSha256,
+      credentialIdSha256: credentialIdentity.credentialIdSha256,
+      selfVerifiedAt: credentialVerifiedAt,
+      expiresAt: credentialIdentity.expiresAt,
+      remainingLifetimeSeconds:
+        credentialIdentity.remainingLifetimeSeconds,
     },
     facts: {
       mechanism: "cloudflare-r2-bucket-lock-api",
@@ -651,6 +679,11 @@ export async function collectAndConfigureLock(options) {
       unrelatedRulesPreserved: true,
     },
     providerOperations: [
+      operationReceipt(
+        "GET",
+        "credential-preflight",
+        credentialPreflight,
+      ),
       operationReceipt("GET", "lock-before", before),
       operationReceipt("PUT", "lock-configure", configured),
       operationReceipt("GET", "lock-after", readback),
@@ -684,7 +717,11 @@ function lockConfigurationUrl(target) {
   return url.toString();
 }
 
-async function fetchLockConfiguration(options) {
+function tokenVerificationUrl(target) {
+  return `${CLOUDFLARE_API_BASE}/accounts/${target.accountId}/tokens/verify`;
+}
+
+async function fetchCloudflareJson(options) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response;
@@ -772,6 +809,55 @@ async function fetchLockConfiguration(options) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function validateTokenVerification(value, observedAt) {
+  const verification = requireObject(
+    value,
+    "[credential-preflight] token verification",
+  );
+  allowedKeys(
+    verification,
+    ["expires_on", "id", "not_before", "status"],
+    "[credential-preflight] token verification",
+  );
+  requireCondition(
+    TOKEN_ID_PATTERN.test(verification.id) &&
+      verification.status === "active" &&
+      typeof verification.expires_on === "string",
+    "[credential-preflight] token identity, status, or expiry is invalid",
+  );
+  const observedMs = Date.parse(observedAt);
+  const expiresAt = requireTimestamp(
+    verification.expires_on,
+    "[credential-preflight] token expiry",
+  );
+  const expiresMs = Date.parse(expiresAt);
+  const remainingLifetimeMs = expiresMs - observedMs;
+  requireCondition(
+    remainingLifetimeMs >= 1_000 &&
+      remainingLifetimeMs <=
+        MAX_MUTABLE_CREDENTIAL_REMAINING_SECONDS * 1_000,
+    "[credential-preflight] mutable credential lifetime is outside the bound",
+  );
+  const remainingLifetimeSeconds = Math.floor(
+    remainingLifetimeMs / 1_000,
+  );
+  if (verification.not_before !== undefined) {
+    const notBefore = requireTimestamp(
+      verification.not_before,
+      "[credential-preflight] token not-before",
+    );
+    requireCondition(
+      Date.parse(notBefore) <= observedMs,
+      "[credential-preflight] token is not active yet",
+    );
+  }
+  return {
+    credentialIdSha256: sha256(verification.id),
+    expiresAt,
+    remainingLifetimeSeconds,
+  };
 }
 
 async function readBoundedResponse(response, label) {
@@ -939,6 +1025,8 @@ function collectorLimits() {
   return {
     requestTimeoutMs: REQUEST_TIMEOUT_MS,
     responseBytes: MAX_RESPONSE_BYTES,
+    mutableCredentialRemainingSeconds:
+      MAX_MUTABLE_CREDENTIAL_REMAINING_SECONDS,
     listPages: MAX_LIST_PAGES,
     listItems: MAX_LIST_ITEMS,
     lockRules: MAX_LOCK_RULES,
@@ -1053,6 +1141,16 @@ function exactKeys(value, keys, label) {
   const expected = [...keys].sort();
   requireCondition(
     sameJson(actual, expected),
+    `${label} fields drifted`,
+  );
+}
+
+function allowedKeys(value, keys, label) {
+  const allowed = new Set(keys);
+  requireCondition(
+    Object.keys(requireObject(value, label)).every((key) =>
+      allowed.has(key),
+    ),
     `${label} fields drifted`,
   );
 }

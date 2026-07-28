@@ -1137,6 +1137,13 @@ pub struct RelayContainerShardPlacementExecutionTicketActivationContextRow {
     pub database_now: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementExecutionTicketActivationReadSnapshot {
+    pub ticket: RelayContainerShardPlacementExecutionTicketRow,
+    pub activation: RelayContainerShardPlacementExecutionTicketActivationRow,
+    pub context: RelayContainerShardPlacementExecutionTicketActivationContextRow,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RelayContainerShardPlacementExecutionTicketActivation<'a> {
     pub ticket_id_sha256: &'a str,
@@ -1170,6 +1177,41 @@ pub struct RelayContainerShardPlacementExecutionTicketActivationRow {
     pub activation_digest_sha256: String,
     pub activated_by_admin_id: i64,
     pub activated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayContainerShardPlacementExecutionTicketAuthorityAck<'a> {
+    pub ticket_id_sha256: &'a str,
+    pub application_ticket_digest_sha256: &'a str,
+    pub authority_claim_digest_sha256: &'a str,
+    pub application_activation_digest_sha256: &'a str,
+    pub authority_activation_terminal_receipt_sha256: &'a str,
+    pub authority_ledger_head_sha256: &'a str,
+    pub authority_database_identity_sha256: &'a str,
+    pub authority_version_id: &'a str,
+    pub authority_read_credential_id_sha256: &'a str,
+    pub authority_read_request_id_sha256: &'a str,
+    pub acknowledgement_digest_sha256: &'a str,
+    pub acknowledged_by_admin_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementExecutionTicketAuthorityAckRow {
+    pub ticket_id_sha256: String,
+    pub contract_version: i64,
+    pub acknowledgement_contract: String,
+    pub application_ticket_digest_sha256: String,
+    pub authority_claim_digest_sha256: String,
+    pub application_activation_digest_sha256: String,
+    pub authority_activation_terminal_receipt_sha256: String,
+    pub authority_ledger_head_sha256: String,
+    pub authority_database_identity_sha256: String,
+    pub authority_version_id: String,
+    pub authority_read_credential_id_sha256: String,
+    pub authority_read_request_id_sha256: String,
+    pub acknowledgement_digest_sha256: String,
+    pub acknowledged_by_admin_id: i64,
+    pub acknowledged_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12359,6 +12401,18 @@ pub async fn relay_container_shard_placement_execution_ticket_activation_context
     ticket_id_sha256: &str,
 ) -> worker::Result<Option<RelayContainerShardPlacementExecutionTicketActivationContextRow>> {
     validate_relay_container_sha256(ticket_id_sha256, "shard placement execution ticket id")?;
+    relay_container_shard_placement_execution_ticket_activation_context_statement(
+        db,
+        ticket_id_sha256,
+    )?
+    .first::<RelayContainerShardPlacementExecutionTicketActivationContextRow>(None)
+    .await
+}
+
+fn relay_container_shard_placement_execution_ticket_activation_context_statement(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
     db.prepare(
         r#"
         SELECT authorization.campaign_nonce_sha256,
@@ -12376,9 +12430,7 @@ pub async fn relay_container_shard_placement_execution_ticket_activation_context
         LIMIT 1
         "#,
     )
-    .bind_refs(&D1Type::Text(ticket_id_sha256))?
-    .first::<RelayContainerShardPlacementExecutionTicketActivationContextRow>(None)
-    .await
+    .bind_refs(&D1Type::Text(ticket_id_sha256))
 }
 
 pub async fn relay_container_shard_placement_execution_ticket_activation(
@@ -12389,6 +12441,72 @@ pub async fn relay_container_shard_placement_execution_ticket_activation(
     relay_container_shard_placement_execution_ticket_activation_statement(db, ticket_id_sha256)?
         .first::<RelayContainerShardPlacementExecutionTicketActivationRow>(None)
         .await
+}
+
+pub async fn relay_container_shard_placement_execution_ticket_activation_read_snapshot(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<Option<RelayContainerShardPlacementExecutionTicketActivationReadSnapshot>> {
+    validate_relay_container_sha256(ticket_id_sha256, "shard placement execution ticket id")?;
+    let results = db
+        .batch(vec![
+            relay_container_shard_placement_execution_ticket_statement(db, ticket_id_sha256)?,
+            relay_container_shard_placement_execution_ticket_activation_statement(
+                db,
+                ticket_id_sha256,
+            )?,
+            relay_container_shard_placement_execution_ticket_activation_context_statement(
+                db,
+                ticket_id_sha256,
+            )?,
+        ])
+        .await?;
+    if results.len() != 3 {
+        return Err(worker::Error::RustError(
+            "shard placement execution ticket activation snapshot is incomplete".to_string(),
+        ));
+    }
+    let mut results = results.into_iter();
+    let ticket = results
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement execution ticket snapshot is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementExecutionTicketRow>()?
+        .into_iter()
+        .next();
+    let activation = results
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement execution ticket activation snapshot is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementExecutionTicketActivationRow>()?
+        .into_iter()
+        .next();
+    let context = results
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement execution ticket activation context is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementExecutionTicketActivationContextRow>()?
+        .into_iter()
+        .next();
+    match (ticket, activation, context) {
+        (Some(ticket), Some(activation), Some(context)) => Ok(Some(
+            RelayContainerShardPlacementExecutionTicketActivationReadSnapshot {
+                ticket,
+                activation,
+                context,
+            },
+        )),
+        _ => Ok(None),
+    }
 }
 
 pub async fn activate_relay_container_shard_placement_execution_ticket(
@@ -12525,6 +12643,154 @@ pub async fn activate_relay_container_shard_placement_execution_ticket(
         })
 }
 
+pub async fn relay_container_shard_placement_execution_ticket_authority_ack(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<Option<RelayContainerShardPlacementExecutionTicketAuthorityAckRow>> {
+    validate_relay_container_sha256(ticket_id_sha256, "shard placement execution ticket id")?;
+    relay_container_shard_placement_execution_ticket_authority_ack_statement(db, ticket_id_sha256)?
+        .first::<RelayContainerShardPlacementExecutionTicketAuthorityAckRow>(None)
+        .await
+}
+
+pub async fn acknowledge_relay_container_shard_placement_execution_ticket_authority(
+    db: &D1Database,
+    acknowledgement: &RelayContainerShardPlacementExecutionTicketAuthorityAck<'_>,
+    admin_audit: worker::D1PreparedStatement,
+) -> worker::Result<RelayContainerShardPlacementExecutionTicketAuthorityAckRow> {
+    for (value, field) in [
+        (
+            acknowledgement.ticket_id_sha256,
+            "shard placement execution ticket id",
+        ),
+        (
+            acknowledgement.application_ticket_digest_sha256,
+            "shard placement application ticket digest",
+        ),
+        (
+            acknowledgement.authority_claim_digest_sha256,
+            "shard placement Authority claim digest",
+        ),
+        (
+            acknowledgement.application_activation_digest_sha256,
+            "shard placement application activation digest",
+        ),
+        (
+            acknowledgement.authority_activation_terminal_receipt_sha256,
+            "shard placement Authority activation terminal receipt",
+        ),
+        (
+            acknowledgement.authority_ledger_head_sha256,
+            "shard placement Authority ledger head",
+        ),
+        (
+            acknowledgement.authority_database_identity_sha256,
+            "shard placement Authority database identity",
+        ),
+        (
+            acknowledgement.authority_read_credential_id_sha256,
+            "shard placement Authority read credential id",
+        ),
+        (
+            acknowledgement.authority_read_request_id_sha256,
+            "shard placement Authority read request id",
+        ),
+        (
+            acknowledgement.acknowledgement_digest_sha256,
+            "shard placement Authority acknowledgement digest",
+        ),
+    ] {
+        validate_relay_container_sha256(value, field)?;
+    }
+    validate_relay_container_token(
+        acknowledgement.authority_version_id,
+        "shard placement Authority version id",
+        1,
+        128,
+        |byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'),
+    )?;
+    if acknowledgement.acknowledged_by_admin_id <= 0
+        || acknowledgement.authority_claim_digest_sha256
+            == acknowledgement.application_activation_digest_sha256
+        || acknowledgement.authority_claim_digest_sha256
+            == acknowledgement.authority_activation_terminal_receipt_sha256
+        || acknowledgement.application_activation_digest_sha256
+            == acknowledgement.authority_activation_terminal_receipt_sha256
+        || acknowledgement.authority_read_credential_id_sha256
+            == acknowledgement.authority_read_request_id_sha256
+    {
+        return Err(worker::Error::RustError(
+            "shard placement Authority acknowledgement is invalid".to_string(),
+        ));
+    }
+
+    let acknowledged_by_admin_id = acknowledgement.acknowledged_by_admin_id.to_string();
+    let args = [
+        D1Type::Text(acknowledgement.ticket_id_sha256),
+        D1Type::Text(acknowledgement.application_ticket_digest_sha256),
+        D1Type::Text(acknowledgement.authority_claim_digest_sha256),
+        D1Type::Text(acknowledgement.application_activation_digest_sha256),
+        D1Type::Text(acknowledgement.authority_activation_terminal_receipt_sha256),
+        D1Type::Text(acknowledgement.authority_ledger_head_sha256),
+        D1Type::Text(acknowledgement.authority_database_identity_sha256),
+        D1Type::Text(acknowledgement.authority_version_id),
+        D1Type::Text(acknowledgement.authority_read_credential_id_sha256),
+        D1Type::Text(acknowledgement.authority_read_request_id_sha256),
+        D1Type::Text(acknowledgement.acknowledgement_digest_sha256),
+        D1Type::Text(&acknowledged_by_admin_id),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT INTO relay_container_shard_placement_execution_ticket_authority_acks (
+              ticket_id_sha256, contract_version, acknowledgement_contract,
+              application_ticket_digest_sha256,
+              authority_claim_digest_sha256,
+              application_activation_digest_sha256,
+              authority_activation_terminal_receipt_sha256,
+              authority_ledger_head_sha256,
+              authority_database_identity_sha256, authority_version_id,
+              authority_read_credential_id_sha256,
+              authority_read_request_id_sha256,
+              acknowledgement_digest_sha256,
+              acknowledged_by_admin_id, acknowledged_at
+            )
+            VALUES (
+              ?1, 1,
+              'cinatoken-relay-container-shard-placement-authority-ack-v1',
+              ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+              CAST(?12 AS INTEGER), unixepoch()
+            )
+            "#,
+        )
+        .bind_refs(&args)?;
+    let readback = relay_container_shard_placement_execution_ticket_authority_ack_statement(
+        db,
+        acknowledgement.ticket_id_sha256,
+    )?;
+    let mut results = db.batch(vec![insert, admin_audit, readback]).await?;
+    if results.len() != 3 {
+        return Err(worker::Error::RustError(
+            "shard placement Authority acknowledgement batch result is incomplete".to_string(),
+        ));
+    }
+    results
+        .pop()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement Authority acknowledgement readback is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementExecutionTicketAuthorityAckRow>()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement Authority acknowledgement readback is missing".to_string(),
+            )
+        })
+}
+
 fn relay_container_shard_placement_execution_ticket_activation_statement(
     db: &D1Database,
     ticket_id_sha256: &str,
@@ -12542,6 +12808,31 @@ fn relay_container_shard_placement_execution_ticket_activation_statement(
                activation_request_id_sha256, activation_digest_sha256,
                activated_by_admin_id, activated_at
         FROM relay_container_shard_placement_execution_ticket_activations
+        WHERE ticket_id_sha256 = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&D1Type::Text(ticket_id_sha256))
+}
+
+fn relay_container_shard_placement_execution_ticket_authority_ack_statement(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    db.prepare(
+        r#"
+        SELECT ticket_id_sha256, contract_version, acknowledgement_contract,
+               application_ticket_digest_sha256,
+               authority_claim_digest_sha256,
+               application_activation_digest_sha256,
+               authority_activation_terminal_receipt_sha256,
+               authority_ledger_head_sha256,
+               authority_database_identity_sha256, authority_version_id,
+               authority_read_credential_id_sha256,
+               authority_read_request_id_sha256,
+               acknowledgement_digest_sha256,
+               acknowledged_by_admin_id, acknowledged_at
+        FROM relay_container_shard_placement_execution_ticket_authority_acks
         WHERE ticket_id_sha256 = ?1
         LIMIT 1
         "#,

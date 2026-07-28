@@ -24,6 +24,46 @@ const clientSource = await Bun.file(
 const repositorySource = await Bun.file(
   new URL("../crates/worker/src/d1_repositories.rs", import.meta.url),
 ).text();
+const activationReadSource = await Bun.file(
+  new URL(
+    "../crates/worker/src/container_shard_placement_activation_read.rs",
+    import.meta.url,
+  ),
+).text();
+const acknowledgementSource = await Bun.file(
+  new URL(
+    "../crates/worker/src/container_shard_placement_authority_ack_admin.rs",
+    import.meta.url,
+  ),
+).text();
+const authorityActivationSource = await Bun.file(
+  new URL(
+    "../services/shard-placement-authority/src/activate_ticket.ts",
+    import.meta.url,
+  ),
+).text();
+const authorityClientSource = await Bun.file(
+  new URL(
+    "../services/shard-placement-authority/src/application_activation_client.ts",
+    import.meta.url,
+  ),
+).text();
+const authorityLocalConfig = JSON.parse(
+  await Bun.file(
+    new URL(
+      "../services/shard-placement-authority/wrangler.jsonc",
+      import.meta.url,
+    ),
+  ).text(),
+);
+const authorityStagingConfig = JSON.parse(
+  await Bun.file(
+    new URL(
+      "../services/shard-placement-authority/wrangler.staging.jsonc",
+      import.meta.url,
+    ),
+  ).text(),
+);
 
 const activationPath =
   "/api/platform/container/shards/placement-execution-tickets/:ticket_id/activate";
@@ -190,6 +230,123 @@ describe("application placement execution ticket activation contract", () => {
     expect(repositorySource).toContain(
       "LEFT JOIN relay_container_shard_activation_campaign_seals AS seal",
     );
+  });
+
+  test("exposes one strict application activation read boundary", () => {
+    expect(libSource).toContain(
+      '"/internal/v1/shard-placement/execution-ticket-activations/:ticket_id"',
+    );
+    expect(activationReadSource).toContain(
+      '"x-cinatoken-shard-placement-application"',
+    );
+    expect(activationReadSource).toContain(
+      "cinatoken-shard-placement-application-v1\\n",
+    );
+    expect(activationReadSource).toContain(
+      'claims.role != "activation_read"',
+    );
+    expect(activationReadSource).toContain(
+      "request_has_forbidden_ambient_headers(&req)",
+    );
+    expect(activationReadSource.indexOf("verify_token(")).toBeLessThan(
+      activationReadSource.indexOf('env.d1("DB")'),
+    );
+    expect(activationReadSource).toContain(
+      "relay_container_shard_placement_execution_ticket_activation_read_snapshot",
+    );
+    expect(activationReadSource).toContain(
+      'response.headers_mut().set("Cache-Control", "no-store")',
+    );
+  });
+
+  test("persists Authority operation-4 start before application read", () => {
+    const startAppend = authorityActivationSource.indexOf(
+      "const appended = await dependencies.appendReceipt(",
+    );
+    const applicationRead = authorityActivationSource.indexOf(
+      "const readback = await dependencies.readActivation(",
+    );
+    const terminalBuild = authorityActivationSource.indexOf(
+      "const terminal = await buildOperationReceipt(",
+    );
+    expect(startAppend).toBeGreaterThan(-1);
+    expect(startAppend).toBeLessThan(applicationRead);
+    expect(applicationRead).toBeLessThan(terminalBuild);
+    expect(authorityActivationSource).toContain(
+      "requireRecoverableOperationFour(snapshot, operation, requestSha256)",
+    );
+    expect(authorityActivationSource).toContain(
+      "SHARD_PLACEMENT_AUTHORITY_ACTIVATION_WRITE_ENABLED",
+    );
+    expect(authorityClientSource).toContain(
+      "SHARD_PLACEMENT_APPLICATION.fetch",
+    );
+    expect(authorityClientSource).toContain(
+      '"x-cinatoken-shard-placement-application": token',
+    );
+    expect(authorityClientSource).toContain(
+      "responseSha256: await sha256Hex(bytes)",
+    );
+  });
+
+  test("records the exact Authority terminal in application D1", () => {
+    const acknowledgementPath =
+      "/api/platform/container/shards/placement-execution-tickets/:ticket_id/acknowledge-authority";
+    expect(libSource).toContain(`"${acknowledgementPath}"`);
+    expect(acknowledgementSource).toContain("require_root_auth(&req, &env)");
+    expect(acknowledgementSource).toContain(
+      "require_secure_verification(&req, &env, claims.id)",
+    );
+    expect(acknowledgementSource).toContain(
+      "exact_operation_four_terminal(",
+    );
+    expect(acknowledgementSource).toContain(
+      "fresh_operation_four_terminal(",
+    );
+    expect(acknowledgementSource).toContain(
+      "acknowledge_relay_container_shard_placement_execution_ticket_authority",
+    );
+    expect(repositorySource).toContain(
+      "INSERT INTO relay_container_shard_placement_execution_ticket_authority_acks",
+    );
+    expect(repositorySource).not.toContain(
+      "INSERT OR IGNORE INTO relay_container_shard_placement_execution_ticket_authority_acks",
+    );
+  });
+
+  test("keeps both operation-4 directions default-off and production-absent", () => {
+    for (const config of [authorityLocalConfig, authorityStagingConfig]) {
+      expect(config.services).toHaveLength(1);
+      expect(config.services[0].binding).toBe(
+        "SHARD_PLACEMENT_APPLICATION",
+      );
+      expect(
+        config.vars.SHARD_PLACEMENT_AUTHORITY_ACTIVATION_READ_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars.SHARD_PLACEMENT_AUTHORITY_ACTIVATION_WRITE_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars
+          .SHARD_PLACEMENT_APPLICATION_ACTIVATION_READ_HMAC_CURRENT_SECRET,
+      ).toBeUndefined();
+    }
+    for (const scope of [rootConfig, rootConfig.env.staging]) {
+      expect(
+        scope.vars.RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ENABLED,
+      ).toBe("false");
+      expect(
+        scope.vars
+          .RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_AUTHORITY_ACK_WRITE_ENABLED,
+      ).toBe("false");
+    }
+    for (const name of [
+      "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ENABLED",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_AUTHORITY_ACK_WRITE_ENABLED",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_SECRET",
+    ]) {
+      expect(rootConfig.env.production.vars[name]).toBeUndefined();
+    }
   });
 
   test("is included in the aggregate scheduler/config gate", () => {

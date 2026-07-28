@@ -585,7 +585,7 @@ fn ticket_context_matches(
         && context.campaign_expires_at == ticket.execution_deadline_at
 }
 
-fn authority_claim_identity_matches(
+pub(crate) fn authority_claim_identity_matches(
     response: &AuthorityExecutionClaimReadResponse,
     ticket: &RelayContainerShardPlacementExecutionTicketRow,
     context: &RelayContainerShardPlacementExecutionTicketActivationContextRow,
@@ -656,7 +656,7 @@ fn authority_claim_is_activatable(
         && response.snapshot.receipts.len() == 1
         && state.receipt_head_sha256 == claim.claim_acquired_receipt_sha256
         && !state.controller_enable_intent_recorded
-        && !state.controller_disabled_verified
+        && state.controller_disabled_verified
         && state.application_activation_digest_sha256.is_none()
         && !state.ticket_activation_confirmed
         && state.renewal_count == 0
@@ -1058,7 +1058,7 @@ mod tests {
                     receipt_count: 1,
                     receipt_head_sha256: digest('0'),
                     controller_enable_intent_recorded: false,
-                    controller_disabled_verified: false,
+                    controller_disabled_verified: true,
                     application_activation_digest_sha256: None,
                     ticket_activation_confirmed: false,
                     renewal_count: 0,

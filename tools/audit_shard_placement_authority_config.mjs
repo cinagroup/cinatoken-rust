@@ -36,6 +36,8 @@ export const REQUIRED_DISABLED_GATES = Object.freeze([
   "SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED",
   "SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED",
   "SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED",
+  "SHARD_PLACEMENT_AUTHORITY_ACTIVATION_READ_ENABLED",
+  "SHARD_PLACEMENT_AUTHORITY_ACTIVATION_WRITE_ENABLED",
 ]);
 export const REQUIRED_REMOTE_BINDINGS = Object.freeze([
   "SHARD_PLACEMENT_PERMIT_SPKI_BASE64URL",
@@ -55,6 +57,7 @@ export const REQUIRED_REMOTE_BINDINGS = Object.freeze([
   "SHARD_PLACEMENT_RECEIPT_HMAC_PREVIOUS_SECRET",
   "SHARD_PLACEMENT_RECOVERY_HMAC_CURRENT_SECRET",
   "SHARD_PLACEMENT_RECOVERY_HMAC_PREVIOUS_SECRET",
+  "SHARD_PLACEMENT_APPLICATION_ACTIVATION_READ_HMAC_CURRENT_SECRET",
 ]);
 
 const WORKER_NAMES = Object.freeze({
@@ -70,6 +73,7 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   "preview_urls",
   "observability",
   "version_metadata",
+  "services",
   "vars",
   "d1_databases",
 ]);
@@ -79,7 +83,6 @@ const PROHIBITED_BINDING_KEYS = Object.freeze([
   "durable_objects",
   "containers",
   "queues",
-  "services",
   "assets",
   "ai",
   "vectorize",
@@ -101,6 +104,7 @@ const EMPTY_TRUST_PATTERNS = Object.freeze([
   /^SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256$/,
   /^SHARD_PLACEMENT_(?:PERMIT|SECURITY|OPERATIONS|RELEASE|ROLLBACK)_(?:KEY_ID|SPKI_SHA256)$/,
   /^SHARD_PLACEMENT_(?:READ|ISSUE|REVOKE|CLAIM|RECEIPT|RECOVERY)_HMAC_(?:CURRENT|PREVIOUS)_(?:KID|CREDENTIAL_ID_SHA256)$/,
+  /^SHARD_PLACEMENT_APPLICATION_ACTIVATION_READ_HMAC_CURRENT_(?:KID|CREDENTIAL_ID_SHA256)$/,
 ]);
 const DATABASE_ID =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|REPLACE_WITH_[A-Z0-9_]+)$/i;
@@ -171,6 +175,19 @@ export function auditConfig(config, environment) {
     config.version_metadata,
     { binding: "CF_VERSION_METADATA" },
     "version_metadata",
+  );
+  if (!Array.isArray(config.services) || config.services.length !== 1) {
+    throw new ShardPlacementAuthorityConfigAuditError(
+      "exactly one application Service Binding is required",
+    );
+  }
+  requireExactObject(
+    config.services[0],
+    {
+      binding: "SHARD_PLACEMENT_APPLICATION",
+      service: `cinatoken-rust-api-${environment}`,
+    },
+    "application Service Binding",
   );
   if (
     !isRecord(config.observability)
@@ -264,6 +281,7 @@ export function auditConfig(config, environment) {
     bindings: Object.freeze([
       "d1_databases.DB",
       "version_metadata.CF_VERSION_METADATA",
+      "services.SHARD_PLACEMENT_APPLICATION",
     ]),
     databaseName: DATABASES[environment],
     ingress: "service_binding_only",

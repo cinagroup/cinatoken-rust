@@ -204,7 +204,7 @@ describe("shard placement Authority migration", () => {
       predecessorReceiptSha256: "e".repeat(64),
       requestSha256: "c".repeat(64),
       responseSha256: "f".repeat(64),
-      evidenceSha256: "0".repeat(64),
+      evidenceSha256: "d".repeat(64),
       outcome: "exact_success",
       leaseOwnerSha256: claimed.lease_owner_sha256,
       leaseTokenSha256: claimed.lease_token_sha256,
@@ -217,7 +217,7 @@ describe("shard placement Authority migration", () => {
       ledger_version: 3,
       last_completed_ordinal: 4,
       inflight_operation_ordinal: null,
-      application_activation_digest_sha256: "0".repeat(64),
+      application_activation_digest_sha256: "d".repeat(64),
       ticket_activation_confirmed: 1,
     });
 
@@ -245,6 +245,80 @@ describe("shard placement Authority migration", () => {
     `).run(issuance.authorization_id_sha256)).toThrow(
       "placement execution receipts are append-preserved",
     );
+  });
+
+  test("rejects operation-4 terminal when revocation races application readback", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    const issuance = validIssuance();
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+    const claimed = readExecutionClaim(database);
+    insertExecutionReceipt(database, {
+      authorizationIdSha256: issuance.authorization_id_sha256,
+      sequence: 2,
+      eventKind: "operation_started",
+      operationOrdinal: 4,
+      operationIdSha256: "4".repeat(64),
+      operationKind: "activate_execution_ticket",
+      predecessorReceiptSha256: "b".repeat(64),
+      requestSha256: "c".repeat(64),
+      responseSha256: null,
+      evidenceSha256: "d".repeat(64),
+      outcome: "pending",
+      leaseOwnerSha256: claimed.lease_owner_sha256,
+      leaseTokenSha256: claimed.lease_token_sha256,
+      leaseGeneration: claimed.lease_generation,
+      leaseExpiresAt: claimed.lease_expires_at,
+      receiptDigestSha256: "e".repeat(64),
+    });
+    database.query(`
+      INSERT INTO shard_placement_authority_revocations (
+        authorization_id_sha256, permit_subject_digest_sha256,
+        reason_code, evidence_sha256, revocation_event_sha256,
+        revoke_credential_id_sha256
+      ) VALUES (?, ?, 'operator_abort', ?, ?, ?)
+    `).run(
+      issuance.authorization_id_sha256,
+      issuance.permit_subject_digest_sha256,
+      "f".repeat(64),
+      "0".repeat(64),
+      "2".repeat(64),
+    );
+    expect(readExecutionClaim(database)).toMatchObject({
+      status: "revoked",
+      inflight_operation_ordinal: 4,
+      ticket_activation_confirmed: 0,
+    });
+    expect(() => insertExecutionReceipt(database, {
+      authorizationIdSha256: issuance.authorization_id_sha256,
+      sequence: 3,
+      eventKind: "operation_terminal",
+      operationOrdinal: 4,
+      operationIdSha256: "4".repeat(64),
+      operationKind: "activate_execution_ticket",
+      predecessorReceiptSha256: "e".repeat(64),
+      requestSha256: "c".repeat(64),
+      responseSha256: "f".repeat(64),
+      evidenceSha256: "d".repeat(64),
+      outcome: "exact_success",
+      leaseOwnerSha256: claimed.lease_owner_sha256,
+      leaseTokenSha256: claimed.lease_token_sha256,
+      leaseGeneration: claimed.lease_generation,
+      leaseExpiresAt: claimed.lease_expires_at,
+      receiptDigestSha256: "1".repeat(64),
+    })).toThrow(
+      "placement execution terminal is not an exact readback",
+    );
+    expect(readExecutionClaim(database)).toMatchObject({
+      status: "revoked",
+      ledger_version: 2,
+      ticket_activation_confirmed: 0,
+      application_activation_digest_sha256: null,
+    });
   });
 
   test("takes over only an expired lease and permanently fences the old owner", () => {
@@ -332,6 +406,25 @@ describe("shard placement Authority migration", () => {
       leaseTokenSha256: original.lease_token_sha256,
       leaseGeneration: 1,
       leaseExpiresAt: expired.lease_expires_at,
+      receiptDigestSha256: "4".repeat(64),
+    })).toThrow("placement execution operation start is invalid");
+
+    expect(() => insertExecutionReceipt(database, {
+      authorizationIdSha256: issuance.authorization_id_sha256,
+      sequence: 3,
+      eventKind: "operation_started",
+      operationOrdinal: 4,
+      operationIdSha256: "4".repeat(64),
+      operationKind: "activate_execution_ticket",
+      predecessorReceiptSha256: "0".repeat(64),
+      requestSha256: "1".repeat(64),
+      responseSha256: null,
+      evidenceSha256: "2".repeat(64),
+      outcome: "pending",
+      leaseOwnerSha256: takenOver.lease_owner_sha256,
+      leaseTokenSha256: takenOver.lease_token_sha256,
+      leaseGeneration: takenOver.lease_generation,
+      leaseExpiresAt: takenOver.lease_expires_at,
       receiptDigestSha256: "4".repeat(64),
     })).toThrow("placement execution operation start is invalid");
   });

@@ -4092,3 +4092,37 @@ remains **NO-GO**.
 The complete local repository gate passed with exit code 0 in 935.6 seconds.
 The Worker library passed 886 tests and the Wasm build retained only the 21
 existing `dead_code` warnings.
+
+## 2026-07-28 Operation-4 Two-Ledger Handshake
+
+Phase 1 now has a complete local, default-off operation-4 handshake. The
+application exposes one authenticated exact activation read through an
+independent application HMAC domain. Authority persists operation start before
+that cross-Worker read, validates the strict no-store response, re-reads its
+current lease/receipt/revocation state, and appends one terminal receipt whose
+response digest covers the exact application bytes. Application then mirrors
+that exact terminal/head/version tuple in the append-only 0064 acknowledgement
+table with administrator audit and exact readback.
+
+Application reads use one D1 batch for ticket, activation, and D1-time context.
+Authority retries require the same receipt credential and HMAC request
+identity. Response loss can resume an existing start but cannot resend a
+mutation or substitute new activation evidence. Existing terminal and
+acknowledgement rows classify only exact replay.
+
+The undeployed Authority 0002 start and terminal triggers now keep operation 4
+on the pristine generation-1 claim with the sole acquisition predecessor and
+reject a racing revocation or any lease, renewal, takeover, enable, credential,
+request, predecessor, or evidence drift. SQLite tests prove a taken-over claim
+cannot start operation 4 and a revoked in-flight claim remains unprojected. The
+application activation bootstrap also now correctly requires the Authority's
+initially verified disabled Controller baseline.
+
+All new local/staging gates are false and every secret remains a Worker secret
+placeholder outside tracked configuration. Production declares neither side
+of the new Service Binding. This is not operation-5 authority: remaining P0 is
+the immediate pre-enable revocation plus acknowledgement fence, independently
+scoped workload identities, the operation 5-14 resumable runner, adversarial
+cross-Worker fault campaigns, remote inventory/credential evidence, and the
+Go/VPS shadow, rollback, drain, and reverse-sync ceremony. Go/VPS remains
+authoritative and production remains **NO-GO**.

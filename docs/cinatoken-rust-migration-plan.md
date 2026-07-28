@@ -23197,3 +23197,116 @@ Worker library passed 886 tests, the Authority Workerd suite passed five
 additional consecutive runs after replacing a fixed wall-clock sleep with D1
 time polling, and the Worker Wasm check retained only the 21 existing
 `dead_code` warnings.
+
+## 22.321 Local Operation-4 Two-Ledger Handshake Closure (2026-07-28)
+
+This checkpoint completes the local application-read, Authority operation-4,
+and application-acknowledgement paths left open by 22.320. It does not enable
+operation 5, replace the Go/VPS authority, apply a remote migration, or approve
+staging or production.
+
+### Application exact activation read
+
+The application Worker now exposes the private Service-Binding route:
+
+`GET /internal/v1/shard-placement/execution-ticket-activations/:ticket_id`
+
+The request uses the independent
+`cinatoken-shard-placement-application-v1` HMAC domain, the
+`x-cinatoken-shard-placement-application` header, and the
+`activation_read` role. It rejects ambient cookie, Origin, content encoding,
+non-empty bodies, non-canonical query order, expired signatures, and every
+ticket, claim, activation, database, ledger, deadline, seal, or digest
+mismatch before returning evidence.
+
+One D1 batch reads the immutable ticket, activation, and authorization/campaign
+time context. The response is strict no-store JSON and includes the exact
+request ID, application version, D1 time, ticket and activation identities,
+Authority version, activation and execution deadlines, permit/campaign
+deadlines, and seal state. The read grants no write or enable authority.
+
+### Authority operation 4
+
+The private Authority now accepts:
+
+`POST /internal/v1/shard-placement/execution-claims/:authorization/activate-ticket`
+
+The route remains behind the existing receipt-role HMAC plus separate
+default-off activation read and write gates. Its caller supplies only the
+immutable authorization, claim owner/digest, application activation digest,
+and application activation request digest. Lease owner/token/generation,
+operation identity, sequence, predecessor, receipt credential, Authority
+version, and timestamps are derived from authenticated state.
+
+The Authority persists the deterministic operation-started receipt before
+calling the application Service Binding. A lost application response therefore
+leaves one resumable in-flight operation instead of an unprovable send. An
+exact retry must use the same HMAC request identity and credential, reuses the
+same start, performs only the exact application read, re-reads current
+Authority state, and appends one predecessor-bound terminal receipt. Existing
+matching terminal evidence returns exact replay without another mutation.
+
+The application client rejects redirects, responses larger than 64 KiB,
+cacheable/non-JSON responses, unknown fields, timeouts beyond three seconds,
+and any application/ticket/claim/operation/version/deadline mismatch. The
+terminal receipt hashes the exact response bytes and projects only the
+application activation digest.
+
+The undeployed Authority migration 0002 now has operation-4-specific start and
+terminal fences. Start requires the pristine generation-1 claim, the sole
+acquisition predecessor, no renewal or takeover, and no prior activation or
+enable projection. A revocation, lease generation change, renewal, takeover,
+enable intent, prior activation projection, request/credential drift, or
+predecessor/evidence drift between readback and terminal insertion aborts the
+insert in D1. Migration tests prove that a taken-over owner cannot start
+operation 4 and that no terminal receipt or activation projection is created
+after a concurrent revocation.
+
+### Application Authority acknowledgement
+
+The root plus secure-verification bootstrap route:
+
+`POST /api/platform/container/shards/placement-execution-tickets/:ticket_id/acknowledge-authority`
+
+reads the exact Authority claim through the existing private binding and
+requires the complete acquisition, operation-4 start, and operation-4 terminal
+chain. Fresh acknowledgement additionally requires operation 4 to be complete,
+operation 5 not started, no renewal/takeover, the lease and every application
+deadline still live, and the application campaign unsealed.
+
+Application D1 writes the create-only acknowledgement, administrator audit,
+and exact readback in one batch. Its digest binds the ticket, claim,
+application activation, Authority terminal/head/database/version, read
+credential, administrator, and read request. A raced or lost response is
+accepted only when the immutable row is byte-for-byte equivalent under that
+digest. The existing 0064 trigger remains the final D1-time admission fence.
+
+### Deployment posture and remaining P0
+
+Local and staging declare only the two private Service Bindings needed for the
+handshake. All application read, Authority activation read/write, activation
+write, and acknowledgement write gates are checked in as `false`. Key and
+credential IDs remain empty, HMAC secrets are absent from tracked variables,
+and production has neither binding nor gate.
+
+Before isolated staging can reach operation 5:
+
+1. replace both root bootstrap mutations and the shared receipt role with
+   independently scoped workload identities and overlap rotation;
+2. synchronously recheck or mirror revocation and the application
+   acknowledgement at the operation-5 start fence;
+3. implement the operation-5 through operation-14 resumable runner, reserving
+   disable capacity and forbidding resend after ambiguous mutation;
+4. add cross-worker double-runner, response-loss, timeout, expiry, renewal,
+   takeover, stale-read, revocation, corrupt-response, and disable-ambiguity
+   fault campaigns;
+5. collect independent remote binding, Access, identity, catalog, zero-row,
+   version, credential, and historical-token revocation evidence; and
+6. complete Go/VPS shadow comparison, rollback, drain, and reverse-sync proof
+   before any traffic or DNS review.
+
+Focused Rust, TypeScript, SQLite migration, Workerd, Wrangler type/config, and
+dry-run build checks pass locally. No credential was read, no remote request,
+migration, gate change, Container wake, customer traffic, billing authority,
+Go/VPS drain, DNS change, or production mutation occurred. Production remains
+**NO-GO**.

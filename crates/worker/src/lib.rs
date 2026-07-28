@@ -34,7 +34,9 @@ mod container_relay_canary;
 mod container_scheduler;
 mod container_shard_activation_admin;
 mod container_shard_activation_campaign_admin;
+mod container_shard_placement_activation_read;
 mod container_shard_placement_admin;
+mod container_shard_placement_authority_ack_admin;
 mod container_shard_placement_authorization_admin;
 mod container_shard_placement_execution_ticket_admin;
 #[allow(dead_code)]
@@ -238,6 +240,30 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             |req, ctx| async move {
                 let ticket_id = ctx.param("ticket_id").cloned();
                 container_shard_placement_execution_ticket_admin::activate(
+                    req,
+                    ctx.env,
+                    ticket_id,
+                )
+                .await
+            },
+        )
+        .post_async(
+            "/api/platform/container/shards/placement-execution-tickets/:ticket_id/acknowledge-authority",
+            |req, ctx| async move {
+                let ticket_id = ctx.param("ticket_id").cloned();
+                container_shard_placement_authority_ack_admin::acknowledge(
+                    req,
+                    ctx.env,
+                    ticket_id,
+                )
+                .await
+            },
+        )
+        .get_async(
+            "/internal/v1/shard-placement/execution-ticket-activations/:ticket_id",
+            |req, ctx| async move {
+                let ticket_id = ctx.param("ticket_id").cloned();
+                container_shard_placement_activation_read::read_exact(
                     req,
                     ctx.env,
                     ticket_id,
@@ -2504,9 +2530,11 @@ mod tests {
             "/api/token/",
             "/api/channel/",
             "/api/log/",
+            "/api/platform/container/shards/placement-execution-tickets/:ticket_id/acknowledge-authority",
             "/internal",
             "/internal/v1/status",
             "/internal/v1/operations",
+            "/internal/v1/shard-placement/execution-ticket-activations/:ticket_id",
             "/v1/models",
             "/v1/chat/completions",
             "/v1/completions",

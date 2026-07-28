@@ -26,6 +26,7 @@ describe("shard placement Authority configuration", () => {
         bindings: [
           "d1_databases.DB",
           "version_metadata.CF_VERSION_METADATA",
+          "services.SHARD_PLACEMENT_APPLICATION",
         ],
         gatesDefaultOff: true,
         ingress: "service_binding_only",
@@ -35,7 +36,7 @@ describe("shard placement Authority configuration", () => {
     }
   });
 
-  test("rejects application bindings, enabled gates, and tracked secrets", () => {
+  test("rejects unexpected bindings, enabled gates, and tracked secrets", () => {
     const base = {
       name: "cinatoken-shard-placement-authority-local",
       main: "src/index.ts",
@@ -44,6 +45,10 @@ describe("shard placement Authority configuration", () => {
       preview_urls: false,
       observability: { enabled: true, head_sampling_rate: 1 },
       version_metadata: { binding: "CF_VERSION_METADATA" },
+      services: [{
+        binding: "SHARD_PLACEMENT_APPLICATION",
+        service: "cinatoken-rust-api-local",
+      }],
       vars: {
         ENVIRONMENT: "local",
         SHARD_PLACEMENT_AUTHORITY_ENABLED: "false",
@@ -53,6 +58,15 @@ describe("shard placement Authority configuration", () => {
         SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_ACTIVATION_READ_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_ACTIVATION_WRITE_ENABLED: "false",
+        SHARD_PLACEMENT_APPLICATION_ISSUER:
+          "cinatoken-shard-placement-authority-local",
+        SHARD_PLACEMENT_APPLICATION_AUDIENCE:
+          "cinatoken-rust-api-local",
+        SHARD_PLACEMENT_APPLICATION_ACTIVATION_READ_HMAC_CURRENT_KID: "",
+        SHARD_PLACEMENT_APPLICATION_ACTIVATION_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "",
         SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: "",
         SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: "",
         SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: "",

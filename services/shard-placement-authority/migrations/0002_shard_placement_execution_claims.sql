@@ -1098,6 +1098,24 @@ BEGIN
             claim.last_completed_ordinal + 1
           AND NEW.operation_ordinal BETWEEN 4 AND 13
           AND (
+            NEW.operation_ordinal <> 4
+            OR (
+              claim.status = 'claimed'
+              AND claim.ledger_version = 1
+              AND claim.last_completed_ordinal = 3
+              AND claim.lease_generation = 1
+              AND claim.renewal_count = 0
+              AND claim.takeover_count = 0
+              AND claim.ticket_activation_confirmed = 0
+              AND claim.application_activation_digest_sha256 IS NULL
+              AND claim.enable_intent_seen = 0
+              AND claim.disable_confirmed = 1
+              AND NEW.sequence = 2
+              AND NEW.predecessor_receipt_sha256 =
+                claim.claim_acquired_receipt_digest_sha256
+            )
+          )
+          AND (
             NEW.operation_ordinal <> 5
             OR (
               claim.ticket_activation_confirmed = 1
@@ -1157,6 +1175,36 @@ BEGIN
         claim.lease_expires_at
       AND NEW.recorded_at < claim.lease_expires_at
       AND NEW.recorded_at < claim.recovery_deadline_at
+      AND (
+        NEW.operation_ordinal <> 4
+        OR (
+          claim.status = 'running'
+          AND claim.lease_generation = 1
+          AND claim.renewal_count = 0
+          AND claim.takeover_count = 0
+          AND claim.ticket_activation_confirmed = 0
+          AND claim.application_activation_digest_sha256 IS NULL
+          AND claim.enable_intent_seen = 0
+          AND claim.disable_confirmed = 1
+          AND started.sequence = 2
+          AND started.predecessor_receipt_sha256 =
+            claim.claim_acquired_receipt_digest_sha256
+          AND NEW.evidence_sha256 =
+            started.evidence_sha256
+          AND NEW.receipt_credential_id_sha256 =
+            started.receipt_credential_id_sha256
+          AND NEW.request_id_sha256 =
+            started.request_id_sha256
+          AND NOT EXISTS (
+            SELECT 1
+            FROM shard_placement_authority_revocations AS revocation
+            WHERE revocation.authorization_id_sha256 =
+              claim.authorization_id_sha256
+              AND revocation.permit_subject_digest_sha256 =
+                claim.permit_subject_digest_sha256
+          )
+        )
+      )
   ) THEN RAISE(ABORT, 'placement execution terminal is not an exact readback') END;
 
   SELECT CASE WHEN NEW.event_kind = 'safety_diverted' AND NOT EXISTS (

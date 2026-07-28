@@ -222,35 +222,15 @@ describe("shard placement Authority Workerd runtime", () => {
       error: "execution_receipt_conflict",
     });
 
-    await waitForDatabaseTimeAfter(
-      claimPayloads[0].snapshot.state.leaseExpiresAt - 60,
-    );
-    const renewal = await placementExecutionReceipt({
-      claim: claim.value,
-      sequence: 2,
-      eventKind: "lease_renewed",
-    });
-    const renewed = await appendExecutionReceipt(
-      claim.value.authorizationIdSha256,
-      "renew",
-      renewal,
-    );
-    expect(renewed.status).toBe(201);
-    const renewedPayload = await renewed.json();
-    expect(renewedPayload).toMatchObject({
-      result: "receipt_appended",
-      eventKind: "lease_renewed",
-      leaseGeneration: 1,
-      receiptCount: 2,
-      receiptDigestSha256: renewal.value.receiptDigestSha256,
-    });
-
+    const applicationActivationDigestSha256 = "d".repeat(64);
+    const operationFourRequestId = "placement-operation4-activation-1";
     const started = await placementExecutionReceipt({
       claim: claim.value,
-      sequence: 3,
+      sequence: 2,
       eventKind: "operation_started",
       operationOrdinal: 4,
-      predecessorReceiptSha256: renewal.value.receiptDigestSha256,
+      evidenceSha256: applicationActivationDigestSha256,
+      requestId: operationFourRequestId,
     });
     expect((await appendExecutionReceipt(
       claim.value.authorizationIdSha256,
@@ -260,11 +240,13 @@ describe("shard placement Authority Workerd runtime", () => {
 
     const terminal = await placementExecutionReceipt({
       claim: claim.value,
-      sequence: 4,
+      sequence: 3,
       eventKind: "operation_terminal",
       operationOrdinal: 4,
       predecessorReceiptSha256: started.value.receiptDigestSha256,
       outcome: "exact_success",
+      evidenceSha256: applicationActivationDigestSha256,
+      requestId: operationFourRequestId,
     });
     const activated = await appendExecutionReceipt(
       claim.value.authorizationIdSha256,
@@ -281,7 +263,7 @@ describe("shard placement Authority Workerd runtime", () => {
 
     const enableStart = await placementExecutionReceipt({
       claim: claim.value,
-      sequence: 5,
+      sequence: 4,
       eventKind: "operation_started",
       operationOrdinal: 5,
       predecessorReceiptSha256: terminal.value.receiptDigestSha256,
@@ -294,7 +276,7 @@ describe("shard placement Authority Workerd runtime", () => {
 
     const enableTerminal = await placementExecutionReceipt({
       claim: claim.value,
-      sequence: 6,
+      sequence: 5,
       eventKind: "operation_terminal",
       operationOrdinal: 5,
       predecessorReceiptSha256:
@@ -306,6 +288,31 @@ describe("shard placement Authority Workerd runtime", () => {
       "receipts",
       enableTerminal,
     )).status).toBe(201);
+
+    await waitForDatabaseTimeAfter(
+      claimPayloads[0].snapshot.state.leaseExpiresAt - 60,
+    );
+    const renewal = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 6,
+      eventKind: "lease_renewed",
+      predecessorReceiptSha256:
+        enableTerminal.value.receiptDigestSha256,
+    });
+    const renewed = await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "renew",
+      renewal,
+    );
+    expect(renewed.status).toBe(201);
+    const renewedPayload = await renewed.json();
+    expect(renewedPayload).toMatchObject({
+      result: "receipt_appended",
+      eventKind: "lease_renewed",
+      leaseGeneration: 1,
+      receiptCount: 6,
+      receiptDigestSha256: renewal.value.receiptDigestSha256,
+    });
 
     const revocation = await placementAuthorityRevocation({
       authorizationIdSha256:
@@ -329,7 +336,7 @@ describe("shard placement Authority Workerd runtime", () => {
       eventKind: "operation_started",
       operationOrdinal: 6,
       predecessorReceiptSha256:
-        enableTerminal.value.receiptDigestSha256,
+        renewal.value.receiptDigestSha256,
     });
     const rejected = await appendExecutionReceipt(
       claim.value.authorizationIdSha256,
@@ -346,7 +353,7 @@ describe("shard placement Authority Workerd runtime", () => {
       sequence: 7,
       eventKind: "safety_diverted",
       predecessorReceiptSha256:
-        enableTerminal.value.receiptDigestSha256,
+        renewal.value.receiptDigestSha256,
       safetyReason: "lease_revoked",
     });
     const diverted = await appendExecutionReceipt(

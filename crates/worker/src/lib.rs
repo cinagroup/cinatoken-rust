@@ -35,6 +35,8 @@ mod container_scheduler;
 mod container_shard_activation_admin;
 mod container_shard_activation_campaign_admin;
 mod container_shard_placement_admin;
+#[allow(dead_code)]
+pub(crate) mod container_shard_placement_mutation_authorization;
 mod container_terminal_outbox;
 mod container_terminal_outbox_admin;
 mod d1_repositories;

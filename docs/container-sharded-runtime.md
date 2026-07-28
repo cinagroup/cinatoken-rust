@@ -1370,8 +1370,9 @@ Migration 0062 preserves that attestation ABI and adds the
 `relay_container_shard_placement_events` sidecar. Its database-assigned
 `placement_event_sequence` is the placement insertion order. `activation_id`
 remains only the unique foreign-key association to 0054 because an attestation
-can be appended later for an older activation. The current application head is
-0062/count 62.
+can be appended later for an older activation. Migration 0063 adds the
+staging-only single-use placement authorization without changing either ABI.
+The current application head is 0063/count 63.
 
 The current ledger is intentionally default-only. Campaign v1 cannot authorize
 jurisdiction, so 0061 rejects `eu`, `us`, `fedramp`, and `fedramp-high` until a
@@ -1393,9 +1394,10 @@ Two exact Boolean gates control the writer and must change together. They are
 false in local, staging, and production configuration, surfaced by the private
 status endpoint, and required false by deploy preflight. They remain outside
 the frozen 22-field campaign-v1 gate digest so this additive evidence path does
-not silently change the activation ABI. No separately signed, single-use
-staging mutation authorization exists yet, so the ordinary deployment path
-cannot enable this writer.
+not silently change the activation ABI. The 0063 runtime now verifies and
+atomically consumes a separately signed, single-use staging authorization.
+The external Authority issuer and deployment runner do not yet exist, so the
+ordinary deployment path still cannot enable this writer.
 
 Promotion still requires reader-first remote migration and empty-schema
 readback, one isolated same-version staging campaign, stable N/N ledger
@@ -1448,9 +1450,10 @@ across N/N. Any missing, duplicate, unknown, mismatched, non-default, or
 drifting placement blocks the registry source and P5.
 
 This read-only contract does not enable the default-only writer. Both tracked
-placement-writer gates remain false, ordinary deploy preflight rejects them
-when true, and the separately signed, single-use staging mutation
-authorization is still absent. No remote 0061/0062 readback or v3 capture has
-been performed. The exposed Cloudflare token must be revoked and replaced with
-a reviewed least-privilege credential before staging work; production remains
-**NO-GO**.
+placement-writer gates remain false and ordinary deploy preflight rejects them
+when true. The 0063 verifier, append-preserved authorization row, campaign
+guard, Controller pre-wake readback, and final placement guard exist locally;
+the four-role Authority, deployment runner, and P5 authorization-row join do
+not. No remote 0061/0062/0063 readback or v3 capture has been performed. The
+exposed Cloudflare token must be revoked and replaced with a reviewed
+least-privilege credential before staging work; production remains **NO-GO**.

@@ -3,25 +3,26 @@
 Date: 2026-07-28
 
 Status: local, default-inert P5 evidence implementation with the 0055 one-time
-activation campaign, 0061 placement attestation ABI, and 0062 immutable event
-sidecar implemented locally. The bounded placement readback and
-shard-registry-v3 production contract is documented here; this docs-only
-increment does not independently verify its code. No D1 migration was applied
-remotely, no campaign was created or consumed, no Worker or Container was
-deployed, no Durable Object or Container was woken for this document, and no
-customer, provider, financial, or production authority changed.
+activation campaign, 0061 placement attestation ABI, 0062 immutable event
+sidecar, and 0063 staging-only placement authorization implemented locally.
+The bounded placement readback and shard-registry-v3 production contract is
+documented here. No D1 migration was applied remotely, no permit or campaign
+was created or consumed, no Worker or Container was deployed, no Durable
+Object or Container was woken, and no customer, provider, financial, or
+production authority changed.
 
 ## Operative Baseline
 
 The current candidate D1 head is
-`0062_relay_container_shard_placement_events.sql`, migration count 62, with 71
-required application tables. Migration 0061 remains the frozen placement
-attestation ABI; 0062 adds insertion order without modifying it. Migration
-0055 remains the historical one-time activation campaign baseline and
-migration 0054 remains the activation ledger beneath it. A new P5 candidate
-must retain that sealed campaign evidence while binding the complete ordered
-schema through 0062; none of the historical 0054-0061 baselines is a valid
-current schema readback by itself.
+`0063_relay_container_shard_placement_mutation_authorizations.sql`, migration
+count 63, with 72 required application tables. Migration 0061 remains the
+frozen placement attestation ABI; 0062 adds insertion order without modifying
+it; 0063 adds staging-only single-use mutation authority without changing
+either predecessor ABI. Migration 0055 remains the historical one-time
+activation campaign baseline and migration 0054 remains the activation ledger
+beneath it. A new P5 candidate must retain that sealed campaign evidence while
+binding the complete ordered schema through 0063; none of the historical
+0054-0062 baselines is a valid current schema readback by itself.
 
 The evidence chain has eight independently checked links:
 
@@ -565,11 +566,10 @@ indexes, three original triggers, foreign keys, default-only insert guard, and
 unchanged application business fingerprints. It must then prove the separate
 0062 event layer below.
 
-## 0062 Current-Head Overlay
+## 0062 Placement Event Overlay
 
-The current application schema head is
-`0062_relay_container_shard_placement_events.sql`, with migration count 62 and
-71 required tables. Its six-column sidecar assigns
+The 0062 application schema checkpoint was 62 migrations and 71 required
+tables. Its six-column sidecar assigns
 `placement_event_sequence INTEGER PRIMARY KEY AUTOINCREMENT`, uniquely binds
 one attestation digest and one activation ID, and indexes
 `(controller_version_id, ring_generation, campaign_id,
@@ -585,7 +585,34 @@ to 0054.
 
 Both placement-writer gates remain false in every tracked environment, and
 ordinary deploy preflight must continue to reject an enabled value. The
-separately signed, single-use staging mutation authorization does not exist.
-The exposed Cloudflare token must be revoked and rotated before staging
-readback. No remote 0061/0062 event/attestation pair or v3 capture has been
-collected; production remains **NO-GO**.
+exposed Cloudflare token must be revoked and rotated before staging readback.
+No remote 0061/0062 event/attestation pair or v3 capture has been collected;
+production remains **NO-GO**.
+
+## 0063 Current-Head Authorization Overlay
+
+The current application schema head is
+`0063_relay_container_shard_placement_mutation_authorizations.sql`, with
+migration count 63, 72 required tables, 962 checked incremental columns, and
+105 key indexes. The append-preserved table records one verified staging
+permit consumption and uniquely fences its authorization ID, execution nonce,
+campaign nonce, subject digest, campaign, and campaign digest.
+
+The campaign create batch inserts authorization before campaign and requires
+exact readback of both. D1 derives consumption time, validates the permit
+window, and requires exact candidate, administrator, lifetime, gate inventory,
+and digest agreement through the campaign trigger. The replacement placement
+guard requires that authorization before the existing 0054/0055 evidence
+checks.
+
+When placement gates are enabled, the Controller reads and validates the exact
+authorization before claim or Durable Object lookup. Rust independently
+verifies the Ed25519 permit against deployment-pinned staging trust. Local and
+staging trust values are checked in empty, production has none, and all writer
+gates remain false.
+
+This runtime boundary is not the signing ceremony. The four-role Authority,
+zero-retry deployment runner, remote 0063 apply/readback, live permit,
+writer-enabled campaign, post-campaign gate disablement, and P5
+authorization-row ingestion are still absent. No remote mutation is
+authorized; production remains **NO-GO**.

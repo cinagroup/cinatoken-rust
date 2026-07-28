@@ -238,6 +238,16 @@ describe("isolated container controller configuration", () => {
       "recordShardPlacementAttestation(",
     );
     expect(controllerSource).toContain(
+      "await requireShardPlacementMutationAuthorization(env.DB",
+    );
+    expect(
+      controllerSource.indexOf(
+        "await requireShardPlacementMutationAuthorization(env.DB",
+      ),
+    ).toBeLessThan(
+      controllerSource.indexOf("return claimShardActivationCampaign(env.DB"),
+    );
+    expect(controllerSource).toContain(
       "shard_placement_attestation_write_enabled",
     );
     expect(edgeControllerSource).toContain(
@@ -262,10 +272,27 @@ describe("isolated container controller configuration", () => {
       "0062_relay_container_shard_placement_events.sql",
     );
     expect(placementLedgerSource).toContain(
+      "0063_relay_container_shard_placement_mutation_authorizations.sql",
+    );
+    expect(placementLedgerSource).toContain(
       "consumption.readiness_result_sha256 = ?17",
     );
     expect(placementLedgerSource).not.toMatch(/console\.(?:log|error)/);
     expect(controllerSource).not.toContain("object_id:");
+    for (const edge of [rootConfig, rootConfig.env.staging]) {
+      expect(edge.vars.CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_ISSUER).toBe("");
+      expect(edge.vars.CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_KEY_ID).toBe("");
+      expect(
+        edge.vars.CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_SPKI_BASE64URL,
+      ).toBe("");
+      expect(
+        edge.vars.CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_SPKI_SHA256,
+      ).toBe("");
+    }
+    expect(
+      rootConfig.env.production.vars
+        .CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_ISSUER,
+    ).toBeUndefined();
   });
 
   test("edge and controller deployment identities are operator-visible", () => {

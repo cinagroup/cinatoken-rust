@@ -2425,8 +2425,8 @@ Go/VPS stays authoritative and production remains **NO-GO**.
 | Cross-language contract | `ShardPlacementAttestationV1`; Rust/TypeScript shared fixture |
 | Bound identity | Controller service/version, DO binding/class, jurisdiction, hashed name/object ID, v1 shard |
 | Attestation ABI migration | `0061_relay_container_shard_placement_attestations.sql`; unchanged |
-| Current D1 migration head | `0062_relay_container_shard_placement_events.sql` |
-| D1 schema totals | 62 migrations / 71 tables |
+| Current D1 migration head | `0063_relay_container_shard_placement_mutation_authorizations.sql` |
+| D1 schema totals | 63 migrations / 72 tables |
 | Activation linkage | Exact 0054 activation plus 0055 campaign consumption |
 | Immutability | One row per activation; replacement/update/delete rejected |
 | Restricted jurisdiction write | Rejected until campaign v2 |
@@ -2434,9 +2434,12 @@ Go/VPS stays authoritative and production remains **NO-GO**.
 | Object/Controller identity cross-check | Implemented; actual `ctx.id` must equal independently selected stub identity |
 | Completed-readiness replay | Implemented; object RPC must replay the matching DO journal before attesting |
 | D1 writer readback | Implemented; exact 0061 attestation plus 0062 event append/readback, idempotent replay, conflict and malformed-readback rejection |
-| Writer-enabled staging deployment authorization | **NOT IMPLEMENTED**; ordinary deploy preflight requires both gates false |
-| Focused local gate | 86 tests / 837 expectations |
-| Complete repository gate | PASS, exit 0 in 811 seconds; 21 existing Rust warnings |
+| Runtime staging permit verification | Implemented locally; Ed25519, candidate-bound, short-lived, and fail-closed |
+| D1 authorization consumption | Implemented locally; atomic authorization-before-campaign batch and exact readback |
+| Authority issuer and deployment runner | **NOT IMPLEMENTED**; ordinary deploy preflight requires both gates false |
+| Focused authorization gate | 15 Bun tests plus 22 Rust tests |
+| Controller/DO gates | 178 portable + 46 runtime + 53 DO tests |
+| Complete repository gate | PASS, exit 0 in 849.1 seconds; existing Rust `dead_code` warnings only |
 | P5 placement reader/collector | Implemented locally; root-only event-sequence reader and capture-v3 collector pass focused Rust/JS verification |
 | Placement read API | Root-only, D1-only, no-store bounded contract at `/api/platform/container/shards/placements` |
 | Shard registry capture | v3 requires stable campaign/activation/placement snapshots and strict 0054/0055 joins |
@@ -2447,20 +2450,20 @@ Go/VPS stays authoritative and production remains **NO-GO**.
 This increment now closes the local default-jurisdiction write path, but it
 does not claim where an object or shared store actually resides. Both writer
 gates remain false and deploy preflight rejects enabling them. No remote
-0061/0062 schema or placement event/attestation pair has been read back.
+0061/0062/0063 schema or placement event/attestation pair has been read back.
 Promotion still needs reader-first isolated staging migration, an exact
-empty-schema receipt, a separately signed single-use staging mutation
-authorization, an exact writer-version N/N campaign, stable bounded P5
-readback, and independent review. Restricted relocation/drain requires a
-separate campaign v2 and shared-store residency proof. Go/VPS remains
-authoritative.
+empty-schema receipt, the four-role Authority and deployment runner, an exact
+writer-version N/N campaign, stable bounded P5 readback including its consumed
+0063 authorization, and independent review. Restricted relocation/drain
+requires a separate campaign v2 and shared-store residency proof. Go/VPS
+remains authoritative.
 
 ## 2026-07-28 Placement Readback And Registry v3 Contract
 
 | Status item | Current value |
 | --- | --- |
 | Endpoint | `GET /api/platform/container/shards/placements` |
-| Current migration head | `0062_relay_container_shard_placement_events.sql`, count 62 |
+| Current migration head | `0063_relay_container_shard_placement_mutation_authorizations.sql`, count 63 |
 | Ledger layering | Immutable 0061 attestation ABI plus immutable 0062 event sidecar |
 | Authorization/cache | Root authentication before D1; `Cache-Control: no-store` on all outcomes |
 | Runtime side effects | D1 read only; no namespace enumeration, stub lookup, DO RPC, service binding, Container wake, or mutation |
@@ -2472,16 +2475,18 @@ authoritative.
 | Registry source | `cinatoken-relay-container-shard-registry-capture-v3`, collector version 3 |
 | Stability | Sealed campaign, 0054 activations, and 0062 event-backed 0061 placements identical before/after one 300-7200 second window |
 | N/N join | One placement per shard, strictly matching its 0054 activation and 0055 receipt |
-| Local verification | `bun run check` PASS in 811 seconds; SQLite PASS at 62 migrations / 71 tables / 937 incremental columns / 104 key indexes; 21 existing Rust warnings |
+| Local schema verification | SQLite PASS at 63 migrations / 72 tables / 962 incremental columns / 105 key indexes |
 | Writer gates | Both remain false; ordinary deploy preflight rejects true |
-| Writer-enabled staging authorization | **NOT IMPLEMENTED**; must be separately signed and single-use |
+| Runtime placement authorization | Implemented locally; signed permit verification, atomic D1 consume, Controller pre-wake and placement-trigger enforcement |
+| Authority issuer/deployment runner | **NOT IMPLEMENTED** |
 | Remote placement evidence | **NOT COLLECTED** |
 | Exposed Cloudflare credential | Must be revoked and rotated before staging access |
+| Complete repository gate | PASS, exit 0 in 849.1 seconds |
 | Production eligibility | **NO-GO** |
 
 This table records the production acceptance contract and verified local
-implementation, not deployed state. The increment does not apply 0061/0062
-remotely and does not create a live v3 capture. A valid
+implementation, not deployed state. The increment does not apply 0061/0062/
+0063 remotely and does not create a live v3 capture. A valid
 capture must freeze one exact candidate by `placement_event_sequence` and
 prove identical before/after canonical campaign, activation, event, and
 attestation records. Every placement must match the same-shard 0054 activation
@@ -2491,7 +2496,36 @@ duplicate, unknown, non-default, mismatched, or drifting rows are
 `not-proven`.
 
 The read route cannot authorize the write route. The two placement-writer
-gates stay false until a separately reviewed staging ceremony exists, and
-ordinary deployment remains unable to enable them. No remote credential,
-schema, placement row, deployment, customer traffic, or production authority
-is claimed. Go/VPS remains authoritative and production remains **NO-GO**.
+gates stay false until the Authority, runner, and separately reviewed staging
+ceremony exist, and ordinary deployment remains unable to enable them. No
+remote credential, schema, placement row, deployment, customer traffic, or
+production authority is claimed. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
+## 2026-07-28 Placement Mutation Authorization v1
+
+| Status item | Current value |
+| --- | --- |
+| Permit contract | `cinatoken-relay-shard-placement-mutation-authorization-v1` |
+| Signature | Canonical Ed25519; Rust/JavaScript fixed-vector parity |
+| Scope | Staging-only, fixed Controller service, exact candidate and campaign |
+| Permit window | 60-600 seconds; 120-second future skew ceiling; at least 60 seconds remaining |
+| Replay fences | Unique authorization, execution nonce, campaign nonce, subject, campaign, and campaign digest |
+| D1 migration | 0063; append-preserved authorization table and campaign/placement guards |
+| Campaign write | One batch: authorization, campaign, audit, campaign readback, authorization readback |
+| Controller ordering | Authorization readback before claim, DO lookup, or Container wake |
+| Production trust config | Absent |
+| Tracked writer gates | False in every environment |
+| Authority issuer | **NOT IMPLEMENTED** |
+| Deployment runner | **NOT IMPLEMENTED** |
+| P5 authorization-row join | **NOT IMPLEMENTED** |
+| Remote permit/schema/evidence | **NOT COLLECTED** |
+| Complete repository gate | PASS, exit 0 in 849.1 seconds |
+| Production eligibility | **NO-GO** |
+
+The implementation closes the local verification and consumption substrate.
+It does not turn the offline verifier into an issuer and it does not permit an
+operator to enable staging gates manually. The next critical path is an
+externally pinned Authority with distinct security, operations, release, and
+rollback approvals, followed by a least-privilege zero-retry deployment runner
+and versioned P5 authorization-row ingestion.

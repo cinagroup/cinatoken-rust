@@ -32,6 +32,7 @@ cinatoken-tasks = { path = "../tasks" }
 cinatoken-tokenizer = { path = "../tokenizer" }
 cinatoken-wfp-authority = { path = "../wfp-authority" }
 console_error_panic_hook = "0.1"
+ed25519-dalek.workspace = true
 futures-util = { version = "0.3", default-features = false }
 futures-channel = "0.3"
 hmac.workspace = true

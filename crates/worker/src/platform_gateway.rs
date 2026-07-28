@@ -193,7 +193,8 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0062_relay_container_shard_placement_events.sql";
+pub const EXPECTED_D1_MIGRATION: &str =
+    "0063_relay_container_shard_placement_mutation_authorizations.sql";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -293,6 +294,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0060_relay_container_ring_transition_authority.sql",
     "0061_relay_container_shard_placement_attestations.sql",
     "0062_relay_container_shard_placement_events.sql",
+    "0063_relay_container_shard_placement_mutation_authorizations.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -5217,12 +5219,11 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0062_relay_container_shard_placement_events.sql"
+            "0063_relay_container_shard_placement_mutation_authorizations.sql"
         );
         assert_eq!(
             &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 10..],
             &[
-                "0053_relay_container_financial_terminal_v2.sql",
                 "0054_relay_container_shard_activations.sql",
                 "0055_relay_container_shard_activation_campaigns.sql",
                 "0056_relay_http_stream_handoffs.sql",
@@ -5232,6 +5233,7 @@ mod tests {
                 "0060_relay_container_ring_transition_authority.sql",
                 "0061_relay_container_shard_placement_attestations.sql",
                 "0062_relay_container_shard_placement_events.sql",
+                "0063_relay_container_shard_placement_mutation_authorizations.sql",
             ]
         );
         assert!(

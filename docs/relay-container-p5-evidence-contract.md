@@ -540,11 +540,11 @@ Go/VPS remains authoritative, and production remains **NO-GO**.
 
 ## 0062 Placement Event Readback And Registry v3 Overlay
 
-Every new integrated P5 candidate must bind
-`0062_relay_container_shard_placement_events.sql`, migration count 62, and the
-71-table application schema. The underlying 0061 attestation ABI remains
-unchanged. Historical 0054/0055/0061 evidence remains historical unless it is
-joined to the same current candidate and exact 0062 schema readback.
+Every new integrated P5 candidate must bind the 0063 application head,
+migration count 63, and the 72-table application schema. The underlying 0061
+attestation and 0062 event ABIs remain unchanged. Historical 0054/0055/0061/
+0062 evidence remains historical unless it is joined to the same current
+candidate and exact 0063 schema readback.
 
 The sidecar exists because `activation_id` is only the immutable association
 to 0054. A later placement can legitimately reference an older activation, so
@@ -611,13 +611,46 @@ digest-mismatched, or before/after-drifting row makes the source `not-proven`.
 
 The read-only source does not grant mutation authority. Both placement-writer
 gates remain false and ordinary deploy preflight must reject them when true.
-The separately signed, single-use isolated-staging mutation authorization for
-one writer-enabled candidate is not implemented. The exposed Cloudflare token
-must be revoked and rotated before authenticated staging work.
+The 0063 verifier and D1 single-use consumption exist locally, but the
+four-role Authority issuer, deployment runner, and P5 authorization-row source
+are not implemented. The exposed Cloudflare token must be revoked and rotated
+before authenticated staging work.
 
-No remote 0061/0062 schema, placement event/attestation pair, v3 capture,
+No remote 0061/0062/0063 schema, placement event/attestation pair, v3 capture,
 deployment, customer traffic, or production authority is claimed by this
 contract. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 0063 Placement Mutation Authorization Overlay
+
+Migration 0063 adds the staging-only authorization that must precede every
+current activation campaign and placement append. P5 must retain the exact
+authorization row joined to its campaign, but it must never retain the raw
+campaign nonce, execution nonce, signature, SPKI bytes, authorization header,
+private key, or request body.
+
+The accepted authorization evidence must prove:
+
+1. exact 0063 table, index, campaign guard, immutable guards, and replacement
+   placement guard;
+2. one unique authorization, execution nonce hash, campaign nonce hash,
+   signed-subject digest, campaign ID, and campaign digest;
+3. fixed staging environment and Controller service;
+4. exact issuer, key ID, signer SPKI fingerprint, Controller version, runtime
+   build, action-gate inventory, foundation manifest, ring, shard count,
+   campaign lifetime, and consuming administrator;
+5. permit issue/expiry and D1-derived consumption times within the frozen
+   v1 windows;
+6. exact campaign and authorization readback from the same atomic D1 batch;
+7. authorization consumption before Controller claim, Durable Object lookup,
+   Container wake, and placement append; and
+8. disabled writer-gate and credential-revocation readback after collection.
+
+The current capture-v3 collector does not ingest this row. Until a versioned
+collector and foundation manifest bind it, a placement capture is
+`not-proven` even when all 0061/0062 rows are otherwise valid. Local verifier
+tests are not substitutes for the missing Authority issuance receipt,
+deployment-runner receipt, authenticated remote D1 readback, and independent
+clean-host replay.
 
 ## Immutable Runner Release Evidence Overlay
 

@@ -3740,8 +3740,9 @@ jurisdiction, so a versioned campaign v2 is mandatory before a restricted
 writer can exist.
 
 Migration 0061 remains the frozen attestation ABI. Security review adds the
-0062 placement-event sidecar, advancing the global schema candidate to head
-0062/count 62 and 71 tables. P5 binds the 0062 head while the separate
+0062 placement-event sidecar. Migration 0063 subsequently advances the global
+schema candidate to head 0063/count 63 and 72 tables while preserving both
+0061 and 0062 ABIs. P5 binds the complete 0063 schema while the separate
 transition authority database remains 0059/0060. `activation_id` remains the
 0054 association key and is not placement insertion order.
 
@@ -3757,12 +3758,14 @@ conflicting, or malformed event/attestation readback fails closed.
 
 Both placement-writer gates remain `false`, must change together, are visible
 on private status, and are pinned false by deploy preflight. No remote schema
-apply, gate change, object wake, or ledger record occurred. A separately
-signed, single-use isolated-staging mutation authorization is not implemented,
-so the ordinary deployment path cannot enable the writer. Next is reader-first
-isolated staging apply and empty-schema readback, that authorization boundary,
-one exact writer-version N/N campaign, and a bounded root-authenticated P5
-placement reader.
+apply, gate change, object wake, or ledger record occurred. The staging-only
+permit verifier, D1 single-use consumption, and Controller pre-wake check are
+now implemented by 0063, but the four-role Authority issuer and deployment
+runner are not. The ordinary deployment path therefore still cannot enable
+the writer. Next is reader-first isolated staging apply and empty-schema
+readback, Authority/runner implementation, one exact writer-version N/N
+campaign, and a bounded root-authenticated P5 placement readback that also
+binds the consumed 0063 authorization.
 Restricted relocation and shared D1/KV/R2 residency remain later, separately
 approved contracts. Go/VPS remains authoritative and production remains
 **NO-GO**.
@@ -3803,8 +3806,55 @@ cross-candidate, non-default, or drifting rows fail P5.
 
 This document contract is not deployment evidence. Placement writer gates
 remain false and deploy preflight must continue to reject enabling them. The
-separately signed, single-use isolated-staging mutation authorization is not
-implemented, and no remote 0061/0062 placement snapshot or v3 capture has been
-collected. Revoke and rotate the exposed Cloudflare token before any staging
-readback or mutation. Go/VPS remains authoritative and production remains
-**NO-GO**.
+0063 runtime verifies and atomically consumes a separately signed, single-use
+isolated-staging authorization, but no Authority issuer or deployment runner
+exists and no remote 0061/0062/0063 snapshot or v3 capture has been collected.
+Revoke and rotate the exposed Cloudflare token before any staging readback or
+mutation. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-28 Placement Mutation Authorization v1
+
+Phase 1 now implements the local runtime side of the staging placement
+authorization boundary. Rust and JavaScript share the exact
+`cinatoken-relay-shard-placement-mutation-authorization-v1` Ed25519 subject,
+canonical length-prefixed encoding, fixed vector, permit window, trust pins,
+candidate binding, and replay-identity rules. The Worker accepts only staging,
+the fixed staging Controller service, a 60-600 second permit, and at least 60
+seconds of remaining validity. Raw campaign nonces, signatures, SPKI bytes,
+and request bodies are not stored or logged.
+
+Migration 0063 advances the application D1 head to 63 migrations, 72 tables,
+962 checked incremental columns, and 105 key indexes. Its append-preserved
+authorization table uniquely consumes the authorization ID, execution nonce,
+campaign nonce, signed-subject digest, campaign ID, and campaign digest. One
+D1 batch inserts the authorization before the campaign, appends the
+administrator audit record, and reads both records back. Deferred foreign-key
+ordering permits that sequence, while the campaign trigger requires exact
+candidate, digest, lifetime, administrator, gate-inventory, and D1-time
+agreement.
+
+When placement writer gates are enabled, the Controller requires the exact
+0063 authorization/campaign join before D1 claim or Durable Object lookup.
+The final placement insert trigger independently requires that authorization
+before validating the existing 0054 activation and 0055 consumption chain.
+Production has no authorization trust variables, checked-in staging values are
+empty, and all tracked writer gates remain false.
+
+This closes local permit verification and single-use runtime consumption, not
+the production ceremony. The offline JavaScript verifier is a reference tool,
+not an issuer. A deployment-pinned Authority must still collect distinct
+security, operations, release, and rollback approvals and issue one bounded
+permit; a separate zero-retry runner must bind replacement least-privilege
+credentials, deploy Controller before edge, classify response loss by
+authenticated readback, disable the writer after the campaign, and retain
+revocation evidence. P5 must also ingest and verify the 0063 authorization
+row.
+
+Focused authorization checks pass 15 Bun and 22 Rust tests; Controller suites
+pass 178 and 46 tests; the DO runtime passes 53 tests; and the Worker library
+passes 872 tests. The complete repository gate passes with exit code 0 in
+849.1 seconds. No Cloudflare credential was read, no migration was applied
+remotely, and no permit, campaign, placement, Container wake, customer
+traffic, provider effect, or financial authority was created. The exposed
+historical credential must be revoked and replaced before staging. Go/VPS
+remains authoritative and production remains **NO-GO**.

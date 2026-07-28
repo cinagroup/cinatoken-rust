@@ -22484,3 +22484,113 @@ authenticated readback or mutation. No replacement credential, remote
 0061/0062 schema, placement event/attestation pair, v3 capture, deployment,
 customer traffic, or production authority is claimed here. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.316 Staging Placement Mutation Authorization v1 (2026-07-28)
+
+The runtime side of the separately signed placement-writer authorization is
+now implemented. This supersedes only the "authorization runtime absent"
+statement in 22.314 and 22.315. It does not supersede their remote evidence,
+restricted-jurisdiction, shared-storage, credential-rotation, P5, traffic,
+financial, rollback, or cutover blockers.
+
+### Exact trust boundary
+
+The fixed contract is
+`cinatoken-relay-shard-placement-mutation-authorization-v1`. Rust and
+JavaScript serialize the same 19 signed fields as four-byte big-endian
+length-prefixed canonical UTF-8 following the literal contract domain. The
+domain has no NUL terminator or length prefix. A frozen Ed25519 vector proves
+byte, subject-digest, and signature parity.
+
+One permit binds the issuer/key, staging environment, authorization ID,
+execution nonce hash, campaign ID and nonce hash, fixed staging Controller
+service, immutable Controller version, action-gate inventory, foundation
+manifest, runtime build, ring, shard count, campaign lifetime, and permit
+window. The three replay identities are pairwise distinct. Permit lifetime is
+60-600 seconds, maximum future clock skew is 120 seconds, and at least 60
+seconds must remain at verification and D1 consumption.
+
+Trust is deployment-pinned by exact issuer, key ID, canonical Ed25519 SPKI, and
+SPKI fingerprint. Local and staging placeholders are empty and fail closed;
+production has no such variables. The raw campaign nonce is accepted only to
+recompute its signed hash. Raw nonce, signature, SPKI, request body, and
+authorization headers are not logged or persisted.
+
+### D1 replay and transaction boundary
+
+Migration
+`0063_relay_container_shard_placement_mutation_authorizations.sql` advances
+the application schema to 63 migrations, 72 tables, 962 checked incremental
+columns, and 105 key indexes. The new row is staging-only,
+append-preserved, and uniquely fences authorization ID, execution nonce,
+campaign nonce, subject digest, campaign ID, and campaign digest.
+
+Campaign creation is one D1 batch:
+
+1. insert the verified authorization with D1-derived consumption time;
+2. insert the exact campaign;
+3. append the administrator audit record;
+4. read back the campaign; and
+5. read back the authorization.
+
+The authorization foreign key is deferred only to allow authorization-first
+ordering. The campaign insert trigger then requires exact candidate, gate
+inventory, digest, lifetime, administrator, environment, and bounded time
+agreement. The Worker accepts success only when both readbacks exactly match.
+A replay or a conflicting response-loss retry cannot consume the permit for a
+second campaign.
+
+### Pre-wake and final enforcement
+
+When both placement-writer gates are enabled, the Controller requires staging
+and validates the exact 0061/0062/0063 schema plus authorization/campaign
+readback before D1 campaign claim, Durable Object lookup, or Container wake.
+Migration 0063 also replaces the final placement insert guard. The guard
+requires the consumed authorization to match campaign, environment,
+Controller service/version, ring, shard count, consumption time, and campaign
+expiry before it validates the complete 0054 activation and 0055 consumption
+chain.
+
+This creates three independent fail-closed decisions: Worker signature
+verification, Controller pre-wake readback, and D1 placement enforcement.
+Production cannot satisfy the first, and every tracked environment keeps both
+writer gates false.
+
+### Remaining production implementation
+
+The repository does not yet contain the production Authority or deployment
+runner. The offline JavaScript verifier is a deterministic reference and test,
+not an issuer. Before the first live staging campaign:
+
+1. revoke the exposed historical Cloudflare credential and independently
+   verify its absence;
+2. establish distinct least-privilege read, migration, deploy, and independent
+   verifier credentials;
+3. implement an externally pinned Authority that requires distinct security,
+   operations, release, and rollback Ed25519 approvals;
+4. retain create-only issuance, key-rotation, expiry, and revocation evidence
+   without private key material;
+5. implement a zero-retry runner that pins Authority trust, consumes one
+   execution nonce, deploys Controller before edge, and classifies response
+   loss through authenticated version readback;
+6. apply and independently read back 0061-0063 with writer gates false and
+   zero authorization/campaign/placement rows;
+7. enable both gates only for the exact authorized staging version and one
+   default-jurisdiction N/N campaign;
+8. restore both gates to false and revoke mutation credentials after success
+   or failure; and
+9. advance the P5 collector so it retains and validates the exact consumed
+   0063 authorization with the existing 0054/0055/0061/0062 evidence.
+
+The dedicated implementation and ceremony contract is documented in
+`docs/relay-container-shard-placement-mutation-authorization.md`.
+
+Focused authorization verification passes 15 Bun and 22 Rust tests;
+Controller suites pass 178 and 46 tests; the DO runtime passes 53 tests; and
+the Worker library passes 872 tests. SQLite proves the complete 0063 chain and
+current schema totals. The complete repository gate passes with exit code 0
+in 849.1 seconds. No credential was read, no Cloudflare API was called, no
+remote migration was applied, and no permit, campaign, placement, Container
+wake, P5 item, customer traffic, financial authority, Go/VPS drain, DNS
+change, or production cutover occurred. Go/VPS remains authoritative and
+production remains **NO-GO**.

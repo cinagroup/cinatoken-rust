@@ -576,6 +576,7 @@ dependencies = [
  "cinatoken-tokenizer",
  "cinatoken-wfp-authority",
  "console_error_panic_hook",
+ "ed25519-dalek",
  "futures-channel",
  "futures-util",
  "getrandom 0.2.17",

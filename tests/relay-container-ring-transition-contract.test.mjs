@@ -1799,8 +1799,9 @@ function candidateFixture() {
     containerClass: "RelayShardContainer",
     ringGeneration: 2,
     shardCount: 12,
-    migrationHead: "0062_relay_container_shard_placement_events.sql",
-    migrationCount: 62,
+    migrationHead:
+      "0063_relay_container_shard_placement_mutation_authorizations.sql",
+    migrationCount: 63,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,

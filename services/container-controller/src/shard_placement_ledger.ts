@@ -42,16 +42,49 @@ const EXPECTED_EVENT_COLUMNS = [
   "campaign_id",
   "activation_id",
 ].join(",");
+const EXPECTED_AUTHORIZATION_COLUMNS = [
+  "authorization_id_sha256",
+  "execution_nonce_sha256",
+  "campaign_nonce_sha256",
+  "subject_digest_sha256",
+  "contract_version",
+  "authorization_contract",
+  "issuer",
+  "key_id",
+  "signer_spki_sha256",
+  "environment",
+  "controller_service_name",
+  "controller_version_id",
+  "action_gate_inventory_sha256",
+  "foundation_manifest_sha256",
+  "runtime_build_id",
+  "ring_generation",
+  "shard_count",
+  "campaign_lifetime_seconds",
+  "permit_issued_at",
+  "permit_expires_at",
+  "campaign_id",
+  "campaign_digest_sha256",
+  "campaign_expires_at",
+  "consumed_by_admin_id",
+  "consumed_at",
+].join(",");
 const EXPECTED_SCHEMA_OBJECTS = [
   "index:idx_relay_container_shard_placement_attestations_candidate",
   "index:idx_relay_container_shard_placement_attestations_object",
+  "index:idx_relay_container_shard_placement_authorizations_candidate",
   "index:idx_relay_container_shard_placement_events_candidate",
   "table:relay_container_shard_placement_attestations",
   "table:relay_container_shard_placement_events",
+  "table:relay_container_shard_placement_mutation_authorizations",
+  "trigger:relay_container_shard_activation_campaign_authorization_guard",
   "trigger:relay_container_shard_placement_attestation_delete_guard",
   "trigger:relay_container_shard_placement_attestation_event_append",
   "trigger:relay_container_shard_placement_attestation_insert_guard",
   "trigger:relay_container_shard_placement_attestation_update_guard",
+  "trigger:relay_container_shard_placement_authorization_delete_guard",
+  "trigger:relay_container_shard_placement_authorization_insert_guard",
+  "trigger:relay_container_shard_placement_authorization_update_guard",
   "trigger:relay_container_shard_placement_event_delete_guard",
   "trigger:relay_container_shard_placement_event_insert_guard",
   "trigger:relay_container_shard_placement_event_update_guard",
@@ -62,7 +95,8 @@ SELECT
   (SELECT COUNT(1) FROM d1_migrations
    WHERE name IN (
      '0061_relay_container_shard_placement_attestations.sql',
-     '0062_relay_container_shard_placement_events.sql'
+     '0062_relay_container_shard_placement_events.sql',
+     '0063_relay_container_shard_placement_mutation_authorizations.sql'
    ))
     AS migration_count,
   (SELECT group_concat(name, ',') FROM (
@@ -75,16 +109,67 @@ SELECT
      FROM pragma_table_info('relay_container_shard_placement_events')
      ORDER BY cid
    )) AS event_columns,
+  (SELECT group_concat(name, ',') FROM (
+     SELECT name
+     FROM pragma_table_info(
+       'relay_container_shard_placement_mutation_authorizations'
+     )
+     ORDER BY cid
+   )) AS authorization_columns,
   (SELECT group_concat(type || ':' || name, '|') FROM (
      SELECT type, name
      FROM sqlite_master
-     WHERE tbl_name IN (
-       'relay_container_shard_placement_attestations',
-       'relay_container_shard_placement_events'
+     WHERE (
+       tbl_name IN (
+         'relay_container_shard_placement_attestations',
+         'relay_container_shard_placement_events',
+         'relay_container_shard_placement_mutation_authorizations'
+       )
+       OR name =
+            'relay_container_shard_activation_campaign_authorization_guard'
      )
        AND name NOT LIKE 'sqlite_autoindex_%'
      ORDER BY type || ':' || name
    )) AS schema_objects
+`.trim();
+
+const AUTHORIZATION_READBACK_SQL = `
+SELECT
+  authorization.authorization_id_sha256,
+  authorization.subject_digest_sha256,
+  authorization.consumed_at,
+  authorization.campaign_expires_at,
+  unixepoch() AS database_now
+FROM relay_container_shard_placement_mutation_authorizations AS authorization
+JOIN relay_container_shard_activation_campaigns AS campaign
+  ON campaign.campaign_id = authorization.campaign_id
+ AND campaign.campaign_digest_sha256 =
+       authorization.campaign_digest_sha256
+ AND campaign.controller_version_id =
+       authorization.controller_version_id
+ AND campaign.action_gate_inventory_sha256 =
+       authorization.action_gate_inventory_sha256
+ AND campaign.foundation_manifest_sha256 =
+       authorization.foundation_manifest_sha256
+ AND campaign.runtime_build_id = authorization.runtime_build_id
+ AND campaign.ring_generation = authorization.ring_generation
+ AND campaign.shard_count = authorization.shard_count
+ AND campaign.environment = authorization.environment
+ AND campaign.expires_at = authorization.campaign_expires_at
+WHERE authorization.campaign_id = ?1
+  AND authorization.controller_version_id = ?2
+  AND authorization.action_gate_inventory_sha256 = ?3
+  AND authorization.ring_generation = ?4
+  AND authorization.shard_count = ?5
+  AND authorization.environment = ?6
+  AND authorization.consumed_at <= unixepoch()
+  AND unixepoch() < authorization.campaign_expires_at
+  AND NOT EXISTS (
+    SELECT 1
+    FROM relay_container_shard_activation_campaign_seals AS seal
+    WHERE seal.campaign_id = authorization.campaign_id
+  )
+LIMIT 1
 `.trim();
 
 const INSERT_SQL = `
@@ -183,6 +268,83 @@ export interface RecordShardPlacementAttestationResult {
   duplicate: boolean;
 }
 
+export interface ShardPlacementMutationAuthorizationCandidate {
+  campaignId: string;
+  controllerVersionId: string;
+  actionGateInventorySha256: string;
+  ringGeneration: number;
+  shardCount: number;
+  environment: string;
+}
+
+interface PlacementAuthorizationRow extends Record<string, unknown> {
+  authorization_id_sha256: string;
+  subject_digest_sha256: string;
+  consumed_at: number;
+  campaign_expires_at: number;
+  database_now: number;
+}
+
+export async function requireShardPlacementMutationAuthorization(
+  database: PlacementDatabase,
+  candidate: ShardPlacementMutationAuthorizationCandidate,
+): Promise<void> {
+  if (
+    !LOWER_HEX_64.test(candidate.campaignId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(
+      candidate.controllerVersionId,
+    ) ||
+    !LOWER_HEX_64.test(candidate.actionGateInventorySha256) ||
+    !Number.isSafeInteger(candidate.ringGeneration) ||
+    candidate.ringGeneration < 1 ||
+    candidate.ringGeneration > 1_000_000 ||
+    !Number.isSafeInteger(candidate.shardCount) ||
+    candidate.shardCount < 1 ||
+    candidate.shardCount > 1_024 ||
+    candidate.environment !== "staging"
+  ) {
+    throw new ProtocolError(
+      "invalid_shard_placement_mutation_authorization",
+      400,
+    );
+  }
+  const session = await placementSession(database);
+  let value: Record<string, unknown> | null;
+  try {
+    value = await session
+      .prepare(AUTHORIZATION_READBACK_SQL)
+      .bind(
+        candidate.campaignId,
+        candidate.controllerVersionId,
+        candidate.actionGateInventorySha256,
+        candidate.ringGeneration,
+        candidate.shardCount,
+        candidate.environment,
+      )
+      .first<Record<string, unknown>>();
+  } catch {
+    throw new ProtocolError(
+      "shard_placement_mutation_authorization_readback_unavailable",
+      503,
+    );
+  }
+  if (!isPlacementAuthorizationRow(value)) {
+    throw new ProtocolError(
+      "shard_placement_mutation_authorization_required",
+      403,
+    );
+  }
+  if (
+    value.consumed_at > value.database_now ||
+    value.database_now >= value.campaign_expires_at
+  ) {
+    throw new ProtocolError(
+      "shard_placement_mutation_authorization_readback_invalid",
+      502,
+    );
+  }
+}
+
 export async function recordShardPlacementAttestation(
   database: PlacementDatabase,
   claim: ShardActivationCampaignClaim,
@@ -252,10 +414,11 @@ async function placementSession(database: PlacementDatabase): Promise<PlacementS
     const schema = await session.prepare(SCHEMA_READINESS_SQL).first<Record<string, unknown>>();
     if (
       schema === null ||
-      Object.keys(schema).length !== 4 ||
-      schema.migration_count !== 2 ||
+      Object.keys(schema).length !== 5 ||
+      schema.migration_count !== 3 ||
       schema.placement_columns !== EXPECTED_COLUMNS ||
       schema.event_columns !== EXPECTED_EVENT_COLUMNS ||
+      schema.authorization_columns !== EXPECTED_AUTHORIZATION_COLUMNS ||
       schema.schema_objects !== EXPECTED_SCHEMA_OBJECTS
     ) {
       throw new ProtocolError("shard_placement_attestation_schema_unavailable", 503);
@@ -265,6 +428,25 @@ async function placementSession(database: PlacementDatabase): Promise<PlacementS
     if (error instanceof ProtocolError) throw error;
     throw new ProtocolError("shard_placement_attestation_schema_unavailable", 503);
   }
+}
+
+function isPlacementAuthorizationRow(
+  value: Record<string, unknown> | null,
+): value is PlacementAuthorizationRow {
+  return (
+    value !== null &&
+    Object.keys(value).length === 5 &&
+    typeof value.authorization_id_sha256 === "string" &&
+    LOWER_HEX_64.test(value.authorization_id_sha256) &&
+    typeof value.subject_digest_sha256 === "string" &&
+    LOWER_HEX_64.test(value.subject_digest_sha256) &&
+    Number.isSafeInteger(value.consumed_at) &&
+    (value.consumed_at as number) > 0 &&
+    Number.isSafeInteger(value.campaign_expires_at) &&
+    (value.campaign_expires_at as number) > 0 &&
+    Number.isSafeInteger(value.database_now) &&
+    (value.database_now as number) > 0
+  );
 }
 
 async function readPlacement(

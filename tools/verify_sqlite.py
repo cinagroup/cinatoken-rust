@@ -271,6 +271,7 @@ REQUIRED_TABLES = [
     "relay_container_ring_transition_expiry_events",
     "relay_container_shard_placement_attestations",
     "relay_container_shard_placement_events",
+    "relay_container_shard_placement_mutation_authorizations",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1312,6 +1313,33 @@ REQUIRED_COLUMNS = {
         "campaign_id",
         "activation_id",
     },
+    "relay_container_shard_placement_mutation_authorizations": {
+        "authorization_id_sha256",
+        "execution_nonce_sha256",
+        "campaign_nonce_sha256",
+        "subject_digest_sha256",
+        "contract_version",
+        "authorization_contract",
+        "issuer",
+        "key_id",
+        "signer_spki_sha256",
+        "environment",
+        "controller_service_name",
+        "controller_version_id",
+        "action_gate_inventory_sha256",
+        "foundation_manifest_sha256",
+        "runtime_build_id",
+        "ring_generation",
+        "shard_count",
+        "campaign_lifetime_seconds",
+        "permit_issued_at",
+        "permit_expires_at",
+        "campaign_id",
+        "campaign_digest_sha256",
+        "campaign_expires_at",
+        "consumed_by_admin_id",
+        "consumed_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -1492,6 +1520,9 @@ REQUIRED_INDEXES = {
     },
     "relay_container_shard_placement_events": {
         "idx_relay_container_shard_placement_events_candidate": False,
+    },
+    "relay_container_shard_placement_mutation_authorizations": {
+        "idx_relay_container_shard_placement_authorizations_candidate": False,
     },
 }
 
@@ -1830,6 +1861,7 @@ def main() -> int:
         message += (
             " + 0061 immutable shard placement attestations"
             " + 0062 insertion-ordered placement events"
+            " + 0063 one-time staging placement authorization"
         )
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
@@ -15112,6 +15144,7 @@ def verify_relay_container_shard_activation_campaign_rollout(
         "relay_container_shard_activation_campaign_seal_update_guard",
         "relay_container_shard_activation_campaign_seal_delete_guard",
         "relay_container_shard_activation_campaign_authority_guard",
+        "relay_container_shard_activation_campaign_authorization_guard",
     }
     trigger_rows = schema_conn.execute(
         "SELECT name, sql FROM sqlite_master "
@@ -15175,6 +15208,13 @@ def verify_relay_container_shard_activation_campaign_rollout(
             "claim.claim_digest_sha256 = consumption.claim_digest_sha256",
             "consumption.readiness_checked_at = NEW.activated_at",
         ),
+        "relay_container_shard_activation_campaign_authorization_guard": (
+            "AFTER INSERT ON relay_container_shard_activation_campaigns",
+            "FROM relay_container_shard_placement_mutation_authorizations AS authorization",
+            "authorization.campaign_nonce_sha256 = NEW.campaign_nonce_sha256",
+            "authorization.environment = NEW.environment",
+            "shard activation campaign authorization mismatch",
+        ),
     }
     for trigger_name, fragments in trigger_fragments.items():
         trigger_sql = normalized_sql(actual_triggers[trigger_name] or "")
@@ -15232,6 +15272,59 @@ def _verify_relay_container_shard_activation_campaign_runtime(
           {", ".join(campaign_columns)}
         ) VALUES (
           {", ".join(f":{column}" for column in campaign_columns)}
+        )
+    """
+    authorization_insert_sql = """
+        INSERT INTO relay_container_shard_placement_mutation_authorizations (
+          authorization_id_sha256,
+          execution_nonce_sha256,
+          campaign_nonce_sha256,
+          subject_digest_sha256,
+          contract_version,
+          authorization_contract,
+          issuer,
+          key_id,
+          signer_spki_sha256,
+          environment,
+          controller_service_name,
+          controller_version_id,
+          action_gate_inventory_sha256,
+          foundation_manifest_sha256,
+          runtime_build_id,
+          ring_generation,
+          shard_count,
+          campaign_lifetime_seconds,
+          permit_issued_at,
+          permit_expires_at,
+          campaign_id,
+          campaign_digest_sha256,
+          campaign_expires_at,
+          consumed_by_admin_id
+        ) VALUES (
+          :authorization_id_sha256,
+          :execution_nonce_sha256,
+          :campaign_nonce_sha256,
+          :subject_digest_sha256,
+          1,
+          'cinatoken-relay-shard-placement-mutation-authorization-v1',
+          'placement-authority-staging',
+          'placement-v1',
+          :signer_spki_sha256,
+          'staging',
+          'cinatoken-container-controller-staging',
+          :controller_version_id,
+          :action_gate_inventory_sha256,
+          :foundation_manifest_sha256,
+          :runtime_build_id,
+          :ring_generation,
+          :shard_count,
+          :campaign_lifetime_seconds,
+          :permit_issued_at,
+          :permit_expires_at,
+          :campaign_id,
+          :campaign_digest_sha256,
+          :campaign_expires_at,
+          :consumed_by_admin_id
         )
     """
     claim_insert_columns = tuple(
@@ -15394,6 +15487,51 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         if "campaign_digest_sha256" not in overrides:
             values["campaign_digest_sha256"] = campaign_digest(values)
         return values
+
+    def insert_authorized_campaign(values: dict[str, object]) -> None:
+        authorization = {
+            "authorization_id_sha256": test_sha256(
+                f"0063:authorization:{values['campaign_id']}"
+            ),
+            "execution_nonce_sha256": test_sha256(
+                f"0063:execution:{values['campaign_id']}"
+            ),
+            "campaign_nonce_sha256": values["campaign_nonce_sha256"],
+            "subject_digest_sha256": test_sha256(
+                f"0063:subject:{values['campaign_id']}"
+            ),
+            "signer_spki_sha256": test_sha256("0063:test-signer"),
+            "controller_version_id": values["controller_version_id"],
+            "action_gate_inventory_sha256": values[
+                "action_gate_inventory_sha256"
+            ],
+            "foundation_manifest_sha256": values["foundation_manifest_sha256"],
+            "runtime_build_id": values["runtime_build_id"],
+            "ring_generation": values["ring_generation"],
+            "shard_count": values["shard_count"],
+            "campaign_lifetime_seconds": max(
+                60,
+                min(
+                    3600,
+                    int(values["expires_at"]) - int(values["created_at"]),
+                ),
+            ),
+            "permit_issued_at": d1_clock[0],
+            "permit_expires_at": d1_clock[0] + 300,
+            "campaign_id": values["campaign_id"],
+            "campaign_digest_sha256": values["campaign_digest_sha256"],
+            "campaign_expires_at": values["expires_at"],
+            "consumed_by_admin_id": values["created_by_admin_id"],
+        }
+        conn.execute("SAVEPOINT authorized_campaign")
+        try:
+            conn.execute(authorization_insert_sql, authorization)
+            conn.execute(campaign_insert_sql, values)
+            conn.execute("RELEASE authorized_campaign")
+        except Exception:
+            conn.execute("ROLLBACK TO authorized_campaign")
+            conn.execute("RELEASE authorized_campaign")
+            raise
 
     def deterministic_probe_id(campaign_id: object, shard_index: int) -> str:
         return digest_parts(
@@ -15578,7 +15716,7 @@ def _verify_relay_container_shard_activation_campaign_runtime(
     changed_inventory["campaign_digest_sha256"] = campaign_digest(changed_inventory)
     if changed_inventory["campaign_digest_sha256"] == primary["campaign_digest_sha256"]:
         raise SystemExit("0055 campaign digest does not bind action gate inventory")
-    conn.execute(campaign_insert_sql, primary)
+    insert_authorized_campaign(primary)
 
     campaign_negative_cases = (
         (
@@ -15608,7 +15746,7 @@ def _verify_relay_container_shard_activation_campaign_runtime(
     )
     for values, failure_message, expected_error in campaign_negative_cases:
         expect_integrity_error(
-            lambda values=values: conn.execute(campaign_insert_sql, values),
+            lambda values=values: insert_authorized_campaign(values),
             failure_message,
             expected_error,
         )
@@ -15622,7 +15760,7 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         ring_generation=primary["ring_generation"],
     )
     expect_integrity_error(
-        lambda: conn.execute(campaign_insert_sql, active_duplicate),
+        lambda: insert_authorized_campaign(active_duplicate),
         "0055 accepted an overlapping D1-active candidate campaign",
         "candidate already has an active campaign",
     )
@@ -15632,7 +15770,7 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         action_gate_inventory_sha256=test_sha256("different-controller-gates"),
     )
     expect_integrity_error(
-        lambda: conn.execute(campaign_insert_sql, inventory_drift),
+        lambda: insert_authorized_campaign(inventory_drift),
         "0055 accepted two action gate inventories for one Controller version",
         "controller action gate inventory mismatch",
     )
@@ -15701,8 +15839,8 @@ def _verify_relay_container_shard_activation_campaign_runtime(
 
     late = campaign_values("late", expires_at=d1_clock[0] + 60)
     clean_expired = campaign_values("clean-expired", expires_at=d1_clock[0] + 60)
-    conn.execute(campaign_insert_sql, late)
-    conn.execute(campaign_insert_sql, clean_expired)
+    insert_authorized_campaign(late)
+    insert_authorized_campaign(clean_expired)
     late_claim = claim_values(late, 0)
     conn.execute(claim_insert_sql, late_claim)
     conn.execute(expiry_materialization_sql)
@@ -15776,7 +15914,7 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         ring_generation=late["ring_generation"],
     )
     expect_integrity_error(
-        lambda: conn.execute(campaign_insert_sql, retired_late),
+        lambda: insert_authorized_campaign(retired_late),
         "0055 reused an expired candidate that had a claim",
         "candidate is not reusable",
     )
@@ -15790,7 +15928,7 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         runtime_build_id=clean_expired["runtime_build_id"],
         ring_generation=clean_expired["ring_generation"],
     )
-    conn.execute(campaign_insert_sql, reusable_expired)
+    insert_authorized_campaign(reusable_expired)
 
     synthetic_claim_one = claim_values(primary, 1)
     no_claim_consumption = consumption_values(synthetic_claim_one)
@@ -15942,13 +16080,13 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         ring_generation=primary["ring_generation"],
     )
     expect_integrity_error(
-        lambda: conn.execute(campaign_insert_sql, complete_rebuild),
+        lambda: insert_authorized_campaign(complete_rebuild),
         "0055 rebuilt a completed candidate",
         "candidate already activated",
     )
 
     failed = campaign_values("failed")
-    conn.execute(campaign_insert_sql, failed)
+    insert_authorized_campaign(failed)
     failed_claim = claim_values(failed, 0)
     conn.execute(claim_insert_sql, failed_claim)
     expect_integrity_error(
@@ -15985,13 +16123,13 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         ring_generation=failed["ring_generation"],
     )
     expect_integrity_error(
-        lambda: conn.execute(campaign_insert_sql, failed_rebuild),
+        lambda: insert_authorized_campaign(failed_rebuild),
         "0055 reused a failed candidate that had a claim",
         "candidate is not reusable",
     )
 
     clean_aborted = campaign_values("clean-aborted")
-    conn.execute(campaign_insert_sql, clean_aborted)
+    insert_authorized_campaign(clean_aborted)
     conn.execute(
         seal_insert_sql,
         seal_values(clean_aborted, "aborted", "operator_aborted"),
@@ -16006,7 +16144,7 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         runtime_build_id=clean_aborted["runtime_build_id"],
         ring_generation=clean_aborted["ring_generation"],
     )
-    conn.execute(campaign_insert_sql, reusable_aborted)
+    insert_authorized_campaign(reusable_aborted)
 
     immutable_mutations = (
         (
@@ -18689,15 +18827,25 @@ def verify_relay_container_ring_transition_claim_rollout(
         ),
         None,
     )
+    placement_authorization_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0063_relay_container_shard_placement_mutation_authorizations.sql"
+        ),
+        None,
+    )
     if (
         claim_path is None
         or abort_path is None
         or authority_path is None
         or placement_path is None
         or placement_event_path is None
+        or placement_authorization_path is None
     ):
         raise SystemExit(
-            "0058..0062 ring transition and placement migrations not found"
+            "0058..0063 ring transition and placement migrations not found"
         )
     claim_index = schema_paths.index(claim_path)
     if claim_index == 0 or schema_paths[claim_index - 1] != abort_path:
@@ -18709,13 +18857,18 @@ def verify_relay_container_ring_transition_claim_rollout(
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
     placement_event_index = schema_paths.index(placement_event_path)
-    if placement_event_index != len(schema_paths) - 1:
-        raise SystemExit("0062 shard placement events must be the D1 head")
+    if placement_event_index != len(schema_paths) - 2:
+        raise SystemExit("0062 shard placement events must immediately precede 0063")
     if (
         placement_event_index == 0
         or schema_paths[placement_event_index - 1] != placement_path
     ):
         raise SystemExit("0062 shard placement events must follow 0061")
+    placement_authorization_index = schema_paths.index(placement_authorization_path)
+    if placement_authorization_index != len(schema_paths) - 1:
+        raise SystemExit("0063 shard placement authorization must be the D1 head")
+    if schema_paths[placement_authorization_index - 1] != placement_event_path:
+        raise SystemExit("0063 shard placement authorization must follow 0062")
 
     claim_sql = claim_path.read_text(encoding="utf-8")
     if "if not exists" in claim_sql.lower():
@@ -19057,23 +19210,40 @@ def verify_relay_container_shard_placement_attestation_rollout(
         ),
         None,
     )
+    placement_authorization_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0063_relay_container_shard_placement_mutation_authorizations.sql"
+        ),
+        None,
+    )
     if (
         placement_path is None
         or authority_path is None
         or placement_event_path is None
+        or placement_authorization_path is None
     ):
-        raise SystemExit("0060/0061/0062 shard placement rollout migrations not found")
+        raise SystemExit(
+            "0060/0061/0062/0063 shard placement rollout migrations not found"
+        )
     placement_index = schema_paths.index(placement_path)
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
     placement_event_index = schema_paths.index(placement_event_path)
-    if placement_event_index != len(schema_paths) - 1:
-        raise SystemExit("0062 shard placement events must be the D1 head")
+    if placement_event_index != len(schema_paths) - 2:
+        raise SystemExit("0062 shard placement events must immediately precede 0063")
     if (
         placement_event_index == 0
         or schema_paths[placement_event_index - 1] != placement_path
     ):
         raise SystemExit("0062 shard placement events must follow 0061")
+    placement_authorization_index = schema_paths.index(placement_authorization_path)
+    if placement_authorization_index != len(schema_paths) - 1:
+        raise SystemExit("0063 shard placement authorization must be the D1 head")
+    if schema_paths[placement_authorization_index - 1] != placement_event_path:
+        raise SystemExit("0063 shard placement authorization must follow 0062")
 
     placement_sql = placement_path.read_text(encoding="utf-8")
     if "if not exists" in placement_sql.lower():
@@ -19113,6 +19283,33 @@ def verify_relay_container_shard_placement_attestation_rollout(
     ):
         if fragment not in placement_event_sql:
             raise SystemExit(f"0062 shard placement event rollout missing: {fragment}")
+
+    placement_authorization_sql = placement_authorization_path.read_text(
+        encoding="utf-8"
+    )
+    if "if not exists" in placement_authorization_sql.lower():
+        raise SystemExit("0063 critical placement authorization objects must fail duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_shard_placement_mutation_authorizations",
+        "authorization_id_sha256 TEXT PRIMARY KEY",
+        "execution_nonce_sha256 TEXT NOT NULL UNIQUE",
+        "campaign_nonce_sha256 TEXT NOT NULL UNIQUE",
+        "subject_digest_sha256 TEXT NOT NULL UNIQUE",
+        "environment TEXT NOT NULL CHECK (environment = 'staging')",
+        "controller_service_name = 'cinatoken-container-controller-staging'",
+        "DEFERRABLE INITIALLY DEFERRED",
+        "relay_container_shard_placement_authorization_insert_guard",
+        "relay_container_shard_activation_campaign_authorization_guard",
+        "shard activation campaign authorization mismatch",
+        "DROP TRIGGER relay_container_shard_placement_attestation_insert_guard",
+        "shard placement mutation authorization is unavailable",
+        "relay_container_shard_placement_authorization_update_guard",
+        "relay_container_shard_placement_authorization_delete_guard",
+    ):
+        if fragment not in placement_authorization_sql:
+            raise SystemExit(
+                f"0063 shard placement authorization rollout missing: {fragment}"
+            )
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

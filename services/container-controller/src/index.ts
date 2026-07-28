@@ -132,7 +132,10 @@ import {
   type ShardPlacementAttestationRpcResultV1,
   type ShardPlacementAttestationWriterEnvironment,
 } from "./shard_placement_attestation";
-import { recordShardPlacementAttestation } from "./shard_placement_ledger";
+import {
+  recordShardPlacementAttestation,
+  requireShardPlacementMutationAuthorization,
+} from "./shard_placement_ledger";
 
 export { ContainerProxy };
 
@@ -1519,7 +1522,7 @@ async function claimShardActivationCampaignBeforeWake(
     }
     return null;
   }
-  shardPlacementAttestationWriterPolicy(env);
+  const placementPolicy = shardPlacementAttestationWriterPolicy(env);
   if (relayShardJurisdictionPolicy(env).restricted) {
     throw new ProtocolError(
       "shard_activation_jurisdiction_contract_unavailable",
@@ -1537,6 +1540,22 @@ async function claimShardActivationCampaignBeforeWake(
   }
   if (env.ENVIRONMENT !== "staging" && env.ENVIRONMENT !== "production") {
     throw new ProtocolError("shard_activation_environment_invalid", 503);
+  }
+  if (placementPolicy.enabled) {
+    if (env.ENVIRONMENT !== "staging") {
+      throw new ProtocolError(
+        "shard_placement_mutation_authorization_environment_invalid",
+        503,
+      );
+    }
+    await requireShardPlacementMutationAuthorization(env.DB, {
+      campaignId: campaign.campaign_id,
+      controllerVersionId: env.CF_VERSION_METADATA.id,
+      actionGateInventorySha256: actionGateInventory.digestSha256,
+      ringGeneration: probe.shard.ring_generation,
+      shardCount: probe.shard.shard_count,
+      environment: env.ENVIRONMENT,
+    });
   }
   return claimShardActivationCampaign(env.DB, {
     credential: campaign,

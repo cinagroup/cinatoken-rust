@@ -13,6 +13,11 @@ use crate::admin::{
 };
 use crate::container_controller::probe as probe_container_controller;
 use crate::container_scheduler::container_scheduler_runtime_status;
+use crate::container_shard_placement_mutation_authorization::{
+    verify_shard_placement_mutation_authorization, ExpectedShardPlacementMutationAuthorization,
+    ShardPlacementMutationAuthorizationError, ShardPlacementMutationAuthorizationPermit,
+    VerifiedShardPlacementMutationAuthorization,
+};
 use crate::d1_repositories::{
     admin_audit_log_statement, create_relay_container_shard_activation_campaign,
     materialize_expired_relay_container_shard_activation_campaign,
@@ -21,6 +26,8 @@ use crate::d1_repositories::{
     relay_container_shard_activation_campaign_status, RelayContainerShardActivationCampaign,
     RelayContainerShardActivationCampaignReceiptRow,
     RelayContainerShardActivationCampaignStatusRow,
+    RelayContainerShardPlacementMutationAuthorization,
+    RelayContainerShardPlacementMutationAuthorizationRow,
 };
 
 const CONTRACT_VERSION: u32 = 1;
@@ -29,7 +36,7 @@ const CAMPAIGN_DIGEST_DOMAIN: &[u8] = b"cinatoken:relay-container-shard-activati
 const ACTIVATION_DIGEST_DOMAIN: &[u8] = b"cinatoken:relay-container-shard-activation:v1\0";
 const CONSUMPTION_DIGEST_DOMAIN: &[u8] =
     b"cinatoken:relay-container-shard-activation-campaign-consumption:v1\0";
-const CREATE_BODY_LIMIT_BYTES: usize = 4 * 1024;
+const CREATE_BODY_LIMIT_BYTES: usize = 8 * 1024;
 const MIN_LIFETIME_SECONDS: i64 = 60;
 const MAX_LIFETIME_SECONDS: i64 = 3_600;
 const MAX_VERSION: i64 = 1_000_000;
@@ -39,6 +46,11 @@ const MAX_VERSION: i64 = 1_000_000;
 struct CreateCampaignRequest {
     contract_version: u32,
     expected_environment: String,
+    campaign_id: String,
+    campaign_nonce: String,
+    authorization_id_sha256: String,
+    execution_nonce_sha256: String,
+    placement_mutation_authorization: ShardPlacementMutationAuthorizationPermit,
     expected_ring_generation: u64,
     expected_shard_count: u16,
     foundation_manifest_sha256: String,
@@ -227,6 +239,12 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
             "Container deployment environment changed before campaign creation",
         ));
     }
+    if environment != "staging" {
+        return no_store(envelope_error_response(
+            404,
+            "Shard placement mutation authorization is unavailable",
+        ));
+    }
 
     let controller = probe_container_controller(&env, runtime).await;
     if !controller.verified {
@@ -250,6 +268,14 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
         return no_store(envelope_error_response(
             409,
             "Legacy shard activation writer must remain disabled",
+        ));
+    }
+    if !controller.shard_placement_attestation_write_enabled
+        || !controller.shard_placement_attestation_staging_verified
+    {
+        return no_store(envelope_error_response(
+            409,
+            "Shard placement writer must be staging-verified before campaign creation",
         ));
     }
     let Some(controller_version_id) = controller.controller_version_id else {
@@ -292,27 +318,50 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
         }
     }
 
-    let campaign_id = match random_hex_256() {
-        Some(value) => value,
-        None => {
-            return no_store(envelope_error_response(
-                503,
-                "Shard activation campaign entropy is unavailable",
-            ));
-        }
-    };
-    let nonce = match random_hex_256() {
-        Some(value) => value,
-        None => {
-            return no_store(envelope_error_response(
-                503,
-                "Shard activation campaign entropy is unavailable",
-            ));
-        }
-    };
+    let campaign_id = input.campaign_id.clone();
+    let nonce = input.campaign_nonce.clone();
     let campaign_nonce_sha256 = sha256_hex(nonce.as_bytes());
     let created_at = (worker::Date::now().as_millis() / 1_000) as i64;
     let expires_at = created_at.saturating_add(input.expires_in_seconds);
+    let verified_authorization = match verify_shard_placement_mutation_authorization(
+        &env,
+        &input.placement_mutation_authorization,
+        &ExpectedShardPlacementMutationAuthorization {
+            authorization_id_sha256: &input.authorization_id_sha256,
+            execution_nonce_sha256: &input.execution_nonce_sha256,
+            campaign_id: &campaign_id,
+            campaign_nonce: &nonce,
+            controller_version_id: &controller_version_id,
+            action_gate_inventory_sha256: &action_gate_inventory_sha256,
+            foundation_manifest_sha256: &input.foundation_manifest_sha256,
+            runtime_build_id: &input.runtime_build_id,
+            ring_generation: runtime.ring_generation,
+            shard_count: runtime.shard_count,
+            campaign_lifetime_seconds: input.expires_in_seconds,
+        },
+        created_at,
+    ) {
+        Ok(verified) => verified,
+        Err(error) => {
+            let unavailable = matches!(
+                error,
+                ShardPlacementMutationAuthorizationError::MissingTrust
+                    | ShardPlacementMutationAuthorizationError::InvalidTrust
+            );
+            worker::console_error!(
+                "Shard placement mutation authorization rejected: {}",
+                error.code()
+            );
+            return no_store(envelope_error_response(
+                if unavailable { 503 } else { 403 },
+                if unavailable {
+                    "Shard placement mutation authorization verifier is unavailable"
+                } else {
+                    "Shard placement mutation authorization was rejected"
+                },
+            ));
+        }
+    };
     let campaign_digest_sha256 = campaign_digest(&CampaignDigestInput {
         campaign_id: &campaign_id,
         campaign_nonce_sha256: &campaign_nonce_sha256,
@@ -354,9 +403,24 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
         created_at,
         expires_at,
     };
+    let authorization = relay_placement_mutation_authorization(
+        &verified_authorization,
+        &campaign_digest_sha256,
+        claims.id,
+        expires_at,
+    );
     let audit_params = json!({
         "campaign_id": &campaign_id,
         "campaign_digest_sha256": &campaign_digest_sha256,
+        "placement_authorization_id_sha256":
+            &verified_authorization.authorization_id_sha256,
+        "placement_authorization_subject_digest_sha256":
+            &verified_authorization.subject_digest_sha256,
+        "placement_authorization_issuer": &verified_authorization.issuer,
+        "placement_authorization_key_id": &verified_authorization.key_id,
+        "placement_authorization_signer_spki_sha256":
+            &verified_authorization.signer_spki_sha256,
+        "placement_authorization_expires_at": verified_authorization.expires_at,
         "controller_version_id": &controller_version_id,
         "action_gate_inventory_sha256": &action_gate_inventory_sha256,
         "action_gate_count": 22,
@@ -379,31 +443,45 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
         &admin_info,
         created_at,
     )?;
-    let stored =
-        match create_relay_container_shard_activation_campaign(&db, &campaign, admin_audit).await {
-            Ok(stored) => stored,
-            Err(err) => {
-                worker::console_error!("Shard activation campaign create failed: {err}");
-                let message = err.to_string().to_ascii_lowercase();
-                let conflict = message.contains("campaign")
-                    || message.contains("activation")
-                    || message.contains("unique");
-                return no_store(envelope_error_response(
-                    if conflict { 409 } else { 503 },
-                    if conflict {
-                        "Shard activation candidate already has conflicting evidence"
-                    } else {
-                        "Shard activation campaign ledger is unavailable"
-                    },
-                ));
-            }
-        };
-    if !campaign_status_valid(&stored)
-        || stored.campaign_nonce_sha256 != campaign_nonce_sha256
-        || stored.campaign_digest_sha256 != campaign_digest_sha256
-        || stored.claimed_shard_count != 0
-        || stored.consumed_shard_count != 0
-        || stored.seal_reason.is_some()
+    let stored = match create_relay_container_shard_activation_campaign(
+        &db,
+        &campaign,
+        &authorization,
+        admin_audit,
+    )
+    .await
+    {
+        Ok(stored) => stored,
+        Err(err) => {
+            worker::console_error!("Shard activation campaign create failed: {err}");
+            let message = err.to_string().to_ascii_lowercase();
+            let conflict = message.contains("campaign")
+                || message.contains("activation")
+                || message.contains("unique");
+            return no_store(envelope_error_response(
+                if conflict { 409 } else { 503 },
+                if conflict {
+                    "Shard activation candidate already has conflicting evidence"
+                } else {
+                    "Shard activation campaign ledger is unavailable"
+                },
+            ));
+        }
+    };
+    if !campaign_status_valid(&stored.campaign)
+        || stored.campaign.campaign_nonce_sha256 != campaign_nonce_sha256
+        || stored.campaign.campaign_digest_sha256 != campaign_digest_sha256
+        || stored.campaign.claimed_shard_count != 0
+        || stored.campaign.consumed_shard_count != 0
+        || stored.campaign.seal_reason.is_some()
+        || !placement_authorization_readback_valid(
+            &stored.authorization,
+            &verified_authorization,
+            &campaign_digest_sha256,
+            expires_at,
+            claims.id,
+            stored.campaign.created_at,
+        )
     {
         worker::console_error!("Shard activation campaign create readback is invalid");
         return no_store(envelope_error_response(
@@ -416,14 +494,19 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
         json!({
             "event": "relay_container_shard_activation_campaign_created",
             "admin_id": claims.id,
-            "campaign_id": stored.campaign_id,
-            "campaign_digest_sha256": stored.campaign_digest_sha256,
-            "controller_version_id": stored.controller_version_id,
-            "ring_generation": stored.ring_generation,
-            "shard_count": stored.shard_count,
-            "expires_at": stored.expires_at,
+            "campaign_id": stored.campaign.campaign_id,
+            "campaign_digest_sha256": stored.campaign.campaign_digest_sha256,
+            "placement_authorization_id_sha256":
+                stored.authorization.authorization_id_sha256,
+            "placement_authorization_subject_digest_sha256":
+                stored.authorization.subject_digest_sha256,
+            "controller_version_id": stored.campaign.controller_version_id,
+            "ring_generation": stored.campaign.ring_generation,
+            "shard_count": stored.campaign.shard_count,
+            "expires_at": stored.campaign.expires_at,
         })
     );
+    let stored = stored.campaign;
     no_store(envelope_ok_response(&CampaignCreateResponse {
         contract_version: CONTRACT_VERSION,
         campaign_contract: CAMPAIGN_CONTRACT,
@@ -650,11 +733,16 @@ fn validate_create_request(input: &CreateCampaignRequest) -> Result<(), &'static
     if input.contract_version != CONTRACT_VERSION {
         return Err("Unsupported shard activation campaign contract");
     }
-    if !matches!(
-        input.expected_environment.as_str(),
-        "staging" | "production"
-    ) {
+    if input.expected_environment != "staging" {
         return Err("Invalid shard activation campaign environment");
+    }
+    if !valid_lower_hex(&input.campaign_id, 64)
+        || !valid_lower_hex(&input.campaign_nonce, 64)
+        || !valid_lower_hex(&input.authorization_id_sha256, 64)
+        || !valid_lower_hex(&input.execution_nonce_sha256, 64)
+        || input.authorization_id_sha256 == input.execution_nonce_sha256
+    {
+        return Err("Invalid shard placement mutation authorization identity");
     }
     if input.expected_ring_generation == 0 || input.expected_ring_generation > MAX_VERSION as u64 {
         return Err("Invalid shard activation campaign ring generation");
@@ -681,6 +769,76 @@ fn validate_create_request(input: &CreateCampaignRequest) -> Result<(), &'static
         return Err("Shard activation campaign requires confirm_create=true");
     }
     Ok(())
+}
+
+fn relay_placement_mutation_authorization<'a>(
+    verified: &'a VerifiedShardPlacementMutationAuthorization,
+    campaign_digest_sha256: &'a str,
+    consumed_by_admin_id: i64,
+    campaign_expires_at: i64,
+) -> RelayContainerShardPlacementMutationAuthorization<'a> {
+    RelayContainerShardPlacementMutationAuthorization {
+        authorization_id_sha256: &verified.authorization_id_sha256,
+        execution_nonce_sha256: &verified.execution_nonce_sha256,
+        campaign_nonce_sha256: &verified.campaign_nonce_sha256,
+        subject_digest_sha256: &verified.subject_digest_sha256,
+        contract_version: i64::from(verified.schema_version),
+        authorization_contract: &verified.contract,
+        issuer: &verified.issuer,
+        key_id: &verified.key_id,
+        signer_spki_sha256: &verified.signer_spki_sha256,
+        environment: &verified.environment,
+        controller_service_name: &verified.controller_service_name,
+        controller_version_id: &verified.controller_version_id,
+        action_gate_inventory_sha256: &verified.action_gate_inventory_sha256,
+        foundation_manifest_sha256: &verified.foundation_manifest_sha256,
+        runtime_build_id: &verified.runtime_build_id,
+        ring_generation: verified.ring_generation as i64,
+        shard_count: i64::from(verified.shard_count),
+        campaign_lifetime_seconds: verified.campaign_lifetime_seconds,
+        permit_issued_at: verified.issued_at,
+        permit_expires_at: verified.expires_at,
+        campaign_id: &verified.campaign_id,
+        campaign_digest_sha256,
+        campaign_expires_at,
+        consumed_by_admin_id,
+    }
+}
+
+fn placement_authorization_readback_valid(
+    row: &RelayContainerShardPlacementMutationAuthorizationRow,
+    verified: &VerifiedShardPlacementMutationAuthorization,
+    campaign_digest_sha256: &str,
+    campaign_expires_at: i64,
+    consumed_by_admin_id: i64,
+    campaign_created_at: i64,
+) -> bool {
+    row.authorization_id_sha256 == verified.authorization_id_sha256
+        && row.execution_nonce_sha256 == verified.execution_nonce_sha256
+        && row.campaign_nonce_sha256 == verified.campaign_nonce_sha256
+        && row.subject_digest_sha256 == verified.subject_digest_sha256
+        && row.contract_version == i64::from(verified.schema_version)
+        && row.authorization_contract == verified.contract
+        && row.issuer == verified.issuer
+        && row.key_id == verified.key_id
+        && row.signer_spki_sha256 == verified.signer_spki_sha256
+        && row.environment == verified.environment
+        && row.controller_service_name == verified.controller_service_name
+        && row.controller_version_id == verified.controller_version_id
+        && row.action_gate_inventory_sha256 == verified.action_gate_inventory_sha256
+        && row.foundation_manifest_sha256 == verified.foundation_manifest_sha256
+        && row.runtime_build_id == verified.runtime_build_id
+        && row.ring_generation == verified.ring_generation as i64
+        && row.shard_count == i64::from(verified.shard_count)
+        && row.campaign_lifetime_seconds == verified.campaign_lifetime_seconds
+        && row.permit_issued_at == verified.issued_at
+        && row.permit_expires_at == verified.expires_at
+        && row.campaign_id == verified.campaign_id
+        && row.campaign_digest_sha256 == campaign_digest_sha256
+        && row.campaign_expires_at == campaign_expires_at
+        && row.consumed_by_admin_id == consumed_by_admin_id
+        && row.consumed_at > 0
+        && row.consumed_at.abs_diff(campaign_created_at) <= 5
 }
 
 fn campaign_id_query(req: &Request) -> Result<String, &'static str> {
@@ -994,12 +1152,6 @@ fn campaign_consumption_digest(row: &RelayContainerShardActivationCampaignReceip
     format!("{:x}", hasher.finalize())
 }
 
-fn random_hex_256() -> Option<String> {
-    let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).ok()?;
-    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
 fn sha256_hex(value: &[u8]) -> String {
     format!("{:x}", Sha256::digest(value))
 }
@@ -1151,6 +1303,32 @@ mod tests {
         let valid = CreateCampaignRequest {
             contract_version: 1,
             expected_environment: "staging".to_string(),
+            campaign_id: "1".repeat(64),
+            campaign_nonce: "2".repeat(64),
+            authorization_id_sha256: "3".repeat(64),
+            execution_nonce_sha256: "4".repeat(64),
+            placement_mutation_authorization: ShardPlacementMutationAuthorizationPermit {
+                schema_version: 1,
+                contract: "cinatoken-relay-shard-placement-mutation-authorization-v1".to_string(),
+                issuer: "placement-authority-staging".to_string(),
+                key_id: "placement-v1".to_string(),
+                environment: "staging".to_string(),
+                authorization_id_sha256: "3".repeat(64),
+                execution_nonce_sha256: "4".repeat(64),
+                campaign_id: "1".repeat(64),
+                campaign_nonce_sha256: sha256_hex("2".repeat(64).as_bytes()),
+                controller_service_name: "cinatoken-container-controller-staging".to_string(),
+                controller_version_id: "controller-version-55".to_string(),
+                action_gate_inventory_sha256: "a".repeat(64),
+                foundation_manifest_sha256: "b".repeat(64),
+                runtime_build_id: "c".repeat(64),
+                ring_generation: 7,
+                shard_count: 8,
+                campaign_lifetime_seconds: 600,
+                issued_at: 1_900_000_000,
+                expires_at: 1_900_000_600,
+                signature_base64url: "A".repeat(86),
+            },
             expected_ring_generation: 7,
             expected_shard_count: 8,
             foundation_manifest_sha256: "b".repeat(64),

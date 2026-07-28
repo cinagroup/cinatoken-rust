@@ -19,7 +19,10 @@ import {
   type ShardPlacementAttestationV1,
   type VerifiedShardPlacementAttestationV1,
 } from "../src/shard_placement_attestation";
-import { recordShardPlacementAttestation } from "../src/shard_placement_ledger";
+import {
+  recordShardPlacementAttestation,
+  requireShardPlacementMutationAuthorization,
+} from "../src/shard_placement_ledger";
 
 const input = fixture.input as CreateShardPlacementAttestationV1Input;
 const expected = fixture.attestation as ShardPlacementAttestationV1;
@@ -36,6 +39,13 @@ const placementMigration = await readFile(
 const placementEventMigration = await readFile(
   new URL(
     "../../../migrations/d1/0062_relay_container_shard_placement_events.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const placementAuthorizationMigration = await readFile(
+  new URL(
+    "../../../migrations/d1/0063_relay_container_shard_placement_mutation_authorizations.sql",
     import.meta.url,
   ),
   "utf8",
@@ -265,6 +275,47 @@ describe("relay shard placement attestation v1", () => {
     }
   });
 
+  test("requires the exact active authorization before a shard wake", async () => {
+    const authorized = placementDatabase();
+    try {
+      await expect(
+        requireShardPlacementMutationAuthorization(
+          authorized.database as never,
+          placementAuthorizationCandidate(),
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        requireShardPlacementMutationAuthorization(
+          authorized.database as never,
+          {
+            ...placementAuthorizationCandidate(),
+            controllerVersionId: "controller-version-drift",
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: "shard_placement_mutation_authorization_required",
+        status: 403,
+      });
+    } finally {
+      authorized.sqlite.close();
+    }
+
+    const missing = placementDatabase({ includeAuthorization: false });
+    try {
+      await expect(
+        requireShardPlacementMutationAuthorization(
+          missing.database as never,
+          placementAuthorizationCandidate(),
+        ),
+      ).rejects.toMatchObject({
+        code: "shard_placement_mutation_authorization_required",
+        status: 403,
+      });
+    } finally {
+      missing.sqlite.close();
+    }
+  });
+
   test("fails closed on missing activation, schema drift, and placement conflict", async () => {
     const missing = placementDatabase({ includeParents: false });
     try {
@@ -424,11 +475,24 @@ function placementClaim(): ShardActivationCampaignClaim {
   };
 }
 
+function placementAuthorizationCandidate() {
+  return {
+    campaignId: CAMPAIGN_ID,
+    controllerVersionId: input.controllerVersionId,
+    actionGateInventorySha256: "8".repeat(64),
+    ringGeneration: 7,
+    shardCount: 32,
+    environment: "staging",
+  };
+}
+
 function placementDatabase({
   includeParents = true,
+  includeAuthorization = true,
   hidePlacementReadback = false,
 }: {
   includeParents?: boolean;
+  includeAuthorization?: boolean;
   hidePlacementReadback?: boolean;
 } = {}) {
   const sqlite = new Database(":memory:", { strict: true });
@@ -437,7 +501,29 @@ function placementDatabase({
     CREATE TABLE d1_migrations (name TEXT NOT NULL);
     INSERT INTO d1_migrations(name)
     VALUES ('0061_relay_container_shard_placement_attestations.sql'),
-           ('0062_relay_container_shard_placement_events.sql');
+           ('0062_relay_container_shard_placement_events.sql'),
+           ('0063_relay_container_shard_placement_mutation_authorizations.sql');
+    CREATE TABLE relay_container_shard_activation_campaigns (
+      campaign_id TEXT PRIMARY KEY,
+      campaign_nonce_sha256 TEXT NOT NULL,
+      controller_version_id TEXT NOT NULL,
+      action_gate_inventory_sha256 TEXT NOT NULL,
+      action_gate_count INTEGER NOT NULL,
+      all_action_gates_false INTEGER NOT NULL,
+      foundation_manifest_sha256 TEXT NOT NULL,
+      runtime_build_id TEXT NOT NULL,
+      ring_generation INTEGER NOT NULL,
+      shard_count INTEGER NOT NULL,
+      shard_contract_version INTEGER NOT NULL,
+      environment TEXT NOT NULL,
+      created_by_admin_id INTEGER NOT NULL,
+      campaign_digest_sha256 TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE relay_container_shard_activation_campaign_seals (
+      campaign_id TEXT PRIMARY KEY
+    );
     CREATE TABLE relay_container_shard_activations (
       activation_id INTEGER PRIMARY KEY,
       controller_version_id TEXT NOT NULL,
@@ -465,6 +551,10 @@ function placementDatabase({
   `);
   sqlite.exec(placementMigration);
   sqlite.exec(placementEventMigration);
+  sqlite.exec(placementAuthorizationMigration);
+  if (includeAuthorization) {
+    insertPlacementAuthorization(sqlite);
+  }
   if (includeParents) {
     sqlite
       .query(
@@ -499,6 +589,69 @@ function placementDatabase({
     sqlite,
     database: sqliteD1Database(sqlite, { hidePlacementReadback }),
   };
+}
+
+function insertPlacementAuthorization(sqlite: Database): void {
+  const now = Math.floor(Date.now() / 1000);
+  sqlite.transaction(() => {
+    sqlite
+      .query(
+        `INSERT INTO relay_container_shard_placement_mutation_authorizations (
+           authorization_id_sha256, execution_nonce_sha256,
+           campaign_nonce_sha256, subject_digest_sha256, contract_version,
+           authorization_contract, issuer, key_id, signer_spki_sha256,
+           environment, controller_service_name, controller_version_id,
+           action_gate_inventory_sha256, foundation_manifest_sha256,
+           runtime_build_id, ring_generation, shard_count,
+           campaign_lifetime_seconds, permit_issued_at, permit_expires_at,
+           campaign_id, campaign_digest_sha256, campaign_expires_at,
+           consumed_by_admin_id
+         ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, 'staging', ?, ?, ?, ?, ?,
+                   7, 32, 600, ?, ?, ?, ?, ?, 42)`,
+      )
+      .run(
+        "a".repeat(64),
+        "b".repeat(64),
+        "c".repeat(64),
+        "d".repeat(64),
+        "cinatoken-relay-shard-placement-mutation-authorization-v1",
+        "placement-authority-staging",
+        "placement-v1",
+        "e".repeat(64),
+        "cinatoken-container-controller-staging",
+        input.controllerVersionId,
+        "8".repeat(64),
+        "9".repeat(64),
+        "1".repeat(64),
+        now,
+        now + 300,
+        CAMPAIGN_ID,
+        "7".repeat(64),
+        now + 600,
+      );
+    sqlite
+      .query(
+        `INSERT INTO relay_container_shard_activation_campaigns (
+           campaign_id, campaign_nonce_sha256, controller_version_id,
+           action_gate_inventory_sha256, action_gate_count,
+           all_action_gates_false, foundation_manifest_sha256,
+           runtime_build_id, ring_generation, shard_count,
+           shard_contract_version, environment, created_by_admin_id,
+           campaign_digest_sha256, created_at, expires_at
+         ) VALUES (?, ?, ?, ?, 22, 1, ?, ?, 7, 32, 1, 'staging', 42, ?, ?, ?)`,
+      )
+      .run(
+        CAMPAIGN_ID,
+        "c".repeat(64),
+        input.controllerVersionId,
+        "8".repeat(64),
+        "9".repeat(64),
+        "1".repeat(64),
+        "7".repeat(64),
+        now,
+        now + 600,
+      );
+  })();
 }
 
 function sqliteD1Database(

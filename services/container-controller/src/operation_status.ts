@@ -18,6 +18,11 @@ import {
   type AuthorityEnvironment,
   type OperationStatusQuery,
 } from "./protocol";
+import {
+  selectRelayShardNamespace,
+  type RelayShardJurisdictionEnvironment,
+  type RelayShardNamespaceLike,
+} from "./relay_shard_jurisdiction";
 
 export type ShardOperationStatusRpcResult =
   | { ok: true; row: OperationRow }
@@ -45,16 +50,14 @@ interface OperationStatusV4Stub {
   readOperationStatusV4(query: OperationStatusQuery): Promise<ShardOperationStatusV4RpcResult>;
 }
 
-export interface OperationStatusEnvironment extends AuthorityEnvironment {
-  RELAY_SHARDS: {
-    getByName(name: string): OperationStatusStub;
-  };
+export interface OperationStatusEnvironment
+  extends AuthorityEnvironment, RelayShardJurisdictionEnvironment {
+  RELAY_SHARDS: RelayShardNamespaceLike<OperationStatusStub>;
 }
 
-export interface OperationStatusV4Environment extends AuthorityEnvironment {
-  RELAY_SHARDS: {
-    getByName(name: string): OperationStatusV4Stub;
-  };
+export interface OperationStatusV4Environment
+  extends AuthorityEnvironment, RelayShardJurisdictionEnvironment {
+  RELAY_SHARDS: RelayShardNamespaceLike<OperationStatusV4Stub>;
 }
 
 export async function handleOperationStatusRequest(
@@ -64,7 +67,9 @@ export async function handleOperationStatusRequest(
 ): Promise<Response> {
   try {
     const verified = await verifyOperationStatusRequest(request, env, now);
-    const stub = env.RELAY_SHARDS.getByName(verified.query.shard.instance_name);
+    const stub = selectRelayShardNamespace(env).getByName(
+      verified.query.shard.instance_name,
+    );
     const result = await stub.readOperationStatus(verified.query);
     if (!result.ok) return jsonError(result.error.code, result.error.status);
     return operationOutcomeResponse(result.row);
@@ -81,7 +86,9 @@ export async function handleOperationStatusV2Request(
 ): Promise<Response> {
   try {
     const verified = await verifyOperationStatusV2Request(request, env, now);
-    const stub = env.RELAY_SHARDS.getByName(verified.query.shard.instance_name);
+    const stub = selectRelayShardNamespace(env).getByName(
+      verified.query.shard.instance_name,
+    );
     const result = await stub.readOperationStatusV2(verified.query);
     if (!result.ok) return jsonError(result.error.code, result.error.status);
     return operationStatusResponse(result.snapshot);
@@ -98,7 +105,9 @@ export async function handleOperationStatusV3Request(
 ): Promise<Response> {
   try {
     const verified = await verifyOperationStatusV3Request(request, env, now);
-    const stub = env.RELAY_SHARDS.getByName(verified.query.shard.instance_name);
+    const stub = selectRelayShardNamespace(env).getByName(
+      verified.query.shard.instance_name,
+    );
     const result = await stub.readOperationStatusV3(verified.query);
     if (!result.ok) return jsonError(result.error.code, result.error.status);
     return operationStatusResponseV3(result.snapshot);
@@ -115,7 +124,9 @@ export async function handleOperationStatusV4Request(
 ): Promise<Response> {
   try {
     const verified = await verifyOperationStatusV4Request(request, env, now);
-    const stub = env.RELAY_SHARDS.getByName(verified.query.shard.instance_name);
+    const stub = selectRelayShardNamespace(env).getByName(
+      verified.query.shard.instance_name,
+    );
     const result = await stub.readOperationStatusV4(verified.query);
     if (!result.ok) return jsonError(result.error.code, result.error.status);
     return operationStatusResponseV4(result.snapshot);

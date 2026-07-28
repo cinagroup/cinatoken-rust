@@ -2383,3 +2383,37 @@ Cloudflare request, token deletion, object mutation, registry action,
 deployment, traffic, billing mutation, or VPS drain occurred. B6/B7 assembly,
 real permission review, signatures, and clean-host replay remain open.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-28 Durable Object Jurisdiction Routing Foundation
+
+| Status item | Current value |
+| --- | --- |
+| Allowed Controller targets | `default`, `eu`, `us`, `fedramp`, `fedramp-high` |
+| Restricted namespace selection | Implemented before shard name and container-ID resolution |
+| Object-side identity check | Implemented before local ledger initialization |
+| Restricted activation gates | Exact two-gate policy; malformed/partial settings return typed 503 |
+| Tracked local/staging/production target | `default`; both gates `false` |
+| Deploy preflight | Rejects non-default target and any enabled/verified gate |
+| Private status visibility | Validated target, restricted flag, and both gates |
+| Focused policy gate | 9 tests / 57 expectations |
+| Remote restricted object evidence | **NOT COLLECTED** |
+| Cross-language jurisdiction provenance | **NOT IMPLEMENTED** |
+| Production eligibility | **NO-GO** |
+
+All Controller routes now use one selector for operation dispatch, status
+v1-v4, terminal acknowledgment v1-v3, readiness, storage access,
+provider-attempt journal, and provider egress. Restricted routes call
+`RELAY_SHARDS.jurisdiction(...)` before deriving an object. A constructed
+`RelayShardContainer` rejects a missing, unexpected, or different
+`ctx.id.jurisdiction` before its SQLite ledger is initialized. The frozen
+22-field activation campaign and D1 `0055` ABI cannot bind jurisdiction, so the
+Controller rejects a restricted placement before any v1 campaign claim.
+
+This closes a local wrong-namespace routing gap, not the data-residency gate.
+`OperationShard`, D1 operation/activation evidence, and R2 object identity do
+not yet persist jurisdiction. Shared D1/KV/R2 residency has no approved
+restricted-placement contract, no destination-versioned relocation/drain
+protocol exists, and no remote staging campaign has proved eviction, alarms,
+Container lifecycle, rollback, or provenance in a restricted namespace.
+Changing tracked deployment configuration therefore remains prohibited.
+Go/VPS stays authoritative and production remains **NO-GO**.

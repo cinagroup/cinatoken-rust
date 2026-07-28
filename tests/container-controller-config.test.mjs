@@ -28,6 +28,12 @@ const durableStateSource = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const jurisdictionSource = await Bun.file(
+  new URL(
+    "../services/container-controller/src/relay_shard_jurisdiction.ts",
+    import.meta.url,
+  ),
+).text();
 const providerAttemptGatewaySource = await Bun.file(
   new URL("../services/container-controller/src/provider_attempt_gateway.ts", import.meta.url),
 ).text();
@@ -94,6 +100,13 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED).toBe("false");
       expect(
         config.vars.CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED,
+      ).toBe("false");
+      expect(config.vars.CONTAINER_DURABLE_OBJECT_JURISDICTION).toBe("default");
+      expect(
+        config.vars.CONTAINER_DURABLE_OBJECT_JURISDICTION_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars.CONTAINER_DURABLE_OBJECT_JURISDICTION_STAGING_VERIFIED,
       ).toBe("false");
       expect(config.vars.CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED).toBe("false");
       expect(
@@ -162,6 +175,29 @@ describe("isolated container controller configuration", () => {
     expect(rootConfig.containers).toBeUndefined();
     expect(packageJson.scripts["check:container-controller"]).toContain("container-controller");
     expect(packageJson.scripts.check).toContain("bun run check:container-controller");
+  });
+
+  test("Durable Object jurisdiction routing is explicit, double-gated, and fail-closed", () => {
+    expect(jurisdictionSource).toContain("RELAY_SHARD_RESTRICTED_JURISDICTIONS");
+    expect(jurisdictionSource).toContain("env.RELAY_SHARDS.jurisdiction");
+    expect(jurisdictionSource).toContain(
+      '"container_durable_object_jurisdiction_gate_mismatch"',
+    );
+    expect(jurisdictionSource).toContain(
+      '"container_durable_object_jurisdiction_mismatch"',
+    );
+    expect(controllerSource).toContain(
+      "assertRelayShardObjectJurisdiction(env, ctx.id.jurisdiction)",
+    );
+    expect(controllerSource).toContain("selectRelayShardNamespace(env)");
+    expect(controllerSource).toContain(
+      '"shard_activation_jurisdiction_contract_unavailable"',
+    );
+    expect(operationStatusSource).toContain("selectRelayShardNamespace(env)");
+    expect(terminalAckSource).toContain("selectRelayShardNamespace(env)");
+    expect(controllerSource).not.toMatch(
+      /env\.RELAY_SHARDS\.(?:getByName|idFromString|get\()/,
+    );
   });
 
   test("edge and controller deployment identities are operator-visible", () => {

@@ -36,6 +36,7 @@ function validConfig(environment) {
       ...Object.fromEntries(
         REQUIRED_DISABLED_RING_TRANSITION_VARS.map((name) => [name, "0"]),
       ),
+      CONTAINER_DURABLE_OBJECT_JURISDICTION: "default",
       CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID: "",
     },
     d1_databases: [
@@ -77,6 +78,10 @@ describe("Container Controller deploy config validation", () => {
         providerEgressWorker:
           CONTROLLER_DEPLOY_ENVIRONMENTS[environment].providerEgressService,
         identities: {
+          durableObject: {
+            binding: "RELAY_SHARDS",
+            jurisdiction: "default",
+          },
           database: { binding: "DB", id: "validated" },
           kvNamespace: { binding: "CONFIG_KV", id: "validated" },
           r2Bucket: { binding: "FILE_BUCKET" },
@@ -140,6 +145,16 @@ describe("Container Controller deploy config validation", () => {
     expect(() => validateControllerConfig(futureGate, "staging")).toThrow(
       /action gate.*must remain false/,
     );
+  });
+
+  test("pins deployment preflight to the default Durable Object jurisdiction", () => {
+    for (const value of ["eu", "us", "fedramp", "fedramp-high", "", "DEFAULT"]) {
+      const config = validConfig("staging");
+      config.vars.CONTAINER_DURABLE_OBJECT_JURISDICTION = value;
+      expect(() => validateControllerConfig(config, "staging")).toThrow(
+        /CONTAINER_DURABLE_OBJECT_JURISDICTION/,
+      );
+    }
   });
 
   test("rejects REPLACE_WITH_* placeholders anywhere in the supplied config", () => {

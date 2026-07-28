@@ -6,6 +6,11 @@ import {
   type AuthorityEnvironment,
   type TerminalAckRequest,
 } from "./protocol";
+import {
+  selectRelayShardNamespace,
+  type RelayShardJurisdictionEnvironment,
+  type RelayShardNamespaceLike,
+} from "./relay_shard_jurisdiction";
 
 /** Exact successful JSON response for the private terminal-ack endpoint. */
 export interface TerminalAckResponse {
@@ -32,11 +37,10 @@ interface TerminalAckStub {
   acknowledgeGlobalTerminal(ack: TerminalAckRequest): Promise<ShardTerminalAckRpcResult>;
 }
 
-export interface TerminalAckEnvironment extends AuthorityEnvironment {
+export interface TerminalAckEnvironment
+  extends AuthorityEnvironment, RelayShardJurisdictionEnvironment {
   CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED: string;
-  RELAY_SHARDS: {
-    getByName(name: string): TerminalAckStub;
-  };
+  RELAY_SHARDS: RelayShardNamespaceLike<TerminalAckStub>;
 }
 
 export async function handleTerminalAckRequest(
@@ -49,7 +53,9 @@ export async function handleTerminalAckRequest(
     if (env.CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED !== "true") {
       return jsonError("container_global_terminal_ack_disabled", 503);
     }
-    const stub = env.RELAY_SHARDS.getByName(verified.ack.shard.instance_name);
+    const stub = selectRelayShardNamespace(env).getByName(
+      verified.ack.shard.instance_name,
+    );
     const outcome = await stub.acknowledgeGlobalTerminal(verified.ack);
     if (!outcome.ok) return jsonError(outcome.error.code, outcome.error.status);
     const body: TerminalAckResponse = {
@@ -81,7 +87,9 @@ export async function handleTerminalAckV2Request(
     if (env.CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED !== "true") {
       return jsonError("container_global_terminal_ack_disabled", 503);
     }
-    const stub = env.RELAY_SHARDS.getByName(verified.ack.shard.instance_name);
+    const stub = selectRelayShardNamespace(env).getByName(
+      verified.ack.shard.instance_name,
+    );
     const outcome = await stub.acknowledgeGlobalTerminal(verified.ack);
     if (!outcome.ok) return jsonError(outcome.error.code, outcome.error.status);
     const body: TerminalAckResponse = {

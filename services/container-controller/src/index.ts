@@ -108,6 +108,12 @@ import {
   type RelayShardAlarmIntentV1,
 } from "./relay_shard_durable_state";
 import {
+  assertRelayShardObjectJurisdiction,
+  relayShardJurisdictionPolicy,
+  selectRelayShardNamespace,
+  type RelayShardJurisdictionEnvironment,
+} from "./relay_shard_jurisdiction";
+import {
   SHARD_ACTIVATION_WRITE_ENABLED_ENV,
 } from "./shard_activation";
 import {
@@ -121,7 +127,8 @@ import {
 
 export { ContainerProxy };
 
-interface ControllerRuntimeEnvironment extends AuthorityEnvironment {
+interface ControllerRuntimeEnvironment
+  extends AuthorityEnvironment, RelayShardJurisdictionEnvironment {
   ENVIRONMENT: string;
   CONTAINER_CONTROLLER_ENABLED: string;
   CONTAINER_EXECUTION_ENABLED: string;
@@ -305,6 +312,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
 
   constructor(ctx: DurableObjectState<{}>, env: ControllerEnv) {
     super(ctx, env);
+    assertRelayShardObjectJurisdiction(env, ctx.id.jurisdiction);
     this.ledger = new RelayShardLedger(ctx.storage);
     ctx.blockConcurrencyWhile(async () => {
       this.ledger.ensureSchema();
@@ -1418,7 +1426,9 @@ async function handleTerminalAckV3Request(
     if (env.CONTAINER_GLOBAL_TERMINAL_ACK_ENABLED !== "true") {
       return jsonError("container_global_terminal_ack_disabled", 503);
     }
-    const stub = env.RELAY_SHARDS.getByName(verified.ack.shard.instance_name);
+    const stub = selectRelayShardNamespace(env).getByName(
+      verified.ack.shard.instance_name,
+    );
     const outcome = await stub.acknowledgeGlobalTerminalV3(verified.ack);
     if (!outcome.ok) return jsonError(outcome.error.code, outcome.error.status);
     return terminalAckV3Response(verified.ack, outcome.result);
@@ -1439,6 +1449,12 @@ async function claimShardActivationCampaignBeforeWake(
       throw new ProtocolError("shard_activation_legacy_writer_retired", 503);
     }
     return null;
+  }
+  if (relayShardJurisdictionPolicy(env).restricted) {
+    throw new ProtocolError(
+      "shard_activation_jurisdiction_contract_unavailable",
+      503,
+    );
   }
   const actionGateInventory = await campaignActionGateInventory(env);
   if (
@@ -1613,6 +1629,7 @@ const handler: ExportedHandler<ControllerEnv> = {
       if (path === INTERNAL_STATUS_PATH) {
         await verifyStatusRequest(request, env);
         const actionGates = await campaignActionGateInventory(env);
+        const jurisdictionPolicy = relayShardJurisdictionPolicy(env);
         const ringTransition = inspectRingTransition(
           env,
           Math.floor(Date.now() / 1000),
@@ -1632,6 +1649,14 @@ const handler: ExportedHandler<ControllerEnv> = {
             previous_ring_admission_until: ringTransition.admission_until,
             previous_ring_admission_open: ringTransition.admission_open,
             controller_version_id: env.CF_VERSION_METADATA.id,
+            durable_object_jurisdiction: jurisdictionPolicy.jurisdiction,
+            durable_object_jurisdiction_restricted:
+              jurisdictionPolicy.restricted,
+            durable_object_jurisdiction_enabled:
+              env.CONTAINER_DURABLE_OBJECT_JURISDICTION_ENABLED === "true",
+            durable_object_jurisdiction_staging_verified:
+              env.CONTAINER_DURABLE_OBJECT_JURISDICTION_STAGING_VERIFIED ===
+              "true",
             shard_activation_write_enabled:
               env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] === "true",
             shard_activation_candidate_build_configured:
@@ -1670,7 +1695,9 @@ const handler: ExportedHandler<ControllerEnv> = {
           ) {
             return jsonError("container_readiness_wake_disabled", 503);
           }
-          const stub = env.RELAY_SHARDS.getByName(verified.probe.shard.instance_name);
+          const stub = selectRelayShardNamespace(env).getByName(
+            verified.probe.shard.instance_name,
+          );
           const outcome = await stub.readinessProbe(
             verified.probe,
             verified.claims.dispatch_id,
@@ -1685,7 +1712,9 @@ const handler: ExportedHandler<ControllerEnv> = {
           shard: verified.probe.shard,
           wake_container: verified.probe.wake_container,
         };
-        const stub = env.RELAY_SHARDS.getByName(verified.probe.shard.instance_name);
+        const stub = selectRelayShardNamespace(env).getByName(
+          verified.probe.shard.instance_name,
+        );
         let outcome: ShardReadinessRpcResultV2;
         try {
           outcome = await stub.readinessProbeV2(
@@ -1768,7 +1797,9 @@ const handler: ExportedHandler<ControllerEnv> = {
       if (!operationRecoveryIntentWriterEnabled(env)) {
         return jsonError("operation_recovery_intent_v1_disabled", 503);
       }
-      const stub = env.RELAY_SHARDS.getByName(verified.envelope.shard.instance_name);
+      const stub = selectRelayShardNamespace(env).getByName(
+        verified.envelope.shard.instance_name,
+      );
       return await stub.fetch(
         new Request(`https://relay-shard.internal${INTERNAL_OPERATION_PATH}`, {
           method: "POST",
@@ -1869,14 +1900,17 @@ async function providerAttemptOutboundHandler(
     await cancelRequestBody(request);
     return jsonError("provider_attempt_access_denied", 403);
   }
-  let id: DurableObjectId;
+  let stub: DurableObjectStub<RelayShardContainer>;
   try {
-    id = env.RELAY_SHARDS.idFromString(context.containerId);
-  } catch {
+    stub = relayShardStubByContainerId(env, context.containerId);
+  } catch (error) {
     await cancelRequestBody(request);
+    if (error instanceof ProtocolError) {
+      return jsonError(error.code, error.status);
+    }
     return jsonError("provider_attempt_access_denied", 403);
   }
-  return handleProviderAttemptGatewayRequest(request, env.RELAY_SHARDS.get(id), identity);
+  return handleProviderAttemptGatewayRequest(request, stub, identity);
 }
 
 async function providerEgressOutboundHandler(
@@ -1889,17 +1923,20 @@ async function providerEgressOutboundHandler(
     await cancelRequestBody(request);
     return jsonError("provider_egress_access_denied", 403);
   }
-  let id: DurableObjectId;
+  let stub: DurableObjectStub<RelayShardContainer>;
   try {
-    id = env.RELAY_SHARDS.idFromString(context.containerId);
-  } catch {
+    stub = relayShardStubByContainerId(env, context.containerId);
+  } catch (error) {
     await cancelRequestBody(request);
+    if (error instanceof ProtocolError) {
+      return jsonError(error.code, error.status);
+    }
     return jsonError("provider_egress_access_denied", 403);
   }
   return handleProviderEgressGatewayRequest(
     request,
     providerEgressEnv(env),
-    env.RELAY_SHARDS.get(id),
+    stub,
     identity,
   );
 }
@@ -1919,14 +1956,16 @@ function storageOutboundHandler(action: StorageGatewayAction) {
       await cancelRequestBody(request);
       return jsonError("storage_access_denied", 403);
     }
-    let id: DurableObjectId;
+    let stub: DurableObjectStub<RelayShardContainer>;
     try {
-      id = env.RELAY_SHARDS.idFromString(context.containerId);
-    } catch {
+      stub = relayShardStubByContainerId(env, context.containerId);
+    } catch (error) {
       await cancelRequestBody(request);
+      if (error instanceof ProtocolError) {
+        return jsonError(error.code, error.status);
+      }
       return jsonError("storage_access_denied", 403);
     }
-    const stub = env.RELAY_SHARDS.get(id);
     const access = await stub.authorizeStorageAccess(
       identity.operationId,
       identity.ownerGeneration,
@@ -1946,6 +1985,14 @@ function storageOutboundHandler(action: StorageGatewayAction) {
     }
     return persistStorageResultResponse(stub, response, gatewayGrant);
   };
+}
+
+function relayShardStubByContainerId(
+  env: Cloudflare.Env,
+  containerId: string,
+): DurableObjectStub<RelayShardContainer> {
+  const namespace = selectRelayShardNamespace(env);
+  return namespace.get(namespace.idFromString(containerId));
 }
 
 function storageActionEnabled(

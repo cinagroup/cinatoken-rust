@@ -16452,7 +16452,7 @@ contracts are mandatory before a Container cutover:
 
 | Contract | Required cinatoken decision and evidence | Current status |
 | --- | --- | --- |
-| Shard, environment, and jurisdiction identity | One DO/Container exists per logical shard, with canonical name `cinatoken-relay-shard-v1-XXXX`. The tenant HMAC digest selects a shard but is never part of the DO name; making the name tenant-specific would silently replace the bounded shard pool with per-tenant Containers. Environment isolation comes from distinct Worker service/namespace/binding deployments. Before a future jurisdiction rollout, select the restricted subnamespace before `getByName`, verify `ctx.id.jurisdiction`, and persist namespace, binding, script, class, canonical-name digest, jurisdiction, and ring generation. The same name produces a different ID in another jurisdiction and must not create an accidental second owner; Regional Services remains a separate ingress decision | Stable shard naming implemented locally; jurisdiction and remote provenance required |
+| Shard, environment, and jurisdiction identity | One DO/Container exists per logical shard, with canonical name `cinatoken-relay-shard-v1-XXXX`. The tenant HMAC digest selects a shard but is never part of the DO name; making the name tenant-specific would silently replace the bounded shard pool with per-tenant Containers. Environment isolation comes from distinct Worker service/namespace/binding deployments. Restricted routing selects the subnamespace before `getByName` and container-ID parsing; the object verifies `ctx.id.jurisdiction`. Persist namespace, binding, script, class, canonical-name digest, jurisdiction, and ring generation. The same name produces a different ID in another jurisdiction and must not create an accidental second owner; Regional Services remains a separate ingress decision | Stable shard naming and fail-closed Controller routing/self-check implemented locally. All tracked deploys remain pinned to `default`; cross-language provenance, relocation/drain, shared-storage residency, and remote proof required |
 | DO class lifecycle | Treat service/binding/class, storage backend, and the chosen Wrangler lifecycle declaration as an ABI. The current repository uses legacy `migrations`: retain its append-only tags and never mix them with `exports`. Before first remote Container deployment, explicitly approve staying on that chain or a one-time move to declarative `exports`, now preferred for new Workers. New namespaces use SQLite. Rename/delete/transfer is an atomic class-lifecycle deployment, not a gradual rollout; require old-binding inventory, stored-data compatibility, remote reconciliation output, and a rollback reader | Design and remote rehearsal required |
 | Cold start | Constructor initialization and SQLite schema migration must be idempotent and block requests until complete; memory is cache only. Keep `blockConcurrencyWhile` bounded to local schema/intent reconstruction and free of provider/network/D1/R2/financial I/O. Track SQL schema in an immutable durable migration table rather than `PRAGMA user_version`. The local candidate restores unarmed deadline intents from SQLite, but the actual `RelayShardContainer` still needs eviction/restart/OOM evidence | Local implementation; real Container lifecycle proof required |
 | Alarm ABI N/N-1 | `@cloudflare/containers` owns the DO alarm and multiplexes application tasks through `schedule()`; application code must not override `alarm()` or call `setAlarm` as a second owner. Persist v1 deadline intent, owner/shard/deadline identity, delivery generation/count, armed state, retry time, and quarantine result in DO SQLite. The reader accepts legacy three-field v0 and strict v1 regardless of writer gates; v1 writes require two default-false gates. Because package 0.3.7 catches callback failures and deletes the one-shot schedule, the callback records delivery and performs bounded application retries itself. Duplicate, early, late, stale-generation, exhausted, and rollback-era delivery is idempotent or quarantined and never calls provider or financial paths | Local v0/v1 bridge implemented; real package alarm and mixed-version proof required |
@@ -16462,6 +16462,18 @@ These requirements deliberately exceed copying `idFromName`, lazy
 initialization, recurring alarms, or Wrangler `new_sqlite_classes` from
 cinaVibeSDK. They make placement, compatibility, and ownership auditable across
 eviction, cold start, rolling deploy, rollback, and jurisdiction change.
+
+The local jurisdiction packet now accepts only `default`, `eu`, `us`,
+`fedramp`, or `fedramp-high`. A restricted target requires an exact two-gate
+approval, namespace selection occurs before every name or ID resolution, and
+the object rejects an unexpected `ctx.id.jurisdiction` before ledger bootstrap.
+The private Controller status reports the validated policy. Wrangler local,
+staging, and production files remain `default + false + false`, and deploy
+preflight rejects every non-default target. This is an intentionally
+non-promotable substrate: the v1 `OperationShard`, D1 activation/operation
+evidence, R2 identity, relocation/drain protocol, storage-residency decision,
+and remote lifecycle campaign still lack the immutable jurisdiction binding
+required for activation.
 
 Current Cloudflare contract anchors are the official
 [data-location](https://developers.cloudflare.com/durable-objects/reference/data-location/),

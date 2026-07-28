@@ -48,6 +48,8 @@ export const REQUIRED_DISABLED_CONTROLLER_VARS = Object.freeze([
   "CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED",
   "CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED",
   "CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED",
+  "CONTAINER_DURABLE_OBJECT_JURISDICTION_ENABLED",
+  "CONTAINER_DURABLE_OBJECT_JURISDICTION_STAGING_VERIFIED",
   "CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED",
 ]);
 export const REQUIRED_DISABLED_RING_TRANSITION_VARS = Object.freeze([
@@ -154,6 +156,11 @@ export function validateControllerConfig(config, environment) {
     "",
     `${environment} CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID`,
   );
+  requireEqual(
+    config.vars.CONTAINER_DURABLE_OBJECT_JURISDICTION,
+    "default",
+    `${environment} CONTAINER_DURABLE_OBJECT_JURISDICTION`,
+  );
   for (const name of REQUIRED_DISABLED_CONTROLLER_VARS) {
     requireEqual(config.vars[name], "false", `${environment} ${name}`);
   }
@@ -226,6 +233,10 @@ export function validateControllerConfig(config, environment) {
     controllerName: contract.controllerName,
     providerEgressWorker: contract.providerEgressService,
     identities: {
+      durableObject: {
+        binding: "RELAY_SHARDS",
+        jurisdiction: "default",
+      },
       database: {
         binding: "DB",
         databaseName: contract.databaseName,

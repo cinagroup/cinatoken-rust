@@ -298,7 +298,9 @@ describe("relay Container shard activation campaign", () => {
     const route = source.slice(routeStart, routeEnd);
 
     const acquire = route.indexOf("claimShardActivationCampaignBeforeWake(");
-    const firstDoLookup = route.indexOf("env.RELAY_SHARDS.getByName(");
+    const firstDoLookup = route.indexOf(
+      "selectRelayShardNamespace(env).getByName(",
+    );
     const v2CallStart = route.indexOf("stub.readinessProbeV2(");
     const v2CallEnd = route.indexOf(");", v2CallStart);
     const finalize = route.indexOf("finalizeClaimedShardActivationCampaign(");

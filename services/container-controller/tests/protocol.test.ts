@@ -57,10 +57,11 @@ import {
   type OperationStatusEnvironment,
   type OperationStatusV4Environment,
 } from "../src/operation_status";
+import type { RelayShardJurisdictionEnvironment } from "../src/relay_shard_jurisdiction";
 
 const secret = "0123456789abcdef0123456789abcdef";
 const now = 1_800_000_000;
-const env: AuthorityEnvironment = {
+const env: AuthorityEnvironment & RelayShardJurisdictionEnvironment = {
   CONTAINER_AUTHORITY_ISSUER: "cinatoken-edge-test",
   CONTAINER_AUTHORITY_AUDIENCE: "cinatoken-container-controller-test",
   CONTAINER_AUTHORITY_CURRENT_KID: "test-v1",
@@ -74,6 +75,9 @@ const env: AuthorityEnvironment = {
   CONTAINER_PREVIOUS_SHARD_COUNT: "0",
   CONTAINER_PREVIOUS_RING_ADMISSION_STARTED_AT: "0",
   CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL: "0",
+  CONTAINER_DURABLE_OBJECT_JURISDICTION: "default",
+  CONTAINER_DURABLE_OBJECT_JURISDICTION_ENABLED: "false",
+  CONTAINER_DURABLE_OBJECT_JURISDICTION_STAGING_VERIFIED: "false",
 };
 
 function envelope(): OperationEnvelope {

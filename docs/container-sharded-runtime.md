@@ -1114,9 +1114,15 @@ cinatoken contracts:
   Separate Worker service/namespace/binding deployments isolate environments.
   Persist the namespace, service/binding/class tuple, canonical-name digest,
   jurisdiction, shard index, and ring generation with the operation.
-- **Jurisdiction (future, not implemented locally):** create the
-  jurisdiction-restricted subnamespace before
-  deriving the object ID and verify `ctx.id.jurisdiction` inside the object.
+- **Jurisdiction (routing foundation implemented; activation blocked):** the
+  Controller now selects the jurisdiction-restricted subnamespace before both
+  `getByName` and container-ID parsing, and verifies `ctx.id.jurisdiction`
+  before initializing the local ledger. Exact targets are `default`, `eu`,
+  `us`, `fedramp`, and `fedramp-high`. Restricted selection requires both
+  `CONTAINER_DURABLE_OBJECT_JURISDICTION_ENABLED` and
+  `CONTAINER_DURABLE_OBJECT_JURISDICTION_STAGING_VERIFIED`; malformed or
+  contradictory settings fail with a typed 503. All tracked configurations
+  and deploy preflight remain pinned to `default` with both gates false.
   The same name has a different ID in another jurisdiction, so a mismatch must
   fail rather than create a second owner. Existing object identity is
   immutable; relocation creates an explicitly versioned destination and a
@@ -1166,6 +1172,29 @@ compensation are forbidden. Until remote migration/readback, mixed-version
 lifecycle faults, provider idempotency/lookup, amount/invoice convergence,
 shared response semantics, and named approval are archived, production remains
 **NO-GO**.
+
+### Jurisdiction activation boundary
+
+The local selector covers every current Controller path that resolves a shard:
+operation dispatch, status v1-v4, terminal acknowledgment v1-v3, readiness,
+storage access, provider-attempt journal, and provider egress. The private
+status response exposes the validated target, whether it is restricted, and
+both gate values. The frozen 22-field shard-activation campaign and D1 `0055`
+ABI cannot represent jurisdiction, so the Controller rejects every restricted
+placement before a v1 campaign claim. Adding jurisdiction to that campaign
+requires a versioned D1 and cross-language contract rather than mutating the
+existing inventory.
+
+This does not make a non-default placement promotable. `OperationShard` still
+has no jurisdiction field; D1 operation/activation evidence and R2 object
+identity do not yet bind a jurisdiction; shared D1/KV/R2 residency has not been
+approved; no versioned relocation/drain/readback protocol exists; and no remote
+staging object has proved namespace identity, eviction, alarm, Container, or
+rollback behavior. Enabling either gate in a tracked deploy remains a preflight
+failure. The next packet must version the cross-language shard/provenance
+contract, add immutable destination identity and drain evidence, then rehearse
+one newly created restricted namespace in isolated staging before production
+configuration is allowed to change.
 
 ## 2026-07-18 Durable Bootstrap And Deadline Alarm Intent v1
 

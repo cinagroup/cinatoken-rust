@@ -23758,3 +23758,116 @@ All related gates remain `false` in tracked local and staging configuration,
 and production placement configuration is absent. No secret was used and no
 remote state was read or changed. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 22.326 Operation-5 Dispatch Consumption and Authority Receipt (2026-07-29)
+
+This checkpoint adds the next local, default-off operation-5 boundary.
+Application migration 0066 records one create-only dispatch consumption bound
+to the exact Application grant, Authority dispatch claim, owner and lease,
+deadlines, ledger identities, Worker versions, frozen Controller command, and
+independently scoped request and credential identities. The row is immutable,
+append-preserved, and accepts only an exact replay.
+
+### Application D1 linearization
+
+Campaign seal and dispatch consumption are ordered by Application D1 commit
+visibility:
+
+- when the seal commits first, the 0066 insert guard rejects a new
+  consumption;
+- when consumption commits first, the one-shot send right is historically
+  consumed and a later seal may still commit, but cannot update, delete, or
+  retroactively invalidate the recorded consumption; and
+- the Application persistence contract can return the stored row on an exact
+  historical replay after a later seal, expiry, or Application version
+  change, but the current Authority HTTP path cannot unconditionally reach or
+  admit that history. A replay never restores, extends, or creates new send
+  authority.
+
+This is a durable ordering result, not evidence that a Controller request was
+attempted or that deployment state changed.
+
+### Authority receipt and cross-D1 limit
+
+Authority migration 0003 adds an immutable receipt for the exact Application
+consumption response. It binds the Application consumption digest, response
+hash and size, request and credential identities, dispatch claim, grant
+receipt, operation-5 start, owner and lease, deadlines, ledger head, Worker
+versions, and frozen Controller identities. Exact replay may classify only
+the same stored receipt; conflicting evidence fails closed.
+
+Before a normal new consumption, Authority requires at least 30 seconds of
+remaining budget on each of the lease, normal deadline, and permit deadline.
+Falling below that floor fails closed before the Authority-to-Application
+call; the budget covers the bounded Service Binding call, D1 round trips, and
+receipt commit jitter, but it cannot make the two D1 commits atomic.
+
+The Authority-to-Application client uses isolated current and previous
+credential sets. A normal request uses current. Previous may be tried only
+when current receives a no-write `409`, and only for the same deterministic
+request as an exact replay. Timeout, disconnect, malformed response, or any
+other result does not authorize previous-key fallback. Previous credentials
+must remain available until the corresponding cross-D1 orphan window is
+proven empty.
+
+Application D1 and Authority D1 still cannot share one transaction. A process
+failure, timeout, response loss, or isolate termination can therefore leave
+an orphan interval in which Application consumption is committed but the
+Authority receipt is absent. The current protocol can repair that interval by
+an exact POST replay only while the Authority fence is still live, the same
+credential or its retained previous credential remains available, all
+required write gates remain open, and the inbound HMAC and runtime trust
+checks still pass. Authority receipt HTTP replay itself remains conditional
+on Authority enablement, write gates, inbound HMAC, and runtime trust; it is
+not an unconditional read interface.
+
+After Authority revocation or expiry, gate closure, or retirement of the
+required previous credential, the current protocol has no independent
+historical Application readback route and no historical Authority receipt
+admission. The orphan must then remain permanently fail-closed. It must never
+be closed by creating a second logical consumption, restoring send authority,
+creating an attempt, sending Controller, or deleting Application history.
+
+### Non-sender boundary
+
+The entire checkpoint remains before external mutation:
+
+- `sendAttemptCreated=false`;
+- `controllerRequestSent=false`;
+- no Controller, deployment gateway, queue, or Cloudflare control-plane I/O
+  is performed; and
+- neither Authority nor Application acquires a Cloudflare deployment
+  credential.
+
+The current Controller still has no deployment-enable route or deployment
+control-plane client. Its `/operations/status` route reports business
+operation state and is not deployment status.
+
+### Remaining P0 order
+
+Before attempt/event work, the next P0 blocker is an independently
+authenticated, bounded historical Application readback route plus historical
+Authority receipt admission. That recovery path must append only the exact
+missing receipt, grant no live send authority, and remain usable under an
+explicit retention policy after normal write gates or the live fence no
+longer admit a new consumption.
+
+Only after that blocker is proven may the next P0 atomically commit one
+Authority send attempt and its `send_started` event before any external I/O.
+Exact readback of that transaction may then permit a call to a separate
+private `controller-deployment-gateway`. The gateway is the sole future
+holder of the minimum deployment credential and must expose a frozen
+create-once command plus status-only readback. Timeout, disconnect, response
+loss, process death, and rollout recovery must use status-only classification
+and must never issue a second enable.
+
+Application D1 now reports 66 migrations, 77 required tables, 1096 checked
+incremental columns, and 111 key indexes. Authority migration inventory now
+contains three files (`0001-0003`).
+
+All related gates remain `false` in tracked local and staging configuration,
+and production placement configuration remains absent. This checkpoint did
+not read a secret, query or mutate remote state, deploy a Worker, apply a
+remote migration, or change Controller, Container, traffic, billing, DNS, or
+Go/VPS state. Go/VPS remains authoritative and production remains
+**NO-GO**.

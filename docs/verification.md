@@ -11483,3 +11483,88 @@ with the new claim schema contained in migration 0002. All gates remain false,
 production placement configuration is absent, no secret was used, and no
 remote state was queried or changed. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-29 Dispatch Consumption and Authority Receipt Verification
+
+This checkpoint verifies the local contract boundary introduced by
+Application migration 0066 and Authority migration 0003. The Application row
+is create-only, immutable, append-preserved, and bound to the exact grant,
+dispatch claim, owner and generation-1 lease, deadlines, ledger identities,
+Worker versions, frozen Controller command, and deterministic request and
+credential identities. The Authority receipt preserves the exact Application
+response and its digest, hash, size, and predecessor evidence.
+
+### Linearization evidence
+
+Focused Application 0066 contracts exercise both D1 commit orders:
+
+- seal committed before consumption causes the new consumption to be
+  rejected;
+- consumption committed before seal remains immutable history after the seal;
+- update and delete cannot erase the consumed one-shot right;
+- conflicting replay is rejected; and
+- exact historical replay returns only the existing row and does not restore
+  new authorization after seal, expiry, or version drift.
+
+Focused Authority 0003 migration and repository contracts verify the exact
+47-column receipt mapping, insert guard, immutable update/delete guards,
+predecessor bindings, exact replay classification, and fail-closed conflict
+behavior. Focused Application route/library and Wasm checks have also passed.
+No new repository-wide `bun run check` result is claimed for this checkpoint.
+
+### Verified stop point
+
+Every successful create or exact replay response remains:
+
+- `sendAttemptCreated=false`;
+- `controllerRequestSent=false`; and
+- free of Controller, deployment gateway, queue, and Cloudflare
+  control-plane I/O.
+
+The evidence does not prove deployment enable, deployment status, operation-5
+terminal state, Container readiness, customer traffic, or production
+eligibility. The current Controller `/operations/status` contract is
+business-operation status and is not acceptable deployment-status evidence.
+
+### Required fault evidence
+
+The two D1 databases do not provide a shared commit. Acceptance must still
+inject failure after Application consumption and before Authority receipt,
+then distinguish a recoverable orphan from a permanently fail-closed one.
+Before a normal new consumption, verify that Authority requires at least 30
+seconds remaining on each of the lease, normal deadline, and permit deadline.
+Values below the floor must fail before the Application call.
+
+Verify that the Authority-to-Application client uses isolated current and
+previous credential sets. Current is always attempted first. Previous is
+permitted only after current receives a no-write `409`, and only for an exact
+replay of the same deterministic request. It must not be used after timeout,
+disconnect, truncation, malformed response, or another status. Retain
+previous until the corresponding orphan window is proven empty.
+
+An exact POST replay may append the missing Authority receipt only while the
+Authority fence remains live, the same or retained previous credential
+remains available, all required write gates remain open, and inbound HMAC and
+runtime trust checks pass. Authority receipt HTTP replay is therefore not an
+unconditional read: it still requires Authority enablement, write gates,
+inbound HMAC, and valid runtime trust. Inject revocation, expiry, gate closure,
+and previous-credential retirement and prove that each unrecoverable orphan
+stays permanently fail-closed, creates no attempt, and sends no Controller
+request.
+
+The next P0 verification blocker, before attempt/event work, is an independent
+historical Application readback route and historical Authority receipt
+admission. It must recover only an exact missing receipt without reviving send
+authority. After that blocker passes, verify one Authority transaction that
+commits an immutable send attempt and its `send_started` event before any I/O.
+A later dedicated `controller-deployment-gateway` must prove one frozen
+create-once mutation and status-only ambiguity recovery with zero resend. The
+existing Controller cannot substitute for that gateway or its deployment
+status contract.
+
+Application D1 inventory is now 66 migrations / 77 tables / 1096 checked
+incremental columns / 111 key indexes. Authority migration inventory is three
+files (`0001-0003`). All related gates remain false, production placement
+configuration is absent, and this checkpoint used no secret and performed no
+remote read, mutation, migration, deployment, or traffic change. Go/VPS
+remains authoritative and production remains **NO-GO**.

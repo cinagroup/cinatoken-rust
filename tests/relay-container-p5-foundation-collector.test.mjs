@@ -1262,8 +1262,8 @@ function requestFixture() {
       ringGeneration: 1,
       shardCount: 8,
       migrationHead:
-        "0065_relay_container_shard_placement_pre_enable_grants.sql",
-      migrationCount: 65,
+        "0066_relay_container_shard_placement_dispatch_consumptions.sql",
+      migrationCount: 66,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,

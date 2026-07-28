@@ -236,6 +236,60 @@ const OPERATION_FIVE_DISPATCH_CLAIM_TRIGGERS = [
   "shard_placement_authority_operation_five_dispatch_claim_insert_guard",
   "shard_placement_authority_operation_five_dispatch_claim_update_guard",
 ] as const;
+const OPERATION_FIVE_DISPATCH_CONSUMPTION_COLUMNS = [
+  "authorization_id_sha256",
+  "contract_version",
+  "receipt_contract",
+  "claim_digest_sha256",
+  "application_ticket_id_sha256",
+  "campaign_id",
+  "application_database_identity_sha256",
+  "application_version_id",
+  "application_grant_receipt_digest_sha256",
+  "application_grant_digest_sha256",
+  "authority_dispatch_outbox_digest_sha256",
+  "operation_five_start_receipt_sha256",
+  "authority_dispatch_claim_digest_sha256",
+  "authority_database_identity_sha256",
+  "authority_ledger_identity_sha256",
+  "authority_ledger_head_sha256",
+  "authority_version_id",
+  "dispatch_owner_sha256",
+  "lease_token_sha256",
+  "lease_generation",
+  "lease_expires_at",
+  "normal_deadline_at",
+  "permit_expires_at",
+  "dispatch_claim_credential_id_sha256",
+  "dispatch_claim_request_id_sha256",
+  "command_dispatch_claim_request_id_sha256",
+  "authority_dispatch_claimed_at",
+  "controller_service_name",
+  "controller_enable_operation_id_sha256",
+  "controller_baseline_version_id",
+  "controller_enabled_version_id",
+  "send_attempt_limit",
+  "retry_limit",
+  "missing_readback_allows_resend",
+  "application_dispatch_consumption_digest_sha256",
+  "application_dispatch_consumption_credential_id_sha256",
+  "application_dispatch_consumption_request_id_sha256",
+  "command_dispatch_consumption_request_id_sha256",
+  "application_consumption_state",
+  "application_consumed_at",
+  "application_response_sha256",
+  "application_response_bytes",
+  "consume_credential_id_sha256",
+  "consume_request_id_sha256",
+  "command_consume_request_id_sha256",
+  "receipt_digest_sha256",
+  "recorded_at",
+] as const;
+const OPERATION_FIVE_DISPATCH_CONSUMPTION_TRIGGERS = [
+  "shard_placement_authority_operation_five_dispatch_consumption_delete_guard",
+  "shard_placement_authority_operation_five_dispatch_consumption_insert_guard",
+  "shard_placement_authority_operation_five_dispatch_consumption_update_guard",
+] as const;
 
 const SCHEMA_PROBE_SQL = `
 SELECT
@@ -319,7 +373,28 @@ SELECT
           'shard_placement_authority_operation_five_dispatch_claims'
       ORDER BY name
     )
-  ) AS operation_five_dispatch_claim_triggers
+  ) AS operation_five_dispatch_claim_triggers,
+  (
+    SELECT group_concat(name, ',')
+    FROM (
+      SELECT name
+      FROM pragma_table_info(
+        'shard_placement_authority_operation_five_dispatch_consumptions'
+      )
+      ORDER BY cid
+    )
+  ) AS operation_five_dispatch_consumption_columns,
+  (
+    SELECT group_concat(name, ',')
+    FROM (
+      SELECT name
+      FROM sqlite_schema
+      WHERE type = 'trigger'
+        AND tbl_name =
+          'shard_placement_authority_operation_five_dispatch_consumptions'
+      ORDER BY name
+    )
+  ) AS operation_five_dispatch_consumption_triggers
 `.trim();
 
 const INSERT_CLAIM_SQL = `
@@ -514,6 +589,50 @@ WHERE authorization_id_sha256 = ?1
 LIMIT 1
 `.trim();
 
+const INSERT_OPERATION_FIVE_DISPATCH_CONSUMPTION_SQL = `
+INSERT INTO shard_placement_authority_operation_five_dispatch_consumptions (
+  authorization_id_sha256, contract_version, receipt_contract,
+  claim_digest_sha256, application_ticket_id_sha256, campaign_id,
+  application_database_identity_sha256, application_version_id,
+  application_grant_receipt_digest_sha256,
+  application_grant_digest_sha256,
+  authority_dispatch_outbox_digest_sha256,
+  operation_five_start_receipt_sha256,
+  authority_dispatch_claim_digest_sha256,
+  authority_database_identity_sha256,
+  authority_ledger_identity_sha256, authority_ledger_head_sha256,
+  authority_version_id, dispatch_owner_sha256, lease_token_sha256,
+  lease_generation, lease_expires_at, normal_deadline_at,
+  permit_expires_at, dispatch_claim_credential_id_sha256,
+  dispatch_claim_request_id_sha256,
+  command_dispatch_claim_request_id_sha256,
+  authority_dispatch_claimed_at, controller_service_name,
+  controller_enable_operation_id_sha256,
+  controller_baseline_version_id, controller_enabled_version_id,
+  send_attempt_limit, retry_limit, missing_readback_allows_resend,
+  application_dispatch_consumption_digest_sha256,
+  application_dispatch_consumption_credential_id_sha256,
+  application_dispatch_consumption_request_id_sha256,
+  command_dispatch_consumption_request_id_sha256,
+  application_consumption_state, application_consumed_at,
+  application_response_sha256, application_response_bytes,
+  consume_credential_id_sha256, consume_request_id_sha256,
+  command_consume_request_id_sha256, receipt_digest_sha256
+) VALUES (
+  ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+  ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37,
+  ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45
+)
+`.trim();
+
+const SELECT_OPERATION_FIVE_DISPATCH_CONSUMPTION_SQL = `
+SELECT ${OPERATION_FIVE_DISPATCH_CONSUMPTION_COLUMNS.join(", ")}
+FROM shard_placement_authority_operation_five_dispatch_consumptions
+WHERE authorization_id_sha256 = ?1
+LIMIT 1
+`.trim();
+
 interface SchemaProbeRow {
   claim_columns: string;
   operation_columns: string;
@@ -523,6 +642,8 @@ interface SchemaProbeRow {
   operation_five_application_grant_columns: string;
   operation_five_dispatch_claim_columns: string;
   operation_five_dispatch_claim_triggers: string;
+  operation_five_dispatch_consumption_columns: string;
+  operation_five_dispatch_consumption_triggers: string;
 }
 
 export interface ExecutionClaimRow {
@@ -888,6 +1009,105 @@ export interface OperationFiveDispatchClaimRow {
   dispatch_claim_digest_sha256: string;
   claim_state: "claimed";
   claimed_at: number;
+}
+
+export interface OperationFiveDispatchConsumptionReceipt {
+  authorizationIdSha256: string;
+  receiptContract:
+    "cinatoken-shard-placement-authority-operation-five-dispatch-consumption-receipt-v1";
+  claimDigestSha256: string;
+  applicationTicketIdSha256: string;
+  campaignId: string;
+  applicationDatabaseIdentitySha256: string;
+  applicationVersionId: string;
+  applicationGrantReceiptDigestSha256: string;
+  applicationGrantDigestSha256: string;
+  authorityDispatchOutboxDigestSha256: string;
+  operationFiveStartReceiptSha256: string;
+  authorityDispatchClaimDigestSha256: string;
+  authorityDatabaseIdentitySha256: string;
+  authorityLedgerIdentitySha256: string;
+  authorityLedgerHeadSha256: string;
+  authorityVersionId: string;
+  dispatchOwnerSha256: string;
+  leaseTokenSha256: string;
+  leaseGeneration: 1;
+  leaseExpiresAt: number;
+  normalDeadlineAt: number;
+  permitExpiresAt: number;
+  dispatchClaimCredentialIdSha256: string;
+  dispatchClaimRequestIdSha256: string;
+  commandDispatchClaimRequestIdSha256: string;
+  authorityDispatchClaimedAt: number;
+  controllerServiceName: string;
+  controllerEnableOperationIdSha256: string;
+  controllerBaselineVersionId: string;
+  controllerEnabledVersionId: string;
+  sendAttemptLimit: 1;
+  retryLimit: 0;
+  missingReadbackAllowsResend: 0;
+  applicationDispatchConsumptionDigestSha256: string;
+  applicationDispatchConsumptionCredentialIdSha256: string;
+  applicationDispatchConsumptionRequestIdSha256: string;
+  commandDispatchConsumptionRequestIdSha256: string;
+  applicationConsumptionState: "consumed";
+  applicationConsumedAt: number;
+  applicationResponseSha256: string;
+  applicationResponseBytes: number;
+  consumeCredentialIdSha256: string;
+  consumeRequestIdSha256: string;
+  commandConsumeRequestIdSha256: string;
+  receiptDigestSha256: string;
+}
+
+export interface OperationFiveDispatchConsumptionReceiptRow {
+  authorization_id_sha256: string;
+  contract_version: number;
+  receipt_contract: string;
+  claim_digest_sha256: string;
+  application_ticket_id_sha256: string;
+  campaign_id: string;
+  application_database_identity_sha256: string;
+  application_version_id: string;
+  application_grant_receipt_digest_sha256: string;
+  application_grant_digest_sha256: string;
+  authority_dispatch_outbox_digest_sha256: string;
+  operation_five_start_receipt_sha256: string;
+  authority_dispatch_claim_digest_sha256: string;
+  authority_database_identity_sha256: string;
+  authority_ledger_identity_sha256: string;
+  authority_ledger_head_sha256: string;
+  authority_version_id: string;
+  dispatch_owner_sha256: string;
+  lease_token_sha256: string;
+  lease_generation: number;
+  lease_expires_at: number;
+  normal_deadline_at: number;
+  permit_expires_at: number;
+  dispatch_claim_credential_id_sha256: string;
+  dispatch_claim_request_id_sha256: string;
+  command_dispatch_claim_request_id_sha256: string;
+  authority_dispatch_claimed_at: number;
+  controller_service_name: string;
+  controller_enable_operation_id_sha256: string;
+  controller_baseline_version_id: string;
+  controller_enabled_version_id: string;
+  send_attempt_limit: number;
+  retry_limit: number;
+  missing_readback_allows_resend: number;
+  application_dispatch_consumption_digest_sha256: string;
+  application_dispatch_consumption_credential_id_sha256: string;
+  application_dispatch_consumption_request_id_sha256: string;
+  command_dispatch_consumption_request_id_sha256: string;
+  application_consumption_state: "consumed";
+  application_consumed_at: number;
+  application_response_sha256: string;
+  application_response_bytes: number;
+  consume_credential_id_sha256: string;
+  consume_request_id_sha256: string;
+  command_consume_request_id_sha256: string;
+  receipt_digest_sha256: string;
+  recorded_at: number;
 }
 
 export async function createExecutionClaim(
@@ -1605,6 +1825,121 @@ export async function createOperationFiveDispatchClaim(
   };
 }
 
+export async function readExactOperationFiveDispatchConsumption(
+  database: D1Database,
+  authorizationIdSha256: string,
+  claimDigestSha256: string,
+): Promise<OperationFiveDispatchConsumptionReceiptRow | null> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  const row = await readOperationFiveDispatchConsumption(
+    session,
+    authorizationIdSha256,
+  );
+  if (row !== null && row.claim_digest_sha256 !== claimDigestSha256) {
+    throw new RepositoryConflictError(
+      "operation_five_dispatch_consumption_conflict",
+    );
+  }
+  return row;
+}
+
+export async function createOperationFiveDispatchConsumption(
+  database: D1Database,
+  receipt: OperationFiveDispatchConsumptionReceipt,
+): Promise<{
+  classification: "recorded" | "exact_replay";
+  receipt: OperationFiveDispatchConsumptionReceiptRow;
+}> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  let writeOutcome: "recorded" | "failed" | "unknown";
+  try {
+    const result = await session
+      .prepare(INSERT_OPERATION_FIVE_DISPATCH_CONSUMPTION_SQL)
+      .bind(
+        receipt.authorizationIdSha256,
+        receipt.receiptContract,
+        receipt.claimDigestSha256,
+        receipt.applicationTicketIdSha256,
+        receipt.campaignId,
+        receipt.applicationDatabaseIdentitySha256,
+        receipt.applicationVersionId,
+        receipt.applicationGrantReceiptDigestSha256,
+        receipt.applicationGrantDigestSha256,
+        receipt.authorityDispatchOutboxDigestSha256,
+        receipt.operationFiveStartReceiptSha256,
+        receipt.authorityDispatchClaimDigestSha256,
+        receipt.authorityDatabaseIdentitySha256,
+        receipt.authorityLedgerIdentitySha256,
+        receipt.authorityLedgerHeadSha256,
+        receipt.authorityVersionId,
+        receipt.dispatchOwnerSha256,
+        receipt.leaseTokenSha256,
+        receipt.leaseGeneration,
+        receipt.leaseExpiresAt,
+        receipt.normalDeadlineAt,
+        receipt.permitExpiresAt,
+        receipt.dispatchClaimCredentialIdSha256,
+        receipt.dispatchClaimRequestIdSha256,
+        receipt.commandDispatchClaimRequestIdSha256,
+        receipt.authorityDispatchClaimedAt,
+        receipt.controllerServiceName,
+        receipt.controllerEnableOperationIdSha256,
+        receipt.controllerBaselineVersionId,
+        receipt.controllerEnabledVersionId,
+        receipt.sendAttemptLimit,
+        receipt.retryLimit,
+        receipt.missingReadbackAllowsResend,
+        receipt.applicationDispatchConsumptionDigestSha256,
+        receipt.applicationDispatchConsumptionCredentialIdSha256,
+        receipt.applicationDispatchConsumptionRequestIdSha256,
+        receipt.commandDispatchConsumptionRequestIdSha256,
+        receipt.applicationConsumptionState,
+        receipt.applicationConsumedAt,
+        receipt.applicationResponseSha256,
+        receipt.applicationResponseBytes,
+        receipt.consumeCredentialIdSha256,
+        receipt.consumeRequestIdSha256,
+        receipt.commandConsumeRequestIdSha256,
+        receipt.receiptDigestSha256,
+      )
+      .run();
+    writeOutcome =
+      result.success === true && result.meta?.changes === 1
+        ? "recorded"
+        : "unknown";
+  } catch {
+    writeOutcome = "failed";
+  }
+
+  const persisted = await readOperationFiveDispatchConsumption(
+    session,
+    receipt.authorizationIdSha256,
+  );
+  if (
+    persisted === null
+    || !matchesOperationFiveDispatchConsumption(persisted, receipt)
+  ) {
+    if (writeOutcome !== "failed") {
+      throw new RepositoryUnavailableError(true);
+    }
+    throw new RepositoryConflictError(
+      "operation_five_dispatch_consumption_conflict",
+    );
+  }
+  if (writeOutcome === "unknown") {
+    throw new RepositoryUnavailableError(true);
+  }
+
+  return {
+    classification: writeOutcome === "recorded"
+      ? "recorded"
+      : "exact_replay",
+    receipt: persisted,
+  };
+}
+
 async function requireExecutionSchema(
   session: D1DatabaseSession,
 ): Promise<void> {
@@ -1631,6 +1966,10 @@ async function requireExecutionSchema(
       !== OPERATION_FIVE_DISPATCH_CLAIM_COLUMNS.join(",")
     || row.operation_five_dispatch_claim_triggers
       !== OPERATION_FIVE_DISPATCH_CLAIM_TRIGGERS.join(",")
+    || row.operation_five_dispatch_consumption_columns
+      !== OPERATION_FIVE_DISPATCH_CONSUMPTION_COLUMNS.join(",")
+    || row.operation_five_dispatch_consumption_triggers
+      !== OPERATION_FIVE_DISPATCH_CONSUMPTION_TRIGGERS.join(",")
   ) {
     throw new RepositoryUnavailableError(false);
   }
@@ -1702,6 +2041,20 @@ async function readOperationFiveDispatchClaim(
       .prepare(SELECT_OPERATION_FIVE_DISPATCH_CLAIM_SQL)
       .bind(authorizationIdSha256)
       .first<OperationFiveDispatchClaimRow>();
+  } catch {
+    throw new RepositoryUnavailableError(true);
+  }
+}
+
+async function readOperationFiveDispatchConsumption(
+  session: D1DatabaseSession,
+  authorizationIdSha256: string,
+): Promise<OperationFiveDispatchConsumptionReceiptRow | null> {
+  try {
+    return await session
+      .prepare(SELECT_OPERATION_FIVE_DISPATCH_CONSUMPTION_SQL)
+      .bind(authorizationIdSha256)
+      .first<OperationFiveDispatchConsumptionReceiptRow>();
   } catch {
     throw new RepositoryUnavailableError(true);
   }
@@ -2189,6 +2542,88 @@ function matchesOperationFiveDispatchClaim(
   );
 }
 
+function matchesOperationFiveDispatchConsumption(
+  row: OperationFiveDispatchConsumptionReceiptRow,
+  receipt: OperationFiveDispatchConsumptionReceipt,
+): boolean {
+  return (
+    row.authorization_id_sha256 === receipt.authorizationIdSha256
+    && row.contract_version === 1
+    && row.receipt_contract === receipt.receiptContract
+    && row.claim_digest_sha256 === receipt.claimDigestSha256
+    && row.application_ticket_id_sha256
+      === receipt.applicationTicketIdSha256
+    && row.campaign_id === receipt.campaignId
+    && row.application_database_identity_sha256
+      === receipt.applicationDatabaseIdentitySha256
+    && row.application_version_id === receipt.applicationVersionId
+    && row.application_grant_receipt_digest_sha256
+      === receipt.applicationGrantReceiptDigestSha256
+    && row.application_grant_digest_sha256
+      === receipt.applicationGrantDigestSha256
+    && row.authority_dispatch_outbox_digest_sha256
+      === receipt.authorityDispatchOutboxDigestSha256
+    && row.operation_five_start_receipt_sha256
+      === receipt.operationFiveStartReceiptSha256
+    && row.authority_dispatch_claim_digest_sha256
+      === receipt.authorityDispatchClaimDigestSha256
+    && row.authority_database_identity_sha256
+      === receipt.authorityDatabaseIdentitySha256
+    && row.authority_ledger_identity_sha256
+      === receipt.authorityLedgerIdentitySha256
+    && row.authority_ledger_head_sha256
+      === receipt.authorityLedgerHeadSha256
+    && row.authority_version_id === receipt.authorityVersionId
+    && row.dispatch_owner_sha256 === receipt.dispatchOwnerSha256
+    && row.lease_token_sha256 === receipt.leaseTokenSha256
+    && row.lease_generation === receipt.leaseGeneration
+    && row.lease_expires_at === receipt.leaseExpiresAt
+    && row.normal_deadline_at === receipt.normalDeadlineAt
+    && row.permit_expires_at === receipt.permitExpiresAt
+    && row.dispatch_claim_credential_id_sha256
+      === receipt.dispatchClaimCredentialIdSha256
+    && row.dispatch_claim_request_id_sha256
+      === receipt.dispatchClaimRequestIdSha256
+    && row.command_dispatch_claim_request_id_sha256
+      === receipt.commandDispatchClaimRequestIdSha256
+    && row.authority_dispatch_claimed_at
+      === receipt.authorityDispatchClaimedAt
+    && row.controller_service_name === receipt.controllerServiceName
+    && row.controller_enable_operation_id_sha256
+      === receipt.controllerEnableOperationIdSha256
+    && row.controller_baseline_version_id
+      === receipt.controllerBaselineVersionId
+    && row.controller_enabled_version_id
+      === receipt.controllerEnabledVersionId
+    && row.send_attempt_limit === receipt.sendAttemptLimit
+    && row.retry_limit === receipt.retryLimit
+    && row.missing_readback_allows_resend
+      === receipt.missingReadbackAllowsResend
+    && row.application_dispatch_consumption_digest_sha256
+      === receipt.applicationDispatchConsumptionDigestSha256
+    && row.application_dispatch_consumption_credential_id_sha256
+      === receipt.applicationDispatchConsumptionCredentialIdSha256
+    && row.application_dispatch_consumption_request_id_sha256
+      === receipt.applicationDispatchConsumptionRequestIdSha256
+    && row.command_dispatch_consumption_request_id_sha256
+      === receipt.commandDispatchConsumptionRequestIdSha256
+    && row.application_consumption_state
+      === receipt.applicationConsumptionState
+    && row.application_consumed_at === receipt.applicationConsumedAt
+    && row.application_response_sha256
+      === receipt.applicationResponseSha256
+    && row.application_response_bytes === receipt.applicationResponseBytes
+    && row.consume_credential_id_sha256
+      === receipt.consumeCredentialIdSha256
+    && row.consume_request_id_sha256 === receipt.consumeRequestIdSha256
+    && row.command_consume_request_id_sha256
+      === receipt.commandConsumeRequestIdSha256
+    && row.receipt_digest_sha256 === receipt.receiptDigestSha256
+    && Number.isSafeInteger(row.recorded_at)
+    && row.recorded_at > 0
+  );
+}
+
 export const executionRepositorySqlForTest = {
   insertClaim: INSERT_CLAIM_SQL,
   insertOperation: INSERT_OPERATION_SQL,
@@ -2203,4 +2638,8 @@ export const executionRepositorySqlForTest = {
     INSERT_OPERATION_FIVE_DISPATCH_CLAIM_SQL,
   selectOperationFiveDispatchClaim:
     SELECT_OPERATION_FIVE_DISPATCH_CLAIM_SQL,
+  insertOperationFiveDispatchConsumption:
+    INSERT_OPERATION_FIVE_DISPATCH_CONSUMPTION_SQL,
+  selectOperationFiveDispatchConsumption:
+    SELECT_OPERATION_FIVE_DISPATCH_CONSUMPTION_SQL,
 } as const;

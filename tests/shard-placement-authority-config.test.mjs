@@ -20,6 +20,7 @@ describe("shard placement Authority configuration", () => {
     expect(report.migrationFiles).toEqual([
       "0001_shard_placement_authorizations.sql",
       "0002_shard_placement_execution_claims.sql",
+      "0003_shard_placement_dispatch_consumptions.sql",
     ]);
     for (const environment of ["local", "staging"]) {
       expect(report.environments[environment]).toMatchObject({
@@ -70,6 +71,10 @@ describe("shard placement Authority configuration", () => {
           "false",
         SHARD_PLACEMENT_AUTHORITY_DISPATCH_CLAIM_WRITE_ENABLED:
           "false",
+        SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_WRITE_ENABLED:
+          "false",
+        SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECEIPT_WRITE_ENABLED:
+          "false",
         SHARD_PLACEMENT_APPLICATION_ISSUER:
           "cinatoken-shard-placement-authority-local",
         SHARD_PLACEMENT_APPLICATION_AUDIENCE:
@@ -83,6 +88,14 @@ describe("shard placement Authority configuration", () => {
         SHARD_PLACEMENT_APPLICATION_PRE_ENABLE_GRANT_HMAC_CURRENT_KID:
           "",
         SHARD_PLACEMENT_APPLICATION_PRE_ENABLE_GRANT_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "",
+        SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_CURRENT_KID:
+          "",
+        SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "",
+        SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_KID:
+          "",
+        SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
           "",
         SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: "",
         SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: "",

@@ -332,6 +332,19 @@ describe("shard placement Authority protocol", () => {
           shardPlacementAuthorityEnv()
             .SHARD_PLACEMENT_READ_HMAC_CURRENT_SECRET,
       }),
+      shardPlacementAuthorityEnv({
+        SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_WRITE_ENABLED:
+          "true",
+        SHARD_PLACEMENT_APPLICATION: {
+          fetch: async () => new Response(),
+        } as unknown as Fetcher,
+        SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_CURRENT_KID:
+          SHARD_PLACEMENT_AUTHORITY_HMAC.send.keyId,
+        SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          SHARD_PLACEMENT_AUTHORITY_HMAC.send.credentialIdSha256,
+        SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_CURRENT_SECRET:
+          SHARD_PLACEMENT_AUTHORITY_HMAC.send.secret,
+      }),
     ]) {
       expect(() => validateRuntimeTrustConfiguration(
         environment,

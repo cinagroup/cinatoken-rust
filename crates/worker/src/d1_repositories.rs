@@ -82,6 +82,8 @@ pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_EXECUTION_TICKET_MIGRATION: &st
     "0064_relay_container_shard_placement_execution_tickets.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_MIGRATION: &str =
     "0065_relay_container_shard_placement_pre_enable_grants.sql";
+pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_MIGRATION: &str =
+    "0066_relay_container_shard_placement_dispatch_consumptions.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT: i64 = 64;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
@@ -967,6 +969,7 @@ struct RelayContainerShardPlacementSchemaProbe {
     ticket_activation_columns: String,
     ticket_authority_ack_columns: String,
     pre_enable_grant_columns: String,
+    dispatch_consumption_columns: String,
     schema_objects: String,
 }
 
@@ -1282,6 +1285,97 @@ pub struct RelayContainerShardPlacementPreEnableGrantRow {
 pub enum RelayContainerShardPlacementPreEnableGrantCreateOutcome {
     Created(RelayContainerShardPlacementPreEnableGrantRow),
     ExactReplay(RelayContainerShardPlacementPreEnableGrantRow),
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayContainerShardPlacementDispatchConsumption<'a> {
+    pub ticket_id_sha256: &'a str,
+    pub authorization_id_sha256: &'a str,
+    pub campaign_id: &'a str,
+    pub application_database_identity_sha256: &'a str,
+    pub application_version_id: &'a str,
+    pub application_grant_digest_sha256: &'a str,
+    pub authority_claim_digest_sha256: &'a str,
+    pub authority_dispatch_outbox_digest_sha256: &'a str,
+    pub application_grant_receipt_digest_sha256: &'a str,
+    pub operation_five_start_receipt_sha256: &'a str,
+    pub authority_dispatch_claim_digest_sha256: &'a str,
+    pub authority_database_identity_sha256: &'a str,
+    pub authority_ledger_identity_sha256: &'a str,
+    pub authority_ledger_head_sha256: &'a str,
+    pub authority_version_id: &'a str,
+    pub dispatch_owner_sha256: &'a str,
+    pub lease_token_sha256: &'a str,
+    pub lease_generation: i64,
+    pub lease_expires_at: i64,
+    pub normal_deadline_at: i64,
+    pub permit_expires_at: i64,
+    pub dispatch_claim_credential_id_sha256: &'a str,
+    pub dispatch_claim_request_id_sha256: &'a str,
+    pub command_dispatch_claim_request_id_sha256: &'a str,
+    pub authority_dispatch_claimed_at: i64,
+    pub controller_service_name: &'a str,
+    pub controller_enable_operation_id_sha256: &'a str,
+    pub controller_baseline_version_id: &'a str,
+    pub controller_enabled_version_id: &'a str,
+    pub send_attempt_limit: i64,
+    pub retry_limit: i64,
+    pub missing_readback_allows_resend: i64,
+    pub application_dispatch_consumption_credential_id_sha256: &'a str,
+    pub application_dispatch_consumption_request_id_sha256: &'a str,
+    pub command_dispatch_consumption_request_id_sha256: &'a str,
+    pub dispatch_consumption_digest_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementDispatchConsumptionRow {
+    pub ticket_id_sha256: String,
+    pub contract_version: i64,
+    pub consumption_contract: String,
+    pub authorization_id_sha256: String,
+    pub campaign_id: String,
+    pub application_database_identity_sha256: String,
+    pub application_version_id: String,
+    pub application_grant_digest_sha256: String,
+    pub authority_claim_digest_sha256: String,
+    pub authority_dispatch_outbox_digest_sha256: String,
+    pub application_grant_receipt_digest_sha256: String,
+    pub operation_five_start_receipt_sha256: String,
+    pub authority_dispatch_claim_digest_sha256: String,
+    pub authority_database_identity_sha256: String,
+    pub authority_ledger_identity_sha256: String,
+    pub authority_ledger_head_sha256: String,
+    pub authority_version_id: String,
+    pub dispatch_owner_sha256: String,
+    pub lease_token_sha256: String,
+    pub lease_generation: i64,
+    pub lease_expires_at: i64,
+    pub normal_deadline_at: i64,
+    pub permit_expires_at: i64,
+    pub dispatch_claim_credential_id_sha256: String,
+    pub dispatch_claim_request_id_sha256: String,
+    pub command_dispatch_claim_request_id_sha256: String,
+    pub authority_dispatch_claimed_at: i64,
+    pub controller_service_name: String,
+    pub controller_enable_operation_id_sha256: String,
+    pub controller_baseline_version_id: String,
+    pub controller_enabled_version_id: String,
+    pub send_attempt_limit: i64,
+    pub retry_limit: i64,
+    pub missing_readback_allows_resend: i64,
+    pub application_dispatch_consumption_credential_id_sha256: String,
+    pub application_dispatch_consumption_request_id_sha256: String,
+    pub command_dispatch_consumption_request_id_sha256: String,
+    pub dispatch_consumption_digest_sha256: String,
+    pub consumption_state: String,
+    pub consumed_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerShardPlacementDispatchConsumptionCreateOutcome {
+    Created(RelayContainerShardPlacementDispatchConsumptionRow),
+    ExactReplay(RelayContainerShardPlacementDispatchConsumptionRow),
     Conflict,
 }
 
@@ -13230,6 +13324,408 @@ fn relay_container_shard_placement_pre_enable_grant_matches(
         && row.granted_at > 0
 }
 
+pub async fn relay_container_shard_placement_dispatch_consumption(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<Option<RelayContainerShardPlacementDispatchConsumptionRow>> {
+    validate_relay_container_sha256(ticket_id_sha256, "shard placement execution ticket id")?;
+    relay_container_shard_placement_dispatch_consumption_statement(db, ticket_id_sha256)?
+        .first::<RelayContainerShardPlacementDispatchConsumptionRow>(None)
+        .await
+}
+
+pub async fn create_relay_container_shard_placement_dispatch_consumption(
+    db: &D1Database,
+    consumption: &RelayContainerShardPlacementDispatchConsumption<'_>,
+) -> worker::Result<RelayContainerShardPlacementDispatchConsumptionCreateOutcome> {
+    for (value, field) in [
+        (
+            consumption.ticket_id_sha256,
+            "shard placement execution ticket id",
+        ),
+        (
+            consumption.authorization_id_sha256,
+            "shard placement authorization id",
+        ),
+        (consumption.campaign_id, "shard placement campaign id"),
+        (
+            consumption.application_database_identity_sha256,
+            "shard placement application database identity",
+        ),
+        (
+            consumption.application_grant_digest_sha256,
+            "shard placement application grant digest",
+        ),
+        (
+            consumption.authority_claim_digest_sha256,
+            "shard placement Authority claim digest",
+        ),
+        (
+            consumption.authority_dispatch_outbox_digest_sha256,
+            "shard placement Authority dispatch outbox digest",
+        ),
+        (
+            consumption.application_grant_receipt_digest_sha256,
+            "shard placement application grant receipt digest",
+        ),
+        (
+            consumption.operation_five_start_receipt_sha256,
+            "shard placement operation-five start receipt",
+        ),
+        (
+            consumption.authority_dispatch_claim_digest_sha256,
+            "shard placement Authority dispatch claim digest",
+        ),
+        (
+            consumption.authority_database_identity_sha256,
+            "shard placement Authority database identity",
+        ),
+        (
+            consumption.authority_ledger_identity_sha256,
+            "shard placement Authority ledger identity",
+        ),
+        (
+            consumption.authority_ledger_head_sha256,
+            "shard placement Authority ledger head",
+        ),
+        (
+            consumption.dispatch_owner_sha256,
+            "shard placement dispatch owner",
+        ),
+        (
+            consumption.lease_token_sha256,
+            "shard placement dispatch lease token",
+        ),
+        (
+            consumption.dispatch_claim_credential_id_sha256,
+            "shard placement dispatch claim credential id",
+        ),
+        (
+            consumption.dispatch_claim_request_id_sha256,
+            "shard placement dispatch claim request id",
+        ),
+        (
+            consumption.command_dispatch_claim_request_id_sha256,
+            "shard placement command dispatch claim request id",
+        ),
+        (
+            consumption.controller_enable_operation_id_sha256,
+            "shard placement Controller enable operation id",
+        ),
+        (
+            consumption.application_dispatch_consumption_credential_id_sha256,
+            "shard placement application dispatch consumption credential id",
+        ),
+        (
+            consumption.application_dispatch_consumption_request_id_sha256,
+            "shard placement application dispatch consumption request id",
+        ),
+        (
+            consumption.command_dispatch_consumption_request_id_sha256,
+            "shard placement command dispatch consumption request id",
+        ),
+        (
+            consumption.dispatch_consumption_digest_sha256,
+            "shard placement dispatch consumption digest",
+        ),
+    ] {
+        validate_relay_container_sha256(value, field)?;
+    }
+    for (value, field) in [
+        (
+            consumption.application_version_id,
+            "shard placement application version id",
+        ),
+        (
+            consumption.authority_version_id,
+            "shard placement Authority version id",
+        ),
+        (
+            consumption.controller_service_name,
+            "shard placement Controller service name",
+        ),
+        (
+            consumption.controller_baseline_version_id,
+            "shard placement Controller baseline version id",
+        ),
+        (
+            consumption.controller_enabled_version_id,
+            "shard placement Controller enabled version id",
+        ),
+    ] {
+        validate_relay_container_token(value, field, 1, 128, |byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+        })?;
+    }
+    if consumption.controller_service_name != "cinatoken-container-controller-staging"
+        || consumption.controller_baseline_version_id == consumption.controller_enabled_version_id
+        || consumption.lease_generation != 1
+        || consumption.lease_expires_at <= 0
+        || consumption.normal_deadline_at <= 0
+        || consumption.permit_expires_at <= 0
+        || consumption.lease_expires_at > consumption.normal_deadline_at
+        || consumption.normal_deadline_at > consumption.permit_expires_at
+        || consumption.authority_dispatch_claimed_at <= 0
+        || consumption.send_attempt_limit != 1
+        || consumption.retry_limit != 0
+        || consumption.missing_readback_allows_resend != 0
+        || consumption.authority_ledger_head_sha256
+            != consumption.operation_five_start_receipt_sha256
+        || consumption.dispatch_claim_credential_id_sha256
+            == consumption.dispatch_claim_request_id_sha256
+        || consumption.application_dispatch_consumption_credential_id_sha256
+            == consumption.application_dispatch_consumption_request_id_sha256
+        || consumption.dispatch_consumption_digest_sha256
+            == consumption.authority_dispatch_claim_digest_sha256
+    {
+        return Err(worker::Error::RustError(
+            "shard placement dispatch consumption is invalid".to_string(),
+        ));
+    }
+
+    if let Some(existing) =
+        relay_container_shard_placement_dispatch_consumption(db, consumption.ticket_id_sha256)
+            .await?
+    {
+        return Ok(
+            if relay_container_shard_placement_dispatch_consumption_matches(&existing, consumption)
+            {
+                RelayContainerShardPlacementDispatchConsumptionCreateOutcome::ExactReplay(existing)
+            } else {
+                RelayContainerShardPlacementDispatchConsumptionCreateOutcome::Conflict
+            },
+        );
+    }
+
+    let lease_generation = consumption.lease_generation.to_string();
+    let lease_expires_at = consumption.lease_expires_at.to_string();
+    let normal_deadline_at = consumption.normal_deadline_at.to_string();
+    let permit_expires_at = consumption.permit_expires_at.to_string();
+    let authority_dispatch_claimed_at = consumption.authority_dispatch_claimed_at.to_string();
+    let send_attempt_limit = consumption.send_attempt_limit.to_string();
+    let retry_limit = consumption.retry_limit.to_string();
+    let missing_readback_allows_resend = consumption.missing_readback_allows_resend.to_string();
+    let args = [
+        D1Type::Text(consumption.ticket_id_sha256),
+        D1Type::Text(consumption.authorization_id_sha256),
+        D1Type::Text(consumption.campaign_id),
+        D1Type::Text(consumption.application_database_identity_sha256),
+        D1Type::Text(consumption.application_version_id),
+        D1Type::Text(consumption.application_grant_digest_sha256),
+        D1Type::Text(consumption.authority_claim_digest_sha256),
+        D1Type::Text(consumption.authority_dispatch_outbox_digest_sha256),
+        D1Type::Text(consumption.application_grant_receipt_digest_sha256),
+        D1Type::Text(consumption.operation_five_start_receipt_sha256),
+        D1Type::Text(consumption.authority_dispatch_claim_digest_sha256),
+        D1Type::Text(consumption.authority_database_identity_sha256),
+        D1Type::Text(consumption.authority_ledger_identity_sha256),
+        D1Type::Text(consumption.authority_ledger_head_sha256),
+        D1Type::Text(consumption.authority_version_id),
+        D1Type::Text(consumption.dispatch_owner_sha256),
+        D1Type::Text(consumption.lease_token_sha256),
+        D1Type::Text(&lease_generation),
+        D1Type::Text(&lease_expires_at),
+        D1Type::Text(&normal_deadline_at),
+        D1Type::Text(&permit_expires_at),
+        D1Type::Text(consumption.dispatch_claim_credential_id_sha256),
+        D1Type::Text(consumption.dispatch_claim_request_id_sha256),
+        D1Type::Text(consumption.command_dispatch_claim_request_id_sha256),
+        D1Type::Text(&authority_dispatch_claimed_at),
+        D1Type::Text(consumption.controller_service_name),
+        D1Type::Text(consumption.controller_enable_operation_id_sha256),
+        D1Type::Text(consumption.controller_baseline_version_id),
+        D1Type::Text(consumption.controller_enabled_version_id),
+        D1Type::Text(&send_attempt_limit),
+        D1Type::Text(&retry_limit),
+        D1Type::Text(&missing_readback_allows_resend),
+        D1Type::Text(consumption.application_dispatch_consumption_credential_id_sha256),
+        D1Type::Text(consumption.application_dispatch_consumption_request_id_sha256),
+        D1Type::Text(consumption.command_dispatch_consumption_request_id_sha256),
+        D1Type::Text(consumption.dispatch_consumption_digest_sha256),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT OR IGNORE
+            INTO relay_container_shard_placement_dispatch_consumptions (
+              ticket_id_sha256, contract_version, consumption_contract,
+              authorization_id_sha256, campaign_id,
+              application_database_identity_sha256, application_version_id,
+              application_grant_digest_sha256, authority_claim_digest_sha256,
+              authority_dispatch_outbox_digest_sha256,
+              application_grant_receipt_digest_sha256,
+              operation_five_start_receipt_sha256,
+              authority_dispatch_claim_digest_sha256,
+              authority_database_identity_sha256,
+              authority_ledger_identity_sha256,
+              authority_ledger_head_sha256, authority_version_id,
+              dispatch_owner_sha256, lease_token_sha256, lease_generation,
+              lease_expires_at, normal_deadline_at, permit_expires_at,
+              dispatch_claim_credential_id_sha256,
+              dispatch_claim_request_id_sha256,
+              command_dispatch_claim_request_id_sha256,
+              authority_dispatch_claimed_at, controller_service_name,
+              controller_enable_operation_id_sha256,
+              controller_baseline_version_id,
+              controller_enabled_version_id, send_attempt_limit, retry_limit,
+              missing_readback_allows_resend,
+              application_dispatch_consumption_credential_id_sha256,
+              application_dispatch_consumption_request_id_sha256,
+              command_dispatch_consumption_request_id_sha256,
+              dispatch_consumption_digest_sha256, consumption_state,
+              consumed_at
+            )
+            VALUES (
+              ?1, 1,
+              'cinatoken-relay-container-shard-placement-dispatch-consumption-v1',
+              ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+              ?15, ?16, ?17, CAST(?18 AS INTEGER), CAST(?19 AS INTEGER),
+              CAST(?20 AS INTEGER), CAST(?21 AS INTEGER), ?22, ?23, ?24,
+              CAST(?25 AS INTEGER), ?26, ?27, ?28, ?29,
+              CAST(?30 AS INTEGER), CAST(?31 AS INTEGER), CAST(?32 AS INTEGER),
+              ?33, ?34, ?35, ?36, 'consumed', unixepoch()
+            )
+            "#,
+        )
+        .bind_refs(&args)?;
+    let inserted = match insert.run().await {
+        Ok(result) => result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1,
+        Err(error) => {
+            if let Some(existing) = relay_container_shard_placement_dispatch_consumption(
+                db,
+                consumption.ticket_id_sha256,
+            )
+            .await?
+            {
+                if relay_container_shard_placement_dispatch_consumption_matches(
+                    &existing,
+                    consumption,
+                ) {
+                    return Ok(
+                        RelayContainerShardPlacementDispatchConsumptionCreateOutcome::ExactReplay(
+                            existing,
+                        ),
+                    );
+                }
+            }
+            return Err(error);
+        }
+    };
+    let Some(persisted) =
+        relay_container_shard_placement_dispatch_consumption(db, consumption.ticket_id_sha256)
+            .await?
+    else {
+        return Ok(RelayContainerShardPlacementDispatchConsumptionCreateOutcome::Conflict);
+    };
+    if !relay_container_shard_placement_dispatch_consumption_matches(&persisted, consumption) {
+        return Ok(RelayContainerShardPlacementDispatchConsumptionCreateOutcome::Conflict);
+    }
+    Ok(if inserted {
+        RelayContainerShardPlacementDispatchConsumptionCreateOutcome::Created(persisted)
+    } else {
+        RelayContainerShardPlacementDispatchConsumptionCreateOutcome::ExactReplay(persisted)
+    })
+}
+
+fn relay_container_shard_placement_dispatch_consumption_statement(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    db.prepare(
+        r#"
+        SELECT ticket_id_sha256, contract_version, consumption_contract,
+               authorization_id_sha256, campaign_id,
+               application_database_identity_sha256, application_version_id,
+               application_grant_digest_sha256,
+               authority_claim_digest_sha256,
+               authority_dispatch_outbox_digest_sha256,
+               application_grant_receipt_digest_sha256,
+               operation_five_start_receipt_sha256,
+               authority_dispatch_claim_digest_sha256,
+               authority_database_identity_sha256,
+               authority_ledger_identity_sha256,
+               authority_ledger_head_sha256, authority_version_id,
+               dispatch_owner_sha256, lease_token_sha256, lease_generation,
+               lease_expires_at, normal_deadline_at, permit_expires_at,
+               dispatch_claim_credential_id_sha256,
+               dispatch_claim_request_id_sha256,
+               command_dispatch_claim_request_id_sha256,
+               authority_dispatch_claimed_at, controller_service_name,
+               controller_enable_operation_id_sha256,
+               controller_baseline_version_id,
+               controller_enabled_version_id, send_attempt_limit, retry_limit,
+               missing_readback_allows_resend,
+               application_dispatch_consumption_credential_id_sha256,
+               application_dispatch_consumption_request_id_sha256,
+               command_dispatch_consumption_request_id_sha256,
+               dispatch_consumption_digest_sha256, consumption_state,
+               consumed_at
+        FROM relay_container_shard_placement_dispatch_consumptions
+        WHERE ticket_id_sha256 = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&D1Type::Text(ticket_id_sha256))
+}
+
+pub fn relay_container_shard_placement_dispatch_consumption_matches(
+    row: &RelayContainerShardPlacementDispatchConsumptionRow,
+    consumption: &RelayContainerShardPlacementDispatchConsumption<'_>,
+) -> bool {
+    row.contract_version == 1
+        && row.consumption_contract
+            == "cinatoken-relay-container-shard-placement-dispatch-consumption-v1"
+        && row.ticket_id_sha256 == consumption.ticket_id_sha256
+        && row.authorization_id_sha256 == consumption.authorization_id_sha256
+        && row.campaign_id == consumption.campaign_id
+        && row.application_database_identity_sha256
+            == consumption.application_database_identity_sha256
+        && row.application_version_id == consumption.application_version_id
+        && row.application_grant_digest_sha256 == consumption.application_grant_digest_sha256
+        && row.authority_claim_digest_sha256 == consumption.authority_claim_digest_sha256
+        && row.authority_dispatch_outbox_digest_sha256
+            == consumption.authority_dispatch_outbox_digest_sha256
+        && row.application_grant_receipt_digest_sha256
+            == consumption.application_grant_receipt_digest_sha256
+        && row.operation_five_start_receipt_sha256
+            == consumption.operation_five_start_receipt_sha256
+        && row.authority_dispatch_claim_digest_sha256
+            == consumption.authority_dispatch_claim_digest_sha256
+        && row.authority_database_identity_sha256 == consumption.authority_database_identity_sha256
+        && row.authority_ledger_identity_sha256 == consumption.authority_ledger_identity_sha256
+        && row.authority_ledger_head_sha256 == consumption.authority_ledger_head_sha256
+        && row.authority_version_id == consumption.authority_version_id
+        && row.dispatch_owner_sha256 == consumption.dispatch_owner_sha256
+        && row.lease_token_sha256 == consumption.lease_token_sha256
+        && row.lease_generation == consumption.lease_generation
+        && row.lease_expires_at == consumption.lease_expires_at
+        && row.normal_deadline_at == consumption.normal_deadline_at
+        && row.permit_expires_at == consumption.permit_expires_at
+        && row.dispatch_claim_credential_id_sha256
+            == consumption.dispatch_claim_credential_id_sha256
+        && row.dispatch_claim_request_id_sha256 == consumption.dispatch_claim_request_id_sha256
+        && row.command_dispatch_claim_request_id_sha256
+            == consumption.command_dispatch_claim_request_id_sha256
+        && row.authority_dispatch_claimed_at == consumption.authority_dispatch_claimed_at
+        && row.controller_service_name == consumption.controller_service_name
+        && row.controller_enable_operation_id_sha256
+            == consumption.controller_enable_operation_id_sha256
+        && row.controller_baseline_version_id == consumption.controller_baseline_version_id
+        && row.controller_enabled_version_id == consumption.controller_enabled_version_id
+        && row.send_attempt_limit == consumption.send_attempt_limit
+        && row.retry_limit == consumption.retry_limit
+        && row.missing_readback_allows_resend == consumption.missing_readback_allows_resend
+        && row.application_dispatch_consumption_credential_id_sha256
+            == consumption.application_dispatch_consumption_credential_id_sha256
+        && row.application_dispatch_consumption_request_id_sha256
+            == consumption.application_dispatch_consumption_request_id_sha256
+        && row.command_dispatch_consumption_request_id_sha256
+            == consumption.command_dispatch_consumption_request_id_sha256
+        && row.dispatch_consumption_digest_sha256 == consumption.dispatch_consumption_digest_sha256
+        && row.consumption_state == "consumed"
+        && row.consumed_at > 0
+}
+
 fn relay_container_shard_placement_execution_ticket_activation_statement(
     db: &D1Database,
     ticket_id_sha256: &str,
@@ -13464,13 +13960,15 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
     const TICKET_ACTIVATION_COLUMNS: &str = "ticket_id_sha256,contract_version,activation_contract,authority_claim_digest_sha256,authority_claim_acquired_receipt_sha256,authority_claim_operation_id_sha256,authority_activation_operation_id_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,authority_version_id,activation_credential_id_sha256,activation_request_id_sha256,activation_digest_sha256,activated_by_admin_id,activated_at";
     const TICKET_AUTHORITY_ACK_COLUMNS: &str = "ticket_id_sha256,contract_version,acknowledgement_contract,application_ticket_digest_sha256,authority_claim_digest_sha256,application_activation_digest_sha256,authority_activation_terminal_receipt_sha256,authority_ledger_head_sha256,authority_database_identity_sha256,authority_version_id,authority_read_credential_id_sha256,authority_read_request_id_sha256,acknowledgement_digest_sha256,acknowledged_by_admin_id,acknowledged_at";
     const PRE_ENABLE_GRANT_COLUMNS: &str = "ticket_id_sha256,contract_version,grant_contract,authorization_id_sha256,application_ticket_digest_sha256,application_database_identity_sha256,authority_claim_digest_sha256,application_activation_digest_sha256,application_acknowledgement_digest_sha256,operation_five_admission_digest_sha256,operation_five_start_receipt_sha256,authority_dispatch_outbox_digest_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,authority_ledger_head_sha256,authority_version_id,controller_service_name,controller_enable_operation_id_sha256,controller_baseline_version_id,controller_enabled_version_id,application_grant_credential_id_sha256,application_grant_request_id_sha256,grant_digest_sha256,granted_at";
-    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_shard_placement_attestations_candidate|index:idx_relay_container_shard_placement_attestations_object|index:idx_relay_container_shard_placement_authorizations_candidate|index:idx_relay_container_shard_placement_events_candidate|index:idx_relay_container_shard_placement_execution_ticket_activations_claim|index:idx_relay_container_shard_placement_execution_ticket_authority_acks_claim|index:idx_relay_container_shard_placement_execution_tickets_candidate|index:idx_relay_container_shard_placement_execution_tickets_plan|index:idx_relay_container_shard_placement_pre_enable_grants_claim|table:relay_container_shard_placement_attestations|table:relay_container_shard_placement_events|table:relay_container_shard_placement_execution_ticket_activations|table:relay_container_shard_placement_execution_ticket_authority_acks|table:relay_container_shard_placement_execution_tickets|table:relay_container_shard_placement_mutation_authorizations|table:relay_container_shard_placement_pre_enable_grants|trigger:relay_container_shard_activation_campaign_authorization_guard|trigger:relay_container_shard_activation_campaign_claim_execution_ticket_guard|trigger:relay_container_shard_placement_attestation_delete_guard|trigger:relay_container_shard_placement_attestation_event_append|trigger:relay_container_shard_placement_attestation_insert_guard|trigger:relay_container_shard_placement_attestation_update_guard|trigger:relay_container_shard_placement_authorization_delete_guard|trigger:relay_container_shard_placement_authorization_insert_guard|trigger:relay_container_shard_placement_authorization_update_guard|trigger:relay_container_shard_placement_event_delete_guard|trigger:relay_container_shard_placement_event_insert_guard|trigger:relay_container_shard_placement_event_update_guard|trigger:relay_container_shard_placement_execution_ticket_activation_delete_guard|trigger:relay_container_shard_placement_execution_ticket_activation_insert_guard|trigger:relay_container_shard_placement_execution_ticket_activation_update_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_delete_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_insert_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_update_guard|trigger:relay_container_shard_placement_execution_ticket_delete_guard|trigger:relay_container_shard_placement_execution_ticket_insert_guard|trigger:relay_container_shard_placement_execution_ticket_update_guard|trigger:relay_container_shard_placement_pre_enable_grant_delete_guard|trigger:relay_container_shard_placement_pre_enable_grant_insert_guard|trigger:relay_container_shard_placement_pre_enable_grant_update_guard";
+    const DISPATCH_CONSUMPTION_COLUMNS: &str = "ticket_id_sha256,contract_version,consumption_contract,authorization_id_sha256,campaign_id,application_database_identity_sha256,application_version_id,application_grant_digest_sha256,authority_claim_digest_sha256,authority_dispatch_outbox_digest_sha256,application_grant_receipt_digest_sha256,operation_five_start_receipt_sha256,authority_dispatch_claim_digest_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,authority_ledger_head_sha256,authority_version_id,dispatch_owner_sha256,lease_token_sha256,lease_generation,lease_expires_at,normal_deadline_at,permit_expires_at,dispatch_claim_credential_id_sha256,dispatch_claim_request_id_sha256,command_dispatch_claim_request_id_sha256,authority_dispatch_claimed_at,controller_service_name,controller_enable_operation_id_sha256,controller_baseline_version_id,controller_enabled_version_id,send_attempt_limit,retry_limit,missing_readback_allows_resend,application_dispatch_consumption_credential_id_sha256,application_dispatch_consumption_request_id_sha256,command_dispatch_consumption_request_id_sha256,dispatch_consumption_digest_sha256,consumption_state,consumed_at";
+    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_shard_placement_attestations_candidate|index:idx_relay_container_shard_placement_attestations_object|index:idx_relay_container_shard_placement_authorizations_candidate|index:idx_relay_container_shard_placement_dispatch_consumptions_claim|index:idx_relay_container_shard_placement_events_candidate|index:idx_relay_container_shard_placement_execution_ticket_activations_claim|index:idx_relay_container_shard_placement_execution_ticket_authority_acks_claim|index:idx_relay_container_shard_placement_execution_tickets_candidate|index:idx_relay_container_shard_placement_execution_tickets_plan|index:idx_relay_container_shard_placement_pre_enable_grants_claim|table:relay_container_shard_placement_attestations|table:relay_container_shard_placement_dispatch_consumptions|table:relay_container_shard_placement_events|table:relay_container_shard_placement_execution_ticket_activations|table:relay_container_shard_placement_execution_ticket_authority_acks|table:relay_container_shard_placement_execution_tickets|table:relay_container_shard_placement_mutation_authorizations|table:relay_container_shard_placement_pre_enable_grants|trigger:relay_container_shard_activation_campaign_authorization_guard|trigger:relay_container_shard_activation_campaign_claim_execution_ticket_guard|trigger:relay_container_shard_placement_attestation_delete_guard|trigger:relay_container_shard_placement_attestation_event_append|trigger:relay_container_shard_placement_attestation_insert_guard|trigger:relay_container_shard_placement_attestation_update_guard|trigger:relay_container_shard_placement_authorization_delete_guard|trigger:relay_container_shard_placement_authorization_insert_guard|trigger:relay_container_shard_placement_authorization_update_guard|trigger:relay_container_shard_placement_dispatch_consumption_delete_guard|trigger:relay_container_shard_placement_dispatch_consumption_insert_guard|trigger:relay_container_shard_placement_dispatch_consumption_update_guard|trigger:relay_container_shard_placement_event_delete_guard|trigger:relay_container_shard_placement_event_insert_guard|trigger:relay_container_shard_placement_event_update_guard|trigger:relay_container_shard_placement_execution_ticket_activation_delete_guard|trigger:relay_container_shard_placement_execution_ticket_activation_insert_guard|trigger:relay_container_shard_placement_execution_ticket_activation_update_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_delete_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_insert_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_update_guard|trigger:relay_container_shard_placement_execution_ticket_delete_guard|trigger:relay_container_shard_placement_execution_ticket_insert_guard|trigger:relay_container_shard_placement_execution_ticket_update_guard|trigger:relay_container_shard_placement_pre_enable_grant_delete_guard|trigger:relay_container_shard_placement_pre_enable_grant_insert_guard|trigger:relay_container_shard_placement_pre_enable_grant_update_guard";
     let migrations = [
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_ATTESTATION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_EVENT_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_EXECUTION_TICKET_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_MIGRATION),
     ];
     let row = db
         .prepare(
@@ -13478,7 +13976,7 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
             SELECT
               (SELECT COUNT(1)
                FROM d1_migrations
-               WHERE name IN (?1, ?2, ?3, ?4, ?5)) AS migration_count,
+               WHERE name IN (?1, ?2, ?3, ?4, ?5, ?6)) AS migration_count,
               (SELECT group_concat(name, ',') FROM (
                  SELECT name
                  FROM pragma_table_info(
@@ -13526,6 +14024,13 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
                   )
                   ORDER BY cid
                 )) AS pre_enable_grant_columns,
+               (SELECT group_concat(name, ',') FROM (
+                  SELECT name
+                  FROM pragma_table_info(
+                    'relay_container_shard_placement_dispatch_consumptions'
+                  )
+                  ORDER BY cid
+                )) AS dispatch_consumption_columns,
               (SELECT group_concat(type || ':' || name, '|') FROM (
                  SELECT type, name
                  FROM sqlite_master
@@ -13537,7 +14042,8 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
                      'relay_container_shard_placement_execution_tickets',
                       'relay_container_shard_placement_execution_ticket_activations',
                       'relay_container_shard_placement_execution_ticket_authority_acks',
-                      'relay_container_shard_placement_pre_enable_grants'
+                      'relay_container_shard_placement_pre_enable_grants',
+                      'relay_container_shard_placement_dispatch_consumptions'
                    )
                    OR name IN (
                         'relay_container_shard_activation_campaign_authorization_guard',
@@ -13553,7 +14059,7 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
         .first::<RelayContainerShardPlacementSchemaProbe>(None)
         .await?;
     Ok(row.is_some_and(|row| {
-        row.migration_count == 5
+        row.migration_count == 6
             && row.placement_columns == PLACEMENT_COLUMNS
             && row.event_columns == EVENT_COLUMNS
             && row.authorization_columns == AUTHORIZATION_COLUMNS
@@ -13561,6 +14067,7 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
             && row.ticket_activation_columns == TICKET_ACTIVATION_COLUMNS
             && row.ticket_authority_ack_columns == TICKET_AUTHORITY_ACK_COLUMNS
             && row.pre_enable_grant_columns == PRE_ENABLE_GRANT_COLUMNS
+            && row.dispatch_consumption_columns == DISPATCH_CONSUMPTION_COLUMNS
             && row.schema_objects == SCHEMA_OBJECTS
     }))
 }

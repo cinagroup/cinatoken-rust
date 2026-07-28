@@ -275,7 +275,7 @@ describe("isolated container controller configuration", () => {
       "0063_relay_container_shard_placement_mutation_authorizations.sql",
     );
     expect(placementLedgerSource).toContain(
-      "0065_relay_container_shard_placement_pre_enable_grants.sql",
+      "0066_relay_container_shard_placement_dispatch_consumptions.sql",
     );
     expect(placementLedgerSource).toContain(
       "consumption.readiness_result_sha256 = ?17",

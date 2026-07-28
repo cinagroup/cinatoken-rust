@@ -1964,3 +1964,122 @@ traffic.
 
 No secret has been used and no remote state has been changed for this
 checkpoint. Production remains **NO-GO**.
+
+## Operation-5 Dispatch Consumption and Receipt Checklist
+
+This checklist covers Application migration 0066 and Authority migration
+0003. Completing it records one Application-owned consumption and its
+Authority evidence receipt. It does not create a send attempt, call a
+Controller, or authorize Cloudflare control-plane traffic.
+
+### Default-off configuration and identity
+
+- Keep
+  `RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_WRITE_ENABLED=false`,
+  `SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_WRITE_ENABLED=false`, and
+  `SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECEIPT_WRITE_ENABLED=false`
+  in tracked local and staging configuration.
+- Keep production placement, consumption, receipt, gateway, and deployment
+  credential configuration absent.
+- Keep Application dispatch-consumption verifier current/previous key IDs and
+  credential fingerprints blank until an isolated credential ceremony.
+- Provision isolated Authority-to-Application current and previous
+  consumption secrets only through stdin-backed Worker secret operations.
+  Never place them in vars, CLI arguments, logs, evidence, or tracked files.
+- Retain previous until every possible Application-only consumption orphan
+  created under that credential is proven to have an Authority receipt.
+  Revoking it earlier turns any remaining orphan permanently fail-closed
+  under the current protocol.
+- Prove the consumption key IDs, credential fingerprints, and secrets are
+  pairwise distinct from activation-read, ACK-read, pre-enable-grant, and
+  every Authority inbound role, including overlap credentials.
+- Read back the exact Application and Authority Service Binding targets,
+  Worker versions, D1 identities, migration catalogs, schema objects, and
+  zero-row baselines before any gate opens.
+- Require Application inventory 66 migrations / 77 tables / 1096 checked
+  incremental columns / 111 key indexes and Authority inventory three
+  migrations (`0001-0003`).
+
+### Reader-first isolated staging order
+
+1. Keep every runtime gate false while applying Application migration 0066
+   and Authority migration 0003 with migration-only identities.
+2. Prove the exact 0066 table, index, insert guard, update guard, and delete
+   guard. Prove the exact 0003 receipt table and all three guards.
+3. Deploy readers and writers with every gate false. Independently prove
+   private Service Binding targets and the absence of public Authority
+   ingress.
+4. Provision isolated consumption credentials and archive only non-secret
+   identities and provisioning receipts.
+5. Open the Application consumption writer first, then the Authority receipt
+   writer, and only then the Authority consumption route for one bounded
+   synthetic authorization.
+6. Before a normal new consumption, prove at least 30 seconds remain on each
+   of the lease, normal deadline, and permit deadline. Prove 29 seconds and
+   deadline equality fail before the Application call.
+7. Submit one canonical deterministic request with current. Previous may be
+   attempted only if current receives a no-write `409`, and only for the same
+   deterministic exact replay. Do not fall back after timeout, disconnect,
+   malformed response, or any other status.
+8. Read back the Application consumption, Authority receipt, D1 timestamps,
+   response hash and size, owner and lease, deadlines, ledger head, versions,
+   frozen Controller identities, and unchanged Controller/deployment state.
+9. Disable Authority consumption ingress first, then the Application writer,
+   and independently prove both false.
+10. Preserve every 0066 consumption and 0003 receipt through rollback. Never
+   delete or rewrite evidence to simulate reversal.
+11. Do not open a sender or deployment gateway gate in this ceremony.
+
+### Required concurrency and fault evidence
+
+- Race campaign seal and consumption in both D1 commit orders. Prove seal-first
+  rejects consumption and consumption-first remains immutable after the later
+  seal.
+- Prove exact historical replay after seal, expiry, or version drift returns
+  only stored Application evidence and grants no new authority. Do not infer
+  that the current Authority HTTP path can always admit that replay.
+- Inject process death, isolate termination, timeout, disconnect, and lost
+  response after Application commit but before Authority receipt. Prove exact
+  POST replay appends the receipt only while the Authority fence remains live,
+  the same/previous credential remains retained, write gates remain open, and
+  inbound HMAC and runtime trust pass.
+- Close each recovery condition independently: revoke or expire Authority,
+  close a required write gate, and retire the required previous credential.
+  Prove the orphan then remains permanently fail-closed, creates no attempt,
+  and sends no Controller request.
+- Prove Authority receipt HTTP replay still requires Authority enablement,
+  write gates, inbound HMAC, and valid runtime trust. It is not an
+  unconditional read interface.
+- Prove conflicting request, credential, owner, lease, deadline, ledger,
+  version, grant, claim, and Controller identities fail closed.
+- Prove every response reports `sendAttemptCreated=false` and
+  `controllerRequestSent=false`.
+- Prove the entire path performs no Controller, deployment gateway, queue, or
+  Cloudflare control-plane I/O.
+- Do not accept the existing Controller `/operations/status` response as
+  deployment status.
+
+### Remaining promotion blockers and rollback
+
+- Before attempt/event, add an independently authenticated, bounded historical
+  Application readback route and historical Authority receipt admission.
+  Prove it appends only the exact missing receipt and never revives live send
+  authority. This is the next P0 blocker.
+- After that blocker, atomically commit one immutable Authority send attempt
+  and its `send_started` event before external I/O.
+- Introduce the independent private `controller-deployment-gateway` only after
+  the attempt/event transaction and exact readback are proven.
+- Give only that gateway the minimum Cloudflare deployment credential.
+  Authority must remain credential-free.
+- Require a frozen create-once gateway command and status-only readback.
+  Timeout, response loss, process death, and rollout must never issue a second
+  enable.
+- Retain Go/VPS mutation authority and customer traffic during rollback.
+- Keep promotion blocked on remote D1 evidence, Access and least-privilege
+  identities, credential rotation and revocation, fault campaigns, status
+  semantics, operation-14 disable, operations 6-13, reverse sync, drain,
+  traffic, DNS, security, SRE, and migration approvals.
+
+All related tracked gates remain false and production configuration remains
+absent. This checkpoint did not read a secret or query or mutate remote state.
+Go/VPS remains authoritative and production remains **NO-GO**.

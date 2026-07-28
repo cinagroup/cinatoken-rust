@@ -530,7 +530,8 @@ function placementDatabase({
            ('0062_relay_container_shard_placement_events.sql'),
            ('0063_relay_container_shard_placement_mutation_authorizations.sql'),
            ('0064_relay_container_shard_placement_execution_tickets.sql'),
-           ('0065_relay_container_shard_placement_pre_enable_grants.sql');
+           ('0065_relay_container_shard_placement_pre_enable_grants.sql'),
+           ('0066_relay_container_shard_placement_dispatch_consumptions.sql');
     CREATE TABLE relay_container_shard_activation_campaigns (
       campaign_id TEXT PRIMARY KEY,
       campaign_nonce_sha256 TEXT NOT NULL,

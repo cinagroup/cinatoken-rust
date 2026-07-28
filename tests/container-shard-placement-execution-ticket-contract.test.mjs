@@ -11,6 +11,7 @@ const migrationNames = [
   "0063_relay_container_shard_placement_mutation_authorizations.sql",
   "0064_relay_container_shard_placement_execution_tickets.sql",
   "0065_relay_container_shard_placement_pre_enable_grants.sql",
+  "0066_relay_container_shard_placement_dispatch_consumptions.sql",
 ];
 const migrations = new Map();
 
@@ -393,6 +394,226 @@ describe("Relay Container shard placement execution ticket", () => {
     );
     drift.close();
   });
+
+  test("installs the application-owned dispatch consumption contract", () => {
+    const db = migratedDatabase();
+    expect(
+      columns(
+        db,
+        "relay_container_shard_placement_dispatch_consumptions",
+      ),
+    ).toEqual([
+      "ticket_id_sha256",
+      "contract_version",
+      "consumption_contract",
+      "authorization_id_sha256",
+      "campaign_id",
+      "application_database_identity_sha256",
+      "application_version_id",
+      "application_grant_digest_sha256",
+      "authority_claim_digest_sha256",
+      "authority_dispatch_outbox_digest_sha256",
+      "application_grant_receipt_digest_sha256",
+      "operation_five_start_receipt_sha256",
+      "authority_dispatch_claim_digest_sha256",
+      "authority_database_identity_sha256",
+      "authority_ledger_identity_sha256",
+      "authority_ledger_head_sha256",
+      "authority_version_id",
+      "dispatch_owner_sha256",
+      "lease_token_sha256",
+      "lease_generation",
+      "lease_expires_at",
+      "normal_deadline_at",
+      "permit_expires_at",
+      "dispatch_claim_credential_id_sha256",
+      "dispatch_claim_request_id_sha256",
+      "command_dispatch_claim_request_id_sha256",
+      "authority_dispatch_claimed_at",
+      "controller_service_name",
+      "controller_enable_operation_id_sha256",
+      "controller_baseline_version_id",
+      "controller_enabled_version_id",
+      "send_attempt_limit",
+      "retry_limit",
+      "missing_readback_allows_resend",
+      "application_dispatch_consumption_credential_id_sha256",
+      "application_dispatch_consumption_request_id_sha256",
+      "command_dispatch_consumption_request_id_sha256",
+      "dispatch_consumption_digest_sha256",
+      "consumption_state",
+      "consumed_at",
+    ]);
+    expect(
+      db
+        .query(
+          `SELECT type, name
+           FROM sqlite_master
+           WHERE tbl_name =
+             'relay_container_shard_placement_dispatch_consumptions'
+             AND name NOT LIKE 'sqlite_autoindex_%'
+           ORDER BY type, name`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        type: "index",
+        name: "idx_relay_container_shard_placement_dispatch_consumptions_claim",
+      },
+      {
+        type: "table",
+        name: "relay_container_shard_placement_dispatch_consumptions",
+      },
+      {
+        type: "trigger",
+        name: "relay_container_shard_placement_dispatch_consumption_delete_guard",
+      },
+      {
+        type: "trigger",
+        name: "relay_container_shard_placement_dispatch_consumption_insert_guard",
+      },
+      {
+        type: "trigger",
+        name: "relay_container_shard_placement_dispatch_consumption_update_guard",
+      },
+    ]);
+    db.close();
+  });
+
+  test("creates one immutable application dispatch consumption", () => {
+    const db = migratedDatabase();
+    prepareDispatchConsumption(db);
+    insertDispatchConsumption(db);
+    expect(
+      db
+        .query(
+          `SELECT ticket_id_sha256, authorization_id_sha256, campaign_id,
+                  application_grant_digest_sha256,
+                  authority_dispatch_claim_digest_sha256,
+                  controller_enable_operation_id_sha256,
+                  send_attempt_limit, retry_limit,
+                  missing_readback_allows_resend, consumption_state
+           FROM relay_container_shard_placement_dispatch_consumptions`,
+        )
+        .get(),
+    ).toEqual({
+      ticket_id_sha256: hex("1"),
+      authorization_id_sha256: hex("2"),
+      campaign_id: hex("3"),
+      application_grant_digest_sha256: hexPair("32"),
+      authority_dispatch_claim_digest_sha256: hexPair("34"),
+      controller_enable_operation_id_sha256: hexPair("13"),
+      send_attempt_limit: 1,
+      retry_limit: 0,
+      missing_readback_allows_resend: 0,
+      consumption_state: "consumed",
+    });
+    expect(() =>
+      db
+        .query(
+          `UPDATE relay_container_shard_placement_dispatch_consumptions
+           SET authority_version_id = 'authority-version-v2'`,
+        )
+        .run(),
+    ).toThrow("shard placement dispatch consumptions are immutable");
+    expect(() =>
+      db
+        .query(
+          "DELETE FROM relay_container_shard_placement_dispatch_consumptions",
+        )
+        .run(),
+    ).toThrow("shard placement dispatch consumptions are append-preserved");
+    db.close();
+  });
+
+  test("orders dispatch consumption against campaign seal", () => {
+    const sealFirst = migratedDatabase();
+    prepareDispatchConsumption(sealFirst);
+    sealCampaign(sealFirst);
+    expect(() => insertDispatchConsumption(sealFirst)).toThrow(
+      "shard placement dispatch consumption is not admissible",
+    );
+    expect(
+      sealFirst
+        .query(
+          "SELECT COUNT(*) AS count FROM relay_container_shard_placement_dispatch_consumptions",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    sealFirst.close();
+
+    const consumptionFirst = migratedDatabase();
+    prepareDispatchConsumption(consumptionFirst);
+    insertDispatchConsumption(consumptionFirst);
+    sealCampaign(consumptionFirst);
+    expect(
+      consumptionFirst
+        .query(
+          `SELECT consumption.consumption_state,
+                  seal.seal_reason, seal.seal_detail_code
+           FROM relay_container_shard_placement_dispatch_consumptions
+             AS consumption
+           JOIN relay_container_shard_activation_campaign_seals AS seal
+             ON seal.campaign_id = consumption.campaign_id`,
+        )
+        .get(),
+    ).toEqual({
+      consumption_state: "consumed",
+      seal_reason: "aborted",
+      seal_detail_code: "operator_aborted",
+    });
+    consumptionFirst.close();
+  });
+
+  test("rejects authority deadline equality at Application D1", () => {
+    for (const field of [
+      "leaseExpiresAt",
+      "normalDeadlineAt",
+      "permitExpiresAt",
+    ]) {
+      const db = migratedDatabase();
+      prepareDispatchConsumption(db);
+      const databaseNow = db.query("SELECT unixepoch() AS now").get().now;
+      expect(() =>
+        insertDispatchConsumption(db, { [field]: databaseNow }),
+      ).toThrow(
+        /CHECK constraint failed|shard placement dispatch consumption is not admissible/,
+      );
+      db.close();
+    }
+  });
+
+  test("requires the application grant and rejects local evidence drift", () => {
+    const missingGrant = migratedDatabase();
+    prepareCampaign(missingGrant);
+    insertActivation(missingGrant);
+    insertAuthorityAcknowledgement(missingGrant);
+    expect(() => insertDispatchConsumption(missingGrant)).toThrow(
+      /FOREIGN KEY constraint failed|shard placement dispatch consumption is not admissible/,
+    );
+    missingGrant.close();
+
+    for (const overrides of [
+      { campaignId: hex("4") },
+      { applicationDatabaseIdentitySha256: hex("e") },
+      { applicationGrantDigestSha256: hexPair("40") },
+      { authorityClaimDigestSha256: hexPair("41") },
+      { authorityDispatchOutboxDigestSha256: hexPair("42") },
+      { authorityDatabaseIdentitySha256: hex("f") },
+      { authorityLedgerIdentitySha256: hexPair("43") },
+      { controllerEnableOperationIdSha256: hexPair("44") },
+      { controllerEnabledVersionId: "controller-enabled-v2" },
+      { authorityDispatchClaimedAt: epoch() - 60 },
+      { authorityDispatchClaimedAt: epoch() + 60 },
+    ]) {
+      const db = migratedDatabase();
+      prepareDispatchConsumption(db);
+      expect(() => insertDispatchConsumption(db, overrides)).toThrow(
+        /FOREIGN KEY constraint failed|shard placement dispatch consumption is not admissible/,
+      );
+      db.close();
+    }
+  });
 });
 
 function migratedDatabase() {
@@ -693,6 +914,142 @@ function sealCampaign(db) {
        seal_reason, seal_detail_code, last_consumption_digest_sha256
      ) VALUES (?, ?, 0, 'aborted', 'operator_aborted', NULL)`,
   ).run(hex("3"), hex("b"));
+}
+
+function prepareDispatchConsumption(db) {
+  prepareCampaign(db);
+  insertActivation(db);
+  insertAuthorityAcknowledgement(db);
+  insertPreEnableGrant(db);
+}
+
+function insertDispatchConsumption(db, overrides = {}) {
+  const context = db
+    .query(
+      `SELECT ticket.execution_deadline_at,
+              authorization.permit_expires_at,
+              unixepoch() AS database_now
+       FROM relay_container_shard_placement_execution_tickets AS ticket
+       JOIN relay_container_shard_placement_mutation_authorizations
+         AS authorization
+         ON authorization.authorization_id_sha256 =
+              ticket.authorization_id_sha256
+       WHERE ticket.ticket_id_sha256 = ?`,
+    )
+    .get(hex("1"));
+  const values = {
+    ticketIdSha256: hex("1"),
+    authorizationIdSha256: hex("2"),
+    campaignId: hex("3"),
+    applicationDatabaseIdentitySha256: hex("c"),
+    applicationVersionId: "application-version-v1",
+    applicationGrantDigestSha256: hexPair("32"),
+    authorityClaimDigestSha256: hexPair("20"),
+    authorityDispatchOutboxDigestSha256: hexPair("2f"),
+    applicationGrantReceiptDigestSha256: hexPair("33"),
+    operationFiveStartReceiptSha256: hexPair("2d"),
+    authorityDispatchClaimDigestSha256: hexPair("34"),
+    authorityDatabaseIdentitySha256: hex("d"),
+    authorityLedgerIdentitySha256: hexPair("22"),
+    authorityLedgerHeadSha256: hexPair("2d"),
+    authorityVersionId: "authority-version-v1",
+    dispatchOwnerSha256: hexPair("35"),
+    leaseTokenSha256: hexPair("36"),
+    leaseGeneration: 1,
+    leaseExpiresAt: context.database_now + 60,
+    normalDeadlineAt: context.execution_deadline_at,
+    permitExpiresAt: context.permit_expires_at,
+    dispatchClaimCredentialIdSha256: hexPair("37"),
+    dispatchClaimRequestIdSha256: hexPair("38"),
+    commandDispatchClaimRequestIdSha256: hexPair("39"),
+    authorityDispatchClaimedAt: context.database_now,
+    controllerServiceName: "cinatoken-container-controller-staging",
+    controllerEnableOperationIdSha256: hexPair("13"),
+    controllerBaselineVersionId: "controller-disabled-v1",
+    controllerEnabledVersionId: "controller-enabled-v1",
+    sendAttemptLimit: 1,
+    retryLimit: 0,
+    missingReadbackAllowsResend: 0,
+    applicationDispatchConsumptionCredentialIdSha256: hexPair("3a"),
+    applicationDispatchConsumptionRequestIdSha256: hexPair("3b"),
+    commandDispatchConsumptionRequestIdSha256: hexPair("3c"),
+    dispatchConsumptionDigestSha256: hexPair("3d"),
+    consumptionState: "consumed",
+    ...overrides,
+  };
+  return db
+    .query(
+      `INSERT INTO relay_container_shard_placement_dispatch_consumptions (
+         ticket_id_sha256, contract_version, consumption_contract,
+         authorization_id_sha256, campaign_id,
+         application_database_identity_sha256, application_version_id,
+         application_grant_digest_sha256, authority_claim_digest_sha256,
+         authority_dispatch_outbox_digest_sha256,
+         application_grant_receipt_digest_sha256,
+         operation_five_start_receipt_sha256,
+         authority_dispatch_claim_digest_sha256,
+         authority_database_identity_sha256,
+         authority_ledger_identity_sha256, authority_ledger_head_sha256,
+         authority_version_id, dispatch_owner_sha256, lease_token_sha256,
+         lease_generation, lease_expires_at, normal_deadline_at,
+         permit_expires_at, dispatch_claim_credential_id_sha256,
+         dispatch_claim_request_id_sha256,
+         command_dispatch_claim_request_id_sha256,
+         authority_dispatch_claimed_at, controller_service_name,
+         controller_enable_operation_id_sha256,
+         controller_baseline_version_id, controller_enabled_version_id,
+         send_attempt_limit, retry_limit, missing_readback_allows_resend,
+         application_dispatch_consumption_credential_id_sha256,
+         application_dispatch_consumption_request_id_sha256,
+         command_dispatch_consumption_request_id_sha256,
+         dispatch_consumption_digest_sha256, consumption_state
+       ) VALUES (
+         ?1, 1,
+         'cinatoken-relay-container-shard-placement-dispatch-consumption-v1',
+         ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+         ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
+         ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37
+       )`,
+    )
+    .run(
+      values.ticketIdSha256,
+      values.authorizationIdSha256,
+      values.campaignId,
+      values.applicationDatabaseIdentitySha256,
+      values.applicationVersionId,
+      values.applicationGrantDigestSha256,
+      values.authorityClaimDigestSha256,
+      values.authorityDispatchOutboxDigestSha256,
+      values.applicationGrantReceiptDigestSha256,
+      values.operationFiveStartReceiptSha256,
+      values.authorityDispatchClaimDigestSha256,
+      values.authorityDatabaseIdentitySha256,
+      values.authorityLedgerIdentitySha256,
+      values.authorityLedgerHeadSha256,
+      values.authorityVersionId,
+      values.dispatchOwnerSha256,
+      values.leaseTokenSha256,
+      values.leaseGeneration,
+      values.leaseExpiresAt,
+      values.normalDeadlineAt,
+      values.permitExpiresAt,
+      values.dispatchClaimCredentialIdSha256,
+      values.dispatchClaimRequestIdSha256,
+      values.commandDispatchClaimRequestIdSha256,
+      values.authorityDispatchClaimedAt,
+      values.controllerServiceName,
+      values.controllerEnableOperationIdSha256,
+      values.controllerBaselineVersionId,
+      values.controllerEnabledVersionId,
+      values.sendAttemptLimit,
+      values.retryLimit,
+      values.missingReadbackAllowsResend,
+      values.applicationDispatchConsumptionCredentialIdSha256,
+      values.applicationDispatchConsumptionRequestIdSha256,
+      values.commandDispatchConsumptionRequestIdSha256,
+      values.dispatchConsumptionDigestSha256,
+      values.consumptionState,
+    );
 }
 
 function columns(db, table) {

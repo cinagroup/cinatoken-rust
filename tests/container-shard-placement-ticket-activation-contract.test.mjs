@@ -320,7 +320,7 @@ describe("application placement execution ticket activation contract", () => {
     );
   });
 
-  test("keeps both operation-4 directions default-off and production-absent", () => {
+  test("keeps private placement directions default-off and production-absent", () => {
     for (const config of [authorityLocalConfig, authorityStagingConfig]) {
       expect(config.services).toHaveLength(1);
       expect(config.services[0].binding).toBe(
@@ -365,11 +365,20 @@ describe("application placement execution ticket activation contract", () => {
         scope.vars
           .RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED,
       ).toBe("false");
+      expect(
+        scope.vars
+          .RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_WRITE_ENABLED,
+      ).toBe("false");
       for (const prefix of [
         "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC",
         "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC",
         "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC",
+        "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC",
       ]) {
+        expect(scope.vars[`${prefix}_CURRENT_KID`]).toBe("");
+        expect(
+          scope.vars[`${prefix}_CURRENT_CREDENTIAL_ID_SHA256`],
+        ).toBe("");
         expect(scope.vars[`${prefix}_PREVIOUS_KID`]).toBe("");
         expect(
           scope.vars[`${prefix}_PREVIOUS_CREDENTIAL_ID_SHA256`],
@@ -378,17 +387,38 @@ describe("application placement execution ticket activation contract", () => {
         expect(scope.vars[`${prefix}_PREVIOUS_SECRET`]).toBeUndefined();
       }
     }
+    for (const assets of [
+      rootConfig.assets,
+      rootConfig.env.staging.assets,
+      rootConfig.env.production.assets,
+    ]) {
+      expect(assets.not_found_handling).toBe(
+        "single-page-application",
+      );
+      expect(assets.run_worker_first).toEqual([
+        "/api/*",
+        "/internal/*",
+        "/v1/*",
+      ]);
+    }
     for (const name of [
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_AUTHORITY_ACK_WRITE_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_WRITE_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_CURRENT_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_PREVIOUS_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC_CURRENT_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC_PREVIOUS_SECRET",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_CURRENT_KID",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_CURRENT_CREDENTIAL_ID_SHA256",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_KID",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_CURRENT_SECRET",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_SECRET",
     ]) {
       expect(rootConfig.env.production.vars[name]).toBeUndefined();
     }

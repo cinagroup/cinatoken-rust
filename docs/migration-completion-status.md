@@ -2730,3 +2730,62 @@ against seal, then one atomic persist-before-I/O attempt and event, then the
 independent deployment gateway, and finally status-only ambiguity recovery
 with zero resend. No secret was used and no remote state was queried or
 changed. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Dispatch Consumption Status
+
+This table supersedes the dispatch-consumption and Authority-receipt rows in
+the operation-5 dispatch-claim status above. Earlier tables remain checkpoint
+history.
+
+| Status item | Current value |
+| --- | --- |
+| Application D1 head | `0066_relay_container_shard_placement_dispatch_consumptions.sql` |
+| Application D1 catalog | 66 migrations / 77 tables / 1096 checked incremental columns / 111 key indexes |
+| Authority migration inventory | 3 files (`0001-0003`) |
+| Application dispatch consumption | **IMPLEMENTED LOCALLY, DEFAULT-OFF**; create-only, immutable, append-preserved, exact replay |
+| Seal/consumption ordering | Linearized by Application D1 commit visibility |
+| Seal commits first | New consumption is rejected |
+| Consumption commits first | Later seal remains valid but cannot erase or retroactively undo historical consumption |
+| Exact historical replay | Returns the stored row only; does not restore, extend, or create new authorization |
+| Authority consumption receipt | **IMPLEMENTED LOCALLY, DEFAULT-OFF**; immutable exact Application response evidence in migration 0003 |
+| New-consumption time budget | Authority requires at least 30 seconds remaining on lease, normal deadline, and permit deadline before the Application call |
+| Authority-to-Application credentials | Isolated current/previous sets; previous only after current receives a no-write `409` for the same deterministic exact replay |
+| Previous credential retention | Required until the corresponding cross-D1 orphan window is proven empty |
+| Cross-D1 atomicity | **NOT AVAILABLE** |
+| Cross-D1 orphan interval | **REMAINS**; Application may be consumed while Authority receipt is absent |
+| Recoverable orphan | Exact POST replay only while the Authority fence is live, the same/previous credential remains, write gates are open, and inbound HMAC/runtime trust pass |
+| Unrecoverable orphan | Revoked/expired fence, closed write gate, or retired required previous credential remains permanently fail-closed under the current protocol |
+| Independent historical Application readback | **NOT IMPLEMENTED**; next P0 blocker before attempt/event |
+| Historical Authority receipt admission | **NOT IMPLEMENTED**; next P0 blocker before attempt/event |
+| Authority receipt HTTP replay | Conditional on Authority enabled, write gates, inbound HMAC, and runtime trust; **NOT AN UNCONDITIONAL READ API** |
+| Send attempt | **NOT CREATED**; `sendAttemptCreated=false` |
+| Controller request | **NOT SENT**; `controllerRequestSent=false` |
+| Controller/deployment gateway/control-plane I/O | **NONE** |
+| Existing Controller `/operations/status` | Business-operation status only; **NOT DEPLOYMENT STATUS** |
+| Atomic Authority attempt plus event | **NOT IMPLEMENTED**; blocked behind historical readback/receipt admission |
+| Dedicated `controller-deployment-gateway` | **NOT IMPLEMENTED**; follows atomic attempt/event |
+| Status-only ambiguity recovery | **NOT IMPLEMENTED** |
+| Checked-in local/staging gates | All related gates `false` |
+| Production placement configuration | **ABSENT** |
+| Remote mutation/evidence | **NOT PERFORMED / NOT COLLECTED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The next P0 must first add an independent historical Application readback
+route and historical Authority receipt admission that can append only the
+exact missing receipt without reviving send authority. Until then, an orphan
+outside the live-fence, open-gate, retained-credential window is permanently
+fail-closed and must never create an attempt or send Controller.
+
+After that blocker, one Authority transaction must atomically persist an
+immutable send attempt and its `send_started` event before any external I/O.
+Only exact readback of that transaction may permit a later call to the
+independent deployment gateway. That gateway must own the minimum Cloudflare
+deployment credential and expose status-only recovery; Authority must remain
+credential-free, and no ambiguous outcome may trigger a second enable.
+
+Focused Application 0066 and Authority 0003 contract evidence has passed.
+This status does not claim a new full repository gate or remote deployment
+result. No secret was read and no remote state, migration, gate, Controller,
+Container, customer traffic, billing, DNS, or Go/VPS state was changed.
+Go/VPS remains authoritative and production remains **NO-GO**.

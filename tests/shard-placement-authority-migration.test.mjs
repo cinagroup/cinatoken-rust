@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
@@ -24,8 +24,30 @@ const executionMigrationSql = readFileSync(join(
   "migrations",
   "0002_shard_placement_execution_claims.sql",
 ), "utf8");
+const dispatchConsumptionMigrationSql = readFileSync(join(
+  import.meta.dir,
+  "..",
+  "services",
+  "shard-placement-authority",
+  "migrations",
+  "0003_shard_placement_dispatch_consumptions.sql",
+), "utf8");
 
 describe("shard placement Authority migration", () => {
+  test("keeps the migration inventory exact", () => {
+    expect(readdirSync(join(
+      import.meta.dir,
+      "..",
+      "services",
+      "shard-placement-authority",
+      "migrations",
+    )).filter((name) => name.endsWith(".sql")).sort()).toEqual([
+      "0001_shard_placement_authorizations.sql",
+      "0002_shard_placement_execution_claims.sql",
+      "0003_shard_placement_dispatch_consumptions.sql",
+    ]);
+  });
+
   test("installs the exact isolated append-only catalog", () => {
     using database = new Database(":memory:");
     database.exec("PRAGMA foreign_keys = ON");
@@ -892,6 +914,252 @@ describe("shard placement Authority migration", () => {
     `).get().count).toBe(0);
   });
 
+  test("records and append-preserves an Application dispatch consumption", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    database.exec(dispatchConsumptionMigrationSql);
+    const prepared = prepareOperationFiveDispatchConsumption(database);
+    const receipt = operationFiveDispatchConsumptionReceipt(
+      database,
+      prepared,
+    );
+
+    expect(database.query(`
+      PRAGMA table_info(
+        'shard_placement_authority_operation_five_dispatch_consumptions'
+      )
+    `).all().map((column) => column.name)).toEqual([
+      "authorization_id_sha256",
+      "contract_version",
+      "receipt_contract",
+      "claim_digest_sha256",
+      "application_ticket_id_sha256",
+      "campaign_id",
+      "application_database_identity_sha256",
+      "application_version_id",
+      "application_grant_receipt_digest_sha256",
+      "application_grant_digest_sha256",
+      "authority_dispatch_outbox_digest_sha256",
+      "operation_five_start_receipt_sha256",
+      "authority_dispatch_claim_digest_sha256",
+      "authority_database_identity_sha256",
+      "authority_ledger_identity_sha256",
+      "authority_ledger_head_sha256",
+      "authority_version_id",
+      "dispatch_owner_sha256",
+      "lease_token_sha256",
+      "lease_generation",
+      "lease_expires_at",
+      "normal_deadline_at",
+      "permit_expires_at",
+      "dispatch_claim_credential_id_sha256",
+      "dispatch_claim_request_id_sha256",
+      "command_dispatch_claim_request_id_sha256",
+      "authority_dispatch_claimed_at",
+      "controller_service_name",
+      "controller_enable_operation_id_sha256",
+      "controller_baseline_version_id",
+      "controller_enabled_version_id",
+      "send_attempt_limit",
+      "retry_limit",
+      "missing_readback_allows_resend",
+      "application_dispatch_consumption_digest_sha256",
+      "application_dispatch_consumption_credential_id_sha256",
+      "application_dispatch_consumption_request_id_sha256",
+      "command_dispatch_consumption_request_id_sha256",
+      "application_consumption_state",
+      "application_consumed_at",
+      "application_response_sha256",
+      "application_response_bytes",
+      "consume_credential_id_sha256",
+      "consume_request_id_sha256",
+      "command_consume_request_id_sha256",
+      "receipt_digest_sha256",
+      "recorded_at",
+    ]);
+
+    const uniqueColumns = database.query(`
+      SELECT info.name
+      FROM pragma_index_list(
+        'shard_placement_authority_operation_five_dispatch_consumptions'
+      ) AS indexes
+      JOIN pragma_index_info(indexes.name) AS info
+      WHERE indexes.[unique] = 1
+    `).all().map((row) => row.name);
+    expect(uniqueColumns).not.toContain(
+      "dispatch_claim_credential_id_sha256",
+    );
+    expect(uniqueColumns).not.toContain(
+      "application_dispatch_consumption_credential_id_sha256",
+    );
+    expect(uniqueColumns).not.toContain("consume_credential_id_sha256");
+
+    insertOperationFiveDispatchConsumption(database, receipt);
+    const stored = database.query(`
+      SELECT *
+      FROM shard_placement_authority_operation_five_dispatch_consumptions
+      WHERE authorization_id_sha256 = ?
+    `).get(prepared.issuance.authorization_id_sha256);
+    expect(stored).toMatchObject(receipt);
+    expect(stored.recorded_at).toBeGreaterThanOrEqual(
+      stored.application_consumed_at,
+    );
+
+    expect(() => database.query(`
+      UPDATE shard_placement_authority_operation_five_dispatch_consumptions
+      SET authority_version_id = 'replacement'
+      WHERE authorization_id_sha256 = ?
+    `).run(prepared.issuance.authorization_id_sha256)).toThrow(
+      "placement operation-five dispatch consumptions are immutable",
+    );
+    expect(() => database.query(`
+      DELETE
+      FROM shard_placement_authority_operation_five_dispatch_consumptions
+      WHERE authorization_id_sha256 = ?
+    `).run(prepared.issuance.authorization_id_sha256)).toThrow(
+      "placement operation-five dispatch consumptions are append-preserved",
+    );
+  });
+
+  test("rejects dispatch consumption before claim and after revocation", () => {
+    using preClaimDatabase = new Database(":memory:");
+    preClaimDatabase.exec("PRAGMA foreign_keys = ON");
+    preClaimDatabase.exec(migrationSql);
+    preClaimDatabase.exec(executionMigrationSql);
+    preClaimDatabase.exec(dispatchConsumptionMigrationSql);
+    const preClaim = prepareOperationFiveDispatchConsumption(
+      preClaimDatabase,
+      false,
+    );
+    expect(() => insertOperationFiveDispatchConsumption(
+      preClaimDatabase,
+      operationFiveDispatchConsumptionReceipt(preClaimDatabase, preClaim),
+    )).toThrow(
+      "placement operation-five dispatch consumption is not admissible",
+    );
+
+    using revokedDatabase = new Database(":memory:");
+    revokedDatabase.exec("PRAGMA foreign_keys = ON");
+    revokedDatabase.exec(migrationSql);
+    revokedDatabase.exec(executionMigrationSql);
+    revokedDatabase.exec(dispatchConsumptionMigrationSql);
+    const revoked = prepareOperationFiveDispatchConsumption(revokedDatabase);
+    revokedDatabase.query(`
+      INSERT INTO shard_placement_authority_revocations (
+        authorization_id_sha256, permit_subject_digest_sha256,
+        reason_code, evidence_sha256, revocation_event_sha256,
+        revoke_credential_id_sha256
+      ) VALUES (?, ?, 'operator_abort', ?, ?, ?)
+    `).run(
+      revoked.issuance.authorization_id_sha256,
+      revoked.issuance.permit_subject_digest_sha256,
+      "3".repeat(64),
+      "4".repeat(64),
+      "5".repeat(64),
+    );
+    expect(() => insertOperationFiveDispatchConsumption(
+      revokedDatabase,
+      operationFiveDispatchConsumptionReceipt(revokedDatabase, revoked),
+    )).toThrow(
+      "placement operation-five dispatch consumption is not admissible",
+    );
+  });
+
+  test("rejects expired and owner-drifted dispatch consumption", () => {
+    using ownerDatabase = new Database(":memory:");
+    ownerDatabase.exec("PRAGMA foreign_keys = ON");
+    ownerDatabase.exec(migrationSql);
+    ownerDatabase.exec(executionMigrationSql);
+    ownerDatabase.exec(dispatchConsumptionMigrationSql);
+    const ownerDrift = prepareOperationFiveDispatchConsumption(ownerDatabase);
+    const identityGuard = ownerDatabase.query(`
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'trigger'
+        AND name =
+          'shard_placement_authority_execution_claim_identity_update_guard'
+    `).get().sql;
+    ownerDatabase.exec(`
+      DROP TRIGGER
+        shard_placement_authority_execution_claim_identity_update_guard
+    `);
+    ownerDatabase.query(`
+      UPDATE shard_placement_authority_execution_claims
+      SET claim_owner_sha256 = ?
+      WHERE authorization_id_sha256 = ?
+    `).run(
+      "f".repeat(64),
+      ownerDrift.issuance.authorization_id_sha256,
+    );
+    ownerDatabase.exec(identityGuard);
+    expect(() => insertOperationFiveDispatchConsumption(
+      ownerDatabase,
+      operationFiveDispatchConsumptionReceipt(ownerDatabase, ownerDrift),
+    )).toThrow(
+      "placement operation-five dispatch consumption is not admissible",
+    );
+
+    using expiredDatabase = new Database(":memory:");
+    expiredDatabase.exec("PRAGMA foreign_keys = ON");
+    expiredDatabase.exec(migrationSql);
+    expiredDatabase.exec(executionMigrationSql);
+    expiredDatabase.exec(dispatchConsumptionMigrationSql);
+    const expired = prepareOperationFiveDispatchConsumption(expiredDatabase);
+    const projectionGuard = expiredDatabase.query(`
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'trigger'
+        AND name =
+          'shard_placement_authority_execution_claim_projection_update_guard'
+    `).get().sql;
+    expiredDatabase.exec(`
+      DROP TRIGGER
+        shard_placement_authority_execution_claim_projection_update_guard
+    `);
+    expiredDatabase.query(`
+      UPDATE shard_placement_authority_execution_claims
+      SET lease_expires_at = unixepoch() - 1
+      WHERE authorization_id_sha256 = ?
+    `).run(expired.issuance.authorization_id_sha256);
+    expiredDatabase.exec(projectionGuard);
+    expect(() => insertOperationFiveDispatchConsumption(
+      expiredDatabase,
+      operationFiveDispatchConsumptionReceipt(expiredDatabase, expired),
+    )).toThrow(
+      "placement operation-five dispatch consumption is not admissible",
+    );
+  });
+
+  test("enforces claimed-consumed-recorded dispatch consumption ordering", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    database.exec(dispatchConsumptionMigrationSql);
+    const prepared = prepareOperationFiveDispatchConsumption(database);
+    const receipt = operationFiveDispatchConsumptionReceipt(
+      database,
+      prepared,
+    );
+
+    expect(() => insertOperationFiveDispatchConsumption(database, {
+      ...receipt,
+      application_consumed_at: receipt.authority_dispatch_claimed_at - 1,
+    })).toThrow();
+    expect(() => insertOperationFiveDispatchConsumption(database, {
+      ...receipt,
+      application_consumed_at: receipt.permit_expires_at,
+    })).toThrow(
+      "placement operation-five dispatch consumption is not admissible",
+    );
+    expect(database.query(`
+      SELECT COUNT(*) AS count
+      FROM shard_placement_authority_operation_five_dispatch_consumptions
+    `).get().count).toBe(0);
+  });
+
   test("rolls back operation-5 admission when revocation wins", () => {
     using database = new Database(":memory:");
     database.exec("PRAGMA foreign_keys = ON");
@@ -1494,6 +1762,109 @@ function insertOperationFiveDispatchClaim(database, dispatchClaim) {
       ${columns.join(", ")}
     ) VALUES (${columns.map(() => "?").join(", ")})
   `).run(...columns.map((column) => dispatchClaim[column]));
+}
+
+function prepareOperationFiveDispatchConsumption(
+  database,
+  insertDispatchClaim = true,
+) {
+  const prepared = prepareOperationFiveApplicationGrant(database);
+  const dispatchClaim = operationFiveDispatchClaim(database, prepared);
+  if (insertDispatchClaim) {
+    insertOperationFiveDispatchClaim(database, dispatchClaim);
+    Object.assign(dispatchClaim, database.query(`
+      SELECT claimed_at
+      FROM shard_placement_authority_operation_five_dispatch_claims
+      WHERE authorization_id_sha256 = ?
+    `).get(prepared.issuance.authorization_id_sha256));
+  } else {
+    dispatchClaim.claimed_at = database.query(
+      "SELECT unixepoch() AS now",
+    ).get().now;
+  }
+  return { ...prepared, dispatchClaim };
+}
+
+function operationFiveDispatchConsumptionReceipt(database, prepared) {
+  const dispatchClaim = prepared.dispatchClaim;
+  return {
+    authorization_id_sha256: dispatchClaim.authorization_id_sha256,
+    contract_version: 1,
+    receipt_contract:
+      "cinatoken-shard-placement-authority-operation-five-dispatch-consumption-receipt-v1",
+    claim_digest_sha256: dispatchClaim.claim_digest_sha256,
+    application_ticket_id_sha256:
+      dispatchClaim.application_ticket_id_sha256,
+    campaign_id: prepared.issuance.campaign_id,
+    application_database_identity_sha256:
+      dispatchClaim.application_database_identity_sha256,
+    application_version_id: dispatchClaim.application_version_id,
+    application_grant_receipt_digest_sha256:
+      dispatchClaim.application_grant_receipt_digest_sha256,
+    application_grant_digest_sha256:
+      dispatchClaim.application_grant_digest_sha256,
+    authority_dispatch_outbox_digest_sha256:
+      dispatchClaim.authority_dispatch_outbox_digest_sha256,
+    operation_five_start_receipt_sha256:
+      dispatchClaim.operation_five_start_receipt_sha256,
+    authority_dispatch_claim_digest_sha256:
+      dispatchClaim.dispatch_claim_digest_sha256,
+    authority_database_identity_sha256:
+      dispatchClaim.authority_database_identity_sha256,
+    authority_ledger_identity_sha256:
+      dispatchClaim.authority_ledger_identity_sha256,
+    authority_ledger_head_sha256:
+      dispatchClaim.authority_ledger_head_sha256,
+    authority_version_id: dispatchClaim.authority_version_id,
+    dispatch_owner_sha256: dispatchClaim.dispatch_owner_sha256,
+    lease_token_sha256: dispatchClaim.lease_token_sha256,
+    lease_generation: dispatchClaim.lease_generation,
+    lease_expires_at: dispatchClaim.lease_expires_at,
+    normal_deadline_at: dispatchClaim.normal_deadline_at,
+    permit_expires_at: dispatchClaim.permit_expires_at,
+    dispatch_claim_credential_id_sha256:
+      dispatchClaim.dispatch_claim_credential_id_sha256,
+    dispatch_claim_request_id_sha256:
+      dispatchClaim.dispatch_claim_request_id_sha256,
+    command_dispatch_claim_request_id_sha256:
+      dispatchClaim.command_dispatch_claim_request_id_sha256,
+    authority_dispatch_claimed_at: dispatchClaim.claimed_at,
+    controller_service_name: dispatchClaim.controller_service_name,
+    controller_enable_operation_id_sha256:
+      dispatchClaim.controller_enable_operation_id_sha256,
+    controller_baseline_version_id:
+      dispatchClaim.controller_baseline_version_id,
+    controller_enabled_version_id:
+      dispatchClaim.controller_enabled_version_id,
+    send_attempt_limit: dispatchClaim.send_attempt_limit,
+    retry_limit: dispatchClaim.retry_limit,
+    missing_readback_allows_resend:
+      dispatchClaim.missing_readback_allows_resend,
+    application_dispatch_consumption_digest_sha256: "0".repeat(64),
+    application_dispatch_consumption_credential_id_sha256:
+      "1".repeat(64),
+    application_dispatch_consumption_request_id_sha256: "2".repeat(64),
+    command_dispatch_consumption_request_id_sha256: "3".repeat(64),
+    application_consumption_state: "consumed",
+    application_consumed_at: database.query(
+      "SELECT unixepoch() AS now",
+    ).get().now,
+    application_response_sha256: "4".repeat(64),
+    application_response_bytes: 4096,
+    consume_credential_id_sha256: "5".repeat(64),
+    consume_request_id_sha256: "6".repeat(64),
+    command_consume_request_id_sha256: "7".repeat(64),
+    receipt_digest_sha256: "8".repeat(64),
+  };
+}
+
+function insertOperationFiveDispatchConsumption(database, receipt) {
+  const columns = Object.keys(receipt);
+  database.query(`
+    INSERT INTO shard_placement_authority_operation_five_dispatch_consumptions (
+      ${columns.join(", ")}
+    ) VALUES (${columns.map(() => "?").join(", ")})
+  `).run(...columns.map((column) => receipt[column]));
 }
 
 function readExecutionClaim(database) {

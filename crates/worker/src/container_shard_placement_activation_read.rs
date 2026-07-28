@@ -9,11 +9,18 @@ use sha2::{Digest, Sha256};
 use worker::{Env, Request, Response, Result as WorkerResult, WorkerVersionMetadata};
 
 use crate::d1_repositories::{
+    create_relay_container_shard_placement_dispatch_consumption,
     create_relay_container_shard_placement_pre_enable_grant,
+    relay_container_shard_placement_dispatch_consumption,
+    relay_container_shard_placement_dispatch_consumption_matches,
     relay_container_shard_placement_execution_ticket,
     relay_container_shard_placement_execution_ticket_activation_context,
     relay_container_shard_placement_execution_ticket_activation_read_snapshot,
     relay_container_shard_placement_execution_ticket_authority_ack_read_snapshot,
+    relay_container_shard_placement_pre_enable_grant,
+    RelayContainerShardPlacementDispatchConsumption,
+    RelayContainerShardPlacementDispatchConsumptionCreateOutcome,
+    RelayContainerShardPlacementDispatchConsumptionRow,
     RelayContainerShardPlacementExecutionTicketActivationReadSnapshot,
     RelayContainerShardPlacementExecutionTicketAuthorityAckReadSnapshot,
     RelayContainerShardPlacementPreEnableGrant,
@@ -25,6 +32,8 @@ const READ_ENABLED_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_
 const ACK_READ_ENABLED_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_ENABLED";
 const PRE_ENABLE_GRANT_WRITE_ENABLED_ENV: &str =
     "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED";
+const DISPATCH_CONSUMPTION_WRITE_ENABLED_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_WRITE_ENABLED";
 const ISSUER_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ISSUER";
 const AUDIENCE_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_AUDIENCE";
 const HMAC_KID_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_KID";
@@ -61,6 +70,18 @@ const GRANT_HMAC_PREVIOUS_CREDENTIAL_ID_ENV: &str =
     "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256";
 const GRANT_HMAC_PREVIOUS_SECRET_ENV: &str =
     "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC_PREVIOUS_SECRET";
+const CONSUMPTION_HMAC_KID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_CURRENT_KID";
+const CONSUMPTION_HMAC_CREDENTIAL_ID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_CURRENT_CREDENTIAL_ID_SHA256";
+const CONSUMPTION_HMAC_SECRET_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_CURRENT_SECRET";
+const CONSUMPTION_HMAC_PREVIOUS_KID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_KID";
+const CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256";
+const CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_SECRET";
 const APPLICATION_DATABASE_IDENTITY_ENV: &str =
     "RELAY_CONTAINER_SHARD_APPLICATION_DATABASE_IDENTITY_SHA256";
 const APPLICATION_HEADER: &str = "x-cinatoken-shard-placement-application";
@@ -71,6 +92,8 @@ const ACKNOWLEDGEMENT_DIGEST_DOMAIN: &[u8] =
     b"cinatoken:relay-container-shard-placement-authority-ack:v1\0";
 const PRE_ENABLE_GRANT_DIGEST_DOMAIN: &[u8] =
     b"cinatoken:relay-container-shard-placement-pre-enable-grant:v1\0";
+const DISPATCH_CONSUMPTION_DIGEST_DOMAIN: &[u8] =
+    b"cinatoken:relay-container-shard-placement-dispatch-consumption:v1\0";
 const EMPTY_BODY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const SNAPSHOT_CONTRACT: &str =
     "cinatoken-relay-container-shard-placement-execution-ticket-activation-snapshot-v1";
@@ -83,12 +106,21 @@ const PRE_ENABLE_GRANT_CONTRACT: &str =
     "cinatoken-relay-container-shard-placement-pre-enable-grant-v1";
 const PRE_ENABLE_GRANT_SNAPSHOT_CONTRACT: &str =
     "cinatoken-relay-container-shard-placement-pre-enable-grant-snapshot-v1";
+const AUTHORITY_DISPATCH_CLAIM_CONTRACT: &str =
+    "cinatoken-shard-placement-authority-operation-five-dispatch-claim-v1";
+const DISPATCH_CONSUMPTION_CONTRACT: &str =
+    "cinatoken-relay-container-shard-placement-dispatch-consumption-v1";
+const DISPATCH_CONSUMPTION_RESULT_CONTRACT: &str =
+    "cinatoken-relay-container-shard-placement-dispatch-consumption-result-v1";
+const DISPATCH_CONSUMPTION_SNAPSHOT_CONTRACT: &str =
+    "cinatoken-relay-container-shard-placement-dispatch-consumption-snapshot-v1";
 const TICKET_CONTRACT: &str = "cinatoken-relay-container-shard-placement-execution-ticket-v1";
 const HMAC_WINDOW_SECONDS: i64 = 60;
 const HMAC_CLOCK_SKEW_SECONDS: i64 = 5;
 const TOKEN_MAX_BYTES: usize = 4096;
 const MAX_JSON_BODY_BYTES: usize = 64 * 1024;
 
+#[derive(Debug, Clone)]
 struct ReadConfig {
     issuer: String,
     audience: String,
@@ -160,6 +192,45 @@ struct PreEnableGrantCommand {
     controller_baseline_version_id: String,
     controller_enabled_version_id: String,
     grant_digest_sha256: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DispatchConsumptionCommand {
+    schema_version: u32,
+    contract: String,
+    ticket_id_sha256: String,
+    authorization_id_sha256: String,
+    application_database_identity_sha256: String,
+    application_version_id: String,
+    application_grant_digest_sha256: String,
+    authority_claim_digest_sha256: String,
+    authority_dispatch_outbox_digest_sha256: String,
+    application_grant_receipt_digest_sha256: String,
+    operation_five_start_receipt_sha256: String,
+    authority_dispatch_claim_digest_sha256: String,
+    authority_database_identity_sha256: String,
+    authority_ledger_identity_sha256: String,
+    authority_ledger_head_sha256: String,
+    authority_version_id: String,
+    dispatch_owner_sha256: String,
+    lease_token_sha256: String,
+    lease_generation: i64,
+    lease_expires_at: i64,
+    normal_deadline_at: i64,
+    permit_expires_at: i64,
+    dispatch_claim_credential_id_sha256: String,
+    dispatch_claim_request_id_sha256: String,
+    command_dispatch_claim_request_id_sha256: String,
+    authority_dispatch_claimed_at: i64,
+    controller_service_name: String,
+    controller_enable_operation_id_sha256: String,
+    controller_baseline_version_id: String,
+    controller_enabled_version_id: String,
+    send_attempt_limit: i64,
+    retry_limit: i64,
+    missing_readback_allows_resend: i64,
+    dispatch_consumption_request_id_sha256: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -267,6 +338,53 @@ struct ExactPreEnableGrantSnapshot<'a> {
     campaign_expires_at: i64,
     campaign_sealed_at: Option<i64>,
     database_now: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExactDispatchConsumptionSnapshot<'a> {
+    schema_version: u32,
+    contract: &'static str,
+    ticket_id_sha256: &'a str,
+    contract_version: i64,
+    consumption_contract: &'a str,
+    authorization_id_sha256: &'a str,
+    campaign_id: &'a str,
+    application_database_identity_sha256: &'a str,
+    application_version_id: &'a str,
+    application_grant_digest_sha256: &'a str,
+    authority_claim_digest_sha256: &'a str,
+    authority_dispatch_outbox_digest_sha256: &'a str,
+    application_grant_receipt_digest_sha256: &'a str,
+    operation_five_start_receipt_sha256: &'a str,
+    authority_dispatch_claim_digest_sha256: &'a str,
+    authority_database_identity_sha256: &'a str,
+    authority_ledger_identity_sha256: &'a str,
+    authority_ledger_head_sha256: &'a str,
+    authority_version_id: &'a str,
+    dispatch_owner_sha256: &'a str,
+    lease_token_sha256: &'a str,
+    lease_generation: i64,
+    lease_expires_at: i64,
+    normal_deadline_at: i64,
+    permit_expires_at: i64,
+    dispatch_claim_credential_id_sha256: &'a str,
+    dispatch_claim_request_id_sha256: &'a str,
+    command_dispatch_claim_request_id_sha256: &'a str,
+    authority_dispatch_claimed_at: i64,
+    controller_service_name: &'a str,
+    controller_enable_operation_id_sha256: &'a str,
+    controller_baseline_version_id: &'a str,
+    controller_enabled_version_id: &'a str,
+    send_attempt_limit: i64,
+    retry_limit: i64,
+    missing_readback_allows_resend: i64,
+    application_dispatch_consumption_credential_id_sha256: &'a str,
+    application_dispatch_consumption_request_id_sha256: &'a str,
+    command_dispatch_consumption_request_id_sha256: &'a str,
+    dispatch_consumption_digest_sha256: &'a str,
+    consumption_state: &'a str,
+    consumed_at: i64,
 }
 
 pub async fn read_exact(
@@ -753,6 +871,201 @@ pub async fn create_pre_enable_grant(
     )
 }
 
+pub async fn create_dispatch_consumption(
+    mut req: Request,
+    env: Env,
+    ticket_id_sha256: Option<String>,
+) -> WorkerResult<Response> {
+    if !runtime_flag(&env, DISPATCH_CONSUMPTION_WRITE_ENABLED_ENV) {
+        return protocol_error(404, "dispatch_consumption_write_disabled");
+    }
+    if request_has_forbidden_ambient_headers(&req) {
+        return protocol_error(400, "forbidden_request_header");
+    }
+    let path_and_query = match request_path_and_query(&req) {
+        Some(value) => value,
+        None => return protocol_error(400, "invalid_request_url"),
+    };
+    let ticket_id_sha256 = match ticket_id_sha256 {
+        Some(value) if valid_sha256(&value) => value,
+        _ => return protocol_error(400, "invalid_ticket_id"),
+    };
+    let expected_path =
+        format!("/internal/v1/shard-placement/dispatch-consumptions/{ticket_id_sha256}");
+    if path_and_query != expected_path {
+        return protocol_error(400, "invalid_dispatch_consumption_path");
+    }
+    let body = match read_bounded_json_body(&mut req).await {
+        Ok(value) => value,
+        Err(code) => return protocol_error(code.0, code.1),
+    };
+    let command = match parse_dispatch_consumption_command(&body) {
+        Some(value) => value,
+        None => return protocol_error(400, "invalid_dispatch_consumption_command"),
+    };
+    if command.ticket_id_sha256 != ticket_id_sha256 {
+        return protocol_error(400, "dispatch_consumption_path_mismatch");
+    }
+    let configs = match read_consumption_configs(&env) {
+        Some(value) => value,
+        None => return protocol_error(503, "dispatch_consumption_configuration_invalid"),
+    };
+    let token = match req.headers().get(APPLICATION_HEADER).ok().flatten() {
+        Some(value) => value,
+        None => return protocol_error(403, "invalid_authority"),
+    };
+    let body_sha256 = sha256_hex(&body);
+    let now = (worker::Date::now().as_millis() / 1_000) as i64;
+    let (request_id, config) = match configs.iter().find_map(|config| {
+        verify_token_for_request(
+            &token,
+            config,
+            "dispatch_consumption",
+            "POST",
+            &path_and_query,
+            &body_sha256,
+            now,
+        )
+        .map(|request_id| (request_id, config))
+    }) {
+        Some(value) => value,
+        None => return protocol_error(403, "invalid_authority"),
+    };
+    let request_id_sha256 = sha256_hex(request_id.as_bytes());
+    if !dispatch_consumption_command_is_valid(
+        &command,
+        &config.application_database_identity_sha256,
+    ) {
+        return protocol_error(409, "dispatch_consumption_command_mismatch");
+    }
+    let db = match env.d1("DB") {
+        Ok(value) => value,
+        Err(_) => return protocol_error(503, "dispatch_consumption_ledger_unavailable"),
+    };
+
+    let existing =
+        match relay_container_shard_placement_dispatch_consumption(&db, &ticket_id_sha256).await {
+            Ok(value) => value,
+            Err(err) => {
+                worker::console_error!("Placement dispatch consumption read failed: {err}");
+                return protocol_error(503, "dispatch_consumption_ledger_unavailable");
+            }
+        };
+    if let Some(existing) = existing {
+        let digest = dispatch_consumption_digest(
+            &command,
+            &existing.campaign_id,
+            &config.credential_id_sha256,
+            &request_id_sha256,
+        );
+        let candidate = dispatch_consumption_record(
+            &command,
+            &existing.campaign_id,
+            &config.credential_id_sha256,
+            &request_id_sha256,
+            &digest,
+        );
+        if !relay_container_shard_placement_dispatch_consumption_matches(&existing, &candidate) {
+            return protocol_error(409, "dispatch_consumption_conflict");
+        }
+        return dispatch_consumption_response(200, "exact_replay", &existing);
+    }
+
+    let ticket =
+        match relay_container_shard_placement_execution_ticket(&db, &ticket_id_sha256).await {
+            Ok(Some(value)) => value,
+            Ok(None) => return protocol_error(409, "dispatch_consumption_not_admissible"),
+            Err(err) => {
+                worker::console_error!("Placement dispatch consumption ticket read failed: {err}");
+                return protocol_error(503, "dispatch_consumption_ledger_unavailable");
+            }
+        };
+    let grant = match relay_container_shard_placement_pre_enable_grant(&db, &ticket_id_sha256).await
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => return protocol_error(409, "dispatch_consumption_not_admissible"),
+        Err(err) => {
+            worker::console_error!("Placement dispatch consumption grant read failed: {err}");
+            return protocol_error(503, "dispatch_consumption_ledger_unavailable");
+        }
+    };
+    if ticket.authorization_id_sha256 != command.authorization_id_sha256
+        || ticket.application_database_identity_sha256
+            != command.application_database_identity_sha256
+        || grant.authorization_id_sha256 != command.authorization_id_sha256
+        || grant.application_database_identity_sha256
+            != command.application_database_identity_sha256
+        || grant.grant_digest_sha256 != command.application_grant_digest_sha256
+        || grant.authority_claim_digest_sha256 != command.authority_claim_digest_sha256
+        || grant.authority_dispatch_outbox_digest_sha256
+            != command.authority_dispatch_outbox_digest_sha256
+        || grant.operation_five_start_receipt_sha256 != command.operation_five_start_receipt_sha256
+        || grant.authority_database_identity_sha256 != command.authority_database_identity_sha256
+        || grant.authority_ledger_identity_sha256 != command.authority_ledger_identity_sha256
+        || grant.authority_ledger_head_sha256 != command.authority_ledger_head_sha256
+        || grant.authority_version_id != command.authority_version_id
+        || grant.controller_service_name != command.controller_service_name
+        || grant.controller_enable_operation_id_sha256
+            != command.controller_enable_operation_id_sha256
+        || grant.controller_baseline_version_id != command.controller_baseline_version_id
+        || grant.controller_enabled_version_id != command.controller_enabled_version_id
+    {
+        return protocol_error(409, "dispatch_consumption_local_evidence_mismatch");
+    }
+    let digest = dispatch_consumption_digest(
+        &command,
+        &ticket.campaign_id,
+        &config.credential_id_sha256,
+        &request_id_sha256,
+    );
+    let candidate = dispatch_consumption_record(
+        &command,
+        &ticket.campaign_id,
+        &config.credential_id_sha256,
+        &request_id_sha256,
+        &digest,
+    );
+    let application_version_id = match env
+        .get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")
+        .map(|metadata| metadata.id())
+        .ok()
+        .filter(|value| valid_identity(value))
+    {
+        Some(value) => value,
+        None => return protocol_error(503, "application_version_unavailable"),
+    };
+    if command.application_version_id != application_version_id {
+        return protocol_error(409, "dispatch_consumption_application_version_mismatch");
+    }
+    let (status, result, persisted) =
+        match create_relay_container_shard_placement_dispatch_consumption(&db, &candidate).await {
+            Ok(RelayContainerShardPlacementDispatchConsumptionCreateOutcome::Created(row)) => {
+                (201, "dispatch_consumption_recorded", row)
+            }
+            Ok(RelayContainerShardPlacementDispatchConsumptionCreateOutcome::ExactReplay(row)) => {
+                (200, "exact_replay", row)
+            }
+            Ok(RelayContainerShardPlacementDispatchConsumptionCreateOutcome::Conflict) => {
+                return protocol_error(409, "dispatch_consumption_conflict");
+            }
+            Err(err) => {
+                let error = err.to_string();
+                worker::console_error!("Placement dispatch consumption D1 failed: {error}");
+                if error.contains("not admissible")
+                    || error.contains("constraint failed")
+                    || error.contains("Constraint failed")
+                {
+                    return protocol_error(409, "dispatch_consumption_not_admissible");
+                }
+                return protocol_error(503, "dispatch_consumption_ledger_unavailable");
+            }
+        };
+    if !relay_container_shard_placement_dispatch_consumption_matches(&persisted, &candidate) {
+        return protocol_error(409, "dispatch_consumption_readback_mismatch");
+    }
+    dispatch_consumption_response(status, result, &persisted)
+}
+
 fn request_has_forbidden_ambient_headers(req: &Request) -> bool {
     ["content-encoding", "cookie", "origin"]
         .iter()
@@ -829,6 +1142,16 @@ async fn read_bounded_json_body(req: &mut Request) -> Result<Vec<u8>, (u16, &'st
 }
 
 fn parse_pre_enable_grant_command(body: &[u8]) -> Option<PreEnableGrantCommand> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let mut canonical = String::new();
+    write_canonical_json_value(&value, &mut canonical)?;
+    if canonical.as_bytes() != body {
+        return None;
+    }
+    serde_json::from_value(value).ok()
+}
+
+fn parse_dispatch_consumption_command(body: &[u8]) -> Option<DispatchConsumptionCommand> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let mut canonical = String::new();
     write_canonical_json_value(&value, &mut canonical)?;
@@ -941,6 +1264,303 @@ fn pre_enable_grant_command_is_valid(
         ],
     );
     command.grant_digest_sha256 == expected
+}
+
+fn dispatch_consumption_command_is_valid(
+    command: &DispatchConsumptionCommand,
+    application_database_identity_sha256: &str,
+) -> bool {
+    let sha256_values = [
+        &command.ticket_id_sha256,
+        &command.authorization_id_sha256,
+        &command.application_database_identity_sha256,
+        &command.application_grant_digest_sha256,
+        &command.authority_claim_digest_sha256,
+        &command.authority_dispatch_outbox_digest_sha256,
+        &command.application_grant_receipt_digest_sha256,
+        &command.operation_five_start_receipt_sha256,
+        &command.authority_dispatch_claim_digest_sha256,
+        &command.authority_database_identity_sha256,
+        &command.authority_ledger_identity_sha256,
+        &command.authority_ledger_head_sha256,
+        &command.dispatch_owner_sha256,
+        &command.lease_token_sha256,
+        &command.dispatch_claim_credential_id_sha256,
+        &command.dispatch_claim_request_id_sha256,
+        &command.command_dispatch_claim_request_id_sha256,
+        &command.controller_enable_operation_id_sha256,
+        &command.dispatch_consumption_request_id_sha256,
+    ];
+    if command.schema_version != 1
+        || command.contract != DISPATCH_CONSUMPTION_CONTRACT
+        || sha256_values.iter().any(|value| !valid_sha256(value))
+        || !valid_identity(&command.application_version_id)
+        || !valid_identity(&command.authority_version_id)
+        || command.controller_service_name != "cinatoken-container-controller-staging"
+        || !valid_identity(&command.controller_baseline_version_id)
+        || !valid_identity(&command.controller_enabled_version_id)
+        || command.controller_baseline_version_id == command.controller_enabled_version_id
+        || command.application_database_identity_sha256 != application_database_identity_sha256
+        || command.authority_ledger_head_sha256 != command.operation_five_start_receipt_sha256
+        || command.lease_generation != 1
+        || command.lease_expires_at <= 0
+        || command.normal_deadline_at <= 0
+        || command.permit_expires_at <= 0
+        || command.lease_expires_at > command.normal_deadline_at
+        || command.normal_deadline_at > command.permit_expires_at
+        || command.authority_dispatch_claimed_at <= 0
+        || command.send_attempt_limit != 1
+        || command.retry_limit != 0
+        || command.missing_readback_allows_resend != 0
+        || command.dispatch_claim_credential_id_sha256 == command.dispatch_claim_request_id_sha256
+    {
+        return false;
+    }
+    authority_dispatch_claim_digest(command)
+        .is_some_and(|value| value == command.authority_dispatch_claim_digest_sha256)
+}
+
+fn authority_dispatch_claim_digest(command: &DispatchConsumptionCommand) -> Option<String> {
+    let value = json!({
+        "schemaVersion": 1,
+        "contract": AUTHORITY_DISPATCH_CLAIM_CONTRACT,
+        "authorizationIdSha256": command.authorization_id_sha256,
+        "claimDigestSha256": command.authority_claim_digest_sha256,
+        "applicationTicketIdSha256": command.ticket_id_sha256,
+        "applicationDatabaseIdentitySha256":
+            command.application_database_identity_sha256,
+        "authorityDispatchOutboxDigestSha256":
+            command.authority_dispatch_outbox_digest_sha256,
+        "applicationGrantReceiptDigestSha256":
+            command.application_grant_receipt_digest_sha256,
+        "applicationGrantDigestSha256":
+            command.application_grant_digest_sha256,
+        "operationFiveStartReceiptSha256":
+            command.operation_five_start_receipt_sha256,
+        "authorityDatabaseIdentitySha256":
+            command.authority_database_identity_sha256,
+        "authorityLedgerIdentitySha256":
+            command.authority_ledger_identity_sha256,
+        "authorityLedgerHeadSha256":
+            command.authority_ledger_head_sha256,
+        "authorityVersionId": command.authority_version_id,
+        "applicationVersionId": command.application_version_id,
+        "dispatchOwnerSha256": command.dispatch_owner_sha256,
+        "leaseTokenSha256": command.lease_token_sha256,
+        "leaseGeneration": command.lease_generation,
+        "leaseExpiresAt": command.lease_expires_at,
+        "normalDeadlineAt": command.normal_deadline_at,
+        "permitExpiresAt": command.permit_expires_at,
+        "dispatchClaimCredentialIdSha256":
+            command.dispatch_claim_credential_id_sha256,
+        "dispatchClaimRequestIdSha256":
+            command.dispatch_claim_request_id_sha256,
+        "commandDispatchClaimRequestIdSha256":
+            command.command_dispatch_claim_request_id_sha256,
+        "controllerServiceName": command.controller_service_name,
+        "controllerEnableOperationIdSha256":
+            command.controller_enable_operation_id_sha256,
+        "controllerBaselineVersionId":
+            command.controller_baseline_version_id,
+        "controllerEnabledVersionId":
+            command.controller_enabled_version_id,
+        "sendAttemptLimit": command.send_attempt_limit,
+        "retryLimit": command.retry_limit,
+        "missingReadbackAllowsResend":
+            command.missing_readback_allows_resend,
+        "claimState": "claimed",
+    });
+    let mut canonical = String::new();
+    write_canonical_json_value(&value, &mut canonical)?;
+    Some(sha256_hex(canonical.as_bytes()))
+}
+
+fn dispatch_consumption_digest(
+    command: &DispatchConsumptionCommand,
+    campaign_id: &str,
+    credential_id_sha256: &str,
+    request_id_sha256: &str,
+) -> String {
+    let lease_generation = command.lease_generation.to_string();
+    let lease_expires_at = command.lease_expires_at.to_string();
+    let normal_deadline_at = command.normal_deadline_at.to_string();
+    let permit_expires_at = command.permit_expires_at.to_string();
+    let authority_dispatch_claimed_at = command.authority_dispatch_claimed_at.to_string();
+    let send_attempt_limit = command.send_attempt_limit.to_string();
+    let retry_limit = command.retry_limit.to_string();
+    let missing_readback_allows_resend = command.missing_readback_allows_resend.to_string();
+    sha256_len_prefixed(
+        DISPATCH_CONSUMPTION_DIGEST_DOMAIN,
+        &[
+            DISPATCH_CONSUMPTION_CONTRACT,
+            &command.ticket_id_sha256,
+            &command.authorization_id_sha256,
+            campaign_id,
+            &command.application_database_identity_sha256,
+            &command.application_version_id,
+            &command.application_grant_digest_sha256,
+            &command.authority_claim_digest_sha256,
+            &command.authority_dispatch_outbox_digest_sha256,
+            &command.application_grant_receipt_digest_sha256,
+            &command.operation_five_start_receipt_sha256,
+            &command.authority_dispatch_claim_digest_sha256,
+            &command.authority_database_identity_sha256,
+            &command.authority_ledger_identity_sha256,
+            &command.authority_ledger_head_sha256,
+            &command.authority_version_id,
+            &command.dispatch_owner_sha256,
+            &command.lease_token_sha256,
+            &lease_generation,
+            &lease_expires_at,
+            &normal_deadline_at,
+            &permit_expires_at,
+            &command.dispatch_claim_credential_id_sha256,
+            &command.dispatch_claim_request_id_sha256,
+            &command.command_dispatch_claim_request_id_sha256,
+            &authority_dispatch_claimed_at,
+            &command.controller_service_name,
+            &command.controller_enable_operation_id_sha256,
+            &command.controller_baseline_version_id,
+            &command.controller_enabled_version_id,
+            &send_attempt_limit,
+            &retry_limit,
+            &missing_readback_allows_resend,
+            credential_id_sha256,
+            request_id_sha256,
+            &command.dispatch_consumption_request_id_sha256,
+            "consumed",
+        ],
+    )
+}
+
+fn dispatch_consumption_record<'a>(
+    command: &'a DispatchConsumptionCommand,
+    campaign_id: &'a str,
+    credential_id_sha256: &'a str,
+    request_id_sha256: &'a str,
+    digest_sha256: &'a str,
+) -> RelayContainerShardPlacementDispatchConsumption<'a> {
+    RelayContainerShardPlacementDispatchConsumption {
+        ticket_id_sha256: &command.ticket_id_sha256,
+        authorization_id_sha256: &command.authorization_id_sha256,
+        campaign_id,
+        application_database_identity_sha256: &command.application_database_identity_sha256,
+        application_version_id: &command.application_version_id,
+        application_grant_digest_sha256: &command.application_grant_digest_sha256,
+        authority_claim_digest_sha256: &command.authority_claim_digest_sha256,
+        authority_dispatch_outbox_digest_sha256: &command.authority_dispatch_outbox_digest_sha256,
+        application_grant_receipt_digest_sha256: &command.application_grant_receipt_digest_sha256,
+        operation_five_start_receipt_sha256: &command.operation_five_start_receipt_sha256,
+        authority_dispatch_claim_digest_sha256: &command.authority_dispatch_claim_digest_sha256,
+        authority_database_identity_sha256: &command.authority_database_identity_sha256,
+        authority_ledger_identity_sha256: &command.authority_ledger_identity_sha256,
+        authority_ledger_head_sha256: &command.authority_ledger_head_sha256,
+        authority_version_id: &command.authority_version_id,
+        dispatch_owner_sha256: &command.dispatch_owner_sha256,
+        lease_token_sha256: &command.lease_token_sha256,
+        lease_generation: command.lease_generation,
+        lease_expires_at: command.lease_expires_at,
+        normal_deadline_at: command.normal_deadline_at,
+        permit_expires_at: command.permit_expires_at,
+        dispatch_claim_credential_id_sha256: &command.dispatch_claim_credential_id_sha256,
+        dispatch_claim_request_id_sha256: &command.dispatch_claim_request_id_sha256,
+        command_dispatch_claim_request_id_sha256: &command.command_dispatch_claim_request_id_sha256,
+        authority_dispatch_claimed_at: command.authority_dispatch_claimed_at,
+        controller_service_name: &command.controller_service_name,
+        controller_enable_operation_id_sha256: &command.controller_enable_operation_id_sha256,
+        controller_baseline_version_id: &command.controller_baseline_version_id,
+        controller_enabled_version_id: &command.controller_enabled_version_id,
+        send_attempt_limit: command.send_attempt_limit,
+        retry_limit: command.retry_limit,
+        missing_readback_allows_resend: command.missing_readback_allows_resend,
+        application_dispatch_consumption_credential_id_sha256: credential_id_sha256,
+        application_dispatch_consumption_request_id_sha256: request_id_sha256,
+        command_dispatch_consumption_request_id_sha256: &command
+            .dispatch_consumption_request_id_sha256,
+        dispatch_consumption_digest_sha256: digest_sha256,
+    }
+}
+
+fn dispatch_consumption_response(
+    status: u16,
+    result: &'static str,
+    row: &RelayContainerShardPlacementDispatchConsumptionRow,
+) -> WorkerResult<Response> {
+    protocol_json(
+        status,
+        &json!({
+            "contract": DISPATCH_CONSUMPTION_RESULT_CONTRACT,
+            "result": result,
+            "snapshot": ExactDispatchConsumptionSnapshot {
+                schema_version: 1,
+                contract: DISPATCH_CONSUMPTION_SNAPSHOT_CONTRACT,
+                ticket_id_sha256: &row.ticket_id_sha256,
+                contract_version: row.contract_version,
+                consumption_contract: &row.consumption_contract,
+                authorization_id_sha256: &row.authorization_id_sha256,
+                campaign_id: &row.campaign_id,
+                application_database_identity_sha256:
+                    &row.application_database_identity_sha256,
+                application_version_id: &row.application_version_id,
+                application_grant_digest_sha256:
+                    &row.application_grant_digest_sha256,
+                authority_claim_digest_sha256:
+                    &row.authority_claim_digest_sha256,
+                authority_dispatch_outbox_digest_sha256:
+                    &row.authority_dispatch_outbox_digest_sha256,
+                application_grant_receipt_digest_sha256:
+                    &row.application_grant_receipt_digest_sha256,
+                operation_five_start_receipt_sha256:
+                    &row.operation_five_start_receipt_sha256,
+                authority_dispatch_claim_digest_sha256:
+                    &row.authority_dispatch_claim_digest_sha256,
+                authority_database_identity_sha256:
+                    &row.authority_database_identity_sha256,
+                authority_ledger_identity_sha256:
+                    &row.authority_ledger_identity_sha256,
+                authority_ledger_head_sha256:
+                    &row.authority_ledger_head_sha256,
+                authority_version_id: &row.authority_version_id,
+                dispatch_owner_sha256: &row.dispatch_owner_sha256,
+                lease_token_sha256: &row.lease_token_sha256,
+                lease_generation: row.lease_generation,
+                lease_expires_at: row.lease_expires_at,
+                normal_deadline_at: row.normal_deadline_at,
+                permit_expires_at: row.permit_expires_at,
+                dispatch_claim_credential_id_sha256:
+                    &row.dispatch_claim_credential_id_sha256,
+                dispatch_claim_request_id_sha256:
+                    &row.dispatch_claim_request_id_sha256,
+                command_dispatch_claim_request_id_sha256:
+                    &row.command_dispatch_claim_request_id_sha256,
+                authority_dispatch_claimed_at:
+                    row.authority_dispatch_claimed_at,
+                controller_service_name: &row.controller_service_name,
+                controller_enable_operation_id_sha256:
+                    &row.controller_enable_operation_id_sha256,
+                controller_baseline_version_id:
+                    &row.controller_baseline_version_id,
+                controller_enabled_version_id:
+                    &row.controller_enabled_version_id,
+                send_attempt_limit: row.send_attempt_limit,
+                retry_limit: row.retry_limit,
+                missing_readback_allows_resend:
+                    row.missing_readback_allows_resend,
+                application_dispatch_consumption_credential_id_sha256:
+                    &row.application_dispatch_consumption_credential_id_sha256,
+                application_dispatch_consumption_request_id_sha256:
+                    &row.application_dispatch_consumption_request_id_sha256,
+                command_dispatch_consumption_request_id_sha256:
+                    &row.command_dispatch_consumption_request_id_sha256,
+                dispatch_consumption_digest_sha256:
+                    &row.dispatch_consumption_digest_sha256,
+                consumption_state: &row.consumption_state,
+                consumed_at: row.consumed_at,
+            },
+            "sendAttemptCreated": false,
+            "controllerRequestSent": false,
+        }),
+    )
 }
 
 fn pre_enable_grant_row_is_exact(
@@ -1094,7 +1714,23 @@ fn read_activation_configs(env: &Env) -> Option<Vec<ReadConfig>> {
             GRANT_HMAC_PREVIOUS_SECRET_ENV,
         ),
     )?;
-    if !optional_config_inventories_are_disjoint(&configs, &acknowledgement, &grant) {
+    let consumption = read_optional_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HMAC_KID_ENV,
+            CONSUMPTION_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    if !optional_config_inventories_are_disjoint(
+        &configs,
+        &[&acknowledgement, &grant, &consumption],
+    ) {
         return None;
     }
     Some(configs)
@@ -1136,7 +1772,20 @@ fn read_ack_configs(env: &Env) -> Option<Vec<ReadConfig>> {
             GRANT_HMAC_PREVIOUS_SECRET_ENV,
         ),
     )?;
-    if !optional_config_inventories_are_disjoint(&configs, &activation, &grant) {
+    let consumption = read_optional_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HMAC_KID_ENV,
+            CONSUMPTION_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    if !optional_config_inventories_are_disjoint(&configs, &[&activation, &grant, &consumption]) {
         return None;
     }
     Some(configs)
@@ -1178,7 +1827,79 @@ fn read_grant_configs(env: &Env) -> Option<Vec<ReadConfig>> {
             ACK_HMAC_PREVIOUS_SECRET_ENV,
         ),
     )?;
-    if !optional_config_inventories_are_disjoint(&configs, &activation, &acknowledgement) {
+    let consumption = read_optional_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HMAC_KID_ENV,
+            CONSUMPTION_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    if !optional_config_inventories_are_disjoint(
+        &configs,
+        &[&activation, &acknowledgement, &consumption],
+    ) {
+        return None;
+    }
+    Some(configs)
+}
+
+fn read_consumption_configs(env: &Env) -> Option<Vec<ReadConfig>> {
+    let configs = read_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HMAC_KID_ENV,
+            CONSUMPTION_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    let activation = read_optional_rotating_configs(
+        env,
+        (HMAC_KID_ENV, HMAC_CREDENTIAL_ID_ENV, HMAC_SECRET_ENV),
+        (
+            HMAC_PREVIOUS_KID_ENV,
+            HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    let acknowledgement = read_optional_rotating_configs(
+        env,
+        (
+            ACK_HMAC_KID_ENV,
+            ACK_HMAC_CREDENTIAL_ID_ENV,
+            ACK_HMAC_SECRET_ENV,
+        ),
+        (
+            ACK_HMAC_PREVIOUS_KID_ENV,
+            ACK_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            ACK_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    let grant = read_optional_rotating_configs(
+        env,
+        (
+            GRANT_HMAC_KID_ENV,
+            GRANT_HMAC_CREDENTIAL_ID_ENV,
+            GRANT_HMAC_SECRET_ENV,
+        ),
+        (
+            GRANT_HMAC_PREVIOUS_KID_ENV,
+            GRANT_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            GRANT_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    if !optional_config_inventories_are_disjoint(&configs, &[&activation, &acknowledgement, &grant])
+    {
         return None;
     }
     Some(configs)
@@ -1186,19 +1907,26 @@ fn read_grant_configs(env: &Env) -> Option<Vec<ReadConfig>> {
 
 fn optional_config_inventories_are_disjoint(
     required: &[ReadConfig],
-    first: &Option<Vec<ReadConfig>>,
-    second: &Option<Vec<ReadConfig>>,
+    optional: &[&Option<Vec<ReadConfig>>],
 ) -> bool {
-    first
-        .as_ref()
-        .map_or(true, |values| configs_are_disjoint(required, values))
-        && second
-            .as_ref()
-            .map_or(true, |values| configs_are_disjoint(required, values))
-        && match (first, second) {
-            (Some(left), Some(right)) => configs_are_disjoint(left, right),
-            _ => true,
+    for values in optional.iter().filter_map(|values| values.as_ref()) {
+        if !configs_are_disjoint(required, values) {
+            return false;
         }
+    }
+    for left_index in 0..optional.len() {
+        for right_index in (left_index + 1)..optional.len() {
+            if let (Some(left), Some(right)) = (
+                optional[left_index].as_ref(),
+                optional[right_index].as_ref(),
+            ) {
+                if !configs_are_disjoint(left, right) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
 }
 
 fn read_optional_rotating_configs(
@@ -1698,6 +2426,76 @@ mod tests {
         )
     }
 
+    fn sign_consumption_post(path_and_query: &str, body_sha256: &str, now: i64) -> String {
+        let header_part = URL_SAFE_NO_PAD.encode(
+            br#"{"typ":"CINATOKEN-SHARD-PLACEMENT-APPLICATION","alg":"HS256","kid":"activation-read-current-v1"}"#,
+        );
+        let claims_part = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&json!({
+                "issuer": "cinatoken-shard-placement-authority-runtime-test",
+                "audience": "cinatoken-rust-api-runtime-test",
+                "role": "dispatch_consumption",
+                "credential_id_sha256": "a".repeat(64),
+                "request_id": "operation-5-dispatch-consumption-1",
+                "method": "POST",
+                "path_and_query": path_and_query,
+                "body_sha256": body_sha256,
+                "issued_at": now - 1,
+                "expires_at": now + 30,
+            }))
+            .unwrap(),
+        );
+        let mut mac = Hmac::<Sha256>::new_from_slice(config().secret.as_bytes()).unwrap();
+        mac.update(HMAC_DOMAIN);
+        mac.update(header_part.as_bytes());
+        mac.update(b".");
+        mac.update(claims_part.as_bytes());
+        format!(
+            "{header_part}.{claims_part}.{}",
+            URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+        )
+    }
+
+    fn dispatch_consumption_command() -> DispatchConsumptionCommand {
+        DispatchConsumptionCommand {
+            schema_version: 1,
+            contract: DISPATCH_CONSUMPTION_CONTRACT.to_string(),
+            ticket_id_sha256: "01".repeat(32),
+            authorization_id_sha256: "02".repeat(32),
+            application_database_identity_sha256: "03".repeat(32),
+            application_version_id: "application-version-1".to_string(),
+            application_grant_digest_sha256: "04".repeat(32),
+            authority_claim_digest_sha256: "05".repeat(32),
+            authority_dispatch_outbox_digest_sha256: "06".repeat(32),
+            application_grant_receipt_digest_sha256: "07".repeat(32),
+            operation_five_start_receipt_sha256: "08".repeat(32),
+            authority_dispatch_claim_digest_sha256:
+                "a5613effb227e283ff2a2c10cc6c8fa92a6ad5299aa496c95c26add4e87a90cc".to_string(),
+            authority_database_identity_sha256: "09".repeat(32),
+            authority_ledger_identity_sha256: "0a".repeat(32),
+            authority_ledger_head_sha256: "08".repeat(32),
+            authority_version_id: "authority-version-1".to_string(),
+            dispatch_owner_sha256: "0b".repeat(32),
+            lease_token_sha256: "0c".repeat(32),
+            lease_generation: 1,
+            lease_expires_at: 1_800_000_100,
+            normal_deadline_at: 1_800_000_200,
+            permit_expires_at: 1_800_000_300,
+            dispatch_claim_credential_id_sha256: "0d".repeat(32),
+            dispatch_claim_request_id_sha256: "0e".repeat(32),
+            command_dispatch_claim_request_id_sha256: "0f".repeat(32),
+            authority_dispatch_claimed_at: 1_800_000_000,
+            controller_service_name: "cinatoken-container-controller-staging".to_string(),
+            controller_enable_operation_id_sha256: "10".repeat(32),
+            controller_baseline_version_id: "controller-baseline-v1".to_string(),
+            controller_enabled_version_id: "controller-enabled-v1".to_string(),
+            send_attempt_limit: 1,
+            retry_limit: 0,
+            missing_readback_allows_resend: 0,
+            dispatch_consumption_request_id_sha256: "11".repeat(32),
+        }
+    }
+
     fn path() -> String {
         format!(
             "/internal/v1/shard-placement/execution-ticket-activations/{}?ticketDigestSha256={}&claimDigestSha256={}&activationDigestSha256={}",
@@ -1843,20 +2641,96 @@ mod tests {
     }
 
     #[test]
-    fn activation_and_acknowledgement_credentials_are_disjoint() {
-        let activation = config();
+    fn dispatch_consumption_hmac_binds_role_post_path_and_body() {
+        let now = 1_750_000_000;
+        let path = format!(
+            "/internal/v1/shard-placement/dispatch-consumptions/{}",
+            "1".repeat(64)
+        );
+        let body_sha256 = "2".repeat(64);
+        let token = sign_consumption_post(&path, &body_sha256, now);
+        assert_eq!(
+            verify_token_for_request(
+                &token,
+                &config(),
+                "dispatch_consumption",
+                "POST",
+                &path,
+                &body_sha256,
+                now,
+            )
+            .as_deref(),
+            Some("operation-5-dispatch-consumption-1")
+        );
+        for role in ["pre_enable_grant", "activation_read", "authority_ack_read"] {
+            assert!(verify_token_for_request(
+                &token,
+                &config(),
+                role,
+                "POST",
+                &path,
+                &body_sha256,
+                now,
+            )
+            .is_none());
+        }
+        assert!(verify_token_for_request(
+            &token,
+            &config(),
+            "dispatch_consumption",
+            "POST",
+            &path,
+            &"3".repeat(64),
+            now,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn four_role_credentials_are_pairwise_disjoint_by_kid_fingerprint_and_secret() {
+        let activation = vec![config()];
         let mut acknowledgement = config();
         acknowledgement.kid = "ack-read-current-v1".to_string();
         acknowledgement.credential_id_sha256 = "c".repeat(64);
         acknowledgement.secret = "abcdef0123456789abcdef0123456789".to_string();
-        assert!(configs_are_disjoint(
-            std::slice::from_ref(&activation),
-            std::slice::from_ref(&acknowledgement),
+        let acknowledgement = Some(vec![acknowledgement]);
+        let mut grant = config();
+        grant.kid = "grant-current-v1".to_string();
+        grant.credential_id_sha256 = "d".repeat(64);
+        grant.secret = "1234567890abcdef1234567890abcdef".to_string();
+        let grant = Some(vec![grant]);
+        let mut consumption = config();
+        consumption.kid = "consumption-current-v1".to_string();
+        consumption.credential_id_sha256 = "e".repeat(64);
+        consumption.secret = "fedcba0987654321fedcba0987654321".to_string();
+        let consumption = Some(vec![consumption]);
+        assert!(optional_config_inventories_are_disjoint(
+            &activation,
+            &[&acknowledgement, &grant, &consumption],
         ));
-        acknowledgement.credential_id_sha256 = activation.credential_id_sha256.clone();
-        assert!(!configs_are_disjoint(
-            std::slice::from_ref(&activation),
-            std::slice::from_ref(&acknowledgement),
+
+        let mut reused_kid = consumption.clone();
+        reused_kid.as_mut().unwrap()[0].kid = activation[0].kid.clone();
+        assert!(!optional_config_inventories_are_disjoint(
+            &activation,
+            &[&acknowledgement, &grant, &reused_kid],
+        ));
+
+        let mut reused_fingerprint = consumption.clone();
+        reused_fingerprint.as_mut().unwrap()[0].credential_id_sha256 =
+            acknowledgement.as_ref().unwrap()[0]
+                .credential_id_sha256
+                .clone();
+        assert!(!optional_config_inventories_are_disjoint(
+            &activation,
+            &[&acknowledgement, &grant, &reused_fingerprint],
+        ));
+
+        let mut reused_secret = consumption.clone();
+        reused_secret.as_mut().unwrap()[0].secret = grant.as_ref().unwrap()[0].secret.clone();
+        assert!(!optional_config_inventories_are_disjoint(
+            &activation,
+            &[&acknowledgement, &grant, &reused_secret],
         ));
     }
 
@@ -1867,12 +2741,17 @@ mod tests {
         assert!(source.contains("RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_ENABLED"));
         assert!(source.contains("RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED"));
         assert!(
+            source.contains("RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_WRITE_ENABLED")
+        );
+        assert!(
             source.contains("RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_SECRET")
         );
         assert!(source
             .contains("RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_PREVIOUS_SECRET"));
         assert!(source
             .contains("RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC_PREVIOUS_SECRET"));
+        assert!(source
+            .contains("RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_SECRET"));
         assert!(source.contains("env.secret(secret_env)"));
         assert!(source.contains("Cache-Control\", \"no-store"));
         assert!(source.contains("X-Content-Type-Options"));
@@ -1882,6 +2761,7 @@ mod tests {
             "relay_container_shard_placement_execution_ticket_authority_ack_read_snapshot"
         ));
         assert!(source.contains("create_relay_container_shard_placement_pre_enable_grant"));
+        assert!(source.contains("create_relay_container_shard_placement_dispatch_consumption"));
     }
 
     #[test]
@@ -1916,6 +2796,81 @@ mod tests {
             digest,
             "8ee874989d2ad6a1754062891241957beda37a82008d2ab62b6c81ba84092df7"
         );
+    }
+
+    #[test]
+    fn dispatch_claim_digest_matches_authority_typescript_fixed_vector() {
+        let command = dispatch_consumption_command();
+        assert_eq!(
+            authority_dispatch_claim_digest(&command).as_deref(),
+            Some("a5613effb227e283ff2a2c10cc6c8fa92a6ad5299aa496c95c26add4e87a90cc")
+        );
+        assert!(dispatch_consumption_command_is_valid(
+            &command,
+            &"03".repeat(32),
+        ));
+    }
+
+    #[test]
+    fn dispatch_consumption_digest_matches_fixed_vector() {
+        let command = dispatch_consumption_command();
+        assert_eq!(
+            dispatch_consumption_digest(
+                &command,
+                &"14".repeat(32),
+                &"12".repeat(32),
+                &"13".repeat(32),
+            ),
+            "1b9f27aba0fe2d26ab23f04746ffcbe6f544e2893357d57e750c1f73a30aaabf"
+        );
+    }
+
+    #[test]
+    fn dispatch_consumption_command_requires_flat_canonical_json() {
+        let command = dispatch_consumption_command();
+        let value = serde_json::to_value(&command).unwrap();
+        let mut canonical = String::new();
+        write_canonical_json_value(&value, &mut canonical).unwrap();
+        assert!(parse_dispatch_consumption_command(canonical.as_bytes()).is_some());
+        assert!(parse_dispatch_consumption_command(format!(" {canonical}").as_bytes()).is_none());
+        let mut with_extra = value;
+        with_extra
+            .as_object_mut()
+            .unwrap()
+            .insert("extra".to_string(), serde_json::Value::Bool(true));
+        let mut canonical_with_extra = String::new();
+        write_canonical_json_value(&with_extra, &mut canonical_with_extra).unwrap();
+        assert!(parse_dispatch_consumption_command(canonical_with_extra.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn exact_dispatch_consumption_replay_precedes_version_and_live_context_checks() {
+        let source = include_str!("container_shard_placement_activation_read.rs");
+        let handler = source
+            .split("pub async fn create_dispatch_consumption")
+            .nth(1)
+            .unwrap()
+            .split("fn request_has_forbidden_ambient_headers")
+            .next()
+            .unwrap();
+        let exact_replay = handler.find("if let Some(existing) = existing").unwrap();
+        let ticket_read = handler
+            .find("relay_container_shard_placement_execution_ticket(&db")
+            .unwrap();
+        let current_version = handler.find("CF_VERSION_METADATA").unwrap();
+        assert!(exact_replay < ticket_read);
+        assert!(exact_replay < current_version);
+        assert!(handler[exact_replay..ticket_read]
+            .contains("dispatch_consumption_response(200, \"exact_replay\""));
+    }
+
+    #[test]
+    fn dispatch_consumption_route_is_registered_in_router_and_contract_inventory() {
+        let source = include_str!("lib.rs");
+        let path = "/internal/v1/shard-placement/dispatch-consumptions/:ticket_id";
+        assert_eq!(source.matches(path).count(), 2);
+        assert!(source
+            .contains("container_shard_placement_activation_read::create_dispatch_consumption"));
     }
 
     #[test]

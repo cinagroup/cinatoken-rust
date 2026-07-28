@@ -4282,3 +4282,66 @@ The complete local repository gate, `bun run check`, passed with exit 0 in
 
 No secret was used and no remote state was read or changed. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Dispatch Consumption and Receipt
+
+Phase 1 now includes the local, default-off Application 0066 dispatch
+consumption and Authority 0003 immutable receipt contracts. Application
+consumption binds the exact grant, dispatch claim, owner and lease, deadlines,
+ledger identities, versions, and frozen Controller command. Authority records
+the exact Application response as append-preserved evidence.
+
+The Application campaign seal and consumption are linearized by D1 commit
+order. If the seal commits first, a new consumption fails closed. If the
+consumption commits first, the one-shot right is historically consumed; a
+later seal can still be recorded but cannot update, delete, or retroactively
+undo that history. Exact historical replay is read-only evidence and never
+restores new authorization after seal, expiry, or version drift.
+
+This increment still stops before a sender:
+
+- `sendAttemptCreated=false`;
+- `controllerRequestSent=false`;
+- no Controller, deployment gateway, queue, or Cloudflare control-plane I/O
+  occurs; and
+- the current Controller `/operations/status` route remains
+  business-operation status, not deployment status.
+
+Application D1 and Authority D1 cannot commit atomically. The remaining orphan
+gap is a committed Application consumption with no Authority receipt after
+response loss or process failure. Before a normal new consumption, Authority
+requires at least 30 seconds remaining on each of the lease, normal deadline,
+and permit deadline.
+
+The Authority-to-Application client uses isolated current and previous
+credential sets. It may use previous only when current receives a no-write
+`409`, and only to replay the same deterministic request exactly. Previous
+must be retained until its orphan window is proven empty; timeout,
+disconnect, malformed response, or another status does not permit fallback.
+
+The current protocol can append a missing receipt by exact POST replay only
+while the Authority fence remains live, the same or previous credential is
+retained, write gates remain open, and inbound HMAC and runtime trust still
+pass. Authority receipt HTTP replay is not an unconditional read interface.
+After revocation, expiry, gate closure, or required previous-credential
+retirement, there is no independent historical Application readback route or
+historical Authority receipt admission. Such an orphan remains permanently
+fail-closed and must never create an attempt, send Controller, create a
+second consumption, or renew send authority.
+
+The next P0 blocker, before attempt/event, is an independent historical
+Application readback route plus historical Authority receipt admission that
+can append only the exact missing receipt without reviving send authority.
+After that boundary, one Authority transaction may commit the immutable send
+attempt and `send_started` event before external I/O. Phase 1 may then
+introduce the independent private `controller-deployment-gateway` and its
+create-once command plus status-only recovery. Authority must not hold the
+deployment credential, and ambiguous mutation recovery must never resend
+enable.
+
+Application inventory is now 66 migrations, 77 required tables, 1096 checked
+incremental columns, and 111 key indexes. Authority migration inventory is
+three files (`0001-0003`). All related gates remain false in tracked local and
+staging configuration, production placement configuration is absent, and no
+secret or remote state was accessed. Go/VPS remains authoritative and
+production remains **NO-GO**.

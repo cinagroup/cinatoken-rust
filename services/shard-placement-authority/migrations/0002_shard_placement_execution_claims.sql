@@ -786,6 +786,170 @@ CREATE TABLE shard_placement_authority_operation_five_admissions (
     ON DELETE RESTRICT
 ) WITHOUT ROWID;
 
+CREATE TABLE shard_placement_authority_operation_five_dispatch_outbox (
+  authorization_id_sha256 TEXT PRIMARY KEY NOT NULL
+    CHECK (
+      length(authorization_id_sha256) = 64
+      AND authorization_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  contract_version INTEGER NOT NULL CHECK (contract_version = 1),
+  dispatch_contract TEXT NOT NULL
+    CHECK (
+      dispatch_contract =
+        'cinatoken-shard-placement-authority-operation-five-dispatch-outbox-v1'
+    ),
+  claim_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(claim_digest_sha256) = 64
+      AND claim_digest_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_ticket_id_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_ticket_id_sha256) = 64
+      AND application_ticket_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_ticket_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_ticket_digest_sha256) = 64
+      AND application_ticket_digest_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_database_identity_sha256 TEXT NOT NULL
+    CHECK (
+      length(application_database_identity_sha256) = 64
+      AND application_database_identity_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_activation_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_activation_digest_sha256) = 64
+      AND application_activation_digest_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_acknowledgement_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_acknowledgement_digest_sha256) = 64
+      AND application_acknowledgement_digest_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  operation_five_admission_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(operation_five_admission_digest_sha256) = 64
+      AND operation_five_admission_digest_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  operation_five_start_receipt_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(operation_five_start_receipt_sha256) = 64
+      AND operation_five_start_receipt_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  authority_database_identity_sha256 TEXT NOT NULL
+    CHECK (
+      length(authority_database_identity_sha256) = 64
+      AND authority_database_identity_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  authority_version_id TEXT NOT NULL
+    CHECK (
+      length(authority_version_id) BETWEEN 1 AND 128
+      AND authority_version_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+    ),
+  authority_ledger_head_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(authority_ledger_head_sha256) = 64
+      AND authority_ledger_head_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_version_id TEXT NOT NULL
+    CHECK (
+      length(application_version_id) BETWEEN 1 AND 128
+      AND application_version_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+    ),
+  application_read_credential_id_sha256 TEXT NOT NULL
+    CHECK (
+      length(application_read_credential_id_sha256) = 64
+      AND application_read_credential_id_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_read_request_id_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_read_request_id_sha256) = 64
+      AND application_read_request_id_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_response_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_response_sha256) = 64
+      AND application_response_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_response_bytes INTEGER NOT NULL
+    CHECK (
+      typeof(application_response_bytes) = 'integer'
+      AND application_response_bytes BETWEEN 1 AND 65536
+    ),
+  application_database_now INTEGER NOT NULL
+    CHECK (
+      typeof(application_database_now) = 'integer'
+      AND application_database_now > 0
+    ),
+  dispatch_credential_id_sha256 TEXT NOT NULL
+    CHECK (
+      length(dispatch_credential_id_sha256) = 64
+      AND dispatch_credential_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  dispatch_request_id_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(dispatch_request_id_sha256) = 64
+      AND dispatch_request_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  command_dispatch_request_id_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(command_dispatch_request_id_sha256) = 64
+      AND command_dispatch_request_id_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  controller_service_name TEXT NOT NULL
+    CHECK (
+      length(controller_service_name) BETWEEN 1 AND 128
+      AND controller_service_name NOT GLOB '*[^A-Za-z0-9._:-]*'
+    ),
+  controller_enable_operation_id_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(controller_enable_operation_id_sha256) = 64
+      AND controller_enable_operation_id_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  controller_baseline_version_id TEXT NOT NULL
+    CHECK (
+      length(controller_baseline_version_id) BETWEEN 1 AND 128
+      AND controller_baseline_version_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+    ),
+  controller_enabled_version_id TEXT NOT NULL
+    CHECK (
+      length(controller_enabled_version_id) BETWEEN 1 AND 128
+      AND controller_enabled_version_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+      AND controller_enabled_version_id <> controller_baseline_version_id
+    ),
+  dispatch_request_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(dispatch_request_sha256) = 64
+      AND dispatch_request_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  outbox_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(outbox_digest_sha256) = 64
+      AND outbox_digest_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  outbox_state TEXT NOT NULL CHECK (outbox_state = 'prepared'),
+  prepared_at INTEGER NOT NULL DEFAULT (unixepoch())
+    CHECK (typeof(prepared_at) = 'integer' AND prepared_at > 0),
+  FOREIGN KEY (authorization_id_sha256)
+    REFERENCES shard_placement_authority_operation_five_admissions(
+      authorization_id_sha256
+    )
+    ON UPDATE RESTRICT
+    ON DELETE RESTRICT
+) WITHOUT ROWID;
+
 CREATE TRIGGER shard_placement_authority_operation_five_admission_insert_guard
 BEFORE INSERT ON shard_placement_authority_operation_five_admissions
 FOR EACH ROW
@@ -889,6 +1053,145 @@ BEGIN
   SELECT RAISE(
     ABORT,
     'placement operation-five admissions are append-preserved'
+  );
+END;
+
+CREATE TRIGGER shard_placement_authority_operation_five_dispatch_outbox_insert_guard
+BEFORE INSERT ON shard_placement_authority_operation_five_dispatch_outbox
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NEW.prepared_at <> unixepoch()
+  THEN RAISE(
+    ABORT,
+    'placement operation-five dispatch outbox time must come from D1'
+  ) END;
+
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM shard_placement_authority_execution_claims AS claim
+    JOIN shard_placement_authority_operation_five_admissions AS admission
+      ON admission.authorization_id_sha256 =
+           claim.authorization_id_sha256
+    JOIN shard_placement_authority_execution_operations AS operation
+      ON operation.authorization_id_sha256 =
+           claim.authorization_id_sha256
+     AND operation.ordinal = 5
+    JOIN shard_placement_authority_execution_receipts AS started
+      ON started.authorization_id_sha256 =
+           claim.authorization_id_sha256
+     AND started.sequence = 4
+     AND started.event_kind = 'operation_started'
+     AND started.operation_ordinal = 5
+    JOIN shard_placement_authority_issuances AS issuance
+      ON issuance.authorization_id_sha256 =
+           claim.authorization_id_sha256
+     AND issuance.permit_subject_digest_sha256 =
+           claim.permit_subject_digest_sha256
+    LEFT JOIN shard_placement_authority_revocations AS revocation
+      ON revocation.authorization_id_sha256 =
+           claim.authorization_id_sha256
+     AND revocation.permit_subject_digest_sha256 =
+           claim.permit_subject_digest_sha256
+    WHERE claim.authorization_id_sha256 =
+            NEW.authorization_id_sha256
+      AND claim.claim_digest_sha256 = NEW.claim_digest_sha256
+      AND claim.application_ticket_id_sha256 =
+            NEW.application_ticket_id_sha256
+      AND claim.application_ticket_digest_sha256 =
+            NEW.application_ticket_digest_sha256
+      AND claim.application_database_identity_sha256 =
+            NEW.application_database_identity_sha256
+      AND claim.application_activation_digest_sha256 =
+            NEW.application_activation_digest_sha256
+      AND claim.authority_database_identity_sha256 =
+            NEW.authority_database_identity_sha256
+      AND claim.status = 'running'
+      AND claim.ledger_version = 4
+      AND claim.ledger_head_sha256 =
+            NEW.operation_five_start_receipt_sha256
+      AND claim.ledger_head_sha256 =
+            NEW.authority_ledger_head_sha256
+      AND claim.last_completed_ordinal = 4
+      AND claim.inflight_operation_ordinal = 5
+      AND claim.inflight_operation_id_sha256 =
+            operation.operation_id_sha256
+      AND claim.inflight_request_sha256 =
+            admission.enable_operation_request_sha256
+      AND claim.inflight_readback_only = 0
+      AND claim.enable_intent_seen = 1
+      AND claim.disable_confirmed = 0
+      AND claim.ticket_activation_confirmed = 1
+      AND claim.lease_generation = 1
+      AND claim.lease_owner_sha256 = claim.claim_owner_sha256
+      AND claim.renewal_count = 0
+      AND claim.takeover_count = 0
+      AND claim.lease_expires_at > unixepoch()
+      AND claim.normal_deadline_at > unixepoch()
+      AND claim.permit_expires_at > unixepoch()
+      AND revocation.authorization_id_sha256 IS NULL
+      AND admission.claim_digest_sha256 =
+            NEW.claim_digest_sha256
+      AND admission.application_ticket_id_sha256 =
+            NEW.application_ticket_id_sha256
+      AND admission.application_ticket_digest_sha256 =
+            NEW.application_ticket_digest_sha256
+      AND admission.application_database_identity_sha256 =
+            NEW.application_database_identity_sha256
+      AND admission.application_activation_digest_sha256 =
+            NEW.application_activation_digest_sha256
+      AND admission.application_acknowledgement_digest_sha256 =
+            NEW.application_acknowledgement_digest_sha256
+      AND admission.confirmation_digest_sha256 =
+            NEW.operation_five_admission_digest_sha256
+      AND admission.operation_start_receipt_digest_sha256 =
+            NEW.operation_five_start_receipt_sha256
+      AND admission.authority_database_identity_sha256 =
+            NEW.authority_database_identity_sha256
+      AND started.receipt_digest_sha256 =
+            NEW.operation_five_start_receipt_sha256
+      AND started.operation_id_sha256 =
+            operation.operation_id_sha256
+      AND started.request_sha256 =
+            admission.enable_operation_request_sha256
+      AND started.evidence_sha256 =
+            admission.confirmation_digest_sha256
+      AND operation.operation_id_sha256 =
+            NEW.controller_enable_operation_id_sha256
+      AND operation.kind = 'enable_controller_deployment'
+      AND operation.shard_index IS NULL
+      AND issuance.controller_service_name =
+            NEW.controller_service_name
+      AND issuance.controller_version_id =
+            NEW.controller_enabled_version_id
+      AND NEW.application_database_now >= admission.confirmed_at
+      AND NEW.application_database_now <= unixepoch() + 5
+      AND NEW.application_database_now >= unixepoch() - 60
+      AND NEW.application_database_now < claim.normal_deadline_at
+      AND NEW.application_database_now < claim.permit_expires_at
+      AND NEW.prepared_at >= admission.confirmed_at
+  ) THEN RAISE(
+    ABORT,
+    'placement operation-five dispatch outbox is not admissible'
+  ) END;
+END;
+
+CREATE TRIGGER shard_placement_authority_operation_five_dispatch_outbox_update_guard
+BEFORE UPDATE ON shard_placement_authority_operation_five_dispatch_outbox
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'placement operation-five dispatch outbox is immutable'
+  );
+END;
+
+CREATE TRIGGER shard_placement_authority_operation_five_dispatch_outbox_delete_guard
+BEFORE DELETE ON shard_placement_authority_operation_five_dispatch_outbox
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'placement operation-five dispatch outbox is append-preserved'
   );
 END;
 

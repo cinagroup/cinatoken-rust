@@ -87,7 +87,8 @@ export interface BeginEnableDependencies {
     authority: ExecutionClaimSnapshot,
     command: {
       applicationAcknowledgementDigestSha256: string;
-      enableRequestIdSha256: string;
+      callerRequestIdSha256: string;
+      requestDomain: "op5";
     },
     authorityVersionId: string,
   ): Promise<ApplicationAuthorityAckReadback>;
@@ -215,7 +216,8 @@ export async function beginControllerEnable(
     {
       applicationAcknowledgementDigestSha256:
         command.applicationAcknowledgementDigestSha256,
-      enableRequestIdSha256: command.enableRequestIdSha256,
+      callerRequestIdSha256: command.enableRequestIdSha256,
+      requestDomain: "op5",
     },
     env.CF_VERSION_METADATA.id,
   );

@@ -23450,3 +23450,131 @@ text. Deployed failure-path metrics and alerts remain required before staging.
 All new gates remain false. No credential or remote Cloudflare state was read,
 and no migration, gate, Container, traffic, billing, DNS, or Go/VPS state was
 changed. Production remains **NO-GO**.
+
+## 22.323 Operation-5 Prepared Dispatch Outbox Boundary (2026-07-29)
+
+This increment extends operation 5 only through a durable
+`prepared` outbox. This narrows the crash window between the second
+application acknowledgement check and later Controller dispatch, but it does
+not create send authority and does not close operation 5.
+
+This section also tightens the terminology from 22.322. The sequence-4
+operation-5 start is the durable enable-intent admission point. The prepared
+outbox is durable pre-dispatch evidence. Neither is the final linearization
+point for a Controller enable send.
+
+### Prepared-only transaction boundary
+
+The private Authority preparation route is:
+
+`POST /internal/v1/shard-placement/execution-claims/:authorization/prepare-enable-dispatch`
+
+Its intended order is fail-closed:
+
+1. read the exact operation-5 admission, sequence-4 start, current claim,
+   activation, ticket, and Authority receipt head;
+2. return only an exact immutable replay when the same prepared outbox already
+   exists;
+3. perform a second exact Application ACK read under the
+   `op5-dispatch` request domain;
+4. require the Application D1 snapshot to remain unsealed and within every
+   activation, execution, permit, and campaign deadline;
+5. re-read the exact Authority claim and reject revocation, owner, generation,
+   token, lease, renewal, takeover, receipt-head, operation, activation,
+   database, version, or schedule drift; and
+6. create one immutable Authority D1 outbox row whose only valid state is
+   `prepared`.
+
+The row binds the original ACK and operation-5 admission/start, the second ACK
+reader credential/request and exact response evidence, both D1 identities and
+observed database times, the current Authority version and receipt head, the
+dispatch credential/request, and the frozen Controller service, baseline,
+enabled version, and enable-operation identities. Exact replay returns the
+stored durable identities; it does not repeat the ACK read and grants no new
+external side effect.
+
+The second Application read and the Authority fence re-read are deliberately
+separate because the two D1 databases cannot share a transaction. The prepared
+outbox proves only that both observations were acceptable before its Authority
+D1 insert. It cannot prove that the Application remained unsealed after that
+insert.
+
+### No send authority
+
+The current boundary has no Controller Service Binding, fetch path, queue
+producer, or other network sender. Creating or replaying a `prepared` row:
+
+- does not claim a dispatch;
+- does not authorize a Controller enable call;
+- does not prove that a Container started or became ready;
+- does not advance operations 6-14; and
+- does not resolve an ambiguous Controller mutation.
+
+No later runner may interpret outbox existence alone as send permission.
+`prepared` must remain distinct from any future dispatch claim, send attempt,
+status readback, enable confirmation, or disable recovery state.
+
+### Independent trust and default-off gates
+
+Preparation uses the independent Authority HMAC role `dispatch`, with its own
+current/previous key IDs, credential fingerprints, and secret bindings. It
+must remain isolated from `activate`, `enable`, `receipt`, and `recovery`
+identities, including overlap rotation and workload injection.
+
+Both gates are required and default false:
+
+- `SHARD_PLACEMENT_AUTHORITY_PRE_DISPATCH_READ_ENABLED`; and
+- `SHARD_PLACEMENT_AUTHORITY_DISPATCH_OUTBOX_WRITE_ENABLED`.
+
+The read gate controls the second Application ACK observation. The write gate
+controls only creation of the immutable prepared outbox. Enabling both still
+does not authorize Controller traffic. Local and staging configuration keep
+both false by default; production must remain absent until the full evidence
+ceremony explicitly admits this stage.
+
+### Next P0 linearization and recovery
+
+The next production-critical increment is an Application D1 create-only
+pre-enable grant. That grant, not the Authority start receipt or prepared
+outbox, is the final send linearization point. Its single Application D1
+transaction must:
+
+1. re-read the campaign seal and all application-owned deadlines;
+2. bind the exact Authority authorization, claim, operation-5 admission/start,
+   prepared-outbox digest, Controller command, service, baseline, enabled
+   version, and enable-operation identities;
+3. reject a seal, expiry, conflicting grant, or identity drift that wins the
+   D1 race; and
+4. create exactly one immutable grant whose conflict behavior is exact replay
+   or fail-closed divergence.
+
+Only after exact grant readback may Authority create a durable dispatch claim
+and let one sender issue the one eligible Controller enable call. The sender
+must persist enough identity before I/O for process death, Worker rollout,
+lease takeover, and response loss. A timeout, disconnect, or lost success
+response must enter status-only ambiguity recovery. It must never resend the
+enable mutation.
+
+Status readback must classify the frozen Controller operation and versions
+without mutation. Exact enabled evidence may advance the operation-5 terminal;
+exact disabled evidence must remain non-enabled; unknown, divergent, stale, or
+expired evidence must divert to reserved operation-14 disable recovery. A new
+owner may resume readback and recovery, but may not acquire a second send
+right.
+
+After operation 5 is closed, operations 6-13 must prove shards 0-7 in frozen
+order against the signed tenant, ring, candidate, Controller version, and
+Container readiness evidence. Operation 14 remains the reserved disable path
+and must retain ledger space, credential scope, deadline, and Cloudflare quota
+capacity before operation 5 can receive a send grant.
+
+### Production posture
+
+This is an undeployed, local prepared-outbox checkpoint. It has not established
+the Application grant, dispatch claim, sender, Controller status reader,
+ambiguity recovery, operation 6-14 runner, deployed fault evidence, remote
+bindings, Access policy, credentials, D1 catalogs, audit/WORM evidence,
+traffic safety, rollback, reverse sync, drain, or DNS approval.
+
+Go/VPS remains authoritative. No Cloudflare production mutation or traffic
+cutover is admitted, and production remains **NO-GO**.

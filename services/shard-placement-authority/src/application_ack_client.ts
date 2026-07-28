@@ -40,7 +40,8 @@ export interface ApplicationAuthorityAckClientEnv {
 
 export interface ApplicationAuthorityAckReadCommand {
   applicationAcknowledgementDigestSha256: string;
-  enableRequestIdSha256: string;
+  callerRequestIdSha256: string;
+  requestDomain: "op5" | "op5-dispatch";
 }
 
 export interface ApplicationAuthorityAckSnapshot {
@@ -55,6 +56,10 @@ export interface ApplicationAuthorityAckSnapshot {
   authorityDatabaseIdentitySha256: string;
   authorityLedgerIdentitySha256: string;
   operationScheduleSha256: string;
+  controllerServiceName: string;
+  controllerBaselineVersionId: string;
+  controllerEnabledVersionId: string;
+  controllerEnableOperationIdSha256: string;
   authorityClaimDigestSha256: string;
   authorityClaimAcquiredReceiptSha256: string;
   authorityClaimOperationIdSha256: string;
@@ -98,6 +103,10 @@ const ACK_FIELDS = [
   "authorityDatabaseIdentitySha256",
   "authorityLedgerIdentitySha256",
   "operationScheduleSha256",
+  "controllerServiceName",
+  "controllerBaselineVersionId",
+  "controllerEnabledVersionId",
+  "controllerEnableOperationIdSha256",
   "authorityClaimDigestSha256",
   "authorityClaimAcquiredReceiptSha256",
   "authorityClaimOperationIdSha256",
@@ -164,7 +173,7 @@ export async function readExactApplicationAuthorityAck(
     + `&activationDigestSha256=${claim.application_activation_digest_sha256}`
     + `&acknowledgementDigestSha256=${command.applicationAcknowledgementDigestSha256}`;
   const requestId =
-    `op5-${command.enableRequestIdSha256.slice(0, 48)}`;
+    `${command.requestDomain}-${command.callerRequestIdSha256.slice(0, 48)}`;
   const token = await applicationHmacToken(
     env,
     pathAndQuery,
@@ -375,6 +384,18 @@ function parseAcknowledgement(
     operationScheduleSha256: requireSha256(
       object.operationScheduleSha256,
     ),
+    controllerServiceName: requireIdentity(
+      object.controllerServiceName,
+    ),
+    controllerBaselineVersionId: requireIdentity(
+      object.controllerBaselineVersionId,
+    ),
+    controllerEnabledVersionId: requireIdentity(
+      object.controllerEnabledVersionId,
+    ),
+    controllerEnableOperationIdSha256: requireSha256(
+      object.controllerEnableOperationIdSha256,
+    ),
     authorityClaimDigestSha256: requireSha256(
       object.authorityClaimDigestSha256,
     ),
@@ -442,6 +463,9 @@ function requireAcknowledgementMatches(
   const operationFour = authority.operations.find(
     (operation) => operation.ordinal === 4,
   );
+  const operationFive = authority.operations.find(
+    (operation) => operation.ordinal === 5,
+  );
   const terminal = authority.receipts.find(
     (receipt) =>
       receipt.sequence === 3
@@ -450,6 +474,7 @@ function requireAcknowledgementMatches(
   );
   if (
     operationFour === undefined
+    || operationFive === undefined
     || terminal === undefined
     || acknowledgement.ticketIdSha256
       !== claim.application_ticket_id_sha256
@@ -466,6 +491,12 @@ function requireAcknowledgementMatches(
       !== claim.ledger_identity_sha256
     || acknowledgement.operationScheduleSha256
       !== claim.operation_schedule_sha256
+    || acknowledgement.controllerEnableOperationIdSha256
+      !== operationFive.operation_id_sha256
+    || operationFive.kind !== "enable_controller_deployment"
+    || operationFive.shard_index !== null
+    || acknowledgement.controllerBaselineVersionId
+      === acknowledgement.controllerEnabledVersionId
     || acknowledgement.authorityClaimDigestSha256
       !== claim.claim_digest_sha256
     || acknowledgement.authorityClaimAcquiredReceiptSha256
@@ -620,6 +651,10 @@ function requireString(value: unknown, pattern: RegExp): string {
 
 function requireSha256(value: unknown): string {
   return requireString(value, SHA256);
+}
+
+function requireIdentity(value: unknown): string {
+  return requireString(value, IDENTITY);
 }
 
 function requireTimestamp(value: unknown): number {

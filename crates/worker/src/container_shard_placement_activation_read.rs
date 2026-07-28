@@ -154,6 +154,10 @@ struct ExactAuthorityAckSnapshot<'a> {
     authority_database_identity_sha256: &'a str,
     authority_ledger_identity_sha256: &'a str,
     operation_schedule_sha256: &'a str,
+    controller_service_name: &'a str,
+    controller_baseline_version_id: &'a str,
+    controller_enabled_version_id: &'a str,
+    controller_enable_operation_id_sha256: &'a str,
     authority_claim_digest_sha256: &'a str,
     authority_claim_acquired_receipt_sha256: &'a str,
     authority_claim_operation_id_sha256: &'a str,
@@ -404,6 +408,13 @@ pub async fn read_exact_ack(
                 authority_ledger_identity_sha256:
                     &ticket.authority_ledger_identity_sha256,
                 operation_schedule_sha256: &ticket.operation_schedule_sha256,
+                controller_service_name: &ticket.controller_service_name,
+                controller_baseline_version_id:
+                    &ticket.controller_baseline_version_id,
+                controller_enabled_version_id:
+                    &ticket.controller_enabled_version_id,
+                controller_enable_operation_id_sha256:
+                    &ticket.controller_enable_operation_id_sha256,
                 authority_claim_digest_sha256:
                     &activation.authority_claim_digest_sha256,
                 authority_claim_acquired_receipt_sha256:
@@ -894,6 +905,11 @@ fn ack_snapshot_is_exact(
             == acknowledgement.authority_ledger_head_sha256
         && acknowledgement.acknowledgement_digest_sha256 == query.acknowledgement_digest_sha256
         && acknowledgement.acknowledgement_digest_sha256 == expected_acknowledgement_digest
+        && valid_identity(&ticket.controller_service_name)
+        && valid_identity(&ticket.controller_baseline_version_id)
+        && valid_identity(&ticket.controller_enabled_version_id)
+        && ticket.controller_baseline_version_id != ticket.controller_enabled_version_id
+        && valid_sha256(&ticket.controller_enable_operation_id_sha256)
         && valid_sha256(&acknowledgement.authority_activation_terminal_receipt_sha256)
         && valid_sha256(&acknowledgement.authority_read_credential_id_sha256)
         && valid_sha256(&acknowledgement.authority_read_request_id_sha256)

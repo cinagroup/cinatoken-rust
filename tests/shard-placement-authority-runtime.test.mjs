@@ -171,6 +171,24 @@ describe("shard placement Authority Workerd runtime", () => {
     });
   });
 
+  it("keeps operation-5 dispatch preparation default-off", async () => {
+    const authorizationIdSha256 = "a".repeat(64);
+    const pathAndQuery =
+      `/internal/v1/shard-placement/execution-claims/${authorizationIdSha256}/prepare-enable-dispatch`;
+    const request = await signedAuthorityRequest({
+      method: "POST",
+      pathAndQuery,
+      role: "dispatch",
+      body: "{}",
+      requestId: "dispatch-default-off-1",
+    });
+    const response = await SELF.fetch(request);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({
+      error: "authority_pre_dispatch_reads_disabled",
+    });
+  });
+
   it("linearizes execution claims and enforces disable-first recovery", async () => {
     const issuance = await signedPlacementAuthorityIssuance();
     expect((await issue(issuance.body, "execution-issue")).status).toBe(201);

@@ -4165,3 +4165,52 @@ recovery, followed by ordered shard probes 6-13 and reserved operation-14
 disable. The application seal context must be re-read immediately before
 dispatch because the two D1 databases cannot share a transaction. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Prepared Dispatch Outbox
+
+This Phase 1 increment adds only the durable preparation
+half of operation-5 dispatch. After the existing admission and sequence-4
+start, Authority performs a second exact Application ACK read, then re-reads
+its own claim and receipt fence, and finally creates one immutable outbox row
+with `outbox_state='prepared'`.
+
+The second ACK uses the separate `op5-dispatch` request domain and must still
+prove the Application campaign is unsealed, the ticket and Controller
+identities are exact, and every application-owned deadline is live at
+Application D1 time. The following Authority re-read rejects revocation,
+lease, owner, generation, token, renewal, takeover, receipt-head, operation,
+activation, database, version, and schedule drift before the D1 insert.
+
+This checkpoint is intentionally not a sender:
+
+- there is no Controller Service Binding or network call;
+- `prepared` is neither a dispatch claim nor a send permission;
+- exact replay returns the same immutable evidence without re-reading the ACK;
+- a prepared row cannot prove Controller enable, Container readiness, or an
+  operation-5 terminal; and
+- the sequence-4 start remains enable-intent admission, not final send
+  linearization.
+
+Authority preparation is protected by an independent `dispatch` HMAC role.
+`SHARD_PLACEMENT_AUTHORITY_PRE_DISPATCH_READ_ENABLED` and
+`SHARD_PLACEMENT_AUTHORITY_DISPATCH_OUTBOX_WRITE_ENABLED` are separate,
+required, default-off gates. Both remain false in tracked local/staging
+configuration. Even when both are enabled in a future isolated ceremony, they
+authorize only the second read and prepared-row write, not Controller traffic.
+
+The next P0 is the Application D1 create-only pre-enable grant. Its single D1
+transaction must make the campaign seal and application deadlines race against
+grant creation, bind the exact prepared outbox and frozen Controller command,
+and become the final send linearization point. Authority may then add a
+durable one-owner dispatch claim and sender. Any timeout or response loss must
+use Controller status-only readback and must never resend enable.
+
+After exact operation-5 recovery, the runner still owes ordered shard proofs
+for operations 6-13 and the pre-reserved operation-14 disable path, including
+takeover, rollout, stale-read, revocation, seal-race, response-loss, and
+disable-failure campaigns.
+
+No production Authority configuration, grant, sender, Controller mutation,
+Container wake, remote evidence, traffic change, billing authority, reverse
+sync, drain, or DNS change is established by this increment. Go/VPS remains
+authoritative and production remains **NO-GO**.

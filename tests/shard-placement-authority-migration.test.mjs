@@ -3,6 +3,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
+import {
+  executionRepositorySqlForTest,
+} from "../services/shard-placement-authority/src/execution_repository.ts";
+
 const migrationPath = join(
   import.meta.dir,
   "..",
@@ -470,6 +474,141 @@ describe("shard placement Authority migration", () => {
     );
   });
 
+  test("prepares and append-preserves the exact operation-5 dispatch outbox", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    const issuance = validIssuance();
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+    const claim = completeOperationFour(database, issuance);
+    const admission = operationFiveAdmission(issuance);
+    const start = operationFiveStart(issuance, claim, admission);
+
+    database.transaction(() => {
+      insertOperationFiveAdmission(database, admission);
+      insertExecutionReceipt(database, start);
+    })();
+    const outbox = operationFiveDispatchOutbox(
+      database,
+      issuance,
+      admission,
+    );
+    insertOperationFiveDispatchOutbox(database, outbox);
+
+    const stored = database.query(`
+      SELECT *
+      FROM shard_placement_authority_operation_five_dispatch_outbox
+      WHERE authorization_id_sha256 = ?
+    `).get(issuance.authorization_id_sha256);
+    const storedAdmission = database.query(`
+      SELECT confirmed_at
+      FROM shard_placement_authority_operation_five_admissions
+      WHERE authorization_id_sha256 = ?
+    `).get(issuance.authorization_id_sha256);
+    expect(stored).toMatchObject({
+      ...outbox,
+      contract_version: 1,
+      outbox_state: "prepared",
+    });
+    expect(stored.prepared_at).toBeGreaterThanOrEqual(
+      storedAdmission.confirmed_at,
+    );
+    expect(database.query(`
+      SELECT COUNT(*) AS count
+      FROM shard_placement_authority_operation_five_dispatch_outbox
+    `).get().count).toBe(1);
+
+    expect(() => database.query(`
+      UPDATE shard_placement_authority_operation_five_dispatch_outbox
+      SET authority_version_id = 'replacement'
+      WHERE authorization_id_sha256 = ?
+    `).run(issuance.authorization_id_sha256)).toThrow(
+      "placement operation-five dispatch outbox is immutable",
+    );
+    expect(() => database.query(`
+      DELETE FROM shard_placement_authority_operation_five_dispatch_outbox
+      WHERE authorization_id_sha256 = ?
+    `).run(issuance.authorization_id_sha256)).toThrow(
+      "placement operation-five dispatch outbox is append-preserved",
+    );
+    expect(database.query(`
+      SELECT outbox_state, authority_version_id
+      FROM shard_placement_authority_operation_five_dispatch_outbox
+      WHERE authorization_id_sha256 = ?
+    `).get(issuance.authorization_id_sha256)).toEqual({
+      outbox_state: "prepared",
+      authority_version_id: outbox.authority_version_id,
+    });
+  });
+
+  test("rejects operation-5 dispatch outbox prerequisite and revocation races", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    const issuance = validIssuance();
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+    const claim = completeOperationFour(database, issuance);
+    const admission = operationFiveAdmission(issuance);
+    const start = operationFiveStart(issuance, claim, admission);
+    const outbox = operationFiveDispatchOutbox(
+      database,
+      issuance,
+      admission,
+    );
+
+    expect(() => insertOperationFiveDispatchOutbox(
+      database,
+      outbox,
+    )).toThrow();
+    expect(database.query(`
+      SELECT COUNT(*) AS count
+      FROM shard_placement_authority_operation_five_dispatch_outbox
+    `).get().count).toBe(0);
+
+    insertOperationFiveAdmission(database, admission);
+    expect(() => insertOperationFiveDispatchOutbox(
+      database,
+      outbox,
+    )).toThrow(
+      "placement operation-five dispatch outbox is not admissible",
+    );
+    expect(database.query(`
+      SELECT COUNT(*) AS count
+      FROM shard_placement_authority_operation_five_dispatch_outbox
+    `).get().count).toBe(0);
+
+    insertExecutionReceipt(database, start);
+    database.query(`
+      INSERT INTO shard_placement_authority_revocations (
+        authorization_id_sha256, permit_subject_digest_sha256,
+        reason_code, evidence_sha256, revocation_event_sha256,
+        revoke_credential_id_sha256
+      ) VALUES (?, ?, 'operator_abort', ?, ?, ?)
+    `).run(
+      issuance.authorization_id_sha256,
+      issuance.permit_subject_digest_sha256,
+      "3".repeat(64),
+      "4".repeat(64),
+      "5".repeat(64),
+    );
+    expect(() => insertOperationFiveDispatchOutbox(
+      database,
+      outbox,
+    )).toThrow(
+      "placement operation-five dispatch outbox is not admissible",
+    );
+    expect(database.query(`
+      SELECT COUNT(*) AS count
+      FROM shard_placement_authority_operation_five_dispatch_outbox
+    `).get().count).toBe(0);
+  });
+
   test("rolls back operation-5 admission when revocation wins", () => {
     using database = new Database(":memory:");
     database.exec("PRAGMA foreign_keys = ON");
@@ -807,6 +946,86 @@ function operationFiveStart(issuance, claim, admission) {
     receiptDigestSha256:
       admission.operation_start_receipt_digest_sha256,
   };
+}
+
+function operationFiveDispatchOutbox(database, issuance, admission) {
+  return {
+    authorization_id_sha256: issuance.authorization_id_sha256,
+    dispatch_contract:
+      "cinatoken-shard-placement-authority-operation-five-dispatch-outbox-v1",
+    claim_digest_sha256: admission.claim_digest_sha256,
+    application_ticket_id_sha256:
+      admission.application_ticket_id_sha256,
+    application_ticket_digest_sha256:
+      admission.application_ticket_digest_sha256,
+    application_database_identity_sha256:
+      admission.application_database_identity_sha256,
+    application_activation_digest_sha256:
+      admission.application_activation_digest_sha256,
+    application_acknowledgement_digest_sha256:
+      admission.application_acknowledgement_digest_sha256,
+    operation_five_admission_digest_sha256:
+      admission.confirmation_digest_sha256,
+    operation_five_start_receipt_sha256:
+      admission.operation_start_receipt_digest_sha256,
+    authority_database_identity_sha256:
+      admission.authority_database_identity_sha256,
+    authority_version_id: admission.authority_version_id,
+    authority_ledger_head_sha256:
+      admission.operation_start_receipt_digest_sha256,
+    application_version_id: "application-dispatch-test-v1",
+    application_read_credential_id_sha256: "b".repeat(64),
+    application_read_request_id_sha256: "c".repeat(64),
+    application_response_sha256: "d".repeat(64),
+    application_response_bytes: 2048,
+    application_database_now: database.query(
+      "SELECT unixepoch() AS now",
+    ).get().now,
+    dispatch_credential_id_sha256: "e".repeat(64),
+    dispatch_request_id_sha256: "f".repeat(64),
+    command_dispatch_request_id_sha256: "0".repeat(64),
+    controller_service_name: issuance.controller_service_name,
+    controller_enable_operation_id_sha256: "5".repeat(64),
+    controller_baseline_version_id: "controller-baseline-test-v1",
+    controller_enabled_version_id: issuance.controller_version_id,
+    dispatch_request_sha256: "1".repeat(64),
+    outbox_digest_sha256: "2".repeat(64),
+  };
+}
+
+function insertOperationFiveDispatchOutbox(database, outbox) {
+  database.query(
+    executionRepositorySqlForTest.insertOperationFiveDispatchOutbox,
+  ).run(
+    outbox.authorization_id_sha256,
+    outbox.dispatch_contract,
+    outbox.claim_digest_sha256,
+    outbox.application_ticket_id_sha256,
+    outbox.application_ticket_digest_sha256,
+    outbox.application_database_identity_sha256,
+    outbox.application_activation_digest_sha256,
+    outbox.application_acknowledgement_digest_sha256,
+    outbox.operation_five_admission_digest_sha256,
+    outbox.operation_five_start_receipt_sha256,
+    outbox.authority_database_identity_sha256,
+    outbox.authority_version_id,
+    outbox.authority_ledger_head_sha256,
+    outbox.application_version_id,
+    outbox.application_read_credential_id_sha256,
+    outbox.application_read_request_id_sha256,
+    outbox.application_response_sha256,
+    outbox.application_response_bytes,
+    outbox.application_database_now,
+    outbox.dispatch_credential_id_sha256,
+    outbox.dispatch_request_id_sha256,
+    outbox.command_dispatch_request_id_sha256,
+    outbox.controller_service_name,
+    outbox.controller_enable_operation_id_sha256,
+    outbox.controller_baseline_version_id,
+    outbox.controller_enabled_version_id,
+    outbox.dispatch_request_sha256,
+    outbox.outbox_digest_sha256,
+  );
 }
 
 function readExecutionClaim(database) {

@@ -11273,3 +11273,107 @@ dispatch, Container health, operation 6-14, deployed Service Binding behavior,
 remote D1 atomicity/fault behavior, Access policy, credentials, traffic,
 billing, drain, DNS, or production authority. Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Prepared Dispatch Outbox Verification
+
+This section records the local acceptance evidence for the prepared-outbox
+increment. Remote checks and the production ceremony have not been performed.
+
+The implementation under review stops after:
+
+1. exact operation-5 admission/start and Authority fence read;
+2. a second exact Application ACK read under `op5-dispatch`;
+3. an exact Authority claim and receipt-fence re-read; and
+4. one immutable Authority D1 insert with state `prepared`.
+
+Static review confirms that this path has no Controller Service
+Binding, Controller fetch, queue send, or equivalent network mutation. The
+prepared row is evidence only; it is not a dispatch claim, send authority,
+enable result, or operation-5 terminal.
+
+### Local acceptance evidence
+
+Focused tests prove:
+
+- canonical preparation commands accept only exact fields and reject
+  non-canonical or extra input;
+- fresh preparation orders reads and writes as Authority read, second
+  Application ACK read, Authority fence re-read, then prepared-outbox insert;
+- the second ACK is bound to `op5-dispatch`, the admitted Authority version,
+  exact response hash/size, Application D1 time, seal state, deadlines, ticket,
+  activation, and frozen Controller identities;
+- a changed owner, generation, token, lease, renewal, takeover, revocation,
+  receipt head, operation, activation, database, version, or schedule rejects
+  preparation;
+- exact replay performs no second ACK read, no new insert, and no external
+  call;
+- divergent replay fails closed;
+- D1 admits exactly one matching `prepared` row and rejects update, delete,
+  missing admission/start, raced revocation, expiry, or identity drift;
+- the independent `dispatch` HMAC role cannot reuse active `activate`,
+  `enable`, `receipt`, or `recovery` key, credential, or secret identities;
+- both preparation gates are required, default false, and false in tracked
+  local/staging configuration; and
+- production configuration remains absent and no Controller binding is
+  declared.
+
+Recorded local results:
+
+- `bun run check:shard-placement-authority` passed generated-type verification,
+  TypeScript compilation, Wrangler dry-run, 24 Authority unit tests, 4
+  Workerd runtime tests, 13 configuration and migration tests, and the
+  credential-free configuration audit;
+- the migration subset passed 10 tests and 46 assertions while executing the
+  repository's actual 28-binding outbox INSERT SQL against SQLite;
+- `cargo test -p cinatoken-worker --lib
+  container_shard_placement_activation_read` passed 8 focused Rust tests;
+- `cargo check -p cinatoken-worker --target wasm32-unknown-unknown` passed;
+- `bun run check` completed with exit code 0 in 949.2 seconds, covering the
+  repository-wide Worker, Container, frontend, migration, Rust workspace, and
+  Wasm gates; and
+- `git diff --check` passed.
+
+The Rust runs retain existing `dead_code` warnings; no new compile or test
+failure was accepted. These results are local and credential-free. They do not
+establish remote D1 behavior, deployed Service Binding behavior, credentials,
+traffic authority, or production eligibility.
+
+### Next P0 acceptance
+
+The Application D1 create-only pre-enable grant is the required final send
+linearization point. Its acceptance campaign must force concurrent seal and
+grant creation and prove that exactly one D1 outcome wins: either one immutable
+exact grant or no grant. It must also prove deadline equality behavior,
+conflicting replay rejection, exact binding to the Authority prepared-outbox
+digest, and no grant after seal or expiry.
+
+Only exact grant readback may feed a future Authority dispatch claim. Sender
+acceptance must then prove one-owner claim acquisition, durable pre-I/O
+identity, process-death recovery, Worker-version rollout, lease takeover, and
+zero resend after ambiguous Controller mutation. Injected timeout,
+disconnect, truncated response, and lost success response must perform
+status-only readback.
+
+Ambiguity recovery must classify exact enabled, exact disabled, and
+unknown/divergent status without mutation. Unknown, stale, expired, or
+divergent evidence must reserve and enter operation-14 disable recovery, never
+manufacture an operation-5 success and never issue a second enable.
+
+Operations 6-13 still require ordered shard 0-7 evidence against the frozen
+ring, candidate, Controller version, and Container readiness identities.
+Operation 14 still requires independently proven reserved ledger, lease,
+deadline, credential, and quota capacity plus response-loss and takeover
+fault campaigns.
+
+### Production decision
+
+No local prepared-outbox result can satisfy production admission by itself.
+Remote Service Binding and Access inventory, D1 migration/catalog and zero-row
+baselines, workload identity isolation and rotation, historical credential
+revocation, structured failure metrics and alerts, audit/WORM retention,
+Controller status semantics, rollback, reverse sync, Go/VPS shadow comparison,
+operation-14 disable, old-ring drain, traffic approval, and DNS approval all
+remain required.
+
+Until those results are independently captured and reviewed, Go/VPS remains
+authoritative and production remains **NO-GO**.

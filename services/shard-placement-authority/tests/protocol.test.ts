@@ -150,6 +150,7 @@ describe("shard placement Authority protocol", () => {
 
   it("binds HMAC role, path, body, and credential identity", async () => {
     const fixture = await signedPlacementAuthorityIssuance();
+    const authorityEnv = shardPlacementAuthorityEnv();
     const request = await signedAuthorityRequest({
       method: "POST",
       pathAndQuery: "/internal/v1/shard-placement/authorizations",
@@ -161,7 +162,7 @@ describe("shard placement Authority protocol", () => {
       request,
       new TextEncoder().encode(fixture.body),
       "issue",
-      shardPlacementAuthorityEnv(),
+      authorityEnv,
     );
     expect(verified).toMatchObject({
       role: "issue",
@@ -173,8 +174,36 @@ describe("shard placement Authority protocol", () => {
       request,
       new TextEncoder().encode(fixture.body),
       "read",
-      shardPlacementAuthorityEnv(),
+      authorityEnv,
     )).rejects.toBeInstanceOf(ProtocolError);
+
+    const dispatchBody = canonicalJson({ probe: "dispatch" });
+    const dispatchRequest = await signedAuthorityRequest({
+      method: "POST",
+      pathAndQuery:
+        `/internal/v1/shard-placement/execution-claims/${"a".repeat(64)}/prepare-enable-dispatch`,
+      role: "dispatch",
+      body: dispatchBody,
+      requestId: "dispatch-protocol-1",
+    });
+    await expect(verifyHmacRequest(
+      dispatchRequest,
+      new TextEncoder().encode(dispatchBody),
+      "enable",
+      authorityEnv,
+    )).rejects.toBeInstanceOf(ProtocolError);
+    await expect(verifyHmacRequest(
+      dispatchRequest,
+      new TextEncoder().encode(dispatchBody),
+      "dispatch",
+      authorityEnv,
+    )).resolves.toMatchObject({
+      role: "dispatch",
+      requestId: "dispatch-protocol-1",
+      credentialIdSha256:
+        authorityEnv
+          .SHARD_PLACEMENT_DISPATCH_HMAC_CURRENT_CREDENTIAL_ID_SHA256,
+    });
   });
 
   it("accepts the Rust application activation read token fixed vector", async () => {

@@ -4,11 +4,17 @@
 //! crate never receives or serializes raw user, token, tenant, or operation IDs.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const CONTAINER_SHARD_CONTRACT_VERSION: u32 = 1;
 pub const CONTAINER_SHARD_INSTANCE_PREFIX: &str = "cinatoken-relay-shard-v1";
 pub const MAX_CONTAINER_SHARDS: u16 = 1_024;
+pub const SHARD_PLACEMENT_ATTESTATION_CONTRACT_VERSION: u32 = 1;
+pub const SHARD_PLACEMENT_ATTESTATION_DIGEST_DOMAIN: &[u8] =
+    b"cinatoken-relay-shard-placement-attestation-v1";
+pub const RELAY_SHARD_NAMESPACE_BINDING: &str = "RELAY_SHARDS";
+pub const RELAY_SHARD_DURABLE_OBJECT_CLASS: &str = "RelayShardContainer";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShardRoutingKey([u8; 32]);
@@ -120,6 +126,89 @@ impl ShardPlan {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ShardPlacementJurisdiction {
+    Default,
+    Eu,
+    Us,
+    Fedramp,
+    FedrampHigh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ShardPlacementEnvironment {
+    Staging,
+    Production,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ShardPlacementAttestationV1 {
+    pub contract_version: u32,
+    pub environment: ShardPlacementEnvironment,
+    pub controller_service_name: String,
+    pub controller_version_id: String,
+    pub durable_object_namespace_binding: String,
+    pub durable_object_class: String,
+    pub jurisdiction: ShardPlacementJurisdiction,
+    pub canonical_name_sha256: String,
+    pub object_id_sha256: String,
+    pub shard: ShardPlan,
+}
+
+impl ShardPlacementAttestationV1 {
+    pub fn validate(&self) -> Result<(), ShardPlacementAttestationError> {
+        if self.contract_version != SHARD_PLACEMENT_ATTESTATION_CONTRACT_VERSION
+            || !valid_service_name(&self.controller_service_name)
+            || !valid_version_id(&self.controller_version_id)
+            || self.durable_object_namespace_binding != RELAY_SHARD_NAMESPACE_BINDING
+            || self.durable_object_class != RELAY_SHARD_DURABLE_OBJECT_CLASS
+            || !is_lower_hex_64(&self.canonical_name_sha256)
+            || !is_lower_hex_64(&self.object_id_sha256)
+        {
+            return Err(ShardPlacementAttestationError::InvalidIdentity);
+        }
+        let ring = ShardRing::new(self.shard.ring_generation, self.shard.shard_count)?;
+        self.shard.validate_fence(ring)?;
+        if sha256_hex(self.shard.instance_name.as_bytes()) != self.canonical_name_sha256 {
+            return Err(ShardPlacementAttestationError::CanonicalNameDigest);
+        }
+        Ok(())
+    }
+
+    pub fn digest_sha256(&self) -> Result<String, ShardPlacementAttestationError> {
+        self.validate()?;
+        let parts = [
+            self.contract_version.to_string(),
+            environment_name(self.environment).to_string(),
+            self.controller_service_name.clone(),
+            self.controller_version_id.clone(),
+            self.durable_object_namespace_binding.clone(),
+            self.durable_object_class.clone(),
+            jurisdiction_name(self.jurisdiction).to_string(),
+            self.canonical_name_sha256.clone(),
+            self.object_id_sha256.clone(),
+            self.shard.contract_version.to_string(),
+            self.shard.ring_generation.to_string(),
+            self.shard.shard_count.to_string(),
+            self.shard.shard_index.to_string(),
+            self.shard.instance_name.clone(),
+        ];
+        let mut digest = Sha256::new();
+        digest.update(SHARD_PLACEMENT_ATTESTATION_DIGEST_DOMAIN);
+        for part in &parts {
+            let bytes = part.as_bytes();
+            let length = u32::try_from(bytes.len())
+                .map_err(|_| ShardPlacementAttestationError::InvalidIdentity)?;
+            digest.update(length.to_be_bytes());
+            digest.update(bytes);
+        }
+        Ok(hex_lower(&digest.finalize()))
+    }
+}
+
 fn jump_consistent_hash(mut key: u64, buckets: u16) -> u16 {
     let mut current = -1_i64;
     let mut candidate = 0_i64;
@@ -156,6 +245,75 @@ pub enum ShardFenceError {
     ShardTopology,
     #[error("container shard instance name is not canonical")]
     InstanceName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ShardPlacementAttestationError {
+    #[error("shard placement attestation identity is invalid")]
+    InvalidIdentity,
+    #[error("shard placement canonical-name digest is invalid")]
+    CanonicalNameDigest,
+    #[error(transparent)]
+    ShardPlan(#[from] ShardPlanError),
+    #[error(transparent)]
+    ShardFence(#[from] ShardFenceError),
+}
+
+fn environment_name(environment: ShardPlacementEnvironment) -> &'static str {
+    match environment {
+        ShardPlacementEnvironment::Staging => "staging",
+        ShardPlacementEnvironment::Production => "production",
+    }
+}
+
+fn jurisdiction_name(jurisdiction: ShardPlacementJurisdiction) -> &'static str {
+    match jurisdiction {
+        ShardPlacementJurisdiction::Default => "default",
+        ShardPlacementJurisdiction::Eu => "eu",
+        ShardPlacementJurisdiction::Us => "us",
+        ShardPlacementJurisdiction::Fedramp => "fedramp",
+        ShardPlacementJurisdiction::FedrampHigh => "fedramp-high",
+    }
+}
+
+fn valid_service_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+}
+
+fn valid_version_id(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn is_lower_hex_64(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+}
+
+fn sha256_hex(value: &[u8]) -> String {
+    hex_lower(&Sha256::digest(value))
+}
+
+fn hex_lower(value: &[u8]) -> String {
+    let mut encoded = String::with_capacity(value.len() * 2);
+    for byte in value {
+        use std::fmt::Write;
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
 }
 
 #[cfg(test)]
@@ -270,5 +428,52 @@ mod tests {
             ShardRoutingKey::try_from([0_u8; 32]),
             Err(ShardPlanError::InvalidRoutingKey)
         );
+    }
+
+    #[test]
+    fn placement_attestation_matches_the_cross_language_fixture() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/container-shard-placement-attestation-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            fixture["contract"],
+            "cinatoken-relay-shard-placement-attestation-v1"
+        );
+        assert_eq!(
+            fixture["digest_domain"],
+            std::str::from_utf8(SHARD_PLACEMENT_ATTESTATION_DIGEST_DOMAIN).unwrap()
+        );
+        let attestation: ShardPlacementAttestationV1 =
+            serde_json::from_value(fixture["attestation"].clone()).unwrap();
+        attestation.validate().unwrap();
+        assert_eq!(
+            serde_json::to_string(&attestation).unwrap(),
+            fixture["canonical_json"].as_str().unwrap()
+        );
+        assert_eq!(
+            attestation.digest_sha256().unwrap(),
+            fixture["attestation_digest_sha256"].as_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn placement_attestation_rejects_identity_and_digest_drift() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/container-shard-placement-attestation-v1.json"
+        ))
+        .unwrap();
+        let mut attestation: ShardPlacementAttestationV1 =
+            serde_json::from_value(fixture["attestation"].clone()).unwrap();
+
+        attestation.canonical_name_sha256 = "0".repeat(64);
+        assert_eq!(
+            attestation.validate(),
+            Err(ShardPlacementAttestationError::CanonicalNameDigest)
+        );
+
+        let mut unknown = fixture["attestation"].clone();
+        unknown["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<ShardPlacementAttestationV1>(unknown).is_err());
     }
 }

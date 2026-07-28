@@ -22202,3 +22202,68 @@ and independently retained decision evidence remain mandatory. Complete S3,
 R3/C1, P5, customer traffic, financial authority, Go/VPS drain, and cutover
 remain blocked. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.313 Shard Placement Attestation v1 And D1 0061 (2026-07-28)
+
+The first cross-language placement identity is now frozen without modifying
+the existing `OperationShard`, migration 0054 activation, or migration 0055
+campaign/claim/consumption ABIs.
+
+`ShardPlacementAttestationV1` is implemented independently in TypeScript and
+Rust and verified against
+`tests/fixtures/container-shard-placement-attestation-v1.json`. Its
+domain-separated, length-prefixed SHA-256 binds:
+
+- contract version and `staging`/`production`;
+- Controller service name and immutable Worker Version Metadata ID;
+- the exact `RELAY_SHARDS` binding and `RelayShardContainer` class;
+- `default`, `eu`, `us`, `fedramp`, or `fedramp-high`;
+- SHA-256 of the canonical shard name and SHA-256 of the Durable Object ID;
+- the complete frozen v1 shard tuple.
+
+The raw Durable Object ID is accepted only as bounded constructor input and is
+not retained in the attestation. Exact-key parsing, canonical shard naming,
+service/version syntax, derived name hash, jurisdiction enum, and unknown
+fields fail closed. Mutating jurisdiction changes the attestation digest.
+
+Migration `0061_relay_container_shard_placement_attestations.sql` adds a
+separate immutable ledger. One row is linked to exactly one 0054 activation
+and one 0055 campaign consumption. Its insert guard compares campaign, claim,
+readiness, activation, consumption, environment, Controller version, ring,
+shard count/index/name, and activation ID before accepting the row. Unique
+constraints prevent a second placement for the same activation or conflicting
+object/shard identity; update and delete always abort. The global D1 candidate
+is now 61 migrations and 70 tables, and P5 candidate/schema-readback contracts
+bind the 0061 head. The separate ring-transition authority database correctly
+retains its own 0059/0060 identity.
+
+This schema is deliberately not a restricted-placement authorization. The
+frozen campaign v1 has no jurisdiction field, so the 0061 insert guard accepts
+only `default`; every restricted jurisdiction is rejected with an explicit
+campaign-v2 requirement. No Controller runtime writer, read endpoint, P5
+placement collector, or live record was enabled in this increment.
+
+The reader-first implementation order is:
+
+1. apply 0061 to isolated staging and verify the exact table, indexes,
+   triggers, foreign keys, and empty readback;
+2. add a versioned object RPC that hashes its actual `ctx.id`, while the
+   Controller independently hashes the selected stub ID and requires equality;
+3. add separate placement writer gates, default false and excluded from the
+   frozen 22-field campaign-v1 action-gate digest;
+4. after an exact 0055 completion, append or exactly replay one 0061 row before
+   returning placement-evidence success;
+5. expose a root-authenticated, bounded, watermark-frozen reader and require
+   one stable attestation per candidate shard in P5;
+6. define campaign v2, destination-versioned relocation/drain, old/new
+   jurisdiction coexistence rules, and rollback before replacing the
+   default-only insert guard;
+7. prove D1/KV/R2 residency and R2 operation identity separately. A DO
+   jurisdiction never implies shared-storage residency.
+
+Local TypeScript/Rust fixture tests, D1 guard tests, the complete SQLite chain,
+P5 evidence/foundation, and ring-transition contracts pass. No Cloudflare
+credential was read and no remote mutation occurred. Restricted placement,
+shared-storage residency, P5, traffic, financial authority, Go/VPS drain, and
+cutover remain blocked. Go/VPS remains authoritative and production remains
+**NO-GO**.

@@ -756,8 +756,8 @@ function candidateFixture() {
     containerClass: "RelayShardContainer",
     ringGeneration: 1,
     shardCount: 8,
-    migrationHead: "0060_relay_container_ring_transition_authority.sql",
-    migrationCount: 60,
+    migrationHead: "0061_relay_container_shard_placement_attestations.sql",
+    migrationCount: 61,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -1007,8 +1007,8 @@ function factsFixture(kind, candidate, foundationBinding) {
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 60,
-        tableCount: 69,
+        migrationCount: 61,
+        tableCount: 70,
         incrementalColumnCount: 909,
         keyIndexCount: 101,
         schemaFingerprintSha256: "a".repeat(64),

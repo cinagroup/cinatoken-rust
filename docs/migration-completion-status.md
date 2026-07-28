@@ -2397,7 +2397,7 @@ Go/VPS remains authoritative and production remains **NO-GO**.
 | Private status visibility | Validated target, restricted flag, and both gates |
 | Focused policy gate | 9 tests / 57 expectations |
 | Remote restricted object evidence | **NOT COLLECTED** |
-| Cross-language jurisdiction provenance | **NOT IMPLEMENTED** |
+| Cross-language jurisdiction provenance | v1 contract and default-only D1 ledger implemented locally; runtime collection pending |
 | Production eligibility | **NO-GO** |
 
 All Controller routes now use one selector for operation dispatch, status
@@ -2417,3 +2417,28 @@ protocol exists, and no remote staging campaign has proved eviction, alarms,
 Container lifecycle, rollback, or provenance in a restricted namespace.
 Changing tracked deployment configuration therefore remains prohibited.
 Go/VPS stays authoritative and production remains **NO-GO**.
+
+## 2026-07-28 Shard Placement Attestation Foundation
+
+| Status item | Current value |
+| --- | --- |
+| Cross-language contract | `ShardPlacementAttestationV1`; Rust/TypeScript shared fixture |
+| Bound identity | Controller service/version, DO binding/class, jurisdiction, hashed name/object ID, v1 shard |
+| D1 migration head | `0061_relay_container_shard_placement_attestations.sql` |
+| D1 schema totals | 61 migrations / 70 tables |
+| Activation linkage | Exact 0054 activation plus 0055 campaign consumption |
+| Immutability | One row per activation; replacement/update/delete rejected |
+| Restricted jurisdiction write | Rejected until campaign v2 |
+| Controller runtime writer | **NOT IMPLEMENTED** |
+| P5 placement reader/collector | **NOT IMPLEMENTED** |
+| Remote placement evidence | **NOT COLLECTED** |
+| Shared D1/KV/R2 residency evidence | **NOT COLLECTED** |
+| Production eligibility | **NO-GO** |
+
+This increment freezes how placement identity will be represented and stored;
+it does not claim where an object or shared store actually resides. Runtime
+collection still needs an object-side hash of actual `ctx.id`, a
+Controller-side hash of the selected stub ID, exact equality, default-false
+writer gates, idempotent linkage after campaign consumption, and bounded P5
+readback. Restricted relocation/drain requires a separate campaign v2 and
+shared-store residency proof. Go/VPS remains authoritative.

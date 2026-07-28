@@ -3721,3 +3721,32 @@ Go/VPS remains authoritative and production remains **NO-GO**.
 All 11 container supply-chain suites pass 127 tests with 1125 expectations.
 The complete repository gate passes with exit code 0 in 587.1 seconds; the 21
 existing Rust `dead_code` findings remain warnings only.
+
+## 2026-07-28 Shard Placement Attestation v1
+
+Phase 1 now includes a strict Rust/TypeScript placement identity and D1
+migration 0061. The domain-separated attestation binds Controller
+service/version, DO binding/class, jurisdiction, hashed canonical name and
+object ID, and the frozen v1 shard tuple. One shared fixture proves identical
+serialization and digest behavior; unknown fields and identity drift fail
+closed.
+
+The new append-only D1 row must match one existing 0054 activation and 0055
+consumption across campaign, claim, readiness, activation and consumption
+digests plus candidate and shard identity. One activation can have only one
+placement attestation. Updates, deletes, mismatched evidence, and restricted
+jurisdictions all fail. The latter is intentional: campaign v1 cannot bind a
+jurisdiction, so a versioned campaign v2 is mandatory before a restricted
+writer can exist.
+
+The global schema candidate is now 61 migrations and 70 tables. P5 binds the
+0061 head; the separate transition authority database remains 0059/0060.
+SQLite, placement fixture/guard, P5, foundation, and ring-transition focused
+gates pass locally.
+
+No runtime writer or remote record exists. Next is reader-first isolated
+staging apply, exact empty-schema readback, a versioned object/stub ID
+cross-check RPC, default-false writer gates, idempotent post-0055 append, and a
+bounded P5 reader. Restricted relocation and shared D1/KV/R2 residency remain
+later, separately approved contracts. Go/VPS remains authoritative and
+production remains **NO-GO**.

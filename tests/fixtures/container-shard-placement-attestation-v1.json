@@ -1,0 +1,38 @@
+{
+  "contract": "cinatoken-relay-shard-placement-attestation-v1",
+  "digest_domain": "cinatoken-relay-shard-placement-attestation-v1",
+  "input": {
+    "environment": "staging",
+    "controllerServiceName": "cinatoken-container-controller-staging",
+    "controllerVersionId": "controller-version-001",
+    "jurisdiction": "default",
+    "durableObjectId": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "shard": {
+      "contract_version": 1,
+      "ring_generation": 7,
+      "shard_count": 32,
+      "shard_index": 3,
+      "instance_name": "cinatoken-relay-shard-v1-0003"
+    }
+  },
+  "attestation": {
+    "contract_version": 1,
+    "environment": "staging",
+    "controller_service_name": "cinatoken-container-controller-staging",
+    "controller_version_id": "controller-version-001",
+    "durable_object_namespace_binding": "RELAY_SHARDS",
+    "durable_object_class": "RelayShardContainer",
+    "jurisdiction": "default",
+    "canonical_name_sha256": "0f7b57fb099ff92837664e800c3aa8066adf3040415dd98d00263a00e09adca4",
+    "object_id_sha256": "a8ae6e6ee929abea3afcfc5258c8ccd6f85273e0d4626d26c7279f3250f77c8e",
+    "shard": {
+      "contract_version": 1,
+      "ring_generation": 7,
+      "shard_count": 32,
+      "shard_index": 3,
+      "instance_name": "cinatoken-relay-shard-v1-0003"
+    }
+  },
+  "canonical_json": "{\"contract_version\":1,\"environment\":\"staging\",\"controller_service_name\":\"cinatoken-container-controller-staging\",\"controller_version_id\":\"controller-version-001\",\"durable_object_namespace_binding\":\"RELAY_SHARDS\",\"durable_object_class\":\"RelayShardContainer\",\"jurisdiction\":\"default\",\"canonical_name_sha256\":\"0f7b57fb099ff92837664e800c3aa8066adf3040415dd98d00263a00e09adca4\",\"object_id_sha256\":\"a8ae6e6ee929abea3afcfc5258c8ccd6f85273e0d4626d26c7279f3250f77c8e\",\"shard\":{\"contract_version\":1,\"ring_generation\":7,\"shard_count\":32,\"shard_index\":3,\"instance_name\":\"cinatoken-relay-shard-v1-0003\"}}",
+  "attestation_digest_sha256": "2f2416c82c3b17feb78884f9d42dbaec63554a98d391a43536df9aac5776fd5c"
+}

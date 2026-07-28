@@ -1352,3 +1352,29 @@ be retained and joined to Cloudflare deployment/image readback, SBOM/signature
 provenance, same-version N/N activation, remote lifecycle faults, and rollback
 evidence. Until that happens, the runtime remains a local candidate and
 production remains **NO-GO**.
+
+## Placement Attestation Boundary (2026-07-28)
+
+The runtime architecture now has a versioned cross-language identity for the
+DO placement plane. `ShardPlacementAttestationV1` binds Controller service and
+version, binding/class, jurisdiction, hashes of the canonical name and object
+ID, and the complete v1 shard tuple. TypeScript and Rust verify one frozen
+fixture and the same domain-separated digest. Raw object IDs are not retained.
+
+D1 migration 0061 stores that identity in a new immutable table linked to one
+0054 activation and one 0055 consumption. It does not add a field to either
+frozen predecessor. The insert guard rechecks the complete activation chain,
+and unique/update/delete guards prevent replacement.
+
+The current ledger is intentionally default-only. Campaign v1 cannot authorize
+jurisdiction, so 0061 rejects `eu`, `us`, `fedramp`, and `fedramp-high` until a
+campaign-v2 migration replaces that guard. The contract can represent those
+targets so their future digest format is already stable; representation alone
+grants no placement authority.
+
+Runtime collection is still pending. The next RPC must compare a hash of the
+object's actual `ctx.id` with a Controller-side hash of the selected stub ID,
+then append or exactly replay 0061 only after the matching 0055 consumption.
+P5 must read a bounded frozen ledger without waking objects and require one
+stable row per candidate shard. Relocation/drain and D1/KV/R2 residency remain
+separate protocols. Production remains **NO-GO**.

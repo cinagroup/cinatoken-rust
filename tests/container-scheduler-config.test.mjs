@@ -123,7 +123,7 @@ describe("container scheduler Wrangler foundation", () => {
 
   test("the full repository gate includes the scheduler config contract", () => {
     expect(packageJson.scripts["check:container-shard-routing-contract"]).toBe(
-      "bun test tests/container-shard-routing-contract.test.mjs && bun tools/verify_container_shard_routing_contract.mjs --self-test --json",
+      "bun test tests/container-shard-routing-contract.test.mjs tests/container-shard-placement-attestation-contract.test.mjs && bun tools/verify_container_shard_routing_contract.mjs --self-test --json",
     );
     expect(packageJson.scripts["check:container-scheduler-config"]).toBe(
       "bun test tests/container-scheduler-config.test.mjs",

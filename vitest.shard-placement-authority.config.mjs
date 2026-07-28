@@ -49,6 +49,8 @@ export default defineConfig({
             "false",
           SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_RECEIPT_WRITE_ENABLED:
             "false",
+          SHARD_PLACEMENT_AUTHORITY_DISPATCH_CLAIM_WRITE_ENABLED:
+            "false",
           SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256:
             "6".repeat(64),
           SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256:
@@ -109,6 +111,10 @@ export default defineConfig({
           ...hmacBindings(
             "GRANT",
             SHARD_PLACEMENT_AUTHORITY_HMAC.grant,
+          ),
+          ...hmacBindings(
+            "SEND",
+            SHARD_PLACEMENT_AUTHORITY_HMAC.send,
           ),
           ...hmacBindings(
             "RECEIPT",

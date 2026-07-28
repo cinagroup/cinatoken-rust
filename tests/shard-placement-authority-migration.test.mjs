@@ -726,6 +726,172 @@ describe("shard placement Authority migration", () => {
     `).get().count).toBe(0);
   });
 
+  test("claims operation-5 dispatch once and append-preserves the claim", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    const prepared = prepareOperationFiveApplicationGrant(database);
+    const dispatchClaim = operationFiveDispatchClaim(database, prepared);
+
+    expect(database.query(`
+      PRAGMA table_info(
+        'shard_placement_authority_operation_five_dispatch_claims'
+      )
+    `).all().map((column) => column.name)).toEqual([
+      "authorization_id_sha256",
+      "contract_version",
+      "claim_contract",
+      "claim_digest_sha256",
+      "application_ticket_id_sha256",
+      "application_database_identity_sha256",
+      "authority_dispatch_outbox_digest_sha256",
+      "application_grant_receipt_digest_sha256",
+      "application_grant_digest_sha256",
+      "operation_five_start_receipt_sha256",
+      "authority_database_identity_sha256",
+      "authority_ledger_identity_sha256",
+      "authority_ledger_head_sha256",
+      "authority_version_id",
+      "application_version_id",
+      "dispatch_owner_sha256",
+      "lease_token_sha256",
+      "lease_generation",
+      "lease_expires_at",
+      "normal_deadline_at",
+      "permit_expires_at",
+      "dispatch_claim_credential_id_sha256",
+      "dispatch_claim_request_id_sha256",
+      "command_dispatch_claim_request_id_sha256",
+      "controller_service_name",
+      "controller_enable_operation_id_sha256",
+      "controller_baseline_version_id",
+      "controller_enabled_version_id",
+      "send_attempt_limit",
+      "retry_limit",
+      "missing_readback_allows_resend",
+      "dispatch_claim_digest_sha256",
+      "claim_state",
+      "claimed_at",
+    ]);
+
+    insertOperationFiveDispatchClaim(database, dispatchClaim);
+    const stored = database.query(`
+      SELECT *
+      FROM shard_placement_authority_operation_five_dispatch_claims
+      WHERE authorization_id_sha256 = ?
+    `).get(prepared.issuance.authorization_id_sha256);
+    expect(stored).toMatchObject(dispatchClaim);
+    expect(stored.claimed_at).toBeGreaterThanOrEqual(
+      prepared.applicationGrant.recorded_at,
+    );
+
+    expect(() => insertOperationFiveDispatchClaim(
+      database,
+      dispatchClaim,
+    )).toThrow("UNIQUE constraint failed");
+    expect(() => database.query(`
+      UPDATE shard_placement_authority_operation_five_dispatch_claims
+      SET authority_version_id = 'replacement'
+      WHERE authorization_id_sha256 = ?
+    `).run(prepared.issuance.authorization_id_sha256)).toThrow(
+      "placement operation-five dispatch claims are immutable",
+    );
+    expect(() => database.query(`
+      DELETE FROM shard_placement_authority_operation_five_dispatch_claims
+      WHERE authorization_id_sha256 = ?
+    `).run(prepared.issuance.authorization_id_sha256)).toThrow(
+      "placement operation-five dispatch claims are append-preserved",
+    );
+  });
+
+  test("rejects operation-5 dispatch claims before grant and after revocation", () => {
+    using preGrantDatabase = new Database(":memory:");
+    preGrantDatabase.exec("PRAGMA foreign_keys = ON");
+    preGrantDatabase.exec(migrationSql);
+    preGrantDatabase.exec(executionMigrationSql);
+    const preGrant = prepareOperationFiveApplicationGrant(
+      preGrantDatabase,
+      false,
+    );
+    expect(() => insertOperationFiveDispatchClaim(
+      preGrantDatabase,
+      operationFiveDispatchClaim(preGrantDatabase, preGrant),
+    )).toThrow(
+      "placement operation-five dispatch claim is not admissible",
+    );
+
+    using revokedDatabase = new Database(":memory:");
+    revokedDatabase.exec("PRAGMA foreign_keys = ON");
+    revokedDatabase.exec(migrationSql);
+    revokedDatabase.exec(executionMigrationSql);
+    const revoked = prepareOperationFiveApplicationGrant(revokedDatabase);
+    revokedDatabase.query(`
+      INSERT INTO shard_placement_authority_revocations (
+        authorization_id_sha256, permit_subject_digest_sha256,
+        reason_code, evidence_sha256, revocation_event_sha256,
+        revoke_credential_id_sha256
+      ) VALUES (?, ?, 'operator_abort', ?, ?, ?)
+    `).run(
+      revoked.issuance.authorization_id_sha256,
+      revoked.issuance.permit_subject_digest_sha256,
+      "3".repeat(64),
+      "4".repeat(64),
+      "5".repeat(64),
+    );
+    expect(() => insertOperationFiveDispatchClaim(
+      revokedDatabase,
+      operationFiveDispatchClaim(revokedDatabase, revoked),
+    )).toThrow(
+      "placement operation-five dispatch claim is not admissible",
+    );
+  });
+
+  test("rejects expired and owner-drifted operation-5 dispatch claims", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    const prepared = prepareOperationFiveApplicationGrant(database);
+    const dispatchClaim = operationFiveDispatchClaim(database, prepared);
+
+    expect(() => insertOperationFiveDispatchClaim(database, {
+      ...dispatchClaim,
+      dispatch_owner_sha256: "f".repeat(64),
+    })).toThrow(
+      "placement operation-five dispatch claim is not admissible",
+    );
+
+    const projectionGuard = database.query(`
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'trigger'
+        AND name =
+          'shard_placement_authority_execution_claim_projection_update_guard'
+    `).get().sql;
+    database.exec(`
+      DROP TRIGGER
+        shard_placement_authority_execution_claim_projection_update_guard
+    `);
+    database.query(`
+      UPDATE shard_placement_authority_execution_claims
+      SET lease_expires_at = unixepoch() - 1
+      WHERE authorization_id_sha256 = ?
+    `).run(prepared.issuance.authorization_id_sha256);
+    database.exec(projectionGuard);
+
+    expect(() => insertOperationFiveDispatchClaim(
+      database,
+      operationFiveDispatchClaim(database, prepared),
+    )).toThrow(
+      "placement operation-five dispatch claim is not admissible",
+    );
+    expect(database.query(`
+      SELECT COUNT(*) AS count
+      FROM shard_placement_authority_operation_five_dispatch_claims
+    `).get().count).toBe(0);
+  });
+
   test("rolls back operation-5 admission when revocation wins", () => {
     using database = new Database(":memory:");
     database.exec("PRAGMA foreign_keys = ON");
@@ -1234,6 +1400,100 @@ function insertOperationFiveApplicationGrant(database, grant) {
     grant.controller_enabled_version_id,
     grant.receipt_digest_sha256,
   );
+}
+
+function prepareOperationFiveApplicationGrant(database, insertGrant = true) {
+  const issuance = validIssuance();
+  insertIssuance(database, issuance);
+  insertExecutionClaim(database, issuance);
+  insertExecutionOperations(database, issuance.authorization_id_sha256);
+  const operationFourClaim = completeOperationFour(database, issuance);
+  const admission = operationFiveAdmission(issuance);
+  const start = operationFiveStart(issuance, operationFourClaim, admission);
+  database.transaction(() => {
+    insertOperationFiveAdmission(database, admission);
+    insertExecutionReceipt(database, start);
+  })();
+  const outbox = operationFiveDispatchOutbox(database, issuance, admission);
+  insertOperationFiveDispatchOutbox(database, outbox);
+  const applicationGrant = operationFiveApplicationGrant(
+    database,
+    issuance,
+    outbox,
+  );
+  if (insertGrant) {
+    insertOperationFiveApplicationGrant(database, applicationGrant);
+    Object.assign(applicationGrant, database.query(`
+      SELECT recorded_at
+      FROM shard_placement_authority_operation_five_application_grants
+      WHERE authorization_id_sha256 = ?
+    `).get(issuance.authorization_id_sha256));
+  }
+  return { issuance, admission, outbox, applicationGrant };
+}
+
+function operationFiveDispatchClaim(database, prepared) {
+  const claim = readExecutionClaim(database);
+  return {
+    authorization_id_sha256: prepared.issuance.authorization_id_sha256,
+    contract_version: 1,
+    claim_contract:
+      "cinatoken-shard-placement-authority-operation-five-dispatch-claim-v1",
+    claim_digest_sha256: prepared.applicationGrant.claim_digest_sha256,
+    application_ticket_id_sha256:
+      prepared.applicationGrant.application_ticket_id_sha256,
+    application_database_identity_sha256:
+      prepared.applicationGrant.application_database_identity_sha256,
+    authority_dispatch_outbox_digest_sha256:
+      prepared.applicationGrant.authority_dispatch_outbox_digest_sha256,
+    application_grant_receipt_digest_sha256:
+      prepared.applicationGrant.receipt_digest_sha256,
+    application_grant_digest_sha256:
+      prepared.applicationGrant.application_grant_digest_sha256,
+    operation_five_start_receipt_sha256:
+      prepared.applicationGrant.operation_five_start_receipt_sha256,
+    authority_database_identity_sha256:
+      prepared.applicationGrant.authority_database_identity_sha256,
+    authority_ledger_identity_sha256:
+      prepared.applicationGrant.authority_ledger_identity_sha256,
+    authority_ledger_head_sha256:
+      prepared.applicationGrant.authority_ledger_head_sha256,
+    authority_version_id:
+      prepared.applicationGrant.authority_version_id,
+    application_version_id:
+      prepared.applicationGrant.application_version_id,
+    dispatch_owner_sha256: claim.claim_owner_sha256,
+    lease_token_sha256: claim.lease_token_sha256,
+    lease_generation: claim.lease_generation,
+    lease_expires_at: claim.lease_expires_at,
+    normal_deadline_at: claim.normal_deadline_at,
+    permit_expires_at: claim.permit_expires_at,
+    dispatch_claim_credential_id_sha256: "b".repeat(64),
+    dispatch_claim_request_id_sha256: "c".repeat(64),
+    command_dispatch_claim_request_id_sha256: "d".repeat(64),
+    controller_service_name:
+      prepared.applicationGrant.controller_service_name,
+    controller_enable_operation_id_sha256:
+      prepared.applicationGrant.controller_enable_operation_id_sha256,
+    controller_baseline_version_id:
+      prepared.applicationGrant.controller_baseline_version_id,
+    controller_enabled_version_id:
+      prepared.applicationGrant.controller_enabled_version_id,
+    send_attempt_limit: 1,
+    retry_limit: 0,
+    missing_readback_allows_resend: 0,
+    dispatch_claim_digest_sha256: "e".repeat(64),
+    claim_state: "claimed",
+  };
+}
+
+function insertOperationFiveDispatchClaim(database, dispatchClaim) {
+  const columns = Object.keys(dispatchClaim);
+  database.query(`
+    INSERT INTO shard_placement_authority_operation_five_dispatch_claims (
+      ${columns.join(", ")}
+    ) VALUES (${columns.map(() => "?").join(", ")})
+  `).run(...columns.map((column) => dispatchClaim[column]));
 }
 
 function readExecutionClaim(database) {

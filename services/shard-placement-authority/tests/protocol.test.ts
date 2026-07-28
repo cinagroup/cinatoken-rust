@@ -16,6 +16,7 @@ import {
   parseExactExecutionClaimQuery,
 } from "../src/execution_protocol";
 import {
+  SHARD_PLACEMENT_AUTHORITY_HMAC,
   placementExecutionClaim,
   placementExecutionReceipt,
   placementAuthorityRevocation,
@@ -204,6 +205,29 @@ describe("shard placement Authority protocol", () => {
         authorityEnv
           .SHARD_PLACEMENT_DISPATCH_HMAC_CURRENT_CREDENTIAL_ID_SHA256,
     });
+
+    for (const role of ["grant", "send"] as const) {
+      const roleBody = canonicalJson({ probe: role });
+      const roleRequest = await signedAuthorityRequest({
+        method: "POST",
+        pathAndQuery:
+          `/internal/v1/shard-placement/execution-claims/${"a".repeat(64)}/${role}`,
+        role,
+        body: roleBody,
+        requestId: `${role}-protocol-1`,
+      });
+      await expect(verifyHmacRequest(
+        roleRequest,
+        new TextEncoder().encode(roleBody),
+        role,
+        authorityEnv,
+      )).resolves.toMatchObject({
+        role,
+        requestId: `${role}-protocol-1`,
+        credentialIdSha256:
+          SHARD_PLACEMENT_AUTHORITY_HMAC[role].credentialIdSha256,
+      });
+    }
   });
 
   it("accepts the Rust application activation read token fixed vector", async () => {

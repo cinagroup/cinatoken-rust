@@ -73,6 +73,12 @@ export const SHARD_PLACEMENT_AUTHORITY_HMAC = Object.freeze({
     secret:
       "grant-hmac-test-secret-0000000000000000000000000000000",
   }),
+  send: Object.freeze({
+    keyId: "send-hmac-test-v1",
+    credentialIdSha256: "4".repeat(64),
+    secret:
+      "send-hmac-test-secret-00000000000000000000000000000000",
+  }),
   receipt: Object.freeze({
     keyId: "receipt-hmac-test-v1",
     credentialIdSha256: "e".repeat(64),
@@ -172,6 +178,10 @@ export function shardPlacementAuthorityEnv(overrides = {}) {
     ...hmacEnvironment(
       "GRANT",
       SHARD_PLACEMENT_AUTHORITY_HMAC.grant,
+    ),
+    ...hmacEnvironment(
+      "SEND",
+      SHARD_PLACEMENT_AUTHORITY_HMAC.send,
     ),
     ...hmacEnvironment(
       "RECEIPT",

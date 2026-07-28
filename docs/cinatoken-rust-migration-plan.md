@@ -23685,3 +23685,76 @@ dry-run, and P5/ring-transition contract tests pass. No credential was read,
 no remote request was made, and no D1 migration, gate, Controller, Container,
 traffic, billing, DNS, or Go/VPS state was changed. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.325 Operation-5 Immutable Dispatch Claim (2026-07-29)
+
+This checkpoint adds the next local, default-off operation-5 boundary: one
+create-only, single-owner Authority dispatch claim bound to the exact
+Application grant receipt, prepared outbox, operation-5 start, live lease,
+deadlines, ledger head, Worker versions, and frozen Controller identities.
+The row is immutable and accepts only an exact replay of the same canonical
+claim. Conflicting ownership, identity drift, revocation, expiry, lease
+change, or predecessor drift fails closed.
+
+The claim reserves one eligible owner and one future send identity. It does
+not create an attempt and does not perform network I/O:
+
+- `sendAttemptCreated=false`;
+- `controllerRequestSent=false`;
+- no Controller Service Binding or deployment control-plane client is used;
+  and
+- the Application grant receipt remains historical evidence, not live send
+  authority.
+
+A later campaign seal, revocation, expiry, lease change, version change, or
+fence drift can therefore prevent future dispatch even though the immutable
+Application grant and Authority claim remain available for audit.
+
+### Trust boundary and current Controller gap
+
+The inbound claim route uses an independently isolated `send` HMAC role. The
+role parser defect that omitted the already-declared `grant` role from exact
+role acceptance is fixed, and focused coverage now exercises both `grant`
+and `send`. Current/previous send key IDs, credential fingerprints, and
+secrets must remain isolated from every other Authority role.
+
+The existing Controller has no deployment-enable route and no Cloudflare
+deployment control-plane client. Its `/operations/status` endpoints describe
+business operations and must not be treated as deployment status. Authority
+must not acquire or use a Cloudflare deployment credential.
+
+The eventual `controller-deployment-gateway` is a separate private workload.
+Only that gateway may hold the minimum Cloudflare deployment credential
+required for the frozen operation. It must expose a narrowly scoped
+create-once command and a status-only readback contract, persist evidence
+before external I/O, reject retries after ambiguous mutation, and remain
+independently deployable and revocable.
+
+### Remaining P0 order
+
+The next P0 increments are deliberately ordered:
+
+1. add an Application-owned create-only dispatch-consumption record so the
+   send decision is ordered in Application D1 against campaign seal and
+   application-owned deadlines;
+2. persist one immutable attempt plus its event atomically before any external
+   I/O, preserving `sendAttemptCreated=false` until that transaction commits;
+3. introduce the dedicated `controller-deployment-gateway`, with Authority
+   sending only the frozen command after exact consumption and attempt
+   readback; and
+4. classify timeout, disconnect, lost response, Worker rollout, or process
+   death through deployment status-only recovery, with no second enable
+   request.
+
+Application D1 remains at 65 migrations, 76 required tables, 1056 checked
+incremental columns, and 110 key indexes. Authority migration inventory
+remains two files (`0001-0002`); the dispatch-claim table is appended to
+Authority migration 0002.
+
+The complete local repository gate, `bun run check`, passed with exit 0 in
+703.8 seconds after this integration.
+
+All related gates remain `false` in tracked local and staging configuration,
+and production placement configuration is absent. No secret was used and no
+remote state was read or changed. Go/VPS remains authoritative and production
+remains **NO-GO**.

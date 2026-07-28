@@ -11432,3 +11432,54 @@ remain required.
 
 Until those results are independently captured and reviewed, Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Immutable Dispatch Claim Verification
+
+This local checkpoint verifies a create-only, single-owner Authority dispatch
+claim. The claim is bound to the exact Application grant receipt, prepared
+outbox, operation-5 start, generation-1 owner and lease, live deadlines,
+unrevoked Authority ledger head, Worker versions, and frozen Controller
+identities. Exact replay returns the same immutable record; a conflicting
+owner, request, credential, predecessor, version, deadline, or Controller
+identity fails closed.
+
+The verified boundary stops before any sender:
+
+- `sendAttemptCreated=false`;
+- `controllerRequestSent=false`;
+- no Controller Service Binding, queue send, deployment-enable request, or
+  Cloudflare control-plane call is reachable from the claim module; and
+- the Application grant receipt is retained as historical evidence and is not
+  interpreted as live send authority.
+
+Protocol coverage also records the exact-role parser correction for `grant`
+and the new independently isolated `send` HMAC role. Send current/previous key
+IDs, credential fingerprints, and secrets are checked against every other
+Authority role, and the dispatch-claim write gate remains required and
+default false.
+
+The existing Controller cannot complete this acceptance path: it has no
+deployment-enable route or deployment control-plane client.
+`/operations/status` reports business-operation state and is not deployment
+status. Future end-to-end evidence must come from a dedicated private
+`controller-deployment-gateway`; only that gateway may hold the minimum
+Cloudflare deployment credential, while Authority remains credential-free.
+
+The next P0 acceptance sequence is:
+
+1. Application-owned create-only dispatch consumption, raced against seal and
+   all application-owned deadlines;
+2. one atomic immutable attempt plus event committed before external I/O;
+3. one frozen request through the dedicated deployment gateway; and
+4. status-only ambiguity recovery that never issues a second enable.
+
+The complete local repository gate, `bun run check`, passed with exit 0 in
+703.8 seconds after the route, repository, migration, configuration, and
+documentation integration.
+
+Application D1 remains 65 migrations / 76 tables / 1056 checked incremental
+columns / 110 key indexes. Authority migration inventory remains two files,
+with the new claim schema contained in migration 0002. All gates remain false,
+production placement configuration is absent, no secret was used, and no
+remote state was queried or changed. Go/VPS remains authoritative and
+production remains **NO-GO**.

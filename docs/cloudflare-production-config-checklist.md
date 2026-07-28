@@ -1904,3 +1904,63 @@ receipt. Completing it does not authorize a Controller call.
   remote evidence, approvals, Go/VPS reverse sync/drain, and DNS review.
 
 Production remains **NO-GO**.
+
+## Operation-5 Immutable Dispatch Claim Checklist
+
+This checklist covers the local create-only, single-owner Authority dispatch
+claim. Completing it does not create a send attempt or authorize Controller
+traffic.
+
+### Default-off configuration and identity
+
+- Keep
+  `SHARD_PLACEMENT_AUTHORITY_DISPATCH_CLAIM_WRITE_ENABLED=false`
+  in every tracked local and staging environment.
+- Keep every `send` current/previous key ID and credential fingerprint blank
+  until an isolated credential ceremony; keep all send secrets out of vars,
+  tracked files, logs, evidence, and command arguments.
+- Prove `send` current/previous key IDs, credential fingerprints, and secrets
+  are distinct from all other Authority roles.
+- Retain the exact-role parser regression tests for both `grant` and `send`.
+- Keep production placement Authority, claim, gateway, and deployment
+  credential configuration absent.
+- Record that Authority migration inventory remains two files (`0001-0002`)
+  and Application D1 remains 65 migrations / 76 tables / 1056 checked
+  incremental columns / 110 key indexes.
+
+### Claim acceptance
+
+1. Keep every gate false while reading back the exact Application grant
+   receipt, prepared outbox, operation-5 start, Authority ledger head, lease,
+   deadlines, versions, and frozen Controller identities.
+2. Race revocation, expiry, lease drift, takeover, version drift, and
+   conflicting ownership against claim creation. Accept exactly one immutable
+   owner or no claim.
+3. Prove exact replay performs no write and divergent replay fails closed.
+4. Read back `sendAttemptCreated=false` and
+   `controllerRequestSent=false`.
+5. Preserve the Application grant receipt and Authority claim as historical
+   evidence. Never treat either record as live send authority.
+6. Disable the claim gate after the bounded synthetic ceremony and
+   independently prove it false.
+
+### Remaining P0 promotion blockers
+
+- Add Application-owned create-only dispatch consumption so seal and
+  application-owned deadlines are ordered before send.
+- Commit one immutable attempt and event atomically before external I/O.
+- Introduce a separate private `controller-deployment-gateway`. Only that
+  gateway may receive the minimum Cloudflare deployment credential; Authority
+  must remain credential-free.
+- Prove the gateway's create-once command and status-only ambiguity recovery
+  never issue a second enable after timeout, disconnect, response loss,
+  process death, or rollout.
+- Do not use the existing Controller `/operations/status` routes as deployment
+  status. The current Controller has no deployment-enable route and no
+  deployment control-plane client.
+- Keep Go/VPS authoritative until remote inventory, credentials, Access,
+  D1/readback, fault campaigns, rollback, reverse sync, drain, traffic, DNS,
+  security, SRE, and migration approvals are complete.
+
+No secret has been used and no remote state has been changed for this
+checkpoint. Production remains **NO-GO**.

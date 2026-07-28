@@ -19,6 +19,10 @@ import {
   parseAuthorizeEnableDispatchCommand,
 } from "./authorize_enable_dispatch";
 import {
+  claimControllerEnableDispatch,
+  parseClaimEnableDispatchCommand,
+} from "./claim_enable_dispatch";
+import {
   beginControllerEnable,
   parseBeginEnableCommand,
 } from "./begin_enable";
@@ -87,6 +91,7 @@ export interface AuthorityEnv
   SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_WRITE_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_RECEIPT_WRITE_ENABLED:
     string;
+  SHARD_PLACEMENT_AUTHORITY_DISPATCH_CLAIM_WRITE_ENABLED: string;
   SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: string;
@@ -114,6 +119,8 @@ const EXECUTION_PREPARE_ENABLE_DISPATCH_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/prepare-enable-dispatch$/;
 const EXECUTION_AUTHORIZE_ENABLE_DISPATCH_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/authorize-enable-dispatch$/;
+const EXECUTION_CLAIM_ENABLE_DISPATCH_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/claim-enable-dispatch$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -338,6 +345,32 @@ export default {
         );
       }
 
+      if (route.kind === "execution_claim_enable_dispatch") {
+        const command = parseClaimEnableDispatchCommand(body);
+        if (
+          command.authorizationIdSha256
+            !== route.authorizationIdSha256
+        ) {
+          throw new ProtocolError(
+            "operation_five_dispatch_claim_path_mismatch",
+            400,
+          );
+        }
+        const result = await claimControllerEnableDispatch(
+          env,
+          command,
+          authentication,
+        );
+        return jsonResponse(
+          result.result === "dispatch_claim_recorded" ? 201 : 200,
+          {
+            contract:
+              "cinatoken-shard-placement-authority-claim-enable-dispatch-result-v1",
+            ...result,
+          },
+        );
+      }
+
       if (route.kind === "execution_receipt_append") {
         const receipt = await parseExecutionReceipt(
           body,
@@ -514,6 +547,10 @@ type Route =
   | {
       kind: "execution_authorize_enable_dispatch";
       authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_claim_enable_dispatch";
+      authorizationIdSha256: string;
     };
 
 function matchRoute(request: Request): Route {
@@ -650,6 +687,21 @@ function matchRoute(request: Request): Route {
         executionAuthorizeEnableDispatchMatch[1]!,
     };
   }
+  const executionClaimEnableDispatchMatch =
+    EXECUTION_CLAIM_ENABLE_DISPATCH_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionClaimEnableDispatchMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_claim_enable_dispatch",
+      authorizationIdSha256:
+        executionClaimEnableDispatchMatch[1]!,
+    };
+  }
   const authorizationMatch = AUTHORIZATION_ID_PATH.exec(url.pathname);
   if (request.method === "GET" && authorizationMatch !== null) {
     return {
@@ -683,6 +735,7 @@ function routeRole(kind: Route["kind"]): HmacRole {
   if (kind === "execution_authorize_enable_dispatch") {
     return "grant";
   }
+  if (kind === "execution_claim_enable_dispatch") return "send";
   if (kind === "execution_receipt_append") return "receipt";
   if (
     kind === "execution_lease_renew"
@@ -790,6 +843,16 @@ function requireRouteGate(
   ) {
     throw new ProtocolError(
       "authority_pre_enable_grant_write_disabled",
+      503,
+    );
+  }
+  if (
+    kind === "execution_claim_enable_dispatch"
+    && env.SHARD_PLACEMENT_AUTHORITY_DISPATCH_CLAIM_WRITE_ENABLED
+      !== "true"
+  ) {
+    throw new ProtocolError(
+      "authority_dispatch_claim_write_disabled",
       503,
     );
   }
@@ -923,6 +986,7 @@ function requireHmacCredentialIsolation(
       "ENABLE",
       "DISPATCH",
       "GRANT",
+      "SEND",
       "RECEIPT",
       "RECOVERY",
     ] as const

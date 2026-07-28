@@ -4242,3 +4242,43 @@ ordered operations 6-13, and the reserved operation-14 disable path.
 Migration totals are now 65 migrations, 76 required tables, 1056 checked
 incremental columns, and 110 key indexes. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Immutable Dispatch Claim
+
+Phase 1 now includes a local, default-off create-only Authority dispatch
+claim. One immutable row assigns the exact operation-5 command to one owner
+only after the Application grant receipt, prepared outbox, operation-5 start,
+lease, deadlines, revocation state, ledger head, versions, and frozen
+Controller identities still match. Exact replay is read-only; conflicting
+ownership or fence drift fails closed.
+
+This checkpoint deliberately ends with `sendAttemptCreated=false` and
+`controllerRequestSent=false`. The Application grant receipt and the new
+Authority claim are durable history, not live Controller send authority. A
+later seal, revocation, expiry, lease change, version change, or ledger drift
+must still be able to stop the future send path.
+
+The Authority verifier now accepts the declared `grant` role correctly and
+adds an independently isolated `send` HMAC role. All claim gates remain false
+in tracked local and staging configuration. Production placement
+configuration remains absent.
+
+The current Controller has neither a deployment-enable route nor a Cloudflare
+deployment control-plane client. Its `/operations/status` routes cannot be
+used as deployment status. Authority will not hold a deployment credential.
+The future private `controller-deployment-gateway` alone may hold the minimum
+Cloudflare credential and must provide the narrow create-once mutation plus
+status-only readback boundary.
+
+The next P0 sequence is Application-owned create-only dispatch consumption
+ordered against campaign seal, one atomic attempt plus event before I/O, the
+dedicated deployment gateway, and status-only ambiguity recovery with no
+second enable. Application D1 remains 65 migrations, 76 required tables, 1056
+checked incremental columns, and 110 key indexes; Authority migration
+inventory remains two files.
+
+The complete local repository gate, `bun run check`, passed with exit 0 in
+703.8 seconds after this integration.
+
+No secret was used and no remote state was read or changed. Go/VPS remains
+authoritative and production remains **NO-GO**.

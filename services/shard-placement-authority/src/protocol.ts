@@ -115,6 +115,7 @@ export type HmacRole =
   | "enable"
   | "dispatch"
   | "grant"
+  | "send"
   | "receipt"
   | "recovery";
 export type ApprovalRole = (typeof APPROVAL_ROLES)[number];
@@ -188,6 +189,12 @@ export interface ShardPlacementAuthoritySecurityEnv {
   SHARD_PLACEMENT_GRANT_HMAC_PREVIOUS_KID: string;
   SHARD_PLACEMENT_GRANT_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
   SHARD_PLACEMENT_GRANT_HMAC_PREVIOUS_SECRET?: string;
+  SHARD_PLACEMENT_SEND_HMAC_CURRENT_KID: string;
+  SHARD_PLACEMENT_SEND_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_SEND_HMAC_CURRENT_SECRET?: string;
+  SHARD_PLACEMENT_SEND_HMAC_PREVIOUS_KID: string;
+  SHARD_PLACEMENT_SEND_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_SEND_HMAC_PREVIOUS_SECRET?: string;
   SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_KID: string;
   SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
   SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_SECRET?: string;
@@ -984,9 +991,11 @@ function selectHmacKey(
                   ? "SHARD_PLACEMENT_DISPATCH_HMAC"
                   : role === "grant"
                     ? "SHARD_PLACEMENT_GRANT_HMAC"
-                  : role === "receipt"
-                    ? "SHARD_PLACEMENT_RECEIPT_HMAC"
-                    : "SHARD_PLACEMENT_RECOVERY_HMAC";
+                    : role === "send"
+                      ? "SHARD_PLACEMENT_SEND_HMAC"
+                      : role === "receipt"
+                        ? "SHARD_PLACEMENT_RECEIPT_HMAC"
+                        : "SHARD_PLACEMENT_RECOVERY_HMAC";
   const values = env as unknown as Record<string, string | undefined>;
   let secret: string | undefined;
   let credentialIdSha256 = "";
@@ -1183,6 +1192,8 @@ function requireExactRole(value: unknown): HmacRole {
     || value === "activate"
     || value === "enable"
     || value === "dispatch"
+    || value === "grant"
+    || value === "send"
     || value === "receipt"
     || value === "recovery"
   ) {

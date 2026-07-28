@@ -2694,3 +2694,39 @@ ambiguity recovery. No retry path may issue a second enable mutation.
 No credential or remote state was accessed and no migration, gate, deployment,
 Container, customer traffic, billing, Go/VPS, DNS, or production state was
 changed. Production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Immutable Dispatch Claim Status
+
+This table supersedes the dispatch-claim row in the Application pre-enable
+grant status above. Earlier tables remain checkpoint history.
+
+| Status item | Current value |
+| --- | --- |
+| Application D1 catalog | Unchanged: 65 migrations / 76 tables / 1056 checked incremental columns / 110 key indexes |
+| Authority migration inventory | Unchanged: 2 files (`0001-0002`); claim schema appended to 0002 |
+| Authority dispatch claim | **IMPLEMENTED LOCALLY, DEFAULT-OFF**; create-only, immutable, single-owner, exact replay |
+| Dispatch-claim fence | Exact grant receipt, prepared outbox, operation-5 start, live generation-1 lease/deadlines, unrevoked ledger head, versions, and Controller identities |
+| Application grant receipt meaning | Historical evidence only; **NOT LIVE SEND AUTHORITY** |
+| Inbound claim identity | Independent `send` HMAC role with current/previous isolation |
+| Grant-role parser | Exact-role acceptance defect fixed; focused `grant` and `send` coverage added |
+| Send attempt | **NOT CREATED**; `sendAttemptCreated=false` |
+| Controller request | **NOT SENT**; `controllerRequestSent=false` |
+| Existing Controller deployment-enable route | **ABSENT** |
+| Existing Controller deployment control-plane client | **ABSENT** |
+| `/operations/status` as deployment status | **INVALID**; business-operation status only |
+| Application-owned dispatch consumption | **NOT IMPLEMENTED**; next P0 seal-ordering boundary |
+| Atomic attempt plus event | **NOT IMPLEMENTED** |
+| Dedicated `controller-deployment-gateway` | **NOT IMPLEMENTED**; future sole holder of minimum Cloudflare deployment credential |
+| Authority Cloudflare deployment credential | **ABSENT BY DESIGN** |
+| Checked-in gates | All related gates `false` |
+| Production placement configuration | **ABSENT** |
+| Remote mutation/evidence | **NOT PERFORMED / NOT COLLECTED** |
+| Complete local repository gate | PASS; `bun run check`, exit 0 in 703.8 seconds |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The next P0 order is Application-owned create-only dispatch consumption
+against seal, then one atomic persist-before-I/O attempt and event, then the
+independent deployment gateway, and finally status-only ambiguity recovery
+with zero resend. No secret was used and no remote state was queried or
+changed. Go/VPS remains authoritative and production remains **NO-GO**.

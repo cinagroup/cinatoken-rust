@@ -79,6 +79,12 @@ export function shardPlacementAuthorityEnv(overrides = {}) {
     SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED: "true",
     SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED: "true",
     SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: "true",
+    SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256:
+      "6".repeat(64),
+    SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256:
+      "7".repeat(64),
+    SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256:
+      "8".repeat(64),
     SHARD_PLACEMENT_AUTHORITY_ISSUER:
       "cinatoken-shard-placement-operator-runtime-test",
     SHARD_PLACEMENT_AUTHORITY_AUDIENCE:
@@ -288,20 +294,20 @@ export async function placementExecutionClaim({
   const source = issuance ?? await signedPlacementAuthorityIssuance({ now });
   const operations = await Promise.all(
     Array.from({ length: 11 }, async (_, index) => {
-      const ordinal = index + 3;
+      const ordinal = index + 4;
       return {
         ordinal,
         operationIdSha256:
           await digestLabel(`placement-operation-${ordinal}`),
-        kind: ordinal === 3
-          ? "enable_controller_deployment"
-          : ordinal === 4
-            ? "create_activation_campaign"
-            : ordinal === 13
+        kind: ordinal === 4
+          ? "activate_execution_ticket"
+          : ordinal === 5
+            ? "enable_controller_deployment"
+            : ordinal === 14
               ? "disable_controller_deployment"
               : "probe_shard_readiness",
         shardIndex:
-          ordinal >= 5 && ordinal <= 12 ? ordinal - 5 : null,
+          ordinal >= 6 && ordinal <= 13 ? ordinal - 6 : null,
       };
     }),
   );
@@ -314,6 +320,12 @@ export async function placementExecutionClaim({
       source.permit.authorization_id_sha256,
     executionNonceSha256: source.permit.execution_nonce_sha256,
     permitSubjectDigestSha256: source.permitSubjectDigestSha256,
+    applicationTicketIdSha256:
+      await digestLabel("placement-application-ticket-id"),
+    applicationTicketDigestSha256:
+      await digestLabel("placement-application-ticket"),
+    applicationDatabaseIdentitySha256: "6".repeat(64),
+    authorityDatabaseIdentitySha256: "7".repeat(64),
     campaignId: source.permit.campaign_id,
     campaignNonceSha256: source.permit.campaign_nonce_sha256,
     executionPlanSha256:
@@ -324,14 +336,15 @@ export async function placementExecutionClaim({
       await digestLabel("placement-execution-activation"),
     runnerBuildSha256: await digestLabel("placement-runner-build"),
     claimOwnerSha256: await digestLabel("placement-claim-owner"),
-    ledgerIdentitySha256:
-      await digestLabel("placement-ledger-identity"),
+    ledgerIdentitySha256: "8".repeat(64),
     baselineOperationIdSha256:
       await digestLabel("placement-operation-1"),
     baselineTerminalReceiptSha256:
       await digestLabel("placement-operation-1-terminal-receipt"),
-    claimOperationIdSha256:
+    preparationOperationIdSha256:
       await digestLabel("placement-operation-2"),
+    claimOperationIdSha256:
+      await digestLabel("placement-operation-3"),
     leaseTokenSha256:
       await digestLabel("placement-lease-token-generation-1"),
     claimCredentialIdSha256:
@@ -343,8 +356,10 @@ export async function placementExecutionClaim({
       new TextEncoder().encode(canonicalJson({
         baselineOperationIdSha256:
           await digestLabel("placement-operation-1"),
-        claimOperationIdSha256:
+        preparationOperationIdSha256:
           await digestLabel("placement-operation-2"),
+        claimOperationIdSha256:
+          await digestLabel("placement-operation-3"),
         operations,
       })),
     ),
@@ -404,10 +419,10 @@ export async function placementExecutionReceipt({
     || eventKind === "lease_taken_over";
   const safetyEvent = eventKind === "safety_diverted";
   const effectiveOrdinal = operationOrdinal
-    ?? (leaseEvent ? 2 : safetyEvent ? 13 : null);
-  const operation = effectiveOrdinal === 2
+    ?? (leaseEvent ? 3 : safetyEvent ? 14 : null);
+  const operation = effectiveOrdinal === 3
     ? {
-        ordinal: 2,
+        ordinal: 3,
         operationIdSha256: claim.claimOperationIdSha256,
         kind: "create_authority_claim",
         shardIndex: null,

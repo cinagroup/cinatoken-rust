@@ -50,6 +50,13 @@ const placementAuthorizationMigration = await readFile(
   ),
   "utf8",
 );
+const placementExecutionTicketMigration = await readFile(
+  new URL(
+    "../../../migrations/d1/0064_relay_container_shard_placement_execution_tickets.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 async function expectInvalid(value: unknown): Promise<void> {
   try {
@@ -314,6 +321,23 @@ describe("relay shard placement attestation v1", () => {
     } finally {
       missing.sqlite.close();
     }
+
+    const missingAcknowledgement = placementDatabase({
+      includeAuthorityAcknowledgement: false,
+    });
+    try {
+      await expect(
+        requireShardPlacementMutationAuthorization(
+          missingAcknowledgement.database as never,
+          placementAuthorizationCandidate(),
+        ),
+      ).rejects.toMatchObject({
+        code: "shard_placement_mutation_authorization_required",
+        status: 403,
+      });
+    } finally {
+      missingAcknowledgement.sqlite.close();
+    }
   });
 
   test("fails closed on missing activation, schema drift, and placement conflict", async () => {
@@ -489,10 +513,12 @@ function placementAuthorizationCandidate() {
 function placementDatabase({
   includeParents = true,
   includeAuthorization = true,
+  includeAuthorityAcknowledgement = true,
   hidePlacementReadback = false,
 }: {
   includeParents?: boolean;
   includeAuthorization?: boolean;
+  includeAuthorityAcknowledgement?: boolean;
   hidePlacementReadback?: boolean;
 } = {}) {
   const sqlite = new Database(":memory:", { strict: true });
@@ -502,7 +528,8 @@ function placementDatabase({
     INSERT INTO d1_migrations(name)
     VALUES ('0061_relay_container_shard_placement_attestations.sql'),
            ('0062_relay_container_shard_placement_events.sql'),
-           ('0063_relay_container_shard_placement_mutation_authorizations.sql');
+           ('0063_relay_container_shard_placement_mutation_authorizations.sql'),
+           ('0064_relay_container_shard_placement_execution_tickets.sql');
     CREATE TABLE relay_container_shard_activation_campaigns (
       campaign_id TEXT PRIMARY KEY,
       campaign_nonce_sha256 TEXT NOT NULL,
@@ -515,6 +542,9 @@ function placementDatabase({
       ring_generation INTEGER NOT NULL,
       shard_count INTEGER NOT NULL,
       shard_contract_version INTEGER NOT NULL,
+      runtime_protocol_version INTEGER NOT NULL,
+      runtime_contract_version INTEGER NOT NULL,
+      activation_generation INTEGER NOT NULL,
       environment TEXT NOT NULL,
       created_by_admin_id INTEGER NOT NULL,
       campaign_digest_sha256 TEXT NOT NULL,
@@ -523,6 +553,27 @@ function placementDatabase({
     );
     CREATE TABLE relay_container_shard_activation_campaign_seals (
       campaign_id TEXT PRIMARY KEY
+    );
+    CREATE TABLE relay_container_shard_activation_campaign_claims (
+      campaign_id TEXT NOT NULL,
+      shard_index INTEGER NOT NULL,
+      presented_nonce_sha256 TEXT NOT NULL,
+      campaign_digest_sha256 TEXT NOT NULL,
+      controller_version_id TEXT NOT NULL,
+      action_gate_inventory_sha256 TEXT NOT NULL,
+      action_gate_count INTEGER NOT NULL,
+      all_action_gates_false INTEGER NOT NULL,
+      foundation_manifest_sha256 TEXT NOT NULL,
+      runtime_build_id TEXT NOT NULL,
+      ring_generation INTEGER NOT NULL,
+      shard_count INTEGER NOT NULL,
+      instance_name TEXT NOT NULL,
+      shard_contract_version INTEGER NOT NULL,
+      runtime_protocol_version INTEGER NOT NULL,
+      runtime_contract_version INTEGER NOT NULL,
+      activation_generation INTEGER NOT NULL,
+      environment TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL
     );
     CREATE TABLE relay_container_shard_activations (
       activation_id INTEGER PRIMARY KEY,
@@ -552,8 +603,9 @@ function placementDatabase({
   sqlite.exec(placementMigration);
   sqlite.exec(placementEventMigration);
   sqlite.exec(placementAuthorizationMigration);
+  sqlite.exec(placementExecutionTicketMigration);
   if (includeAuthorization) {
-    insertPlacementAuthorization(sqlite);
+    insertPlacementAuthorization(sqlite, includeAuthorityAcknowledgement);
   }
   if (includeParents) {
     sqlite
@@ -591,11 +643,15 @@ function placementDatabase({
   };
 }
 
-function insertPlacementAuthorization(sqlite: Database): void {
+function insertPlacementAuthorization(
+  sqlite: Database,
+  includeAuthorityAcknowledgement: boolean,
+): void {
   const now = Math.floor(Date.now() / 1000);
   sqlite.transaction(() => {
-    sqlite
-      .query(
+    if (includeAuthorityAcknowledgement) {
+      sqlite
+        .query(
         `INSERT INTO relay_container_shard_placement_mutation_authorizations (
            authorization_id_sha256, execution_nonce_sha256,
            campaign_nonce_sha256, subject_digest_sha256, contract_version,
@@ -608,8 +664,8 @@ function insertPlacementAuthorization(sqlite: Database): void {
            consumed_by_admin_id
          ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, 'staging', ?, ?, ?, ?, ?,
                    7, 32, 600, ?, ?, ?, ?, ?, 42)`,
-      )
-      .run(
+        )
+        .run(
         "a".repeat(64),
         "b".repeat(64),
         "c".repeat(64),
@@ -624,10 +680,73 @@ function insertPlacementAuthorization(sqlite: Database): void {
         "9".repeat(64),
         "1".repeat(64),
         now,
-        now + 300,
+        now + 600,
         CAMPAIGN_ID,
         "7".repeat(64),
         now + 600,
+      );
+    sqlite
+      .query(
+        `INSERT INTO relay_container_shard_placement_execution_tickets (
+           ticket_id_sha256, contract_version, ticket_contract,
+           authorization_id_sha256, campaign_id, campaign_digest_sha256,
+           execution_nonce_sha256, permit_subject_digest_sha256,
+           application_database_identity_sha256,
+           authority_database_identity_sha256,
+           authority_ledger_identity_sha256, execution_plan_sha256,
+           operation_schedule_sha256, preparation_operation_id_sha256,
+           claim_operation_id_sha256, activation_operation_id_sha256,
+           controller_enable_operation_id_sha256,
+           controller_disable_operation_id_sha256, release_sha256,
+           publication_sha256, execution_activation_sha256,
+           runner_build_sha256, controller_service_name,
+           controller_baseline_version_id, controller_enabled_version_id,
+           controller_disabled_version_id, edge_baseline_version_id,
+           action_gate_inventory_sha256, action_gate_count,
+           all_action_gates_false, foundation_manifest_sha256,
+           runtime_build_id, ring_generation, shard_count, environment,
+           prepared_by_admin_id, activation_deadline_at,
+           execution_deadline_at, ticket_digest_sha256
+         ) VALUES (
+           ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+           ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21,
+           'cinatoken-container-controller-staging',
+           ?22, ?23, ?24, ?25, ?26, 22, 1, ?27, ?28, 7, 32,
+           'staging', 42, ?29, ?30, ?31
+         )`,
+      )
+      .run(
+        "0a".repeat(32),
+        "cinatoken-relay-container-shard-placement-execution-ticket-v1",
+        "a".repeat(64),
+        CAMPAIGN_ID,
+        "7".repeat(64),
+        "b".repeat(64),
+        "d".repeat(64),
+        "0b".repeat(32),
+        "0c".repeat(32),
+        "1b".repeat(32),
+        "0d".repeat(32),
+        "0e".repeat(32),
+        "0f".repeat(32),
+        "10".repeat(32),
+        "11".repeat(32),
+        "12".repeat(32),
+        "13".repeat(32),
+        "14".repeat(32),
+        "15".repeat(32),
+        "16".repeat(32),
+        "17".repeat(32),
+        "controller-disabled-v1",
+        input.controllerVersionId,
+        "controller-disabled-v1",
+        "edge-baseline-v1",
+        "8".repeat(64),
+        "9".repeat(64),
+        "1".repeat(64),
+        now + 240,
+        now + 600,
+        "18".repeat(32),
       );
     sqlite
       .query(
@@ -636,9 +755,12 @@ function insertPlacementAuthorization(sqlite: Database): void {
            action_gate_inventory_sha256, action_gate_count,
            all_action_gates_false, foundation_manifest_sha256,
            runtime_build_id, ring_generation, shard_count,
-           shard_contract_version, environment, created_by_admin_id,
+           shard_contract_version, runtime_protocol_version,
+           runtime_contract_version, activation_generation,
+           environment, created_by_admin_id,
            campaign_digest_sha256, created_at, expires_at
-         ) VALUES (?, ?, ?, ?, 22, 1, ?, ?, 7, 32, 1, 'staging', 42, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, 22, 1, ?, ?, 7, 32, 1, 1, 1, 1,
+                   'staging', 42, ?, ?, ?)`,
       )
       .run(
         CAMPAIGN_ID,
@@ -651,6 +773,63 @@ function insertPlacementAuthorization(sqlite: Database): void {
         now,
         now + 600,
       );
+    sqlite
+      .query(
+        `INSERT INTO relay_container_shard_placement_execution_ticket_activations (
+           ticket_id_sha256, contract_version, activation_contract,
+           authority_claim_digest_sha256,
+           authority_claim_acquired_receipt_sha256,
+           authority_claim_operation_id_sha256,
+           authority_activation_operation_id_sha256,
+           authority_database_identity_sha256,
+           authority_ledger_identity_sha256, authority_version_id,
+           activation_credential_id_sha256, activation_request_id_sha256,
+           activation_digest_sha256, activated_by_admin_id
+         ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 42)`,
+      )
+      .run(
+        "0a".repeat(32),
+        "cinatoken-relay-container-shard-placement-execution-ticket-activation-v1",
+        "19".repeat(32),
+        "1a".repeat(32),
+        "10".repeat(32),
+        "11".repeat(32),
+        "0c".repeat(32),
+        "1b".repeat(32),
+        "authority-version-v1",
+        "1c".repeat(32),
+        "1d".repeat(32),
+        "1e".repeat(32),
+      );
+    sqlite
+      .query(
+        `INSERT INTO relay_container_shard_placement_execution_ticket_authority_acks (
+           ticket_id_sha256, contract_version, acknowledgement_contract,
+           application_ticket_digest_sha256,
+           authority_claim_digest_sha256,
+           application_activation_digest_sha256,
+           authority_activation_terminal_receipt_sha256,
+           authority_ledger_head_sha256, authority_database_identity_sha256,
+           authority_version_id, authority_read_credential_id_sha256,
+           authority_read_request_id_sha256, acknowledgement_digest_sha256,
+           acknowledged_by_admin_id
+         ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 42)`,
+      )
+      .run(
+        "0a".repeat(32),
+        "cinatoken-relay-container-shard-placement-authority-ack-v1",
+        "18".repeat(32),
+        "19".repeat(32),
+        "1e".repeat(32),
+        "1f".repeat(32),
+        "20".repeat(32),
+        "0c".repeat(32),
+        "authority-version-v1",
+        "21".repeat(32),
+        "22".repeat(32),
+        "23".repeat(32),
+      );
+    }
   })();
 }
 

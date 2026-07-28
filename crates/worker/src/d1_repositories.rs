@@ -78,6 +78,8 @@ pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_EVENT_MIGRATION: &str =
     "0062_relay_container_shard_placement_events.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_MIGRATION: &str =
     "0063_relay_container_shard_placement_mutation_authorizations.sql";
+pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_EXECUTION_TICKET_MIGRATION: &str =
+    "0064_relay_container_shard_placement_execution_tickets.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT: i64 = 64;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
@@ -959,6 +961,9 @@ struct RelayContainerShardPlacementSchemaProbe {
     placement_columns: String,
     event_columns: String,
     authorization_columns: String,
+    ticket_columns: String,
+    ticket_activation_columns: String,
+    ticket_authority_ack_columns: String,
     schema_objects: String,
 }
 
@@ -1043,9 +1048,91 @@ pub struct RelayContainerShardPlacementMutationAuthorizationRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementExecutionTicket<'a> {
+    pub ticket_id_sha256: &'a str,
+    pub authorization_id_sha256: &'a str,
+    pub campaign_id: &'a str,
+    pub campaign_digest_sha256: &'a str,
+    pub execution_nonce_sha256: &'a str,
+    pub permit_subject_digest_sha256: &'a str,
+    pub application_database_identity_sha256: &'a str,
+    pub authority_database_identity_sha256: &'a str,
+    pub authority_ledger_identity_sha256: &'a str,
+    pub execution_plan_sha256: &'a str,
+    pub operation_schedule_sha256: &'a str,
+    pub preparation_operation_id_sha256: &'a str,
+    pub claim_operation_id_sha256: &'a str,
+    pub activation_operation_id_sha256: &'a str,
+    pub controller_enable_operation_id_sha256: &'a str,
+    pub controller_disable_operation_id_sha256: &'a str,
+    pub release_sha256: &'a str,
+    pub publication_sha256: &'a str,
+    pub execution_activation_sha256: &'a str,
+    pub runner_build_sha256: &'a str,
+    pub controller_baseline_version_id: &'a str,
+    pub controller_enabled_version_id: &'a str,
+    pub controller_disabled_version_id: &'a str,
+    pub edge_baseline_version_id: &'a str,
+    pub action_gate_inventory_sha256: &'a str,
+    pub foundation_manifest_sha256: &'a str,
+    pub runtime_build_id: &'a str,
+    pub ring_generation: i64,
+    pub shard_count: i64,
+    pub prepared_by_admin_id: i64,
+    pub activation_deadline_at: i64,
+    pub execution_deadline_at: i64,
+    pub ticket_digest_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementExecutionTicketRow {
+    pub ticket_id_sha256: String,
+    pub contract_version: i64,
+    pub ticket_contract: String,
+    pub authorization_id_sha256: String,
+    pub campaign_id: String,
+    pub campaign_digest_sha256: String,
+    pub execution_nonce_sha256: String,
+    pub permit_subject_digest_sha256: String,
+    pub application_database_identity_sha256: String,
+    pub authority_database_identity_sha256: String,
+    pub authority_ledger_identity_sha256: String,
+    pub execution_plan_sha256: String,
+    pub operation_schedule_sha256: String,
+    pub preparation_operation_id_sha256: String,
+    pub claim_operation_id_sha256: String,
+    pub activation_operation_id_sha256: String,
+    pub controller_enable_operation_id_sha256: String,
+    pub controller_disable_operation_id_sha256: String,
+    pub release_sha256: String,
+    pub publication_sha256: String,
+    pub execution_activation_sha256: String,
+    pub runner_build_sha256: String,
+    pub controller_service_name: String,
+    pub controller_baseline_version_id: String,
+    pub controller_enabled_version_id: String,
+    pub controller_disabled_version_id: String,
+    pub edge_baseline_version_id: String,
+    pub action_gate_inventory_sha256: String,
+    pub action_gate_count: i64,
+    pub all_action_gates_false: i64,
+    pub foundation_manifest_sha256: String,
+    pub runtime_build_id: String,
+    pub ring_generation: i64,
+    pub shard_count: i64,
+    pub environment: String,
+    pub prepared_by_admin_id: i64,
+    pub activation_deadline_at: i64,
+    pub execution_deadline_at: i64,
+    pub ticket_digest_sha256: String,
+    pub prepared_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayContainerShardActivationCampaignCreateResult {
     pub campaign: RelayContainerShardActivationCampaignStatusRow,
     pub authorization: RelayContainerShardPlacementMutationAuthorizationRow,
+    pub execution_ticket: RelayContainerShardPlacementExecutionTicketRow,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -1121,6 +1208,9 @@ struct RelayContainerShardActivationCampaignSchemaRow {
     consumption_columns: String,
     seal_columns: String,
     authorization_columns: String,
+    ticket_columns: String,
+    ticket_activation_columns: String,
+    ticket_authority_ack_columns: String,
     index_count: i64,
     trigger_count: i64,
 }
@@ -11333,9 +11423,13 @@ pub async fn relay_container_shard_activation_campaign_schema_ready(
     db: &D1Database,
 ) -> worker::Result<bool> {
     const AUTHORIZATION_COLUMNS: &str = "authorization_id_sha256,execution_nonce_sha256,campaign_nonce_sha256,subject_digest_sha256,contract_version,authorization_contract,issuer,key_id,signer_spki_sha256,environment,controller_service_name,controller_version_id,action_gate_inventory_sha256,foundation_manifest_sha256,runtime_build_id,ring_generation,shard_count,campaign_lifetime_seconds,permit_issued_at,permit_expires_at,campaign_id,campaign_digest_sha256,campaign_expires_at,consumed_by_admin_id,consumed_at";
+    const TICKET_COLUMNS: &str = "ticket_id_sha256,contract_version,ticket_contract,authorization_id_sha256,campaign_id,campaign_digest_sha256,execution_nonce_sha256,permit_subject_digest_sha256,application_database_identity_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,execution_plan_sha256,operation_schedule_sha256,preparation_operation_id_sha256,claim_operation_id_sha256,activation_operation_id_sha256,controller_enable_operation_id_sha256,controller_disable_operation_id_sha256,release_sha256,publication_sha256,execution_activation_sha256,runner_build_sha256,controller_service_name,controller_baseline_version_id,controller_enabled_version_id,controller_disabled_version_id,edge_baseline_version_id,action_gate_inventory_sha256,action_gate_count,all_action_gates_false,foundation_manifest_sha256,runtime_build_id,ring_generation,shard_count,environment,prepared_by_admin_id,activation_deadline_at,execution_deadline_at,ticket_digest_sha256,prepared_at";
+    const TICKET_ACTIVATION_COLUMNS: &str = "ticket_id_sha256,contract_version,activation_contract,authority_claim_digest_sha256,authority_claim_acquired_receipt_sha256,authority_claim_operation_id_sha256,authority_activation_operation_id_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,authority_version_id,activation_credential_id_sha256,activation_request_id_sha256,activation_digest_sha256,activated_by_admin_id,activated_at";
+    const TICKET_AUTHORITY_ACK_COLUMNS: &str = "ticket_id_sha256,contract_version,acknowledgement_contract,application_ticket_digest_sha256,authority_claim_digest_sha256,application_activation_digest_sha256,authority_activation_terminal_receipt_sha256,authority_ledger_head_sha256,authority_database_identity_sha256,authority_version_id,authority_read_credential_id_sha256,authority_read_request_id_sha256,acknowledgement_digest_sha256,acknowledged_by_admin_id,acknowledged_at";
     let migrations = [
         D1Type::Text(RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_EXECUTION_TICKET_MIGRATION),
     ];
     let row = db
         .prepare(
@@ -11343,7 +11437,7 @@ pub async fn relay_container_shard_activation_campaign_schema_ready(
             SELECT
               (SELECT COUNT(1)
                FROM d1_migrations
-               WHERE name IN (?1, ?2)) AS migration_count,
+               WHERE name IN (?1, ?2, ?3)) AS migration_count,
               (SELECT COUNT(1)
                FROM sqlite_master
                WHERE type = 'table'
@@ -11352,7 +11446,10 @@ pub async fn relay_container_shard_activation_campaign_schema_ready(
                     'relay_container_shard_activation_campaign_claims',
                     'relay_container_shard_activation_campaign_consumptions',
                     'relay_container_shard_activation_campaign_seals',
-                    'relay_container_shard_placement_mutation_authorizations'
+                    'relay_container_shard_placement_mutation_authorizations',
+                    'relay_container_shard_placement_execution_tickets',
+                    'relay_container_shard_placement_execution_ticket_activations',
+                    'relay_container_shard_placement_execution_ticket_authority_acks'
                   )) AS table_count,
               (SELECT COUNT(1)
                FROM sqlite_master
@@ -11381,11 +11478,32 @@ pub async fn relay_container_shard_activation_campaign_schema_ready(
                )) AS seal_columns,
               (SELECT group_concat(name, ',') FROM (
                  SELECT name
-                 FROM pragma_table_info(
+               FROM pragma_table_info(
                    'relay_container_shard_placement_mutation_authorizations'
                  )
                  ORDER BY cid
                )) AS authorization_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_shard_placement_execution_tickets'
+                 )
+                 ORDER BY cid
+               )) AS ticket_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_shard_placement_execution_ticket_activations'
+                 )
+                 ORDER BY cid
+               )) AS ticket_activation_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_shard_placement_execution_ticket_authority_acks'
+                 )
+                 ORDER BY cid
+               )) AS ticket_authority_ack_columns,
               (SELECT COUNT(1)
                FROM sqlite_master
                WHERE type = 'index'
@@ -11398,7 +11516,11 @@ pub async fn relay_container_shard_activation_campaign_schema_ready(
                     'idx_relay_container_shard_activation_campaign_consumptions_activation',
                     'idx_relay_container_shard_activation_campaign_consumptions_consumption',
                     'idx_relay_container_shard_activation_campaign_consumptions_instance',
-                    'idx_relay_container_shard_placement_authorizations_candidate'
+                    'idx_relay_container_shard_placement_authorizations_candidate',
+                    'idx_relay_container_shard_placement_execution_tickets_candidate',
+                    'idx_relay_container_shard_placement_execution_tickets_plan',
+                    'idx_relay_container_shard_placement_execution_ticket_activations_claim',
+                    'idx_relay_container_shard_placement_execution_ticket_authority_acks_claim'
                  )) AS index_count,
               (SELECT COUNT(1)
                FROM sqlite_master
@@ -11421,7 +11543,17 @@ pub async fn relay_container_shard_activation_campaign_schema_ready(
                    'relay_container_shard_activation_campaign_authorization_guard',
                    'relay_container_shard_placement_authorization_insert_guard',
                    'relay_container_shard_placement_authorization_update_guard',
-                   'relay_container_shard_placement_authorization_delete_guard'
+                   'relay_container_shard_placement_authorization_delete_guard',
+                   'relay_container_shard_placement_execution_ticket_insert_guard',
+                   'relay_container_shard_placement_execution_ticket_update_guard',
+                   'relay_container_shard_placement_execution_ticket_delete_guard',
+                   'relay_container_shard_placement_execution_ticket_activation_insert_guard',
+                   'relay_container_shard_placement_execution_ticket_activation_update_guard',
+                   'relay_container_shard_placement_execution_ticket_activation_delete_guard',
+                   'relay_container_shard_placement_execution_ticket_authority_ack_insert_guard',
+                   'relay_container_shard_placement_execution_ticket_authority_ack_update_guard',
+                   'relay_container_shard_placement_execution_ticket_authority_ack_delete_guard',
+                   'relay_container_shard_activation_campaign_claim_execution_ticket_guard'
                  )) AS trigger_count
             "#,
         )
@@ -11429,8 +11561,8 @@ pub async fn relay_container_shard_activation_campaign_schema_ready(
         .first::<RelayContainerShardActivationCampaignSchemaRow>(None)
         .await?;
     Ok(row.is_some_and(|row| {
-        row.migration_count == 2
-            && row.table_count == 5
+        row.migration_count == 3
+            && row.table_count == 8
             && row.view_count == 1
             && row.campaign_columns
                 == "campaign_id,campaign_nonce_sha256,controller_version_id,action_gate_inventory_sha256,action_gate_count,all_action_gates_false,foundation_manifest_sha256,runtime_build_id,ring_generation,shard_count,shard_contract_version,runtime_protocol_version,runtime_contract_version,activation_generation,environment,created_by_admin_id,campaign_digest_sha256,created_at,expires_at"
@@ -11441,8 +11573,11 @@ pub async fn relay_container_shard_activation_campaign_schema_ready(
             && row.seal_columns
                 == "campaign_id,campaign_digest_sha256,consumed_shard_count,seal_reason,seal_detail_code,last_consumption_digest_sha256,sealed_at"
             && row.authorization_columns == AUTHORIZATION_COLUMNS
-            && row.index_count == 9
-            && row.trigger_count == 18
+            && row.ticket_columns == TICKET_COLUMNS
+            && row.ticket_activation_columns == TICKET_ACTIVATION_COLUMNS
+            && row.ticket_authority_ack_columns == TICKET_AUTHORITY_ACK_COLUMNS
+            && row.index_count == 13
+            && row.trigger_count == 28
     }))
 }
 
@@ -11616,6 +11751,7 @@ pub async fn create_relay_container_shard_activation_campaign(
     db: &D1Database,
     campaign: &RelayContainerShardActivationCampaign<'_>,
     authorization: &RelayContainerShardPlacementMutationAuthorization<'_>,
+    execution_ticket: &RelayContainerShardPlacementExecutionTicket<'_>,
     admin_audit: worker::D1PreparedStatement,
 ) -> worker::Result<RelayContainerShardActivationCampaignCreateResult> {
     validate_relay_container_sha256(campaign.campaign_id, "shard activation campaign ID")?;
@@ -11659,6 +11795,71 @@ pub async fn create_relay_container_shard_activation_campaign(
         authorization.signer_spki_sha256,
         "shard placement authorization signer fingerprint",
     )?;
+    for (value, label) in [
+        (
+            execution_ticket.ticket_id_sha256,
+            "shard placement execution ticket ID",
+        ),
+        (
+            execution_ticket.application_database_identity_sha256,
+            "application D1 identity",
+        ),
+        (
+            execution_ticket.authority_database_identity_sha256,
+            "Authority D1 identity",
+        ),
+        (
+            execution_ticket.authority_ledger_identity_sha256,
+            "Authority ledger identity",
+        ),
+        (
+            execution_ticket.execution_plan_sha256,
+            "placement execution plan digest",
+        ),
+        (
+            execution_ticket.operation_schedule_sha256,
+            "placement operation schedule digest",
+        ),
+        (
+            execution_ticket.preparation_operation_id_sha256,
+            "placement preparation operation ID",
+        ),
+        (
+            execution_ticket.claim_operation_id_sha256,
+            "placement claim operation ID",
+        ),
+        (
+            execution_ticket.activation_operation_id_sha256,
+            "placement ticket activation operation ID",
+        ),
+        (
+            execution_ticket.controller_enable_operation_id_sha256,
+            "Controller enable operation ID",
+        ),
+        (
+            execution_ticket.controller_disable_operation_id_sha256,
+            "Controller disable operation ID",
+        ),
+        (execution_ticket.release_sha256, "placement release digest"),
+        (
+            execution_ticket.publication_sha256,
+            "placement publication digest",
+        ),
+        (
+            execution_ticket.execution_activation_sha256,
+            "placement execution activation digest",
+        ),
+        (
+            execution_ticket.runner_build_sha256,
+            "placement runner build digest",
+        ),
+        (
+            execution_ticket.ticket_digest_sha256,
+            "placement execution ticket digest",
+        ),
+    ] {
+        validate_relay_container_sha256(value, label)?;
+    }
     validate_relay_container_token(
         campaign.controller_version_id,
         "Controller version ID",
@@ -11741,6 +11942,74 @@ pub async fn create_relay_container_shard_activation_campaign(
             "shard placement mutation authorization is invalid".to_string(),
         ));
     }
+    for (value, label) in [
+        (
+            execution_ticket.controller_baseline_version_id,
+            "Controller baseline version ID",
+        ),
+        (
+            execution_ticket.controller_enabled_version_id,
+            "Controller enabled version ID",
+        ),
+        (
+            execution_ticket.controller_disabled_version_id,
+            "Controller disabled version ID",
+        ),
+        (
+            execution_ticket.edge_baseline_version_id,
+            "edge baseline version ID",
+        ),
+    ] {
+        validate_relay_container_token(value, label, 1, 128, |byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+        })?;
+        if !value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        {
+            return Err(worker::Error::RustError(
+                "shard placement execution ticket deployment identity is invalid".to_string(),
+            ));
+        }
+    }
+    let ticket_operation_ids = [
+        execution_ticket.preparation_operation_id_sha256,
+        execution_ticket.claim_operation_id_sha256,
+        execution_ticket.activation_operation_id_sha256,
+        execution_ticket.controller_enable_operation_id_sha256,
+        execution_ticket.controller_disable_operation_id_sha256,
+    ];
+    if execution_ticket.authorization_id_sha256 != authorization.authorization_id_sha256
+        || execution_ticket.campaign_id != campaign.campaign_id
+        || execution_ticket.campaign_digest_sha256 != campaign.campaign_digest_sha256
+        || execution_ticket.execution_nonce_sha256 != authorization.execution_nonce_sha256
+        || execution_ticket.permit_subject_digest_sha256 != authorization.subject_digest_sha256
+        || execution_ticket.controller_enabled_version_id != campaign.controller_version_id
+        || execution_ticket.controller_enabled_version_id
+            == execution_ticket.controller_baseline_version_id
+        || execution_ticket.controller_enabled_version_id
+            == execution_ticket.controller_disabled_version_id
+        || execution_ticket.action_gate_inventory_sha256 != campaign.action_gate_inventory_sha256
+        || execution_ticket.foundation_manifest_sha256 != campaign.foundation_manifest_sha256
+        || execution_ticket.runtime_build_id != campaign.runtime_build_id
+        || execution_ticket.ring_generation != campaign.ring_generation
+        || execution_ticket.shard_count != campaign.shard_count
+        || execution_ticket.prepared_by_admin_id != campaign.created_by_admin_id
+        || execution_ticket.activation_deadline_at <= campaign.created_at
+        || execution_ticket.activation_deadline_at > authorization.permit_expires_at
+        || execution_ticket.activation_deadline_at > campaign.expires_at
+        || execution_ticket.execution_deadline_at != campaign.expires_at
+        || ticket_operation_ids
+            .iter()
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            != ticket_operation_ids.len()
+    {
+        return Err(worker::Error::RustError(
+            "shard placement execution ticket is invalid".to_string(),
+        ));
+    }
 
     let ring_generation = campaign.ring_generation.to_string();
     let shard_count = campaign.shard_count.to_string();
@@ -11808,6 +12077,46 @@ pub async fn create_relay_container_shard_activation_campaign(
         D1Type::Text(&campaign_expires_at),
         D1Type::Text(&consumed_by_admin_id),
     ];
+    let ticket_ring_generation = execution_ticket.ring_generation.to_string();
+    let ticket_shard_count = execution_ticket.shard_count.to_string();
+    let ticket_prepared_by_admin_id = execution_ticket.prepared_by_admin_id.to_string();
+    let ticket_activation_deadline_at = execution_ticket.activation_deadline_at.to_string();
+    let ticket_execution_deadline_at = execution_ticket.execution_deadline_at.to_string();
+    let execution_ticket_args = [
+        D1Type::Text(execution_ticket.ticket_id_sha256),
+        D1Type::Text(execution_ticket.authorization_id_sha256),
+        D1Type::Text(execution_ticket.campaign_id),
+        D1Type::Text(execution_ticket.campaign_digest_sha256),
+        D1Type::Text(execution_ticket.execution_nonce_sha256),
+        D1Type::Text(execution_ticket.permit_subject_digest_sha256),
+        D1Type::Text(execution_ticket.application_database_identity_sha256),
+        D1Type::Text(execution_ticket.authority_database_identity_sha256),
+        D1Type::Text(execution_ticket.authority_ledger_identity_sha256),
+        D1Type::Text(execution_ticket.execution_plan_sha256),
+        D1Type::Text(execution_ticket.operation_schedule_sha256),
+        D1Type::Text(execution_ticket.preparation_operation_id_sha256),
+        D1Type::Text(execution_ticket.claim_operation_id_sha256),
+        D1Type::Text(execution_ticket.activation_operation_id_sha256),
+        D1Type::Text(execution_ticket.controller_enable_operation_id_sha256),
+        D1Type::Text(execution_ticket.controller_disable_operation_id_sha256),
+        D1Type::Text(execution_ticket.release_sha256),
+        D1Type::Text(execution_ticket.publication_sha256),
+        D1Type::Text(execution_ticket.execution_activation_sha256),
+        D1Type::Text(execution_ticket.runner_build_sha256),
+        D1Type::Text(execution_ticket.controller_baseline_version_id),
+        D1Type::Text(execution_ticket.controller_enabled_version_id),
+        D1Type::Text(execution_ticket.controller_disabled_version_id),
+        D1Type::Text(execution_ticket.edge_baseline_version_id),
+        D1Type::Text(execution_ticket.action_gate_inventory_sha256),
+        D1Type::Text(execution_ticket.foundation_manifest_sha256),
+        D1Type::Text(execution_ticket.runtime_build_id),
+        D1Type::Text(&ticket_ring_generation),
+        D1Type::Text(&ticket_shard_count),
+        D1Type::Text(&ticket_prepared_by_admin_id),
+        D1Type::Text(&ticket_activation_deadline_at),
+        D1Type::Text(&ticket_execution_deadline_at),
+        D1Type::Text(execution_ticket.ticket_digest_sha256),
+    ];
     let authorization_insert = db
         .prepare(
             r#"
@@ -11831,6 +12140,43 @@ pub async fn create_relay_container_shard_activation_campaign(
             "#,
         )
         .bind_refs(&authorization_args)?;
+    let execution_ticket_insert = db
+        .prepare(
+            r#"
+            INSERT INTO relay_container_shard_placement_execution_tickets (
+              ticket_id_sha256, contract_version, ticket_contract,
+              authorization_id_sha256, campaign_id, campaign_digest_sha256,
+              execution_nonce_sha256, permit_subject_digest_sha256,
+              application_database_identity_sha256,
+              authority_database_identity_sha256,
+              authority_ledger_identity_sha256, execution_plan_sha256,
+              operation_schedule_sha256, preparation_operation_id_sha256,
+              claim_operation_id_sha256, activation_operation_id_sha256,
+              controller_enable_operation_id_sha256,
+              controller_disable_operation_id_sha256, release_sha256,
+              publication_sha256, execution_activation_sha256,
+              runner_build_sha256, controller_service_name,
+              controller_baseline_version_id, controller_enabled_version_id,
+              controller_disabled_version_id, edge_baseline_version_id,
+              action_gate_inventory_sha256, action_gate_count,
+              all_action_gates_false, foundation_manifest_sha256,
+              runtime_build_id, ring_generation, shard_count, environment,
+              prepared_by_admin_id, activation_deadline_at,
+              execution_deadline_at, ticket_digest_sha256
+            ) VALUES (
+              ?1, 1,
+              'cinatoken-relay-container-shard-placement-execution-ticket-v1',
+              ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+              ?15, ?16, ?17, ?18, ?19, ?20,
+              'cinatoken-container-controller-staging',
+              ?21, ?22, ?23, ?24, ?25, 22, 1, ?26, ?27,
+              CAST(?28 AS INTEGER), CAST(?29 AS INTEGER), 'staging',
+              CAST(?30 AS INTEGER), CAST(?31 AS INTEGER),
+              CAST(?32 AS INTEGER), ?33
+            )
+            "#,
+        )
+        .bind_refs(&execution_ticket_args)?;
     let campaign_insert = db
         .prepare(
             r#"
@@ -11858,24 +12204,42 @@ pub async fn create_relay_container_shard_activation_campaign(
         db,
         authorization.authorization_id_sha256,
     )?;
+    let execution_ticket_readback = relay_container_shard_placement_execution_ticket_statement(
+        db,
+        execution_ticket.ticket_id_sha256,
+    )?;
     let mut results = db
         .batch(vec![
             authorization_insert,
+            execution_ticket_insert,
             campaign_insert,
             admin_audit,
             campaign_readback,
             authorization_readback,
+            execution_ticket_readback,
         ])
         .await?;
-    if results.len() != 5
+    if results.len() != 7
         || !batch_changed(&results, 0)?
         || !batch_changed(&results, 1)?
         || !batch_changed(&results, 2)?
+        || !batch_changed(&results, 3)?
     {
         return Err(worker::Error::RustError(
             "shard activation campaign batch returned an invalid result".to_string(),
         ));
     }
+    let execution_ticket = results
+        .pop()
+        .expect("execution ticket readback result exists")
+        .results::<RelayContainerShardPlacementExecutionTicketRow>()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement execution ticket readback is missing".to_string(),
+            )
+        })?;
     let authorization = results
         .pop()
         .expect("authorization readback result exists")
@@ -11899,7 +12263,41 @@ pub async fn create_relay_container_shard_activation_campaign(
     Ok(RelayContainerShardActivationCampaignCreateResult {
         campaign,
         authorization,
+        execution_ticket,
     })
+}
+
+fn relay_container_shard_placement_execution_ticket_statement(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    db.prepare(
+        r#"
+        SELECT ticket_id_sha256, contract_version, ticket_contract,
+               authorization_id_sha256, campaign_id, campaign_digest_sha256,
+               execution_nonce_sha256, permit_subject_digest_sha256,
+               application_database_identity_sha256,
+               authority_database_identity_sha256,
+               authority_ledger_identity_sha256, execution_plan_sha256,
+               operation_schedule_sha256, preparation_operation_id_sha256,
+               claim_operation_id_sha256, activation_operation_id_sha256,
+               controller_enable_operation_id_sha256,
+               controller_disable_operation_id_sha256, release_sha256,
+               publication_sha256, execution_activation_sha256,
+               runner_build_sha256, controller_service_name,
+               controller_baseline_version_id, controller_enabled_version_id,
+               controller_disabled_version_id, edge_baseline_version_id,
+               action_gate_inventory_sha256, action_gate_count,
+               all_action_gates_false, foundation_manifest_sha256,
+               runtime_build_id, ring_generation, shard_count, environment,
+               prepared_by_admin_id, activation_deadline_at,
+               execution_deadline_at, ticket_digest_sha256, prepared_at
+        FROM relay_container_shard_placement_execution_tickets
+        WHERE ticket_id_sha256 = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&D1Type::Text(ticket_id_sha256))
 }
 
 fn relay_container_shard_placement_authorization_statement(
@@ -12083,11 +12481,15 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
     const PLACEMENT_COLUMNS: &str = "placement_attestation_digest_sha256,contract_version,environment,controller_service_name,controller_version_id,durable_object_namespace_binding,durable_object_class,jurisdiction,canonical_name_sha256,object_id_sha256,shard_contract_version,ring_generation,shard_count,shard_index,instance_name,activation_id,campaign_id,claim_digest_sha256,readiness_result_sha256,activation_digest_sha256,consumption_digest_sha256,recorded_at";
     const EVENT_COLUMNS: &str = "placement_event_sequence,placement_attestation_digest_sha256,controller_version_id,ring_generation,campaign_id,activation_id";
     const AUTHORIZATION_COLUMNS: &str = "authorization_id_sha256,execution_nonce_sha256,campaign_nonce_sha256,subject_digest_sha256,contract_version,authorization_contract,issuer,key_id,signer_spki_sha256,environment,controller_service_name,controller_version_id,action_gate_inventory_sha256,foundation_manifest_sha256,runtime_build_id,ring_generation,shard_count,campaign_lifetime_seconds,permit_issued_at,permit_expires_at,campaign_id,campaign_digest_sha256,campaign_expires_at,consumed_by_admin_id,consumed_at";
-    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_shard_placement_attestations_candidate|index:idx_relay_container_shard_placement_attestations_object|index:idx_relay_container_shard_placement_authorizations_candidate|index:idx_relay_container_shard_placement_events_candidate|table:relay_container_shard_placement_attestations|table:relay_container_shard_placement_events|table:relay_container_shard_placement_mutation_authorizations|trigger:relay_container_shard_activation_campaign_authorization_guard|trigger:relay_container_shard_placement_attestation_delete_guard|trigger:relay_container_shard_placement_attestation_event_append|trigger:relay_container_shard_placement_attestation_insert_guard|trigger:relay_container_shard_placement_attestation_update_guard|trigger:relay_container_shard_placement_authorization_delete_guard|trigger:relay_container_shard_placement_authorization_insert_guard|trigger:relay_container_shard_placement_authorization_update_guard|trigger:relay_container_shard_placement_event_delete_guard|trigger:relay_container_shard_placement_event_insert_guard|trigger:relay_container_shard_placement_event_update_guard";
+    const TICKET_COLUMNS: &str = "ticket_id_sha256,contract_version,ticket_contract,authorization_id_sha256,campaign_id,campaign_digest_sha256,execution_nonce_sha256,permit_subject_digest_sha256,application_database_identity_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,execution_plan_sha256,operation_schedule_sha256,preparation_operation_id_sha256,claim_operation_id_sha256,activation_operation_id_sha256,controller_enable_operation_id_sha256,controller_disable_operation_id_sha256,release_sha256,publication_sha256,execution_activation_sha256,runner_build_sha256,controller_service_name,controller_baseline_version_id,controller_enabled_version_id,controller_disabled_version_id,edge_baseline_version_id,action_gate_inventory_sha256,action_gate_count,all_action_gates_false,foundation_manifest_sha256,runtime_build_id,ring_generation,shard_count,environment,prepared_by_admin_id,activation_deadline_at,execution_deadline_at,ticket_digest_sha256,prepared_at";
+    const TICKET_ACTIVATION_COLUMNS: &str = "ticket_id_sha256,contract_version,activation_contract,authority_claim_digest_sha256,authority_claim_acquired_receipt_sha256,authority_claim_operation_id_sha256,authority_activation_operation_id_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,authority_version_id,activation_credential_id_sha256,activation_request_id_sha256,activation_digest_sha256,activated_by_admin_id,activated_at";
+    const TICKET_AUTHORITY_ACK_COLUMNS: &str = "ticket_id_sha256,contract_version,acknowledgement_contract,application_ticket_digest_sha256,authority_claim_digest_sha256,application_activation_digest_sha256,authority_activation_terminal_receipt_sha256,authority_ledger_head_sha256,authority_database_identity_sha256,authority_version_id,authority_read_credential_id_sha256,authority_read_request_id_sha256,acknowledgement_digest_sha256,acknowledged_by_admin_id,acknowledged_at";
+    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_shard_placement_attestations_candidate|index:idx_relay_container_shard_placement_attestations_object|index:idx_relay_container_shard_placement_authorizations_candidate|index:idx_relay_container_shard_placement_events_candidate|index:idx_relay_container_shard_placement_execution_ticket_activations_claim|index:idx_relay_container_shard_placement_execution_ticket_authority_acks_claim|index:idx_relay_container_shard_placement_execution_tickets_candidate|index:idx_relay_container_shard_placement_execution_tickets_plan|table:relay_container_shard_placement_attestations|table:relay_container_shard_placement_events|table:relay_container_shard_placement_execution_ticket_activations|table:relay_container_shard_placement_execution_ticket_authority_acks|table:relay_container_shard_placement_execution_tickets|table:relay_container_shard_placement_mutation_authorizations|trigger:relay_container_shard_activation_campaign_authorization_guard|trigger:relay_container_shard_activation_campaign_claim_execution_ticket_guard|trigger:relay_container_shard_placement_attestation_delete_guard|trigger:relay_container_shard_placement_attestation_event_append|trigger:relay_container_shard_placement_attestation_insert_guard|trigger:relay_container_shard_placement_attestation_update_guard|trigger:relay_container_shard_placement_authorization_delete_guard|trigger:relay_container_shard_placement_authorization_insert_guard|trigger:relay_container_shard_placement_authorization_update_guard|trigger:relay_container_shard_placement_event_delete_guard|trigger:relay_container_shard_placement_event_insert_guard|trigger:relay_container_shard_placement_event_update_guard|trigger:relay_container_shard_placement_execution_ticket_activation_delete_guard|trigger:relay_container_shard_placement_execution_ticket_activation_insert_guard|trigger:relay_container_shard_placement_execution_ticket_activation_update_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_delete_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_insert_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_update_guard|trigger:relay_container_shard_placement_execution_ticket_delete_guard|trigger:relay_container_shard_placement_execution_ticket_insert_guard|trigger:relay_container_shard_placement_execution_ticket_update_guard";
     let migrations = [
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_ATTESTATION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_EVENT_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_EXECUTION_TICKET_MIGRATION),
     ];
     let row = db
         .prepare(
@@ -12095,7 +12497,7 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
             SELECT
               (SELECT COUNT(1)
                FROM d1_migrations
-               WHERE name IN (?1, ?2, ?3)) AS migration_count,
+               WHERE name IN (?1, ?2, ?3, ?4)) AS migration_count,
               (SELECT group_concat(name, ',') FROM (
                  SELECT name
                  FROM pragma_table_info(
@@ -12115,6 +12517,27 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
                  )
                  ORDER BY cid
                )) AS authorization_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_shard_placement_execution_tickets'
+                 )
+                 ORDER BY cid
+               )) AS ticket_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_shard_placement_execution_ticket_activations'
+                 )
+                 ORDER BY cid
+               )) AS ticket_activation_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_shard_placement_execution_ticket_authority_acks'
+                 )
+                 ORDER BY cid
+               )) AS ticket_authority_ack_columns,
               (SELECT group_concat(type || ':' || name, '|') FROM (
                  SELECT type, name
                  FROM sqlite_master
@@ -12122,10 +12545,15 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
                    tbl_name IN (
                      'relay_container_shard_placement_attestations',
                      'relay_container_shard_placement_events',
-                     'relay_container_shard_placement_mutation_authorizations'
+                     'relay_container_shard_placement_mutation_authorizations',
+                     'relay_container_shard_placement_execution_tickets',
+                     'relay_container_shard_placement_execution_ticket_activations',
+                     'relay_container_shard_placement_execution_ticket_authority_acks'
                    )
-                   OR name =
-                        'relay_container_shard_activation_campaign_authorization_guard'
+                   OR name IN (
+                        'relay_container_shard_activation_campaign_authorization_guard',
+                        'relay_container_shard_activation_campaign_claim_execution_ticket_guard'
+                   )
                  )
                    AND name NOT LIKE 'sqlite_autoindex_%'
                  ORDER BY type || ':' || name
@@ -12136,10 +12564,13 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
         .first::<RelayContainerShardPlacementSchemaProbe>(None)
         .await?;
     Ok(row.is_some_and(|row| {
-        row.migration_count == 3
+        row.migration_count == 4
             && row.placement_columns == PLACEMENT_COLUMNS
             && row.event_columns == EVENT_COLUMNS
             && row.authorization_columns == AUTHORIZATION_COLUMNS
+            && row.ticket_columns == TICKET_COLUMNS
+            && row.ticket_activation_columns == TICKET_ACTIVATION_COLUMNS
+            && row.ticket_authority_ack_columns == TICKET_AUTHORITY_ACK_COLUMNS
             && row.schema_objects == SCHEMA_OBJECTS
     }))
 }

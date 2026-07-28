@@ -45,6 +45,9 @@ export interface AuthorityEnv extends ShardPlacementAuthoritySecurityEnv {
   SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: string;
+  SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: string;
+  SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: string;
 }
 
 const AUTHORIZATION_ID_PATH =
@@ -101,6 +104,12 @@ export default {
             rollback: env.SHARD_PLACEMENT_ROLLBACK_SPKI_SHA256,
           },
           authorityVersionId: env.CF_VERSION_METADATA.id,
+          applicationDatabaseIdentitySha256:
+            env.SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256,
+          authorityDatabaseIdentitySha256:
+            env.SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256,
+          authorityLedgerIdentitySha256:
+            env.SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256,
         });
       }
 
@@ -141,6 +150,19 @@ export default {
           body,
           authentication,
         );
+        if (
+          claim.applicationDatabaseIdentitySha256
+            !== env.SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256
+          || claim.authorityDatabaseIdentitySha256
+            !== env.SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256
+          || claim.ledgerIdentitySha256
+            !== env.SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256
+        ) {
+          throw new ProtocolError(
+            "execution_claim_database_identity_mismatch",
+            403,
+          );
+        }
         const result = await createExecutionClaim(env.DB, claim);
         return jsonResponse(
           result.classification === "created" ? 201 : 200,
@@ -196,6 +218,10 @@ export default {
               result.claim.ledger_head_sha256,
             receiptDigestSha256:
               result.receipt.receipt_digest_sha256,
+            applicationActivationDigestSha256:
+              result.claim.application_activation_digest_sha256,
+            ticketActivationConfirmed:
+              result.claim.ticket_activation_confirmed === 1,
             authorityVersionId: env.CF_VERSION_METADATA.id,
           },
         );
@@ -499,7 +525,7 @@ function requireRouteGate(
 }
 
 export function validateRuntimeTrustConfiguration(
-  env: ShardPlacementAuthoritySecurityEnv,
+  env: AuthorityEnv,
 ): void {
   const policyIdentity = [
     env.SHARD_PLACEMENT_AUTHORITY_POLICY_ID,
@@ -532,6 +558,17 @@ export function validateRuntimeTrustConfiguration(
     || new Set(fingerprints.slice(1)).size !== 5
   ) {
     throw new ProtocolError("authority_trust_unavailable", 503);
+  }
+  const databaseIdentities = [
+    env.SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256,
+    env.SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256,
+    env.SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256,
+  ];
+  if (
+    databaseIdentities.some((value) => !SHA256.test(value))
+    || new Set(databaseIdentities).size !== databaseIdentities.length
+  ) {
+    throw new ProtocolError("authority_database_identity_unavailable", 503);
   }
   requireHmacCredentialIsolation(env);
 }
@@ -635,6 +672,14 @@ function publicExecutionSnapshot(
       permitSubjectDigestSha256:
         row.permit_subject_digest_sha256,
       executionNonceSha256: row.execution_nonce_sha256,
+      applicationTicketIdSha256:
+        row.application_ticket_id_sha256,
+      applicationTicketDigestSha256:
+        row.application_ticket_digest_sha256,
+      applicationDatabaseIdentitySha256:
+        row.application_database_identity_sha256,
+      authorityDatabaseIdentitySha256:
+        row.authority_database_identity_sha256,
       campaignId: row.campaign_id,
       campaignNonceSha256: row.campaign_nonce_sha256,
       claimScope: row.claim_scope,
@@ -651,6 +696,8 @@ function publicExecutionSnapshot(
         row.baseline_operation_id_sha256,
       baselineTerminalReceiptSha256:
         row.baseline_terminal_digest_sha256,
+      preparationOperationIdSha256:
+        row.preparation_operation_id_sha256,
       claimOperationIdSha256: row.claim_operation_id_sha256,
       operationScheduleSha256:
         row.operation_schedule_sha256,
@@ -679,6 +726,10 @@ function publicExecutionSnapshot(
         row.enable_intent_seen === 1,
       controllerDisabledVerified:
         row.disable_confirmed === 1,
+      applicationActivationDigestSha256:
+        row.application_activation_digest_sha256,
+      ticketActivationConfirmed:
+        row.ticket_activation_confirmed === 1,
       renewalCount: row.renewal_count,
       takeoverCount: row.takeover_count,
       updatedAt: row.updated_at,
@@ -736,8 +787,8 @@ function nextExecutionOperation(
   ) {
     return null;
   }
-  if (row.status === "disable_required") return 13;
-  return Math.min(row.last_completed_ordinal + 1, 13);
+  if (row.status === "disable_required") return 14;
+  return Math.min(row.last_completed_ordinal + 1, 14);
 }
 
 function publicIssuance(row: IssuanceRow): Record<string, unknown> {

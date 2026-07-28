@@ -265,7 +265,12 @@ describe("shard placement Authority protocol", () => {
     );
     expect(claim.operations).toHaveLength(11);
     expect(claim.operations[0]).toMatchObject({
-      ordinal: 3,
+      ordinal: 4,
+      kind: "activate_execution_ticket",
+      shardIndex: null,
+    });
+    expect(claim.operations[1]).toMatchObject({
+      ordinal: 5,
       kind: "enable_controller_deployment",
       shardIndex: null,
     });
@@ -273,7 +278,7 @@ describe("shard placement Authority protocol", () => {
       (operation) => operation.shardIndex,
     )).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
     expect(claim.operations[10]).toMatchObject({
-      ordinal: 13,
+      ordinal: 14,
       kind: "disable_controller_deployment",
       shardIndex: null,
     });
@@ -303,7 +308,7 @@ describe("shard placement Authority protocol", () => {
     const started = await placementExecutionReceipt({
       claim: claimFixture.value,
       sequence: 2,
-      operationOrdinal: 3,
+      operationOrdinal: 4,
       eventKind: "operation_started",
     });
     expect(await parseExecutionReceipt(
@@ -389,7 +394,7 @@ describe("shard placement Authority protocol", () => {
       eventKind: "lease_renewed",
       leaseGeneration: 1,
       leaseTokenSha256: claimFixture.value.leaseTokenSha256,
-      operationOrdinal: 2,
+      operationOrdinal: 3,
       operationKind: "create_authority_claim",
     });
     await expect(parseExecutionReceipt(
@@ -443,7 +448,7 @@ describe("shard placement Authority protocol", () => {
       new Set(["safety_diverted"]),
     )).resolves.toMatchObject({
       eventKind: "safety_diverted",
-      operationOrdinal: 13,
+      operationOrdinal: 14,
       operationKind: "disable_controller_deployment",
       outcome: "disable_required",
       safetyReason: "lease_revoked",

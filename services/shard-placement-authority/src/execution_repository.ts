@@ -13,6 +13,10 @@ const CLAIM_COLUMNS = [
   "authorization_id_sha256",
   "permit_subject_digest_sha256",
   "execution_nonce_sha256",
+  "application_ticket_id_sha256",
+  "application_ticket_digest_sha256",
+  "application_database_identity_sha256",
+  "authority_database_identity_sha256",
   "campaign_id",
   "campaign_nonce_sha256",
   "claim_scope",
@@ -29,6 +33,7 @@ const CLAIM_COLUMNS = [
   "lease_expires_at",
   "baseline_operation_id_sha256",
   "baseline_terminal_digest_sha256",
+  "preparation_operation_id_sha256",
   "claim_operation_id_sha256",
   "operation_schedule_sha256",
   "claim_credential_id_sha256",
@@ -52,6 +57,8 @@ const CLAIM_COLUMNS = [
   "inflight_readback_only",
   "enable_intent_seen",
   "disable_confirmed",
+  "application_activation_digest_sha256",
+  "ticket_activation_confirmed",
   "renewal_count",
   "takeover_count",
   "generated_at",
@@ -131,13 +138,17 @@ SELECT
 const INSERT_CLAIM_SQL = `
 INSERT INTO shard_placement_authority_execution_claims (
   authorization_id_sha256, permit_subject_digest_sha256,
-  execution_nonce_sha256, campaign_id, campaign_nonce_sha256,
+  execution_nonce_sha256, application_ticket_id_sha256,
+  application_ticket_digest_sha256,
+  application_database_identity_sha256,
+  authority_database_identity_sha256, campaign_id, campaign_nonce_sha256,
   claim_scope, execution_plan_sha256, release_sha256,
   publication_sha256, execution_activation_sha256,
   runner_build_sha256, claim_owner_sha256, lease_owner_sha256,
   ledger_identity_sha256, lease_token_sha256, lease_generation,
   lease_expires_at, baseline_operation_id_sha256,
-  baseline_terminal_digest_sha256, claim_operation_id_sha256,
+  baseline_terminal_digest_sha256, preparation_operation_id_sha256,
+  claim_operation_id_sha256,
   operation_schedule_sha256, claim_credential_id_sha256,
   claim_request_id_sha256, claim_digest_sha256,
   claim_acquired_receipt_digest_sha256, permit_expires_at,
@@ -145,10 +156,10 @@ INSERT INTO shard_placement_authority_execution_claims (
   generated_at, claimed_at, updated_at
 )
 SELECT
-  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12,
-  ?13, ?14, 1, unixepoch() + 60, ?15, ?16, ?17, ?18, ?19,
-  ?20, ?21, ?22, issuance.permit_expires_at, ?23,
-  issuance.permit_expires_at + 600, ?16, ?24, unixepoch(),
+  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+  ?15, ?16, ?16, ?17, ?18, 1, unixepoch() + 60, ?19, ?20, ?21, ?22,
+  ?23, ?24, ?25, ?26, ?27, issuance.permit_expires_at, ?28,
+  issuance.permit_expires_at + 600, ?20, ?29, unixepoch(),
   unixepoch()
 FROM shard_placement_authority_issuances AS issuance
 LEFT JOIN shard_placement_authority_revocations AS revocation
@@ -157,8 +168,8 @@ LEFT JOIN shard_placement_authority_revocations AS revocation
 WHERE issuance.authorization_id_sha256 = ?1
   AND issuance.permit_subject_digest_sha256 = ?2
   AND issuance.execution_nonce_sha256 = ?3
-  AND issuance.campaign_id = ?4
-  AND issuance.campaign_nonce_sha256 = ?5
+  AND issuance.campaign_id = ?8
+  AND issuance.campaign_nonce_sha256 = ?9
   AND issuance.environment = 'staging'
   AND issuance.shard_count = 8
   AND revocation.authorization_id_sha256 IS NULL
@@ -210,6 +221,10 @@ export interface ExecutionClaimRow {
   authorization_id_sha256: string;
   permit_subject_digest_sha256: string;
   execution_nonce_sha256: string;
+  application_ticket_id_sha256: string;
+  application_ticket_digest_sha256: string;
+  application_database_identity_sha256: string;
+  authority_database_identity_sha256: string;
   campaign_id: string;
   campaign_nonce_sha256: string;
   claim_scope: string;
@@ -226,6 +241,7 @@ export interface ExecutionClaimRow {
   lease_expires_at: number;
   baseline_operation_id_sha256: string;
   baseline_terminal_digest_sha256: string;
+  preparation_operation_id_sha256: string;
   claim_operation_id_sha256: string;
   operation_schedule_sha256: string;
   claim_credential_id_sha256: string;
@@ -249,6 +265,8 @@ export interface ExecutionClaimRow {
   inflight_readback_only: number;
   enable_intent_seen: number;
   disable_confirmed: number;
+  application_activation_digest_sha256: string | null;
+  ticket_activation_confirmed: number;
   renewal_count: number;
   takeover_count: number;
   generated_at: number;
@@ -315,6 +333,10 @@ export async function createExecutionClaim(
         claim.authorizationIdSha256,
         claim.permitSubjectDigestSha256,
         claim.executionNonceSha256,
+        claim.applicationTicketIdSha256,
+        claim.applicationTicketDigestSha256,
+        claim.applicationDatabaseIdentitySha256,
+        claim.authorityDatabaseIdentitySha256,
         claim.campaignId,
         claim.campaignNonceSha256,
         claim.claimScope,
@@ -328,6 +350,7 @@ export async function createExecutionClaim(
         claim.leaseTokenSha256,
         claim.baselineOperationIdSha256,
         claim.baselineTerminalReceiptSha256,
+        claim.preparationOperationIdSha256,
         claim.claimOperationIdSha256,
         claim.operationScheduleSha256,
         claim.claimCredentialIdSha256,
@@ -666,6 +689,14 @@ function matchesClaimSnapshot(
     && row.permit_subject_digest_sha256
       === claim.permitSubjectDigestSha256
     && row.execution_nonce_sha256 === claim.executionNonceSha256
+    && row.application_ticket_id_sha256
+      === claim.applicationTicketIdSha256
+    && row.application_ticket_digest_sha256
+      === claim.applicationTicketDigestSha256
+    && row.application_database_identity_sha256
+      === claim.applicationDatabaseIdentitySha256
+    && row.authority_database_identity_sha256
+      === claim.authorityDatabaseIdentitySha256
     && row.campaign_id === claim.campaignId
     && row.campaign_nonce_sha256 === claim.campaignNonceSha256
     && row.claim_scope === claim.claimScope
@@ -681,6 +712,8 @@ function matchesClaimSnapshot(
       === claim.baselineOperationIdSha256
     && row.baseline_terminal_digest_sha256
       === claim.baselineTerminalReceiptSha256
+    && row.preparation_operation_id_sha256
+      === claim.preparationOperationIdSha256
     && row.claim_operation_id_sha256
       === claim.claimOperationIdSha256
     && row.operation_schedule_sha256

@@ -1104,8 +1104,8 @@ function selfTestRequest() {
       ringGeneration: 1,
       shardCount: 8,
       migrationHead:
-        "0063_relay_container_shard_placement_mutation_authorizations.sql",
-      migrationCount: 63,
+        "0064_relay_container_shard_placement_execution_tickets.sql",
+      migrationCount: 64,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,

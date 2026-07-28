@@ -9,7 +9,7 @@ pub const PLACEMENT_RUNNER_CONTRACT: &str = "cinatoken-relay-container-shard-pla
 pub const INITIAL_STAGING_SHARD_COUNT: u16 = 8;
 pub const MUTATION_SEND_ATTEMPTS: u8 = 1;
 pub const MUTATION_RETRY_LIMIT: u8 = 0;
-pub const MUTATION_OPERATION_COUNT: usize = 13;
+pub const MUTATION_OPERATION_COUNT: usize = 14;
 pub const RECEIPT_RECORDS_PER_OPERATION: usize = 2;
 pub const RECEIPT_RECORD_LIMIT: usize = 128;
 pub const CONTROLLER_ACTION_GATE_COUNT: u16 = 22;
@@ -29,6 +29,10 @@ pub struct PlacementExecutionPlan {
     pub authorization_id_sha256: String,
     pub execution_nonce_sha256: String,
     pub permit_subject_digest_sha256: String,
+    pub execution_ticket_id_sha256: String,
+    pub execution_ticket_digest_sha256: String,
+    pub application_database_identity_sha256: String,
+    pub authority_database_identity_sha256: String,
     pub campaign_id: String,
     pub campaign_nonce_sha256: String,
     pub claim_owner: String,
@@ -96,6 +100,22 @@ impl PlacementExecutionPlan {
                 "permit_subject_digest_sha256",
                 self.permit_subject_digest_sha256.as_str(),
             ),
+            (
+                "execution_ticket_id_sha256",
+                self.execution_ticket_id_sha256.as_str(),
+            ),
+            (
+                "execution_ticket_digest_sha256",
+                self.execution_ticket_digest_sha256.as_str(),
+            ),
+            (
+                "application_database_identity_sha256",
+                self.application_database_identity_sha256.as_str(),
+            ),
+            (
+                "authority_database_identity_sha256",
+                self.authority_database_identity_sha256.as_str(),
+            ),
             ("campaign_id", self.campaign_id.as_str()),
             ("campaign_nonce_sha256", self.campaign_nonce_sha256.as_str()),
             (
@@ -116,11 +136,15 @@ impl PlacementExecutionPlan {
             self.authorization_id_sha256.as_str(),
             self.execution_nonce_sha256.as_str(),
             self.permit_subject_digest_sha256.as_str(),
+            self.execution_ticket_id_sha256.as_str(),
+            self.execution_ticket_digest_sha256.as_str(),
+            self.application_database_identity_sha256.as_str(),
+            self.authority_database_identity_sha256.as_str(),
             self.campaign_id.as_str(),
             self.campaign_nonce_sha256.as_str(),
         ])
         .len()
-            != 5
+            != 9
         {
             return Err(PlacementPlanError::IdentityCollision);
         }
@@ -160,6 +184,10 @@ impl PlacementExecutionPlan {
             self.authorization_id_sha256.clone(),
             self.execution_nonce_sha256.clone(),
             self.permit_subject_digest_sha256.clone(),
+            self.execution_ticket_id_sha256.clone(),
+            self.execution_ticket_digest_sha256.clone(),
+            self.application_database_identity_sha256.clone(),
+            self.authority_database_identity_sha256.clone(),
             self.campaign_id.clone(),
             self.campaign_nonce_sha256.clone(),
             self.claim_owner.clone(),
@@ -190,9 +218,10 @@ impl PlacementExecutionPlan {
 #[serde(rename_all = "snake_case")]
 pub enum PlacementMutationKind {
     ProveDisabledDeployment,
+    PrepareExecutionTicket,
     CreateAuthorityClaim,
+    ActivateExecutionTicket,
     EnableControllerDeployment,
-    CreateActivationCampaign,
     ProbeShardReadiness,
     DisableControllerDeployment,
 }
@@ -201,9 +230,10 @@ impl PlacementMutationKind {
     const fn label(self) -> &'static str {
         match self {
             Self::ProveDisabledDeployment => "prove_disabled_deployment",
+            Self::PrepareExecutionTicket => "prepare_execution_ticket",
             Self::CreateAuthorityClaim => "create_authority_claim",
+            Self::ActivateExecutionTicket => "activate_execution_ticket",
             Self::EnableControllerDeployment => "enable_controller_deployment",
-            Self::CreateActivationCampaign => "create_activation_campaign",
             Self::ProbeShardReadiness => "probe_shard_readiness",
             Self::DisableControllerDeployment => "disable_controller_deployment",
         }
@@ -214,9 +244,10 @@ impl PlacementMutationKind {
             Self::ProveDisabledDeployment | Self::DisableControllerDeployment => {
                 "stable_disabled_controller_deployment"
             }
+            Self::PrepareExecutionTicket => "authorization_ticket_campaign_and_audit",
             Self::CreateAuthorityClaim => "exact_authority_claim",
+            Self::ActivateExecutionTicket => "application_activation_and_authority_acknowledgement",
             Self::EnableControllerDeployment => "stable_enabled_controller_deployment",
-            Self::CreateActivationCampaign => "campaign_and_0063_authorization",
             Self::ProbeShardReadiness => "exact_shard_consumption_receipt",
         }
     }
@@ -243,9 +274,10 @@ pub fn mutation_schedule(
     let plan_digest = plan.digest_sha256()?;
     let mut specs = vec![
         (PlacementMutationKind::ProveDisabledDeployment, None),
+        (PlacementMutationKind::PrepareExecutionTicket, None),
         (PlacementMutationKind::CreateAuthorityClaim, None),
+        (PlacementMutationKind::ActivateExecutionTicket, None),
         (PlacementMutationKind::EnableControllerDeployment, None),
-        (PlacementMutationKind::CreateActivationCampaign, None),
     ];
     for shard_index in 0..plan.shard_count {
         specs.push((
@@ -275,7 +307,6 @@ pub fn mutation_schedule(
             disable_first_after_enable_intent: matches!(
                 kind,
                 PlacementMutationKind::EnableControllerDeployment
-                    | PlacementMutationKind::CreateActivationCampaign
                     | PlacementMutationKind::ProbeShardReadiness
                     | PlacementMutationKind::DisableControllerDeployment
             ),
@@ -420,7 +451,7 @@ mod tests {
     fn checked_in_description_is_inert_and_explicitly_zero_retry() {
         let description = describe();
         assert_eq!(description.initial_shard_count, 8);
-        assert_eq!(description.mutation_operation_count, 13);
+        assert_eq!(description.mutation_operation_count, 14);
         assert_eq!(description.mutation_send_attempt_limit, 1);
         assert_eq!(description.mutation_retry_limit, 0);
         assert!(description.persist_start_before_send);
@@ -525,16 +556,20 @@ mod tests {
             authorization_id_sha256: "5".repeat(64),
             execution_nonce_sha256: "6".repeat(64),
             permit_subject_digest_sha256: "7".repeat(64),
-            campaign_id: "8".repeat(64),
-            campaign_nonce_sha256: "9".repeat(64),
+            execution_ticket_id_sha256: "8".repeat(64),
+            execution_ticket_digest_sha256: "9".repeat(64),
+            application_database_identity_sha256: "a".repeat(64),
+            authority_database_identity_sha256: "b".repeat(64),
+            campaign_id: "c".repeat(64),
+            campaign_nonce_sha256: "d".repeat(64),
             claim_owner: "placement-runner-staging-001".to_string(),
             controller_baseline_version_id: "controller-disabled-v1".to_string(),
             controller_enabled_version_id: "controller-enabled-v1".to_string(),
             controller_disabled_version_id: "controller-disabled-v1".to_string(),
             edge_baseline_version_id: "edge-baseline-v1".to_string(),
-            action_gate_inventory_sha256: "a".repeat(64),
-            foundation_manifest_sha256: "b".repeat(64),
-            runtime_build_id: "c".repeat(64),
+            action_gate_inventory_sha256: "e".repeat(64),
+            foundation_manifest_sha256: "f".repeat(64),
+            runtime_build_id: "0".repeat(64),
             ring_generation: 7,
             shard_count: INITIAL_STAGING_SHARD_COUNT,
             controller_action_gate_count: CONTROLLER_ACTION_GATE_COUNT,

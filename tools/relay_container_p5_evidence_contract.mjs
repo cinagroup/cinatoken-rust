@@ -103,7 +103,7 @@ const PINNED_GO_SOURCE_COMMIT =
 const PINNED_VIBE_SOURCE_COMMIT =
   "918e97480ee44e357abe99bf33c27259d6ac7ebd";
 const EXPECTED_MIGRATION_HEAD =
-  "0063_relay_container_shard_placement_mutation_authorizations.sql";
+  "0064_relay_container_shard_placement_execution_tickets.sql";
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const gitCommitPattern = /^[0-9a-f]{40}$/;
@@ -609,7 +609,7 @@ function validateCandidate(value) {
   requireInteger(candidate.ringGeneration, 1, 1_000_000, "[candidate] ring generation");
   requireInteger(candidate.shardCount, 1, 1024, "[candidate] shard count");
   requireExact(candidate.migrationHead, EXPECTED_MIGRATION_HEAD, "[candidate] migration head");
-  requireExact(candidate.migrationCount, 63, "[candidate] migration count");
+  requireExact(candidate.migrationCount, 64, "[candidate] migration count");
   requireExact(candidate.responseProtocolVersion, 3, "[candidate] response protocol");
   requireExact(candidate.statusContractVersion, 4, "[candidate] status contract");
   requireExact(candidate.financialTerminalContractVersion, 2, "[candidate] terminal contract");
@@ -1908,10 +1908,10 @@ function validateSchemaReadback(facts) {
     "[schema-readback] facts",
   );
   requireExact(facts.migrationHead, EXPECTED_MIGRATION_HEAD, "[schema-readback] migration head");
-  requireExact(facts.migrationCount, 63, "[schema-readback] migration count");
-  requireExact(facts.tableCount, 72, "[schema-readback] table count");
-  requireExact(facts.incrementalColumnCount, 962, "[schema-readback] incremental columns");
-  requireExact(facts.keyIndexCount, 105, "[schema-readback] key indexes");
+  requireExact(facts.migrationCount, 64, "[schema-readback] migration count");
+  requireExact(facts.tableCount, 75, "[schema-readback] table count");
+  requireExact(facts.incrementalColumnCount, 1032, "[schema-readback] incremental columns");
+  requireExact(facts.keyIndexCount, 109, "[schema-readback] key indexes");
   requireSha256(facts.schemaFingerprintSha256, "[schema-readback] schema fingerprint");
   requireSha256(facts.businessFingerprintBeforeSha256, "[schema-readback] before fingerprint");
   requireExact(

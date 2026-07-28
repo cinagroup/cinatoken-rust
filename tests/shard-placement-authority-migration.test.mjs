@@ -159,9 +159,10 @@ describe("shard placement Authority migration", () => {
     expect(claimed).toMatchObject({
       status: "claimed",
       ledger_version: 1,
-      last_completed_ordinal: 2,
+      last_completed_ordinal: 3,
       enable_intent_seen: 0,
       disable_confirmed: 1,
+      ticket_activation_confirmed: 0,
     });
     expect(database.query(`
       SELECT COUNT(*) AS count
@@ -172,9 +173,9 @@ describe("shard placement Authority migration", () => {
       authorizationIdSha256: issuance.authorization_id_sha256,
       sequence: 2,
       eventKind: "operation_started",
-      operationOrdinal: 3,
-      operationIdSha256: "3".repeat(64),
-      operationKind: "enable_controller_deployment",
+      operationOrdinal: 4,
+      operationIdSha256: "4".repeat(64),
+      operationKind: "activate_execution_ticket",
       predecessorReceiptSha256: "b".repeat(64),
       requestSha256: "c".repeat(64),
       responseSha256: null,
@@ -189,9 +190,35 @@ describe("shard placement Authority migration", () => {
     expect(readExecutionClaim(database)).toMatchObject({
       status: "running",
       ledger_version: 2,
-      inflight_operation_ordinal: 3,
-      enable_intent_seen: 1,
-      disable_confirmed: 0,
+      inflight_operation_ordinal: 4,
+      enable_intent_seen: 0,
+      disable_confirmed: 1,
+    });
+    insertExecutionReceipt(database, {
+      authorizationIdSha256: issuance.authorization_id_sha256,
+      sequence: 3,
+      eventKind: "operation_terminal",
+      operationOrdinal: 4,
+      operationIdSha256: "4".repeat(64),
+      operationKind: "activate_execution_ticket",
+      predecessorReceiptSha256: "e".repeat(64),
+      requestSha256: "c".repeat(64),
+      responseSha256: "f".repeat(64),
+      evidenceSha256: "0".repeat(64),
+      outcome: "exact_success",
+      leaseOwnerSha256: claimed.lease_owner_sha256,
+      leaseTokenSha256: claimed.lease_token_sha256,
+      leaseGeneration: claimed.lease_generation,
+      leaseExpiresAt: claimed.lease_expires_at,
+      receiptDigestSha256: "1".repeat(64),
+    });
+    expect(readExecutionClaim(database)).toMatchObject({
+      status: "running",
+      ledger_version: 3,
+      last_completed_ordinal: 4,
+      inflight_operation_ordinal: null,
+      application_activation_digest_sha256: "0".repeat(64),
+      ticket_activation_confirmed: 1,
     });
 
     database.query(`
@@ -208,9 +235,9 @@ describe("shard placement Authority migration", () => {
       "2".repeat(64),
     );
     expect(readExecutionClaim(database)).toMatchObject({
-      status: "disable_required",
-      inflight_operation_ordinal: 3,
-      inflight_readback_only: 1,
+      status: "revoked",
+      inflight_operation_ordinal: null,
+      inflight_readback_only: 0,
     });
     expect(() => database.query(`
       DELETE FROM shard_placement_authority_execution_receipts
@@ -235,8 +262,8 @@ describe("shard placement Authority migration", () => {
       authorizationIdSha256: issuance.authorization_id_sha256,
       sequence: 2,
       eventKind: "lease_taken_over",
-      operationOrdinal: 2,
-      operationIdSha256: "2".repeat(64),
+      operationOrdinal: 3,
+      operationIdSha256: "c".repeat(64),
       operationKind: "create_authority_claim",
       predecessorReceiptSha256: "b".repeat(64),
       requestSha256: "c".repeat(64),
@@ -293,9 +320,9 @@ describe("shard placement Authority migration", () => {
       authorizationIdSha256: issuance.authorization_id_sha256,
       sequence: 3,
       eventKind: "operation_started",
-      operationOrdinal: 3,
-      operationIdSha256: "3".repeat(64),
-      operationKind: "enable_controller_deployment",
+      operationOrdinal: 4,
+      operationIdSha256: "4".repeat(64),
+      operationKind: "activate_execution_ticket",
       predecessorReceiptSha256: "0".repeat(64),
       requestSha256: "1".repeat(64),
       responseSha256: null,
@@ -371,27 +398,37 @@ function insertExecutionClaim(database, issuance) {
   database.query(`
     INSERT INTO shard_placement_authority_execution_claims (
       authorization_id_sha256, permit_subject_digest_sha256,
-      execution_nonce_sha256, campaign_id, campaign_nonce_sha256,
+      execution_nonce_sha256, application_ticket_id_sha256,
+      application_ticket_digest_sha256,
+      application_database_identity_sha256,
+      authority_database_identity_sha256,
+      campaign_id, campaign_nonce_sha256,
       claim_scope, execution_plan_sha256, release_sha256,
       publication_sha256, execution_activation_sha256,
       runner_build_sha256, claim_owner_sha256, lease_owner_sha256,
       ledger_identity_sha256, lease_token_sha256, lease_generation,
       lease_expires_at, baseline_operation_id_sha256,
-      baseline_terminal_digest_sha256, claim_operation_id_sha256,
+      baseline_terminal_digest_sha256, preparation_operation_id_sha256,
+      claim_operation_id_sha256,
       operation_schedule_sha256, claim_credential_id_sha256,
       claim_request_id_sha256, claim_digest_sha256,
       claim_acquired_receipt_digest_sha256, permit_expires_at,
       normal_deadline_at, recovery_deadline_at, ledger_head_sha256,
       generated_at, claimed_at, updated_at
     ) VALUES (
-      ?, ?, ?, ?, ?, 'staging-controller-placement-v1', ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, 1, unixepoch() + 60, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, unixepoch(), unixepoch(), unixepoch()
+      ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      'staging-controller-placement-v1', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1,
+      unixepoch() + 60, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      unixepoch(), unixepoch(), unixepoch()
     )
   `).run(
     issuance.authorization_id_sha256,
     issuance.permit_subject_digest_sha256,
     issuance.execution_nonce_sha256,
+    "c".repeat(64),
+    "d".repeat(64),
+    "e".repeat(64),
+    "f".repeat(64),
     issuance.campaign_id,
     issuance.campaign_nonce_sha256,
     "6".repeat(64),
@@ -405,7 +442,8 @@ function insertExecutionClaim(database, issuance) {
     "3".repeat(64),
     "1".repeat(64),
     "a".repeat(64),
-    "2".repeat(64),
+    "3".repeat(64),
+    "c".repeat(64),
     "4".repeat(64),
     "5".repeat(64),
     "6".repeat(64),
@@ -419,7 +457,7 @@ function insertExecutionClaim(database, issuance) {
 }
 
 function insertExecutionOperations(database, authorizationIdSha256) {
-  for (let ordinal = 3; ordinal <= 13; ordinal += 1) {
+  for (let ordinal = 4; ordinal <= 14; ordinal += 1) {
     database.query(`
       INSERT INTO shard_placement_authority_execution_operations (
         authorization_id_sha256, ordinal, operation_id_sha256,
@@ -429,14 +467,14 @@ function insertExecutionOperations(database, authorizationIdSha256) {
       authorizationIdSha256,
       ordinal,
       ordinal.toString(16).repeat(64),
-      ordinal === 3
-        ? "enable_controller_deployment"
-        : ordinal === 4
-          ? "create_activation_campaign"
-          : ordinal === 13
+      ordinal === 4
+        ? "activate_execution_ticket"
+        : ordinal === 5
+          ? "enable_controller_deployment"
+          : ordinal === 14
             ? "disable_controller_deployment"
             : "probe_shard_readiness",
-      ordinal >= 5 && ordinal <= 12 ? ordinal - 5 : null,
+      ordinal >= 6 && ordinal <= 13 ? ordinal - 6 : null,
     );
   }
 }

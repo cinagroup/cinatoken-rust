@@ -3984,3 +3984,64 @@ two-ledger activation acknowledgement. Runner transport begins only after
 that state machine and its revocation races are locally proven. The complete
 repository gate passes this checkpoint with exit code 0 in 929.3 seconds;
 existing Rust `dead_code` findings remain warnings only.
+
+## 2026-07-28 Two-Ledger Execution Ticket v1
+
+Phase 1 now includes the local application-D1 half and Authority-D1 half of
+the placement execution ticket protocol. This checkpoint supersedes the
+13-slot plan and the statement that migration 0064 is still absent. It does
+not make the protocol remotely executable.
+
+Application migration 0064 adds immutable execution ticket, activation, and
+Authority acknowledgement tables. Campaign preparation now writes the 0063
+authorization consumption, execution ticket, campaign, administrator audit,
+and exact readbacks in one batch while every placement writer gate remains
+false. The ticket binds the candidate, permit and campaign lifetime,
+14-operation schedule, Controller versions, application D1 identity,
+Authority D1 identity, and Authority ledger identity. These identities come
+only from deployment configuration.
+
+The Authority claim binds the same ticket and database identities. Operation
+4 is the activation handshake, operation 5 records enable intent and performs
+the only eligible Controller enable deployment, operations 6-13 are the eight
+ordered shard probes, and operation 14 restores and proves the disabled
+deployment. Authority D1 rejects operation 5 until an exact successful
+operation-4 terminal receipt has projected the application activation digest.
+The application D1 rejects a campaign claim until both its activation row and
+its exact Authority acknowledgement mirror exist.
+
+The Controller read path now requires the exact authorization, ticket,
+activation, acknowledgement, and campaign tuple before any Durable Object
+lookup or shard wake. Migration and evidence totals advance to 64 migrations,
+75 tables, 1032 checked incremental columns, and 109 key indexes.
+
+The protocol remains deliberately unable to enable staging. The remaining P0
+work is:
+
+1. add the authenticated application activation writer after exact Authority
+   claim readback;
+2. add the private Authority operation-4 workload path and application-D1
+   Service Binding readback;
+3. add the application acknowledgement writer after exact Authority receipt
+   and ledger-head readback;
+4. close the cross-D1 revocation race at every pre-enable boundary;
+5. reserve receipt capacity for disable, bound renewal churn, and complete
+   in-flight safety-diversion recovery;
+6. replace shared execution secrets with independently scoped and rotated
+   workload identities protected by Access;
+7. add cross-runtime fixed vectors and fault campaigns for every ticket,
+   activation, acknowledgement, receipt, response-loss, takeover, expiry,
+   stale-read, revocation, and disable-ambiguity path; and
+8. independently prove remote bindings, database identities, exact catalogs,
+   zero-row baselines, gates, versions, credentials, and revocation state.
+
+The first isolated-staging ceremony may reach operation 5 only after the exact
+operation-2 preparation, operation-3 claim, and two-ledger operation-4
+handshake are durably read back. Ambiguity before operation 5 grants no
+mutation authority. Ambiguity after enable intent grants only readback and
+operation-14 disable authority. The historical Cloudflare credential must be
+revoked and independently proven absent before any remote read or write.
+The complete repository gate passes with exit code 0 in 1043.0 seconds; the
+Worker library separately passes 875 tests, and existing Rust `dead_code`
+findings remain warnings only. Go/VPS remains authoritative and production
+remains **NO-GO**.

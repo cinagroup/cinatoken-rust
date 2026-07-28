@@ -25,7 +25,8 @@ use crate::d1_repositories::{
     relay_container_shard_activation_campaign_schema_ready,
     relay_container_shard_activation_campaign_status, RelayContainerShardActivationCampaign,
     RelayContainerShardActivationCampaignReceiptRow,
-    RelayContainerShardActivationCampaignStatusRow,
+    RelayContainerShardActivationCampaignStatusRow, RelayContainerShardPlacementExecutionTicket,
+    RelayContainerShardPlacementExecutionTicketRow,
     RelayContainerShardPlacementMutationAuthorization,
     RelayContainerShardPlacementMutationAuthorizationRow,
 };
@@ -36,10 +37,18 @@ const CAMPAIGN_DIGEST_DOMAIN: &[u8] = b"cinatoken:relay-container-shard-activati
 const ACTIVATION_DIGEST_DOMAIN: &[u8] = b"cinatoken:relay-container-shard-activation:v1\0";
 const CONSUMPTION_DIGEST_DOMAIN: &[u8] =
     b"cinatoken:relay-container-shard-activation-campaign-consumption:v1\0";
+const EXECUTION_TICKET_DIGEST_DOMAIN: &[u8] =
+    b"cinatoken:relay-container-shard-placement-execution-ticket:v1\0";
 const CREATE_BODY_LIMIT_BYTES: usize = 8 * 1024;
 const MIN_LIFETIME_SECONDS: i64 = 60;
 const MAX_LIFETIME_SECONDS: i64 = 3_600;
 const MAX_VERSION: i64 = 1_000_000;
+const APPLICATION_DATABASE_IDENTITY_ENV: &str =
+    "RELAY_CONTAINER_SHARD_APPLICATION_DATABASE_IDENTITY_SHA256";
+const AUTHORITY_DATABASE_IDENTITY_ENV: &str =
+    "RELAY_CONTAINER_SHARD_AUTHORITY_DATABASE_IDENTITY_SHA256";
+const AUTHORITY_LEDGER_IDENTITY_ENV: &str =
+    "RELAY_CONTAINER_SHARD_AUTHORITY_LEDGER_IDENTITY_SHA256";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,6 +60,7 @@ struct CreateCampaignRequest {
     authorization_id_sha256: String,
     execution_nonce_sha256: String,
     placement_mutation_authorization: ShardPlacementMutationAuthorizationPermit,
+    placement_execution_ticket: PlacementExecutionTicketRequest,
     expected_ring_generation: u64,
     expected_shard_count: u16,
     foundation_manifest_sha256: String,
@@ -61,6 +71,27 @@ struct CreateCampaignRequest {
     activation_generation: i64,
     expires_in_seconds: i64,
     confirm_create: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlacementExecutionTicketRequest {
+    ticket_id_sha256: String,
+    execution_plan_sha256: String,
+    operation_schedule_sha256: String,
+    preparation_operation_id_sha256: String,
+    claim_operation_id_sha256: String,
+    activation_operation_id_sha256: String,
+    controller_enable_operation_id_sha256: String,
+    controller_disable_operation_id_sha256: String,
+    release_sha256: String,
+    publication_sha256: String,
+    execution_activation_sha256: String,
+    runner_build_sha256: String,
+    controller_baseline_version_id: String,
+    controller_disabled_version_id: String,
+    edge_baseline_version_id: String,
+    activation_deadline_in_seconds: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,6 +115,10 @@ struct CampaignCreateResponse {
     activation_generation: i64,
     environment: String,
     campaign_digest_sha256: String,
+    execution_ticket_id_sha256: String,
+    execution_ticket_digest_sha256: String,
+    execution_ticket_activation_deadline_at: i64,
+    execution_ticket_execution_deadline_at: i64,
     created_at: i64,
     expires_at: i64,
     claimed_shard_count: i64,
@@ -245,6 +280,30 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
             "Shard placement mutation authorization is unavailable",
         ));
     }
+    let Some(application_database_identity_sha256) =
+        deployment_identity_sha256(&env, APPLICATION_DATABASE_IDENTITY_ENV)
+    else {
+        return no_store(envelope_error_response(
+            503,
+            "Application D1 identity is unavailable",
+        ));
+    };
+    let Some(authority_database_identity_sha256) =
+        deployment_identity_sha256(&env, AUTHORITY_DATABASE_IDENTITY_ENV)
+    else {
+        return no_store(envelope_error_response(
+            503,
+            "Shard placement Authority D1 identity is unavailable",
+        ));
+    };
+    let Some(authority_ledger_identity_sha256) =
+        deployment_identity_sha256(&env, AUTHORITY_LEDGER_IDENTITY_ENV)
+    else {
+        return no_store(envelope_error_response(
+            503,
+            "Shard placement Authority ledger identity is unavailable",
+        ));
+    };
 
     let controller = probe_container_controller(&env, runtime).await;
     if !controller.verified {
@@ -270,12 +329,12 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
             "Legacy shard activation writer must remain disabled",
         ));
     }
-    if !controller.shard_placement_attestation_write_enabled
-        || !controller.shard_placement_attestation_staging_verified
+    if controller.shard_placement_attestation_write_enabled
+        || controller.shard_placement_attestation_staging_verified
     {
         return no_store(envelope_error_response(
             409,
-            "Shard placement writer must be staging-verified before campaign creation",
+            "Shard placement writer must remain disabled during ticket preparation",
         ));
     }
     let Some(controller_version_id) = controller.controller_version_id else {
@@ -409,6 +468,107 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
         claims.id,
         expires_at,
     );
+    let execution_ticket_activation_deadline_at = created_at.saturating_add(
+        input
+            .placement_execution_ticket
+            .activation_deadline_in_seconds,
+    );
+    let execution_ticket_digest_sha256 =
+        placement_execution_ticket_digest(&PlacementExecutionTicketDigestInput {
+            ticket_id_sha256: &input.placement_execution_ticket.ticket_id_sha256,
+            authorization_id_sha256: &verified_authorization.authorization_id_sha256,
+            campaign_id: &campaign_id,
+            campaign_digest_sha256: &campaign_digest_sha256,
+            execution_nonce_sha256: &verified_authorization.execution_nonce_sha256,
+            permit_subject_digest_sha256: &verified_authorization.subject_digest_sha256,
+            application_database_identity_sha256: &application_database_identity_sha256,
+            authority_database_identity_sha256: &authority_database_identity_sha256,
+            authority_ledger_identity_sha256: &authority_ledger_identity_sha256,
+            execution_plan_sha256: &input.placement_execution_ticket.execution_plan_sha256,
+            operation_schedule_sha256: &input.placement_execution_ticket.operation_schedule_sha256,
+            preparation_operation_id_sha256: &input
+                .placement_execution_ticket
+                .preparation_operation_id_sha256,
+            claim_operation_id_sha256: &input.placement_execution_ticket.claim_operation_id_sha256,
+            activation_operation_id_sha256: &input
+                .placement_execution_ticket
+                .activation_operation_id_sha256,
+            controller_enable_operation_id_sha256: &input
+                .placement_execution_ticket
+                .controller_enable_operation_id_sha256,
+            controller_disable_operation_id_sha256: &input
+                .placement_execution_ticket
+                .controller_disable_operation_id_sha256,
+            release_sha256: &input.placement_execution_ticket.release_sha256,
+            publication_sha256: &input.placement_execution_ticket.publication_sha256,
+            execution_activation_sha256: &input
+                .placement_execution_ticket
+                .execution_activation_sha256,
+            runner_build_sha256: &input.placement_execution_ticket.runner_build_sha256,
+            controller_baseline_version_id: &input
+                .placement_execution_ticket
+                .controller_baseline_version_id,
+            controller_enabled_version_id: &controller_version_id,
+            controller_disabled_version_id: &input
+                .placement_execution_ticket
+                .controller_disabled_version_id,
+            edge_baseline_version_id: &input.placement_execution_ticket.edge_baseline_version_id,
+            action_gate_inventory_sha256: &action_gate_inventory_sha256,
+            foundation_manifest_sha256: &input.foundation_manifest_sha256,
+            runtime_build_id: &input.runtime_build_id,
+            ring_generation: runtime.ring_generation as i64,
+            shard_count: i64::from(runtime.shard_count),
+            prepared_by_admin_id: claims.id,
+            activation_deadline_at: execution_ticket_activation_deadline_at,
+            execution_deadline_at: expires_at,
+        });
+    let execution_ticket = RelayContainerShardPlacementExecutionTicket {
+        ticket_id_sha256: &input.placement_execution_ticket.ticket_id_sha256,
+        authorization_id_sha256: &verified_authorization.authorization_id_sha256,
+        campaign_id: &campaign_id,
+        campaign_digest_sha256: &campaign_digest_sha256,
+        execution_nonce_sha256: &verified_authorization.execution_nonce_sha256,
+        permit_subject_digest_sha256: &verified_authorization.subject_digest_sha256,
+        application_database_identity_sha256: &application_database_identity_sha256,
+        authority_database_identity_sha256: &authority_database_identity_sha256,
+        authority_ledger_identity_sha256: &authority_ledger_identity_sha256,
+        execution_plan_sha256: &input.placement_execution_ticket.execution_plan_sha256,
+        operation_schedule_sha256: &input.placement_execution_ticket.operation_schedule_sha256,
+        preparation_operation_id_sha256: &input
+            .placement_execution_ticket
+            .preparation_operation_id_sha256,
+        claim_operation_id_sha256: &input.placement_execution_ticket.claim_operation_id_sha256,
+        activation_operation_id_sha256: &input
+            .placement_execution_ticket
+            .activation_operation_id_sha256,
+        controller_enable_operation_id_sha256: &input
+            .placement_execution_ticket
+            .controller_enable_operation_id_sha256,
+        controller_disable_operation_id_sha256: &input
+            .placement_execution_ticket
+            .controller_disable_operation_id_sha256,
+        release_sha256: &input.placement_execution_ticket.release_sha256,
+        publication_sha256: &input.placement_execution_ticket.publication_sha256,
+        execution_activation_sha256: &input.placement_execution_ticket.execution_activation_sha256,
+        runner_build_sha256: &input.placement_execution_ticket.runner_build_sha256,
+        controller_baseline_version_id: &input
+            .placement_execution_ticket
+            .controller_baseline_version_id,
+        controller_enabled_version_id: &controller_version_id,
+        controller_disabled_version_id: &input
+            .placement_execution_ticket
+            .controller_disabled_version_id,
+        edge_baseline_version_id: &input.placement_execution_ticket.edge_baseline_version_id,
+        action_gate_inventory_sha256: &action_gate_inventory_sha256,
+        foundation_manifest_sha256: &input.foundation_manifest_sha256,
+        runtime_build_id: &input.runtime_build_id,
+        ring_generation: runtime.ring_generation as i64,
+        shard_count: i64::from(runtime.shard_count),
+        prepared_by_admin_id: claims.id,
+        activation_deadline_at: execution_ticket_activation_deadline_at,
+        execution_deadline_at: expires_at,
+        ticket_digest_sha256: &execution_ticket_digest_sha256,
+    };
     let audit_params = json!({
         "campaign_id": &campaign_id,
         "campaign_digest_sha256": &campaign_digest_sha256,
@@ -421,6 +581,12 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
         "placement_authorization_signer_spki_sha256":
             &verified_authorization.signer_spki_sha256,
         "placement_authorization_expires_at": verified_authorization.expires_at,
+        "placement_execution_ticket_id_sha256":
+            &input.placement_execution_ticket.ticket_id_sha256,
+        "placement_execution_ticket_digest_sha256":
+            &execution_ticket_digest_sha256,
+        "placement_execution_ticket_activation_deadline_at":
+            execution_ticket_activation_deadline_at,
         "controller_version_id": &controller_version_id,
         "action_gate_inventory_sha256": &action_gate_inventory_sha256,
         "action_gate_count": 22,
@@ -447,6 +613,7 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
         &db,
         &campaign,
         &authorization,
+        &execution_ticket,
         admin_audit,
     )
     .await
@@ -482,6 +649,11 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
             claims.id,
             stored.campaign.created_at,
         )
+        || !placement_execution_ticket_readback_valid(
+            &stored.execution_ticket,
+            &execution_ticket,
+            stored.campaign.created_at,
+        )
     {
         worker::console_error!("Shard activation campaign create readback is invalid");
         return no_store(envelope_error_response(
@@ -500,12 +672,17 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
                 stored.authorization.authorization_id_sha256,
             "placement_authorization_subject_digest_sha256":
                 stored.authorization.subject_digest_sha256,
+            "placement_execution_ticket_id_sha256":
+                stored.execution_ticket.ticket_id_sha256,
+            "placement_execution_ticket_digest_sha256":
+                stored.execution_ticket.ticket_digest_sha256,
             "controller_version_id": stored.campaign.controller_version_id,
             "ring_generation": stored.campaign.ring_generation,
             "shard_count": stored.campaign.shard_count,
             "expires_at": stored.campaign.expires_at,
         })
     );
+    let stored_execution_ticket = stored.execution_ticket;
     let stored = stored.campaign;
     no_store(envelope_ok_response(&CampaignCreateResponse {
         contract_version: CONTRACT_VERSION,
@@ -527,6 +704,10 @@ pub async fn create(mut req: Request, env: Env) -> WorkerResult<Response> {
         activation_generation: stored.activation_generation,
         environment: stored.environment,
         campaign_digest_sha256: stored.campaign_digest_sha256,
+        execution_ticket_id_sha256: stored_execution_ticket.ticket_id_sha256,
+        execution_ticket_digest_sha256: stored_execution_ticket.ticket_digest_sha256,
+        execution_ticket_activation_deadline_at: stored_execution_ticket.activation_deadline_at,
+        execution_ticket_execution_deadline_at: stored_execution_ticket.execution_deadline_at,
         created_at: stored.created_at,
         expires_at: stored.expires_at,
         claimed_shard_count: stored.claimed_shard_count,
@@ -744,6 +925,43 @@ fn validate_create_request(input: &CreateCampaignRequest) -> Result<(), &'static
     {
         return Err("Invalid shard placement mutation authorization identity");
     }
+    let ticket = &input.placement_execution_ticket;
+    for value in [
+        ticket.ticket_id_sha256.as_str(),
+        ticket.execution_plan_sha256.as_str(),
+        ticket.operation_schedule_sha256.as_str(),
+        ticket.preparation_operation_id_sha256.as_str(),
+        ticket.claim_operation_id_sha256.as_str(),
+        ticket.activation_operation_id_sha256.as_str(),
+        ticket.controller_enable_operation_id_sha256.as_str(),
+        ticket.controller_disable_operation_id_sha256.as_str(),
+        ticket.release_sha256.as_str(),
+        ticket.publication_sha256.as_str(),
+        ticket.execution_activation_sha256.as_str(),
+        ticket.runner_build_sha256.as_str(),
+    ] {
+        if !valid_lower_hex(value, 64) {
+            return Err("Invalid shard placement execution ticket digest");
+        }
+    }
+    if !valid_controller_version_id(&ticket.controller_baseline_version_id)
+        || !valid_controller_version_id(&ticket.controller_disabled_version_id)
+        || !valid_controller_version_id(&ticket.edge_baseline_version_id)
+        || !(MIN_LIFETIME_SECONDS..=600).contains(&ticket.activation_deadline_in_seconds)
+        || ticket.activation_deadline_in_seconds > input.expires_in_seconds
+    {
+        return Err("Invalid shard placement execution ticket deployment");
+    }
+    let operation_ids = [
+        ticket.preparation_operation_id_sha256.as_str(),
+        ticket.claim_operation_id_sha256.as_str(),
+        ticket.activation_operation_id_sha256.as_str(),
+        ticket.controller_enable_operation_id_sha256.as_str(),
+        ticket.controller_disable_operation_id_sha256.as_str(),
+    ];
+    if operation_ids.iter().copied().collect::<HashSet<_>>().len() != operation_ids.len() {
+        return Err("Invalid shard placement execution ticket operation schedule");
+    }
     if input.expected_ring_generation == 0 || input.expected_ring_generation > MAX_VERSION as u64 {
         return Err("Invalid shard activation campaign ring generation");
     }
@@ -839,6 +1057,56 @@ fn placement_authorization_readback_valid(
         && row.consumed_by_admin_id == consumed_by_admin_id
         && row.consumed_at > 0
         && row.consumed_at.abs_diff(campaign_created_at) <= 5
+}
+
+fn placement_execution_ticket_readback_valid(
+    row: &RelayContainerShardPlacementExecutionTicketRow,
+    expected: &RelayContainerShardPlacementExecutionTicket<'_>,
+    campaign_created_at: i64,
+) -> bool {
+    row.ticket_id_sha256 == expected.ticket_id_sha256
+        && row.contract_version == 1
+        && row.ticket_contract == "cinatoken-relay-container-shard-placement-execution-ticket-v1"
+        && row.authorization_id_sha256 == expected.authorization_id_sha256
+        && row.campaign_id == expected.campaign_id
+        && row.campaign_digest_sha256 == expected.campaign_digest_sha256
+        && row.execution_nonce_sha256 == expected.execution_nonce_sha256
+        && row.permit_subject_digest_sha256 == expected.permit_subject_digest_sha256
+        && row.application_database_identity_sha256 == expected.application_database_identity_sha256
+        && row.authority_database_identity_sha256 == expected.authority_database_identity_sha256
+        && row.authority_ledger_identity_sha256 == expected.authority_ledger_identity_sha256
+        && row.execution_plan_sha256 == expected.execution_plan_sha256
+        && row.operation_schedule_sha256 == expected.operation_schedule_sha256
+        && row.preparation_operation_id_sha256 == expected.preparation_operation_id_sha256
+        && row.claim_operation_id_sha256 == expected.claim_operation_id_sha256
+        && row.activation_operation_id_sha256 == expected.activation_operation_id_sha256
+        && row.controller_enable_operation_id_sha256
+            == expected.controller_enable_operation_id_sha256
+        && row.controller_disable_operation_id_sha256
+            == expected.controller_disable_operation_id_sha256
+        && row.release_sha256 == expected.release_sha256
+        && row.publication_sha256 == expected.publication_sha256
+        && row.execution_activation_sha256 == expected.execution_activation_sha256
+        && row.runner_build_sha256 == expected.runner_build_sha256
+        && row.controller_service_name == "cinatoken-container-controller-staging"
+        && row.controller_baseline_version_id == expected.controller_baseline_version_id
+        && row.controller_enabled_version_id == expected.controller_enabled_version_id
+        && row.controller_disabled_version_id == expected.controller_disabled_version_id
+        && row.edge_baseline_version_id == expected.edge_baseline_version_id
+        && row.action_gate_inventory_sha256 == expected.action_gate_inventory_sha256
+        && row.action_gate_count == 22
+        && row.all_action_gates_false == 1
+        && row.foundation_manifest_sha256 == expected.foundation_manifest_sha256
+        && row.runtime_build_id == expected.runtime_build_id
+        && row.ring_generation == expected.ring_generation
+        && row.shard_count == expected.shard_count
+        && row.environment == "staging"
+        && row.prepared_by_admin_id == expected.prepared_by_admin_id
+        && row.activation_deadline_at == expected.activation_deadline_at
+        && row.execution_deadline_at == expected.execution_deadline_at
+        && row.ticket_digest_sha256 == expected.ticket_digest_sha256
+        && row.prepared_at > 0
+        && row.prepared_at.abs_diff(campaign_created_at) <= 5
 }
 
 fn campaign_id_query(req: &Request) -> Result<String, &'static str> {
@@ -959,6 +1227,11 @@ fn campaign_receipts_valid(
     }
 }
 
+fn deployment_identity_sha256(env: &Env, name: &str) -> Option<String> {
+    let value = env.var(name).ok()?.to_string();
+    valid_lower_hex(&value, 64).then_some(value)
+}
+
 fn campaign_status_valid(row: &RelayContainerShardActivationCampaignStatusRow) -> bool {
     valid_lower_hex(&row.campaign_id, 64)
         && valid_lower_hex(&row.campaign_nonce_sha256, 64)
@@ -1052,6 +1325,90 @@ fn campaign_promotion_eligible(row: &RelayContainerShardActivationCampaignStatus
             .as_deref()
             .is_some_and(|value| valid_lower_hex(value, 64))
         && row.sealed_at.is_some_and(|value| value > 0)
+}
+
+struct PlacementExecutionTicketDigestInput<'a> {
+    ticket_id_sha256: &'a str,
+    authorization_id_sha256: &'a str,
+    campaign_id: &'a str,
+    campaign_digest_sha256: &'a str,
+    execution_nonce_sha256: &'a str,
+    permit_subject_digest_sha256: &'a str,
+    application_database_identity_sha256: &'a str,
+    authority_database_identity_sha256: &'a str,
+    authority_ledger_identity_sha256: &'a str,
+    execution_plan_sha256: &'a str,
+    operation_schedule_sha256: &'a str,
+    preparation_operation_id_sha256: &'a str,
+    claim_operation_id_sha256: &'a str,
+    activation_operation_id_sha256: &'a str,
+    controller_enable_operation_id_sha256: &'a str,
+    controller_disable_operation_id_sha256: &'a str,
+    release_sha256: &'a str,
+    publication_sha256: &'a str,
+    execution_activation_sha256: &'a str,
+    runner_build_sha256: &'a str,
+    controller_baseline_version_id: &'a str,
+    controller_enabled_version_id: &'a str,
+    controller_disabled_version_id: &'a str,
+    edge_baseline_version_id: &'a str,
+    action_gate_inventory_sha256: &'a str,
+    foundation_manifest_sha256: &'a str,
+    runtime_build_id: &'a str,
+    ring_generation: i64,
+    shard_count: i64,
+    prepared_by_admin_id: i64,
+    activation_deadline_at: i64,
+    execution_deadline_at: i64,
+}
+
+fn placement_execution_ticket_digest(input: &PlacementExecutionTicketDigestInput<'_>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(EXECUTION_TICKET_DIGEST_DOMAIN);
+    for part in [
+        "1".to_string(),
+        "cinatoken-relay-container-shard-placement-execution-ticket-v1".to_string(),
+        input.ticket_id_sha256.to_string(),
+        input.authorization_id_sha256.to_string(),
+        input.campaign_id.to_string(),
+        input.campaign_digest_sha256.to_string(),
+        input.execution_nonce_sha256.to_string(),
+        input.permit_subject_digest_sha256.to_string(),
+        input.application_database_identity_sha256.to_string(),
+        input.authority_database_identity_sha256.to_string(),
+        input.authority_ledger_identity_sha256.to_string(),
+        input.execution_plan_sha256.to_string(),
+        input.operation_schedule_sha256.to_string(),
+        input.preparation_operation_id_sha256.to_string(),
+        input.claim_operation_id_sha256.to_string(),
+        input.activation_operation_id_sha256.to_string(),
+        input.controller_enable_operation_id_sha256.to_string(),
+        input.controller_disable_operation_id_sha256.to_string(),
+        input.release_sha256.to_string(),
+        input.publication_sha256.to_string(),
+        input.execution_activation_sha256.to_string(),
+        input.runner_build_sha256.to_string(),
+        "cinatoken-container-controller-staging".to_string(),
+        input.controller_baseline_version_id.to_string(),
+        input.controller_enabled_version_id.to_string(),
+        input.controller_disabled_version_id.to_string(),
+        input.edge_baseline_version_id.to_string(),
+        input.action_gate_inventory_sha256.to_string(),
+        "22".to_string(),
+        "true".to_string(),
+        input.foundation_manifest_sha256.to_string(),
+        input.runtime_build_id.to_string(),
+        input.ring_generation.to_string(),
+        input.shard_count.to_string(),
+        "staging".to_string(),
+        input.prepared_by_admin_id.to_string(),
+        input.activation_deadline_at.to_string(),
+        input.execution_deadline_at.to_string(),
+    ] {
+        hasher.update((part.len() as u32).to_be_bytes());
+        hasher.update(part.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 struct CampaignDigestInput<'a> {
@@ -1328,6 +1685,24 @@ mod tests {
                 issued_at: 1_900_000_000,
                 expires_at: 1_900_000_600,
                 signature_base64url: "A".repeat(86),
+            },
+            placement_execution_ticket: PlacementExecutionTicketRequest {
+                ticket_id_sha256: "5".repeat(64),
+                execution_plan_sha256: "8".repeat(64),
+                operation_schedule_sha256: "9".repeat(64),
+                preparation_operation_id_sha256: "0a".repeat(32),
+                claim_operation_id_sha256: "0b".repeat(32),
+                activation_operation_id_sha256: "0c".repeat(32),
+                controller_enable_operation_id_sha256: "0d".repeat(32),
+                controller_disable_operation_id_sha256: "0e".repeat(32),
+                release_sha256: "0f".repeat(32),
+                publication_sha256: "10".repeat(32),
+                execution_activation_sha256: "11".repeat(32),
+                runner_build_sha256: "12".repeat(32),
+                controller_baseline_version_id: "controller-disabled-v1".to_string(),
+                controller_disabled_version_id: "controller-disabled-v1".to_string(),
+                edge_baseline_version_id: "edge-baseline-v1".to_string(),
+                activation_deadline_in_seconds: 300,
             },
             expected_ring_generation: 7,
             expected_shard_count: 8,

@@ -37,6 +37,12 @@ export default defineConfig({
           SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED: "true",
           SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED: "true",
           SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: "true",
+          SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256:
+            "6".repeat(64),
+          SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256:
+            "7".repeat(64),
+          SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256:
+            "8".repeat(64),
           SHARD_PLACEMENT_AUTHORITY_ISSUER:
             "cinatoken-shard-placement-operator-runtime-test",
           SHARD_PLACEMENT_AUTHORITY_AUDIENCE:

@@ -784,8 +784,8 @@ function candidateFixture() {
     ringGeneration: 1,
     shardCount: 8,
     migrationHead:
-      "0063_relay_container_shard_placement_mutation_authorizations.sql",
-    migrationCount: 63,
+      "0064_relay_container_shard_placement_execution_tickets.sql",
+    migrationCount: 64,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -1012,7 +1012,7 @@ function placementMutationAuthorizationFixture(candidate) {
   );
   const authorization = {
     storageMigration:
-      "0063_relay_container_shard_placement_mutation_authorizations.sql",
+      "0064_relay_container_shard_placement_execution_tickets.sql",
     contractVersion: 1,
     authorizationContract:
       "cinatoken-relay-shard-placement-mutation-authorization-v1",
@@ -1115,10 +1115,10 @@ function factsFixture(kind, candidate, foundationBinding) {
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 63,
-        tableCount: 72,
-        incrementalColumnCount: 962,
-        keyIndexCount: 105,
+        migrationCount: 64,
+        tableCount: 75,
+        incrementalColumnCount: 1032,
+        keyIndexCount: 109,
         schemaFingerprintSha256: "a".repeat(64),
         businessFingerprintBeforeSha256: "b".repeat(64),
         businessFingerprintAfterSha256: "b".repeat(64),

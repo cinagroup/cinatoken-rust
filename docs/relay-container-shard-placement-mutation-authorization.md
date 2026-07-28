@@ -406,3 +406,83 @@ dry-run. The complete repository gate also passes with exit code 0 in 929.3
 seconds; existing Rust `dead_code` findings remain warnings only. No remote
 migration, deployment, credential read, gate change, claim, campaign,
 Container wake, or traffic action occurred. Production remains **NO-GO**.
+
+## Two-Ledger Execution Ticket Overlay
+
+Migration `0064_relay_container_shard_placement_execution_tickets.sql` and
+Authority migration 0002 now implement the local fallback described above.
+This section supersedes the provisional operation numbers and the statement
+that the application activation ticket does not exist. It does not claim
+cross-D1 atomicity or a deployed handshake.
+
+### Canonical operation schedule
+
+| Ordinal | Record owner | Operation |
+| --- | --- | --- |
+| 1 | runner evidence | prove exact disabled baseline |
+| 2 | application D1 | consume 0063 authorization and prepare ticket/campaign |
+| 3 | Authority D1 | acquire the exclusive ticket-bound claim |
+| 4 | both ledgers | activate ticket and mirror Authority acknowledgement |
+| 5 | Authority D1 | record enable intent and deploy the enabled Controller |
+| 6-13 | Authority D1 | execute shard 0-7 readiness probes in order |
+| 14 | Authority D1 | deploy and prove the disabled Controller |
+
+The ticket is immutable and create-new. It binds the signed authorization,
+campaign, candidate, exact schedule, Controller versions, release and runner
+identities, permit/campaign/execution deadlines, application database
+identity, Authority database identity, and Authority ledger identity.
+Application activation binds one exact Authority claim. The acknowledgement
+binds the exact Authority version, ledger head, operation-4 terminal evidence,
+and application activation digest.
+
+All three database/ledger identities are deployment-owned lowercase SHA-256
+values and must be pairwise distinct. The campaign creator cannot inject
+them. Ticket execution expiry equals campaign expiry and cannot exceed permit
+expiry. A claim after any relevant deadline fails closed.
+
+### Enforced pre-enable proof
+
+Application D1 permits a campaign claim only when the immutable activation and
+Authority acknowledgement rows match the prepared ticket. Authority D1
+permits operation 5 only after operation 4 has terminated successfully and
+projected the exact application activation digest. The Controller requires
+the same four-way application-D1 join before it looks up a Durable Object.
+
+Exact claim-create replay remains valid after later receipts advance the
+Authority ledger. This classifies a lost create response by readback without
+issuing another mutation attempt. Revocation, expiry, mismatch, missing
+readback, or a partially written handshake grants no enable authority.
+
+### Required live protocol
+
+The checked-in state has no application activation or acknowledgement write
+route and no Authority workload route that reads application D1. Those
+omissions are intentional local safety gates. The live implementation must:
+
+1. activate the application ticket only after authenticated exact Authority
+   claim readback and a current 0063 revocation/lifetime check;
+2. let Authority operation 4 read the exact application activation only
+   through a pinned private Service Binding;
+3. mirror the Authority acknowledgement only after an authenticated exact
+   receipt-chain and ledger-head snapshot;
+4. repeat revocation and deadline checks immediately before operation 5;
+5. keep one guaranteed terminal-disable receipt budget despite renewals,
+   takeovers, and recovery events;
+6. use separate, least-privilege, rotated credentials for read, claim,
+   activation, acknowledgement, normal receipt, recovery, and deployment;
+7. prove deterministic Rust/TypeScript vectors for every canonical digest;
+   and
+8. pass response-loss, concurrent-runner, stale-generation, stale-ledger,
+   corruption, revocation, timeout, and uncertain-disable fault campaigns.
+
+Consolidating the control chain into one dedicated D1 remains the simpler
+transaction model. Retaining two D1 databases is acceptable only if the live
+implementation and evidence demonstrate that every partial state is
+fail-closed and can never authorize operation 5.
+
+No remote migration or deployment may begin until the historical exposed
+Cloudflare credential is revoked and independently proven absent. All tracked
+writer gates remain false. The complete repository gate passes with exit code
+0 in 1043.0 seconds; the Worker library separately passes 875 tests, and
+existing Rust `dead_code` findings remain warnings only. Go/VPS remains
+authoritative and production remains **NO-GO**.

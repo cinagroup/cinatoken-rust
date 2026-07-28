@@ -2572,3 +2572,48 @@ protocol tests, 3 Workerd lifecycle tests, and 8 migration/config tests. No
 Cloudflare credential was read and no remote state was queried or changed.
 The complete repository gate passes with exit code 0 in 929.3 seconds;
 existing Rust `dead_code` findings remain warnings only.
+
+## 2026-07-28 Two-Ledger Placement Execution Ticket Status
+
+This table supersedes the current-value fields in the placement and Authority
+tables above. Earlier tables remain as checkpoint history.
+
+| Status item | Current value |
+| --- | --- |
+| Application D1 head | `0064_relay_container_shard_placement_execution_tickets.sql` |
+| Application D1 catalog | 64 migrations / 75 tables / 1032 checked incremental columns / 109 key indexes |
+| Application execution records | Immutable prepared ticket, application activation, and Authority acknowledgement mirror |
+| Preparation atomicity | 0063 authorization consumption, ticket, campaign, audit, and exact readbacks in one D1 batch |
+| Trusted identities | Application D1, Authority D1, and Authority ledger identities are deployment-owned, pairwise-distinct SHA-256 values |
+| Canonical execution plan | 14 slots: disabled baseline, prepare, claim, activate, enable, 8 shard probes, disable |
+| Authority schedule | Operations 4-14; operation 4 activation fence, operation 5 enable intent, operation 14 terminal disable |
+| Authority pre-enable fence | Operation 5 rejected until successful operation-4 evidence projects the exact application activation digest |
+| Application claim fence | Campaign claim rejected until exact activation and Authority acknowledgement rows exist |
+| Controller ordering | Exact authorization/ticket/activation/acknowledgement readback before Durable Object lookup or wake |
+| Exact lost-response recovery | Claim-create exact replay remains valid after later Authority ledger progress |
+| Checked-in gates | All application and Authority writers remain false |
+| Application activation writer | **NOT IMPLEMENTED** |
+| Authority application-D1 readback workload | **NOT IMPLEMENTED** |
+| Application acknowledgement writer | **NOT IMPLEMENTED** |
+| Cross-D1 revocation closure | **NOT IMPLEMENTED** |
+| Reserved terminal-disable receipt capacity | **NOT PROVEN** |
+| Access and least-privilege workload identities | **NOT DEPLOYED** |
+| Cross-runtime fixed vectors and fault campaigns | **INCOMPLETE** |
+| Remote migration/deployment/evidence | **NOT COLLECTED** |
+| Historical exposed credential revocation proof | **NOT COLLECTED** |
+| Complete repository gate | PASS, exit 0 in 1043.0 seconds; Worker library 875/875; existing Rust `dead_code` warnings only |
+| Production eligibility | **NO-GO** |
+
+The checked-in protocol is a fail-closed local foundation, not distributed
+atomicity. It cannot reach operation 5 because the three authenticated live
+handshake writers/readers are deliberately absent. Before isolated staging,
+the implementation must close those paths, repeat revocation and deadline
+checks immediately before enable, reserve disable recovery capacity, use
+separate rotated workload credentials behind Access and private Service
+Bindings, pass deterministic cross-runtime vectors and adversarial fault
+campaigns, and obtain independent remote readback evidence.
+
+No remote state was queried or mutated, no credential was read, and no gate,
+ticket, claim, activation, campaign, Container wake, customer traffic,
+financial authority, Go/VPS drain, DNS, or production state changed. Go/VPS
+remains authoritative and production remains **NO-GO**.

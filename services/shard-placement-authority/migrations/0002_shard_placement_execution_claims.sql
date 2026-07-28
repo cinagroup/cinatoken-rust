@@ -17,6 +17,30 @@ CREATE TABLE shard_placement_authority_execution_claims (
       AND length(execution_nonce_sha256) = 64
       AND execution_nonce_sha256 NOT GLOB '*[^0-9a-f]*'
     ),
+  application_ticket_id_sha256 TEXT NOT NULL
+    CHECK (
+      typeof(application_ticket_id_sha256) = 'text'
+      AND length(application_ticket_id_sha256) = 64
+      AND application_ticket_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_ticket_digest_sha256 TEXT NOT NULL
+    CHECK (
+      typeof(application_ticket_digest_sha256) = 'text'
+      AND length(application_ticket_digest_sha256) = 64
+      AND application_ticket_digest_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_database_identity_sha256 TEXT NOT NULL
+    CHECK (
+      typeof(application_database_identity_sha256) = 'text'
+      AND length(application_database_identity_sha256) = 64
+      AND application_database_identity_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  authority_database_identity_sha256 TEXT NOT NULL
+    CHECK (
+      typeof(authority_database_identity_sha256) = 'text'
+      AND length(authority_database_identity_sha256) = 64
+      AND authority_database_identity_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
   campaign_id TEXT NOT NULL
     CHECK (
       typeof(campaign_id) = 'text'
@@ -101,6 +125,12 @@ CREATE TABLE shard_placement_authority_execution_claims (
       AND length(baseline_terminal_digest_sha256) = 64
       AND baseline_terminal_digest_sha256 NOT GLOB '*[^0-9a-f]*'
     ),
+  preparation_operation_id_sha256 TEXT NOT NULL
+    CHECK (
+      typeof(preparation_operation_id_sha256) = 'text'
+      AND length(preparation_operation_id_sha256) = 64
+      AND preparation_operation_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
   claim_operation_id_sha256 TEXT NOT NULL
     CHECK (
       typeof(claim_operation_id_sha256) = 'text'
@@ -177,14 +207,14 @@ CREATE TABLE shard_placement_authority_execution_claims (
   last_completed_ordinal INTEGER NOT NULL DEFAULT 1
     CHECK (
       typeof(last_completed_ordinal) = 'integer'
-      AND last_completed_ordinal BETWEEN 1 AND 13
+      AND last_completed_ordinal BETWEEN 1 AND 14
     ),
   inflight_operation_ordinal INTEGER
     CHECK (
       inflight_operation_ordinal IS NULL
       OR (
         typeof(inflight_operation_ordinal) = 'integer'
-        AND inflight_operation_ordinal BETWEEN 3 AND 13
+        AND inflight_operation_ordinal BETWEEN 4 AND 14
       )
     ),
   inflight_operation_id_sha256 TEXT
@@ -255,6 +285,20 @@ CREATE TABLE shard_placement_authority_execution_claims (
       typeof(disable_confirmed) = 'integer'
       AND disable_confirmed IN (0, 1)
     ),
+  application_activation_digest_sha256 TEXT
+    CHECK (
+      application_activation_digest_sha256 IS NULL
+      OR (
+        typeof(application_activation_digest_sha256) = 'text'
+        AND length(application_activation_digest_sha256) = 64
+        AND application_activation_digest_sha256 NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
+  ticket_activation_confirmed INTEGER NOT NULL DEFAULT 0
+    CHECK (
+      typeof(ticket_activation_confirmed) = 'integer'
+      AND ticket_activation_confirmed IN (0, 1)
+    ),
   renewal_count INTEGER NOT NULL DEFAULT 0
     CHECK (typeof(renewal_count) = 'integer' AND renewal_count >= 0),
   takeover_count INTEGER NOT NULL DEFAULT 0
@@ -324,6 +368,14 @@ CREATE TABLE shard_placement_authority_execution_claims (
     status NOT IN ('aborted', 'revoked')
     OR (enable_intent_seen = 0 AND disable_confirmed = 1)
   ),
+  CHECK (
+    (ticket_activation_confirmed = 0
+      AND application_activation_digest_sha256 IS NULL)
+    OR (
+      ticket_activation_confirmed = 1
+      AND application_activation_digest_sha256 IS NOT NULL
+    )
+  ),
   FOREIGN KEY (
     authorization_id_sha256,
     permit_subject_digest_sha256
@@ -353,7 +405,7 @@ ON shard_placement_authority_execution_claims(claim_digest_sha256);
 CREATE TABLE shard_placement_authority_execution_operations (
   authorization_id_sha256 TEXT NOT NULL,
   ordinal INTEGER NOT NULL
-    CHECK (typeof(ordinal) = 'integer' AND ordinal BETWEEN 3 AND 13),
+    CHECK (typeof(ordinal) = 'integer' AND ordinal BETWEEN 4 AND 14),
   operation_id_sha256 TEXT NOT NULL
     CHECK (
       typeof(operation_id_sha256) = 'text'
@@ -363,8 +415,8 @@ CREATE TABLE shard_placement_authority_execution_operations (
   kind TEXT NOT NULL
     CHECK (
       kind IN (
+        'activate_execution_ticket',
         'enable_controller_deployment',
-        'create_activation_campaign',
         'probe_shard_readiness',
         'disable_controller_deployment'
       )
@@ -379,16 +431,16 @@ CREATE TABLE shard_placement_authority_execution_operations (
     ),
   PRIMARY KEY (authorization_id_sha256, ordinal),
   CHECK (
-    (ordinal = 3
+    (ordinal = 4
+      AND kind = 'activate_execution_ticket'
+      AND shard_index IS NULL)
+    OR (ordinal = 5
       AND kind = 'enable_controller_deployment'
       AND shard_index IS NULL)
-    OR (ordinal = 4
-      AND kind = 'create_activation_campaign'
-      AND shard_index IS NULL)
-    OR (ordinal BETWEEN 5 AND 12
+    OR (ordinal BETWEEN 6 AND 13
       AND kind = 'probe_shard_readiness'
-      AND shard_index = ordinal - 5)
-    OR (ordinal = 13
+      AND shard_index = ordinal - 6)
+    OR (ordinal = 14
       AND kind = 'disable_controller_deployment'
       AND shard_index IS NULL)
   ),
@@ -439,7 +491,7 @@ CREATE TABLE shard_placement_authority_execution_receipts (
   operation_ordinal INTEGER NOT NULL
     CHECK (
       typeof(operation_ordinal) = 'integer'
-      AND operation_ordinal BETWEEN 2 AND 13
+      AND operation_ordinal BETWEEN 3 AND 14
     ),
   operation_id_sha256 TEXT NOT NULL
     CHECK (
@@ -451,8 +503,8 @@ CREATE TABLE shard_placement_authority_execution_receipts (
     CHECK (
       operation_kind IN (
         'create_authority_claim',
+        'activate_execution_ticket',
         'enable_controller_deployment',
-        'create_activation_campaign',
         'probe_shard_readiness',
         'disable_controller_deployment'
       )
@@ -627,6 +679,8 @@ BEGIN
     OR NEW.inflight_readback_only <> 0
     OR NEW.enable_intent_seen <> 0
     OR NEW.disable_confirmed <> 1
+    OR NEW.application_activation_digest_sha256 IS NOT NULL
+    OR NEW.ticket_activation_confirmed <> 0
     OR NEW.renewal_count <> 0
     OR NEW.takeover_count <> 0
     OR NEW.terminal_at IS NOT NULL
@@ -673,6 +727,10 @@ BEFORE UPDATE OF
   authorization_id_sha256,
   permit_subject_digest_sha256,
   execution_nonce_sha256,
+  application_ticket_id_sha256,
+  application_ticket_digest_sha256,
+  application_database_identity_sha256,
+  authority_database_identity_sha256,
   campaign_id,
   campaign_nonce_sha256,
   claim_scope,
@@ -685,6 +743,7 @@ BEFORE UPDATE OF
   ledger_identity_sha256,
   baseline_operation_id_sha256,
   baseline_terminal_digest_sha256,
+  preparation_operation_id_sha256,
   claim_operation_id_sha256,
   operation_schedule_sha256,
   claim_credential_id_sha256,
@@ -722,6 +781,8 @@ BEFORE UPDATE OF
   inflight_readback_only,
   enable_intent_seen,
   disable_confirmed,
+  application_activation_digest_sha256,
+  ticket_activation_confirmed,
   renewal_count,
   takeover_count,
   updated_at,
@@ -769,6 +830,10 @@ WHEN NOT (
       OLD.inflight_started_lease_token_sha256
     AND NEW.enable_intent_seen = OLD.enable_intent_seen
     AND NEW.disable_confirmed = OLD.disable_confirmed
+    AND NEW.application_activation_digest_sha256 IS
+      OLD.application_activation_digest_sha256
+    AND NEW.ticket_activation_confirmed =
+      OLD.ticket_activation_confirmed
     AND NEW.renewal_count = OLD.renewal_count
     AND NEW.takeover_count = OLD.takeover_count
     AND OLD.status IN (
@@ -829,7 +894,7 @@ BEGIN
       NEW.authorization_id_sha256
       AND claim.status = 'claimed'
       AND claim.ledger_version = 1
-      AND claim.last_completed_ordinal = 2
+      AND claim.last_completed_ordinal = 3
       AND claim.inflight_operation_ordinal IS NULL
       AND unixepoch() < claim.lease_expires_at
       AND unixepoch() < claim.normal_deadline_at
@@ -901,7 +966,7 @@ BEGIN
       AND claim.status = 'acquiring'
       AND claim.ledger_version = 0
       AND NEW.sequence = 1
-      AND NEW.operation_ordinal = 2
+      AND NEW.operation_ordinal = 3
       AND NEW.operation_id_sha256 =
         claim.claim_operation_id_sha256
       AND NEW.operation_kind = 'create_authority_claim'
@@ -938,7 +1003,7 @@ BEGIN
         'disable_required',
         'recovery_required'
       )
-      AND NEW.operation_ordinal = 2
+      AND NEW.operation_ordinal = 3
       AND NEW.operation_id_sha256 =
         claim.claim_operation_id_sha256
       AND NEW.operation_kind = 'create_authority_claim'
@@ -974,7 +1039,7 @@ BEGIN
         'disable_required',
         'recovery_required'
       )
-      AND NEW.operation_ordinal = 2
+      AND NEW.operation_ordinal = 3
       AND NEW.operation_id_sha256 =
         claim.claim_operation_id_sha256
       AND NEW.operation_kind = 'create_authority_claim'
@@ -1031,15 +1096,22 @@ BEGIN
           )
           AND NEW.operation_ordinal =
             claim.last_completed_ordinal + 1
-          AND NEW.operation_ordinal BETWEEN 3 AND 12
+          AND NEW.operation_ordinal BETWEEN 4 AND 13
+          AND (
+            NEW.operation_ordinal <> 5
+            OR (
+              claim.ticket_activation_confirmed = 1
+              AND claim.application_activation_digest_sha256 IS NOT NULL
+            )
+          )
           AND NEW.recorded_at < claim.normal_deadline_at
         )
         OR (
-          NEW.operation_ordinal = 13
+          NEW.operation_ordinal = 14
           AND (
             (
               claim.status IN ('claimed', 'running')
-              AND claim.last_completed_ordinal = 12
+              AND claim.last_completed_ordinal = 13
             )
             OR claim.status = 'disable_required'
           )
@@ -1098,13 +1170,13 @@ BEGIN
         'disable_required'
       )
       AND claim.inflight_operation_ordinal IS NULL
-      AND NEW.operation_ordinal = 13
+      AND NEW.operation_ordinal = 14
       AND NEW.operation_id_sha256 = (
         SELECT operation.operation_id_sha256
         FROM shard_placement_authority_execution_operations AS operation
         WHERE operation.authorization_id_sha256 =
           claim.authorization_id_sha256
-          AND operation.ordinal = 13
+          AND operation.ordinal = 14
       )
       AND NEW.operation_kind = 'disable_controller_deployment'
       AND NEW.shard_index IS NULL
@@ -1166,7 +1238,7 @@ BEGIN
       WHEN NEW.event_kind = 'operation_started'
         AND status = 'claimed' THEN 'running'
       WHEN NEW.event_kind = 'operation_terminal'
-        AND NEW.operation_ordinal = 13
+        AND NEW.operation_ordinal = 14
         AND NEW.outcome IN (
           'exact_success',
           'exact_replay',
@@ -1174,7 +1246,7 @@ BEGIN
         )
         THEN 'completed'
       WHEN NEW.event_kind = 'operation_terminal'
-        AND NEW.operation_ordinal = 13
+        AND NEW.operation_ordinal = 14
         THEN 'recovery_required'
       WHEN NEW.event_kind = 'operation_terminal'
         AND EXISTS (
@@ -1204,7 +1276,7 @@ BEGIN
     ledger_version = ledger_version + 1,
     ledger_head_sha256 = NEW.receipt_digest_sha256,
     last_completed_ordinal = CASE
-      WHEN NEW.event_kind = 'claim_acquired' THEN 2
+      WHEN NEW.event_kind = 'claim_acquired' THEN 3
       WHEN NEW.event_kind = 'operation_terminal'
         AND NEW.outcome IN (
           'exact_success',
@@ -1263,14 +1335,14 @@ BEGIN
     END,
     enable_intent_seen = CASE
       WHEN NEW.event_kind = 'operation_started'
-        AND NEW.operation_ordinal = 3 THEN 1
+        AND NEW.operation_ordinal = 5 THEN 1
       ELSE enable_intent_seen
     END,
     disable_confirmed = CASE
       WHEN NEW.event_kind = 'operation_started'
-        AND NEW.operation_ordinal = 3 THEN 0
+        AND NEW.operation_ordinal = 5 THEN 0
       WHEN NEW.event_kind = 'operation_terminal'
-        AND NEW.operation_ordinal = 13
+        AND NEW.operation_ordinal = 14
         AND NEW.outcome IN (
           'exact_success',
           'exact_replay',
@@ -1278,6 +1350,28 @@ BEGIN
         )
         THEN 1
       ELSE disable_confirmed
+    END,
+    application_activation_digest_sha256 = CASE
+      WHEN NEW.event_kind = 'operation_terminal'
+        AND NEW.operation_ordinal = 4
+        AND NEW.outcome IN (
+          'exact_success',
+          'exact_replay',
+          'ambiguous_recovered'
+        )
+        THEN NEW.evidence_sha256
+      ELSE application_activation_digest_sha256
+    END,
+    ticket_activation_confirmed = CASE
+      WHEN NEW.event_kind = 'operation_terminal'
+        AND NEW.operation_ordinal = 4
+        AND NEW.outcome IN (
+          'exact_success',
+          'exact_replay',
+          'ambiguous_recovered'
+        )
+        THEN 1
+      ELSE ticket_activation_confirmed
     END,
     renewal_count = renewal_count + CASE
       WHEN NEW.event_kind = 'lease_renewed' THEN 1
@@ -1292,7 +1386,7 @@ BEGIN
       WHEN NEW.event_kind = 'safety_diverted'
         AND enable_intent_seen = 0 THEN NEW.recorded_at
       WHEN NEW.event_kind = 'operation_terminal'
-        AND NEW.operation_ordinal = 13
+        AND NEW.operation_ordinal = 14
         AND NEW.outcome IN (
           'exact_success',
           'exact_replay',
@@ -1300,7 +1394,13 @@ BEGIN
         )
         THEN NEW.recorded_at
       WHEN NEW.event_kind = 'operation_terminal'
-        AND enable_intent_seen = 0 THEN NEW.recorded_at
+        AND enable_intent_seen = 0
+        AND NEW.outcome NOT IN (
+          'exact_success',
+          'exact_replay',
+          'ambiguous_recovered'
+        )
+        THEN NEW.recorded_at
       ELSE terminal_at
     END
   WHERE authorization_id_sha256 = NEW.authorization_id_sha256;
@@ -1343,7 +1443,7 @@ BEGIN
     NEW.claim_digest_sha256,
     NEW.execution_plan_sha256,
     NEW.ledger_identity_sha256,
-    2,
+    3,
     NEW.claim_operation_id_sha256,
     'create_authority_claim',
     NULL,

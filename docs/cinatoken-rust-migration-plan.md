@@ -22939,3 +22939,148 @@ queried or mutated, no credential was read, no gate was changed, and no live
 claim, campaign, Container wake, customer traffic, financial authority,
 Go/VPS drain, DNS change, or production cutover occurred. Production remains
 **NO-GO**.
+
+## 22.319 Two-Ledger Placement Execution Ticket And Activation Fence (2026-07-28)
+
+This checkpoint implements the local two-ledger safety foundation proposed in
+22.318. It supersedes the 13-slot placement schedule and the statements that
+application migration 0064, Authority ticket binding, and the pre-enable
+activation fence are absent. It does not claim a deployed cross-D1 protocol,
+live Authority readback, staging mutation authority, or production readiness.
+
+### Frozen 14-slot protocol
+
+The canonical placement sequence is now:
+
+| Ordinal | Durable owner | Meaning |
+| --- | --- | --- |
+| 1 | runner evidence | prove the exact disabled Controller baseline |
+| 2 | application D1 | atomically prepare authorization, ticket, and campaign |
+| 3 | Authority D1 | acquire the exclusive execution claim |
+| 4 | both ledgers | activate the application ticket and record exact Authority acknowledgement |
+| 5 | Authority D1 | persist enable intent, then send the exact Controller enable deployment once |
+| 6-13 | Authority D1 | send readiness once for shards 0-7 in canonical order |
+| 14 | Authority D1 | restore and prove the exact disabled Controller deployment |
+
+Authority operation rows cover ordinals 4-14. Claim acquisition remains the
+ordinal-3 receipt, while ordinal 2 is the application-D1 preparation
+predecessor. The Rust placement plan now derives all 14 deterministic IDs and
+binds the application ticket ID/digest plus application and Authority database
+identities. Its checked-in execution entry point remains inert.
+
+### Application-D1 migration 0064
+
+`0064_relay_container_shard_placement_execution_tickets.sql` advances the
+application D1 head to 64 migrations, 75 tables, 1032 checked incremental
+columns, and 109 key indexes. It adds three append-only tables:
+
+1. immutable prepared execution tickets;
+2. application ticket activations bound to one exact Authority claim; and
+3. application mirrors of the exact Authority activation acknowledgement.
+
+The existing root campaign-creation path now derives the trusted application
+D1, Authority D1, and Authority ledger identities from deployment
+configuration. Caller-selected database identities are not accepted. One D1
+batch writes the consumed 0063 authorization, prepared ticket, campaign,
+administrator audit, and exact readback. Preparation requires the placement
+writer to remain disabled.
+
+The ticket binds authorization, campaign, permit subject, execution nonce,
+candidate and gate inventory, release/publication/runner identities, exact
+operation schedule, Controller baseline/enabled/disabled versions, both
+database identities, the Authority ledger identity, and separate activation
+and execution deadlines. D1 enforces:
+
+- activation before the ticket, campaign, and permit deadline;
+- execution deadline equal to campaign expiry and not later than permit
+  expiry;
+- append-only activation and acknowledgement rows;
+- exact application ticket, claim, Authority database, Authority version, and
+  activation digest joins; and
+- no shard campaign claim until both activation and Authority acknowledgement
+  rows exist.
+
+The additional claim trigger runs after the existing 0055 validation so nonce,
+candidate, D1-time, and replay errors retain their original fail-closed
+classification. Any trigger failure rolls back the claim statement.
+
+### Authority-local pre-enable fence
+
+Authority claims now bind the application ticket ID and digest, application
+and Authority database identities, preparation operation ID, and the pinned
+Authority ledger identity. The three database/ledger identities are required,
+valid lowercase SHA-256 values, pairwise distinct, deployment-owned, and
+reported by authenticated preflight.
+
+Operation 4 is `activate_execution_ticket`. A successful exact terminal
+receipt projects its evidence digest to
+`application_activation_digest_sha256` and sets
+`ticket_activation_confirmed=1`. D1 rejects operation 5 unless both fields are
+present. Operation 5 records `enable_intent_seen`; operation 14 remains the
+mandatory disable path. Claim create supports exact replay even after the
+receipt ledger has advanced, so a lost create response never requires another
+mutation attempt.
+
+The Authority configuration remains private, production-absent, and
+default-off. Editing undeployed migration 0002 is intentional for this local
+foundation; any environment that had independently applied the older 0002
+shape must be discarded or rebuilt before review, not upgraded in place.
+
+### Controller and evidence closure
+
+The Controller's first-primary application-D1 readback now requires an exact
+0063 authorization, prepared ticket, application activation, and Authority
+acknowledgement tuple before a shard wake. It validates application ticket
+digest, Authority claim and database identity, Authority version, activation
+digest, execution deadline, permit deadline, campaign deadline, and the
+existing candidate fields. Schema drift, a missing acknowledgement, expiry,
+or any identity mismatch yields no wake authority.
+
+SQLite verification, Worker schema probes, P5 candidate evidence, foundation
+capture, Controller tests, and migration-head reports now use 0064 and the
+64/75/1032/109 catalog totals. Historical evidence that specifically names the
+0063 authorization migration remains unchanged.
+
+### Remaining P0 implementation
+
+The local ledgers deliberately cannot execute a campaign yet. Before isolated
+staging can become eligible:
+
+1. implement the application ticket-activation writer as a bounded,
+   authenticated, exact-replay operation after exact Authority claim readback;
+2. implement the Authority operation-4 workload path that reads the exact
+   application activation through a pinned private Service Binding, appends
+   the terminal receipt, and exposes exact readback;
+3. implement the application acknowledgement mirror writer only after an
+   authenticated exact Authority snapshot proves the operation-4 terminal
+   receipt and ledger head;
+4. mirror or synchronously recheck revocation at every pre-enable boundary so
+   no stale cross-D1 row can authorize operation 5;
+5. reserve receipt capacity for operation 14, bound renewal churn, and permit
+   safety diversion/readback recovery when an earlier operation is in flight;
+6. replace the shared owner-token assumption with independently scoped,
+   rotated workload credentials and Access policy evidence;
+7. add Rust/TypeScript fixed vectors for ticket, activation,
+   acknowledgement, claim, and every operation receipt;
+8. add double-runner, response-loss, expiry, revocation, stale-read, corrupt
+   projection, and disable-ambiguity fault campaigns; and
+9. prove all private bindings, D1 identities, gates, catalogs, credentials,
+   versions, and zero-row baselines by independent remote readback.
+
+The first staging ceremony must prepare ordinal 2, create and exactly read
+ordinal 3, complete the two-ledger ordinal-4 handshake, and only then permit
+ordinal 5. Any ambiguity before enable grants zero mutation authority. Any
+ambiguity after enable intent grants only readback and ordinal-14 disable
+authority. Edge remains unchanged and Go/VPS remains authoritative.
+
+Focused local verification passes the 0064 contract, complete SQLite chain,
+Authority protocol/migration/Workerd/config aggregate, Controller aggregate,
+P5 evidence/foundation, ring-transition plan, Worker shard tests, Rust runner
+tests, and Worker wasm check. The complete repository gate passes with exit
+code 0 in 1043.0 seconds; the Worker library separately passes 875 tests, and
+existing Rust `dead_code` findings remain warnings only. No credential was
+read, no remote state was queried or mutated, no migration was applied, and
+no gate, claim, ticket, campaign, Container wake, customer traffic, financial
+authority, Go/VPS drain, DNS, or production state changed. The exposed
+historical Cloudflare credential still requires independent revocation and
+absence proof. Production remains **NO-GO**.

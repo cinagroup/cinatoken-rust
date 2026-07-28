@@ -14,8 +14,8 @@ export const EXECUTION_RECEIPT_CONTRACT =
 export const EXECUTION_CLAIM_SCOPE =
   "staging-controller-placement-v1";
 export const EXECUTION_OPERATION_COUNT = 11;
-export const EXECUTION_FIRST_OPERATION_ORDINAL = 3;
-export const EXECUTION_LAST_OPERATION_ORDINAL = 13;
+export const EXECUTION_FIRST_OPERATION_ORDINAL = 4;
+export const EXECUTION_LAST_OPERATION_ORDINAL = 14;
 export const EXECUTION_RECEIPT_LIMIT = 64;
 export const EXECUTION_LEASE_SECONDS = 60;
 export const EXECUTION_RECOVERY_SECONDS = 600;
@@ -29,6 +29,10 @@ const CLAIM_FIELDS = [
   "authorizationIdSha256",
   "executionNonceSha256",
   "permitSubjectDigestSha256",
+  "applicationTicketIdSha256",
+  "applicationTicketDigestSha256",
+  "applicationDatabaseIdentitySha256",
+  "authorityDatabaseIdentitySha256",
   "campaignId",
   "campaignNonceSha256",
   "executionPlanSha256",
@@ -40,6 +44,7 @@ const CLAIM_FIELDS = [
   "ledgerIdentitySha256",
   "baselineOperationIdSha256",
   "baselineTerminalReceiptSha256",
+  "preparationOperationIdSha256",
   "claimOperationIdSha256",
   "leaseTokenSha256",
   "claimCredentialIdSha256",
@@ -87,8 +92,8 @@ const RECEIPT_FIELDS = [
 ] as const;
 const OPERATION_KINDS = new Set([
   "create_authority_claim",
+  "activate_execution_ticket",
   "enable_controller_deployment",
-  "create_activation_campaign",
   "probe_shard_readiness",
   "disable_controller_deployment",
 ]);
@@ -118,8 +123,8 @@ export interface ExecutionOperation {
   ordinal: number;
   operationIdSha256: string;
   kind:
+    | "activate_execution_ticket"
     | "enable_controller_deployment"
-    | "create_activation_campaign"
     | "probe_shard_readiness"
     | "disable_controller_deployment";
   shardIndex: number | null;
@@ -133,6 +138,10 @@ export interface ExecutionClaim {
   authorizationIdSha256: string;
   executionNonceSha256: string;
   permitSubjectDigestSha256: string;
+  applicationTicketIdSha256: string;
+  applicationTicketDigestSha256: string;
+  applicationDatabaseIdentitySha256: string;
+  authorityDatabaseIdentitySha256: string;
   campaignId: string;
   campaignNonceSha256: string;
   executionPlanSha256: string;
@@ -144,6 +153,7 @@ export interface ExecutionClaim {
   ledgerIdentitySha256: string;
   baselineOperationIdSha256: string;
   baselineTerminalReceiptSha256: string;
+  preparationOperationIdSha256: string;
   claimOperationIdSha256: string;
   leaseTokenSha256: string;
   claimCredentialIdSha256: string;
@@ -220,6 +230,14 @@ export async function parseExecutionClaim(
     executionNonceSha256: requireSha256(value.executionNonceSha256),
     permitSubjectDigestSha256:
       requireSha256(value.permitSubjectDigestSha256),
+    applicationTicketIdSha256:
+      requireSha256(value.applicationTicketIdSha256),
+    applicationTicketDigestSha256:
+      requireSha256(value.applicationTicketDigestSha256),
+    applicationDatabaseIdentitySha256:
+      requireSha256(value.applicationDatabaseIdentitySha256),
+    authorityDatabaseIdentitySha256:
+      requireSha256(value.authorityDatabaseIdentitySha256),
     campaignId: requireSha256(value.campaignId),
     campaignNonceSha256: requireSha256(value.campaignNonceSha256),
     executionPlanSha256: requireSha256(value.executionPlanSha256),
@@ -234,6 +252,8 @@ export async function parseExecutionClaim(
       requireSha256(value.baselineOperationIdSha256),
     baselineTerminalReceiptSha256:
       requireSha256(value.baselineTerminalReceiptSha256),
+    preparationOperationIdSha256:
+      requireSha256(value.preparationOperationIdSha256),
     claimOperationIdSha256:
       requireSha256(value.claimOperationIdSha256),
     leaseTokenSha256: requireSha256(value.leaseTokenSha256),
@@ -266,6 +286,10 @@ export async function parseExecutionClaim(
     claim.authorizationIdSha256,
     claim.executionNonceSha256,
     claim.permitSubjectDigestSha256,
+    claim.applicationTicketIdSha256,
+    claim.applicationTicketDigestSha256,
+    claim.applicationDatabaseIdentitySha256,
+    claim.authorityDatabaseIdentitySha256,
     claim.campaignId,
     claim.campaignNonceSha256,
     claim.executionPlanSha256,
@@ -273,6 +297,7 @@ export async function parseExecutionClaim(
     claim.ledgerIdentitySha256,
     claim.baselineOperationIdSha256,
     claim.baselineTerminalReceiptSha256,
+    claim.preparationOperationIdSha256,
     claim.claimOperationIdSha256,
     claim.leaseTokenSha256,
     ...claim.operations.map((operation) => operation.operationIdSha256),
@@ -282,6 +307,7 @@ export async function parseExecutionClaim(
   }
   const expectedScheduleDigest = await digestCanonical({
     baselineOperationIdSha256: claim.baselineOperationIdSha256,
+    preparationOperationIdSha256: claim.preparationOperationIdSha256,
     claimOperationIdSha256: claim.claimOperationIdSha256,
     operations: claim.operations,
   });
@@ -346,7 +372,7 @@ export async function parseExecutionReceipt(
       requireSha256(value.actorCredentialIdSha256),
     requestIdSha256: requireSha256(value.requestIdSha256),
     operationOrdinal:
-      requireInteger(value.operationOrdinal, 2, 13),
+      requireInteger(value.operationOrdinal, 3, 14),
     operationIdSha256: requireSha256(value.operationIdSha256),
     operationKind: requireSetString(
       value.operationKind,
@@ -437,7 +463,7 @@ export function claimAcquiredDigestInput(
     actorOwnerSha256: claim.claimOwnerSha256,
     actorCredentialIdSha256: claim.claimCredentialIdSha256,
     requestIdSha256: claim.requestIdSha256,
-    operationOrdinal: 2,
+    operationOrdinal: 3,
     operationIdSha256: claim.claimOperationIdSha256,
     operationKind: "create_authority_claim",
     shardIndex: null,
@@ -476,7 +502,7 @@ function validateReceiptShape(receipt: ExecutionReceipt): void {
     || receipt.eventKind === "lease_taken_over"
   ) {
     const valid =
-      receipt.operationOrdinal === 2
+      receipt.operationOrdinal === 3
       && receipt.operationKind === "create_authority_claim"
       && receipt.shardIndex === null
       && receipt.outcome === "exact_success"
@@ -489,7 +515,7 @@ function validateReceiptShape(receipt: ExecutionReceipt): void {
   }
   if (receipt.eventKind === "safety_diverted") {
     if (
-      receipt.operationOrdinal !== 13
+      receipt.operationOrdinal !== 14
       || receipt.operationKind !== "disable_controller_deployment"
       || receipt.shardIndex !== null
       || receipt.outcome !== "disable_required"
@@ -503,7 +529,7 @@ function validateReceiptShape(receipt: ExecutionReceipt): void {
     return;
   }
   if (
-    receipt.operationOrdinal < 3
+    receipt.operationOrdinal < 4
     || receipt.operationKind === "create_authority_claim"
     || receipt.leaseDurationSeconds !== null
     || receipt.safetyReason !== null
@@ -545,7 +571,7 @@ function parseOperations(value: unknown): readonly ExecutionOperation[] {
     const operation = requireObject(entry);
     assertExactKeys(operation, OPERATION_FIELDS);
     return {
-      ordinal: requireInteger(operation.ordinal, 3, 13),
+      ordinal: requireInteger(operation.ordinal, 4, 14),
       operationIdSha256: requireSha256(operation.operationIdSha256),
       kind: requireSetString(
         operation.kind,
@@ -576,17 +602,17 @@ function validateOperationShape(value: {
   shardIndex: number | null;
 }): void {
   const valid =
-    (value.ordinal === 3
+    (value.ordinal === 4
+      && value.kind === "activate_execution_ticket"
+      && value.shardIndex === null)
+    || (value.ordinal === 5
       && value.kind === "enable_controller_deployment"
       && value.shardIndex === null)
-    || (value.ordinal === 4
-      && value.kind === "create_activation_campaign"
-      && value.shardIndex === null)
-    || (value.ordinal >= 5
-      && value.ordinal <= 12
+    || (value.ordinal >= 6
+      && value.ordinal <= 13
       && value.kind === "probe_shard_readiness"
-      && value.shardIndex === value.ordinal - 5)
-    || (value.ordinal === 13
+      && value.shardIndex === value.ordinal - 6)
+    || (value.ordinal === 14
       && value.kind === "disable_controller_deployment"
       && value.shardIndex === null);
   if (!valid) {

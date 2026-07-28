@@ -272,6 +272,9 @@ REQUIRED_TABLES = [
     "relay_container_shard_placement_attestations",
     "relay_container_shard_placement_events",
     "relay_container_shard_placement_mutation_authorizations",
+    "relay_container_shard_placement_execution_tickets",
+    "relay_container_shard_placement_execution_ticket_activations",
+    "relay_container_shard_placement_execution_ticket_authority_acks",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1340,6 +1343,82 @@ REQUIRED_COLUMNS = {
         "consumed_by_admin_id",
         "consumed_at",
     },
+    "relay_container_shard_placement_execution_tickets": {
+        "ticket_id_sha256",
+        "contract_version",
+        "ticket_contract",
+        "authorization_id_sha256",
+        "campaign_id",
+        "campaign_digest_sha256",
+        "execution_nonce_sha256",
+        "permit_subject_digest_sha256",
+        "application_database_identity_sha256",
+        "authority_database_identity_sha256",
+        "authority_ledger_identity_sha256",
+        "execution_plan_sha256",
+        "operation_schedule_sha256",
+        "preparation_operation_id_sha256",
+        "claim_operation_id_sha256",
+        "activation_operation_id_sha256",
+        "controller_enable_operation_id_sha256",
+        "controller_disable_operation_id_sha256",
+        "release_sha256",
+        "publication_sha256",
+        "execution_activation_sha256",
+        "runner_build_sha256",
+        "controller_service_name",
+        "controller_baseline_version_id",
+        "controller_enabled_version_id",
+        "controller_disabled_version_id",
+        "edge_baseline_version_id",
+        "action_gate_inventory_sha256",
+        "action_gate_count",
+        "all_action_gates_false",
+        "foundation_manifest_sha256",
+        "runtime_build_id",
+        "ring_generation",
+        "shard_count",
+        "environment",
+        "prepared_by_admin_id",
+        "activation_deadline_at",
+        "execution_deadline_at",
+        "ticket_digest_sha256",
+        "prepared_at",
+    },
+    "relay_container_shard_placement_execution_ticket_activations": {
+        "ticket_id_sha256",
+        "contract_version",
+        "activation_contract",
+        "authority_claim_digest_sha256",
+        "authority_claim_acquired_receipt_sha256",
+        "authority_claim_operation_id_sha256",
+        "authority_activation_operation_id_sha256",
+        "authority_database_identity_sha256",
+        "authority_ledger_identity_sha256",
+        "authority_version_id",
+        "activation_credential_id_sha256",
+        "activation_request_id_sha256",
+        "activation_digest_sha256",
+        "activated_by_admin_id",
+        "activated_at",
+    },
+    "relay_container_shard_placement_execution_ticket_authority_acks": {
+        "ticket_id_sha256",
+        "contract_version",
+        "acknowledgement_contract",
+        "application_ticket_digest_sha256",
+        "authority_claim_digest_sha256",
+        "application_activation_digest_sha256",
+        "authority_activation_terminal_receipt_sha256",
+        "authority_ledger_head_sha256",
+        "authority_database_identity_sha256",
+        "authority_version_id",
+        "authority_read_credential_id_sha256",
+        "authority_read_request_id_sha256",
+        "acknowledgement_digest_sha256",
+        "acknowledged_by_admin_id",
+        "acknowledged_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -1523,6 +1602,16 @@ REQUIRED_INDEXES = {
     },
     "relay_container_shard_placement_mutation_authorizations": {
         "idx_relay_container_shard_placement_authorizations_candidate": False,
+    },
+    "relay_container_shard_placement_execution_tickets": {
+        "idx_relay_container_shard_placement_execution_tickets_candidate": False,
+        "idx_relay_container_shard_placement_execution_tickets_plan": False,
+    },
+    "relay_container_shard_placement_execution_ticket_activations": {
+        "idx_relay_container_shard_placement_execution_ticket_activations_claim": False,
+    },
+    "relay_container_shard_placement_execution_ticket_authority_acks": {
+        "idx_relay_container_shard_placement_execution_ticket_authority_acks_claim": False,
     },
 }
 
@@ -15145,6 +15234,7 @@ def verify_relay_container_shard_activation_campaign_rollout(
         "relay_container_shard_activation_campaign_seal_delete_guard",
         "relay_container_shard_activation_campaign_authority_guard",
         "relay_container_shard_activation_campaign_authorization_guard",
+        "relay_container_shard_activation_campaign_claim_execution_ticket_guard",
     }
     trigger_rows = schema_conn.execute(
         "SELECT name, sql FROM sqlite_master "
@@ -15211,9 +15301,17 @@ def verify_relay_container_shard_activation_campaign_rollout(
         "relay_container_shard_activation_campaign_authorization_guard": (
             "AFTER INSERT ON relay_container_shard_activation_campaigns",
             "FROM relay_container_shard_placement_mutation_authorizations AS authorization",
+            "JOIN relay_container_shard_placement_execution_tickets AS ticket",
             "authorization.campaign_nonce_sha256 = NEW.campaign_nonce_sha256",
             "authorization.environment = NEW.environment",
-            "shard activation campaign authorization mismatch",
+            "shard activation campaign execution ticket mismatch",
+        ),
+        "relay_container_shard_activation_campaign_claim_execution_ticket_guard": (
+            "AFTER INSERT ON relay_container_shard_activation_campaign_claims",
+            "JOIN relay_container_shard_placement_execution_ticket_activations AS activation",
+            "JOIN relay_container_shard_placement_execution_ticket_authority_acks AS acknowledgement",
+            "ticket.execution_deadline_at",
+            "shard activation campaign claim is not Authority-acknowledged",
         ),
     }
     for trigger_name, fragments in trigger_fragments.items():
@@ -15326,6 +15424,157 @@ def _verify_relay_container_shard_activation_campaign_runtime(
           :campaign_expires_at,
           :consumed_by_admin_id
         )
+    """
+    execution_ticket_insert_sql = """
+        INSERT INTO relay_container_shard_placement_execution_tickets (
+          ticket_id_sha256,
+          contract_version,
+          ticket_contract,
+          authorization_id_sha256,
+          campaign_id,
+          campaign_digest_sha256,
+          execution_nonce_sha256,
+          permit_subject_digest_sha256,
+          application_database_identity_sha256,
+          authority_database_identity_sha256,
+          authority_ledger_identity_sha256,
+          execution_plan_sha256,
+          operation_schedule_sha256,
+          preparation_operation_id_sha256,
+          claim_operation_id_sha256,
+          activation_operation_id_sha256,
+          controller_enable_operation_id_sha256,
+          controller_disable_operation_id_sha256,
+          release_sha256,
+          publication_sha256,
+          execution_activation_sha256,
+          runner_build_sha256,
+          controller_service_name,
+          controller_baseline_version_id,
+          controller_enabled_version_id,
+          controller_disabled_version_id,
+          edge_baseline_version_id,
+          action_gate_inventory_sha256,
+          action_gate_count,
+          all_action_gates_false,
+          foundation_manifest_sha256,
+          runtime_build_id,
+          ring_generation,
+          shard_count,
+          environment,
+          prepared_by_admin_id,
+          activation_deadline_at,
+          execution_deadline_at,
+          ticket_digest_sha256
+        ) VALUES (
+          :ticket_id_sha256,
+          1,
+          'cinatoken-relay-container-shard-placement-execution-ticket-v1',
+          :authorization_id_sha256,
+          :campaign_id,
+          :campaign_digest_sha256,
+          :execution_nonce_sha256,
+          :permit_subject_digest_sha256,
+          :application_database_identity_sha256,
+          :authority_database_identity_sha256,
+          :authority_ledger_identity_sha256,
+          :execution_plan_sha256,
+          :operation_schedule_sha256,
+          :preparation_operation_id_sha256,
+          :claim_operation_id_sha256,
+          :activation_operation_id_sha256,
+          :controller_enable_operation_id_sha256,
+          :controller_disable_operation_id_sha256,
+          :release_sha256,
+          :publication_sha256,
+          :execution_activation_sha256,
+          :runner_build_sha256,
+          'cinatoken-container-controller-staging',
+          :controller_baseline_version_id,
+          :controller_enabled_version_id,
+          :controller_disabled_version_id,
+          :edge_baseline_version_id,
+          :action_gate_inventory_sha256,
+          22,
+          1,
+          :foundation_manifest_sha256,
+          :runtime_build_id,
+          :ring_generation,
+          :shard_count,
+          'staging',
+          :prepared_by_admin_id,
+          :activation_deadline_at,
+          :execution_deadline_at,
+          :ticket_digest_sha256
+        )
+    """
+    execution_ticket_activation_insert_sql = """
+        INSERT INTO
+          relay_container_shard_placement_execution_ticket_activations (
+            ticket_id_sha256,
+            contract_version,
+            activation_contract,
+            authority_claim_digest_sha256,
+            authority_claim_acquired_receipt_sha256,
+            authority_claim_operation_id_sha256,
+            authority_activation_operation_id_sha256,
+            authority_database_identity_sha256,
+            authority_ledger_identity_sha256,
+            authority_version_id,
+            activation_credential_id_sha256,
+            activation_request_id_sha256,
+            activation_digest_sha256,
+            activated_by_admin_id
+          ) VALUES (
+            :ticket_id_sha256,
+            1,
+            'cinatoken-relay-container-shard-placement-execution-ticket-activation-v1',
+            :authority_claim_digest_sha256,
+            :authority_claim_acquired_receipt_sha256,
+            :authority_claim_operation_id_sha256,
+            :authority_activation_operation_id_sha256,
+            :authority_database_identity_sha256,
+            :authority_ledger_identity_sha256,
+            :authority_version_id,
+            :activation_credential_id_sha256,
+            :activation_request_id_sha256,
+            :activation_digest_sha256,
+            :activated_by_admin_id
+          )
+    """
+    execution_ticket_ack_insert_sql = """
+        INSERT INTO
+          relay_container_shard_placement_execution_ticket_authority_acks (
+            ticket_id_sha256,
+            contract_version,
+            acknowledgement_contract,
+            application_ticket_digest_sha256,
+            authority_claim_digest_sha256,
+            application_activation_digest_sha256,
+            authority_activation_terminal_receipt_sha256,
+            authority_ledger_head_sha256,
+            authority_database_identity_sha256,
+            authority_version_id,
+            authority_read_credential_id_sha256,
+            authority_read_request_id_sha256,
+            acknowledgement_digest_sha256,
+            acknowledged_by_admin_id
+          ) VALUES (
+            :ticket_id_sha256,
+            1,
+            'cinatoken-relay-container-shard-placement-authority-ack-v1',
+            :application_ticket_digest_sha256,
+            :authority_claim_digest_sha256,
+            :application_activation_digest_sha256,
+            :authority_activation_terminal_receipt_sha256,
+            :authority_ledger_head_sha256,
+            :authority_database_identity_sha256,
+            :authority_version_id,
+            :authority_read_credential_id_sha256,
+            :authority_read_request_id_sha256,
+            :acknowledgement_digest_sha256,
+            :acknowledged_by_admin_id
+          )
     """
     claim_insert_columns = tuple(
         column for column in claim_columns if column != "claimed_at"
@@ -15517,16 +15766,134 @@ def _verify_relay_container_shard_activation_campaign_runtime(
                 ),
             ),
             "permit_issued_at": d1_clock[0],
-            "permit_expires_at": d1_clock[0] + 300,
+            "permit_expires_at": min(
+                int(values["expires_at"]),
+                d1_clock[0] + 600,
+            ),
             "campaign_id": values["campaign_id"],
             "campaign_digest_sha256": values["campaign_digest_sha256"],
             "campaign_expires_at": values["expires_at"],
             "consumed_by_admin_id": values["created_by_admin_id"],
         }
+        ticket = {
+            "ticket_id_sha256": test_sha256(
+                f"0064:ticket:{values['campaign_id']}"
+            ),
+            **authorization,
+            "permit_subject_digest_sha256": authorization[
+                "subject_digest_sha256"
+            ],
+            "application_database_identity_sha256": test_sha256(
+                "0064:application-database"
+            ),
+            "authority_database_identity_sha256": test_sha256(
+                "0064:authority-database"
+            ),
+            "authority_ledger_identity_sha256": test_sha256(
+                "0064:authority-ledger"
+            ),
+            "execution_plan_sha256": test_sha256(
+                f"0064:plan:{values['campaign_id']}"
+            ),
+            "operation_schedule_sha256": test_sha256(
+                f"0064:schedule:{values['campaign_id']}"
+            ),
+            "preparation_operation_id_sha256": test_sha256(
+                f"0064:prepare:{values['campaign_id']}"
+            ),
+            "claim_operation_id_sha256": test_sha256(
+                f"0064:claim:{values['campaign_id']}"
+            ),
+            "activation_operation_id_sha256": test_sha256(
+                f"0064:activate:{values['campaign_id']}"
+            ),
+            "controller_enable_operation_id_sha256": test_sha256(
+                f"0064:enable:{values['campaign_id']}"
+            ),
+            "controller_disable_operation_id_sha256": test_sha256(
+                f"0064:disable:{values['campaign_id']}"
+            ),
+            "release_sha256": test_sha256(
+                f"0064:release:{values['campaign_id']}"
+            ),
+            "publication_sha256": test_sha256(
+                f"0064:publication:{values['campaign_id']}"
+            ),
+            "execution_activation_sha256": test_sha256(
+                f"0064:execution-activation:{values['campaign_id']}"
+            ),
+            "runner_build_sha256": test_sha256(
+                f"0064:runner:{values['campaign_id']}"
+            ),
+            "controller_baseline_version_id": f"controller-baseline-{values['campaign_id']}",
+            "controller_enabled_version_id": values["controller_version_id"],
+            "controller_disabled_version_id": f"controller-disabled-{values['campaign_id']}",
+            "edge_baseline_version_id": f"edge-baseline-{values['campaign_id']}",
+            "prepared_by_admin_id": values["created_by_admin_id"],
+            "activation_deadline_at": d1_clock[0] + 30,
+            "execution_deadline_at": values["expires_at"],
+            "ticket_digest_sha256": test_sha256(
+                f"0064:ticket-digest:{values['campaign_id']}"
+            ),
+        }
+        activation = {
+            **ticket,
+            "authority_claim_digest_sha256": test_sha256(
+                f"0064:authority-claim:{values['campaign_id']}"
+            ),
+            "authority_claim_acquired_receipt_sha256": test_sha256(
+                f"0064:claim-acquired:{values['campaign_id']}"
+            ),
+            "authority_claim_operation_id_sha256": ticket[
+                "claim_operation_id_sha256"
+            ],
+            "authority_activation_operation_id_sha256": ticket[
+                "activation_operation_id_sha256"
+            ],
+            "authority_version_id": f"authority-{values['campaign_id']}",
+            "activation_credential_id_sha256": test_sha256(
+                f"0064:activation-credential:{values['campaign_id']}"
+            ),
+            "activation_request_id_sha256": test_sha256(
+                f"0064:activation-request:{values['campaign_id']}"
+            ),
+            "activation_digest_sha256": test_sha256(
+                f"0064:activation-digest:{values['campaign_id']}"
+            ),
+            "activated_by_admin_id": values["created_by_admin_id"],
+        }
+        acknowledgement = {
+            **activation,
+            "application_ticket_digest_sha256": ticket[
+                "ticket_digest_sha256"
+            ],
+            "application_activation_digest_sha256": activation[
+                "activation_digest_sha256"
+            ],
+            "authority_activation_terminal_receipt_sha256": test_sha256(
+                f"0064:activation-terminal:{values['campaign_id']}"
+            ),
+            "authority_ledger_head_sha256": test_sha256(
+                f"0064:ledger-head:{values['campaign_id']}"
+            ),
+            "authority_read_credential_id_sha256": test_sha256(
+                f"0064:read-credential:{values['campaign_id']}"
+            ),
+            "authority_read_request_id_sha256": test_sha256(
+                f"0064:read-request:{values['campaign_id']}"
+            ),
+            "acknowledgement_digest_sha256": test_sha256(
+                f"0064:ack:{values['campaign_id']}"
+            ),
+            "acknowledged_by_admin_id": values["created_by_admin_id"],
+        }
         conn.execute("SAVEPOINT authorized_campaign")
         try:
             conn.execute(authorization_insert_sql, authorization)
+            conn.execute(execution_ticket_insert_sql, ticket)
             conn.execute(campaign_insert_sql, values)
+            conn.execute(execution_ticket_activation_insert_sql, activation)
+            conn.execute(execution_ticket_ack_insert_sql, acknowledgement)
             conn.execute("RELEASE authorized_campaign")
         except Exception:
             conn.execute("ROLLBACK TO authorized_campaign")
@@ -15731,7 +16098,7 @@ def _verify_relay_container_shard_activation_campaign_runtime(
         (
             campaign_values("long-window", expires_at=d1_clock[0] + 3601),
             "0055 accepted a campaign beyond the D1 expiry window",
-            "expiry is outside the D1 window",
+            "execution ticket authorization mismatch",
         ),
         (
             campaign_values("gate-count", action_gate_count=21),
@@ -18836,6 +19203,15 @@ def verify_relay_container_ring_transition_claim_rollout(
         ),
         None,
     )
+    placement_execution_ticket_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0064_relay_container_shard_placement_execution_tickets.sql"
+        ),
+        None,
+    )
     if (
         claim_path is None
         or abort_path is None
@@ -18843,9 +19219,10 @@ def verify_relay_container_ring_transition_claim_rollout(
         or placement_path is None
         or placement_event_path is None
         or placement_authorization_path is None
+        or placement_execution_ticket_path is None
     ):
         raise SystemExit(
-            "0058..0063 ring transition and placement migrations not found"
+            "0058..0064 ring transition and placement migrations not found"
         )
     claim_index = schema_paths.index(claim_path)
     if claim_index == 0 or schema_paths[claim_index - 1] != abort_path:
@@ -18857,7 +19234,7 @@ def verify_relay_container_ring_transition_claim_rollout(
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
     placement_event_index = schema_paths.index(placement_event_path)
-    if placement_event_index != len(schema_paths) - 2:
+    if placement_event_index != len(schema_paths) - 3:
         raise SystemExit("0062 shard placement events must immediately precede 0063")
     if (
         placement_event_index == 0
@@ -18865,10 +19242,20 @@ def verify_relay_container_ring_transition_claim_rollout(
     ):
         raise SystemExit("0062 shard placement events must follow 0061")
     placement_authorization_index = schema_paths.index(placement_authorization_path)
-    if placement_authorization_index != len(schema_paths) - 1:
-        raise SystemExit("0063 shard placement authorization must be the D1 head")
+    if placement_authorization_index != len(schema_paths) - 2:
+        raise SystemExit("0063 shard placement authorization must immediately precede 0064")
     if schema_paths[placement_authorization_index - 1] != placement_event_path:
         raise SystemExit("0063 shard placement authorization must follow 0062")
+    placement_execution_ticket_index = schema_paths.index(
+        placement_execution_ticket_path
+    )
+    if placement_execution_ticket_index != len(schema_paths) - 1:
+        raise SystemExit("0064 shard placement execution ticket must be the D1 head")
+    if (
+        schema_paths[placement_execution_ticket_index - 1]
+        != placement_authorization_path
+    ):
+        raise SystemExit("0064 shard placement execution ticket must follow 0063")
 
     claim_sql = claim_path.read_text(encoding="utf-8")
     if "if not exists" in claim_sql.lower():
@@ -19219,20 +19606,30 @@ def verify_relay_container_shard_placement_attestation_rollout(
         ),
         None,
     )
+    placement_execution_ticket_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0064_relay_container_shard_placement_execution_tickets.sql"
+        ),
+        None,
+    )
     if (
         placement_path is None
         or authority_path is None
         or placement_event_path is None
         or placement_authorization_path is None
+        or placement_execution_ticket_path is None
     ):
         raise SystemExit(
-            "0060/0061/0062/0063 shard placement rollout migrations not found"
+            "0060/0061/0062/0063/0064 shard placement rollout migrations not found"
         )
     placement_index = schema_paths.index(placement_path)
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
     placement_event_index = schema_paths.index(placement_event_path)
-    if placement_event_index != len(schema_paths) - 2:
+    if placement_event_index != len(schema_paths) - 3:
         raise SystemExit("0062 shard placement events must immediately precede 0063")
     if (
         placement_event_index == 0
@@ -19240,10 +19637,20 @@ def verify_relay_container_shard_placement_attestation_rollout(
     ):
         raise SystemExit("0062 shard placement events must follow 0061")
     placement_authorization_index = schema_paths.index(placement_authorization_path)
-    if placement_authorization_index != len(schema_paths) - 1:
-        raise SystemExit("0063 shard placement authorization must be the D1 head")
+    if placement_authorization_index != len(schema_paths) - 2:
+        raise SystemExit("0063 shard placement authorization must immediately precede 0064")
     if schema_paths[placement_authorization_index - 1] != placement_event_path:
         raise SystemExit("0063 shard placement authorization must follow 0062")
+    placement_execution_ticket_index = schema_paths.index(
+        placement_execution_ticket_path
+    )
+    if placement_execution_ticket_index != len(schema_paths) - 1:
+        raise SystemExit("0064 shard placement execution ticket must be the D1 head")
+    if (
+        schema_paths[placement_execution_ticket_index - 1]
+        != placement_authorization_path
+    ):
+        raise SystemExit("0064 shard placement execution ticket must follow 0063")
 
     placement_sql = placement_path.read_text(encoding="utf-8")
     if "if not exists" in placement_sql.lower():
@@ -19309,6 +19716,38 @@ def verify_relay_container_shard_placement_attestation_rollout(
         if fragment not in placement_authorization_sql:
             raise SystemExit(
                 f"0063 shard placement authorization rollout missing: {fragment}"
+            )
+
+    placement_execution_ticket_sql = placement_execution_ticket_path.read_text(
+        encoding="utf-8"
+    )
+    if "if not exists" in placement_execution_ticket_sql.lower():
+        raise SystemExit("0064 critical placement ticket objects must fail duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_shard_placement_execution_tickets",
+        "CREATE TABLE relay_container_shard_placement_execution_ticket_activations",
+        "CREATE TABLE relay_container_shard_placement_execution_ticket_authority_acks",
+        "application_database_identity_sha256 TEXT NOT NULL",
+        "authority_database_identity_sha256 TEXT NOT NULL",
+        "authority_ledger_identity_sha256 TEXT NOT NULL",
+        "activation_deadline_at INTEGER NOT NULL",
+        "execution_deadline_at INTEGER NOT NULL",
+        "application_ticket_digest_sha256 TEXT NOT NULL",
+        "relay_container_shard_placement_execution_ticket_insert_guard",
+        "relay_container_shard_placement_execution_ticket_activation_insert_guard",
+        "relay_container_shard_placement_execution_ticket_authority_ack_insert_guard",
+        "relay_container_shard_activation_campaign_claim_execution_ticket_guard",
+        "shard activation campaign claim is not Authority-acknowledged",
+        "relay_container_shard_placement_execution_ticket_update_guard",
+        "relay_container_shard_placement_execution_ticket_delete_guard",
+        "relay_container_shard_placement_execution_ticket_activation_update_guard",
+        "relay_container_shard_placement_execution_ticket_activation_delete_guard",
+        "relay_container_shard_placement_execution_ticket_authority_ack_update_guard",
+        "relay_container_shard_placement_execution_ticket_authority_ack_delete_guard",
+    ):
+        if fragment not in placement_execution_ticket_sql:
+            raise SystemExit(
+                f"0064 shard placement execution ticket rollout missing: {fragment}"
             )
 
 

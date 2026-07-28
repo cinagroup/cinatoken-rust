@@ -69,15 +69,99 @@ const EXPECTED_AUTHORIZATION_COLUMNS = [
   "consumed_by_admin_id",
   "consumed_at",
 ].join(",");
+const EXPECTED_TICKET_COLUMNS = [
+  "ticket_id_sha256",
+  "contract_version",
+  "ticket_contract",
+  "authorization_id_sha256",
+  "campaign_id",
+  "campaign_digest_sha256",
+  "execution_nonce_sha256",
+  "permit_subject_digest_sha256",
+  "application_database_identity_sha256",
+  "authority_database_identity_sha256",
+  "authority_ledger_identity_sha256",
+  "execution_plan_sha256",
+  "operation_schedule_sha256",
+  "preparation_operation_id_sha256",
+  "claim_operation_id_sha256",
+  "activation_operation_id_sha256",
+  "controller_enable_operation_id_sha256",
+  "controller_disable_operation_id_sha256",
+  "release_sha256",
+  "publication_sha256",
+  "execution_activation_sha256",
+  "runner_build_sha256",
+  "controller_service_name",
+  "controller_baseline_version_id",
+  "controller_enabled_version_id",
+  "controller_disabled_version_id",
+  "edge_baseline_version_id",
+  "action_gate_inventory_sha256",
+  "action_gate_count",
+  "all_action_gates_false",
+  "foundation_manifest_sha256",
+  "runtime_build_id",
+  "ring_generation",
+  "shard_count",
+  "environment",
+  "prepared_by_admin_id",
+  "activation_deadline_at",
+  "execution_deadline_at",
+  "ticket_digest_sha256",
+  "prepared_at",
+].join(",");
+const EXPECTED_TICKET_ACTIVATION_COLUMNS = [
+  "ticket_id_sha256",
+  "contract_version",
+  "activation_contract",
+  "authority_claim_digest_sha256",
+  "authority_claim_acquired_receipt_sha256",
+  "authority_claim_operation_id_sha256",
+  "authority_activation_operation_id_sha256",
+  "authority_database_identity_sha256",
+  "authority_ledger_identity_sha256",
+  "authority_version_id",
+  "activation_credential_id_sha256",
+  "activation_request_id_sha256",
+  "activation_digest_sha256",
+  "activated_by_admin_id",
+  "activated_at",
+].join(",");
+const EXPECTED_TICKET_AUTHORITY_ACK_COLUMNS = [
+  "ticket_id_sha256",
+  "contract_version",
+  "acknowledgement_contract",
+  "application_ticket_digest_sha256",
+  "authority_claim_digest_sha256",
+  "application_activation_digest_sha256",
+  "authority_activation_terminal_receipt_sha256",
+  "authority_ledger_head_sha256",
+  "authority_database_identity_sha256",
+  "authority_version_id",
+  "authority_read_credential_id_sha256",
+  "authority_read_request_id_sha256",
+  "acknowledgement_digest_sha256",
+  "acknowledged_by_admin_id",
+  "acknowledged_at",
+].join(",");
 const EXPECTED_SCHEMA_OBJECTS = [
   "index:idx_relay_container_shard_placement_attestations_candidate",
   "index:idx_relay_container_shard_placement_attestations_object",
   "index:idx_relay_container_shard_placement_authorizations_candidate",
   "index:idx_relay_container_shard_placement_events_candidate",
+  "index:idx_relay_container_shard_placement_execution_ticket_activations_claim",
+  "index:idx_relay_container_shard_placement_execution_ticket_authority_acks_claim",
+  "index:idx_relay_container_shard_placement_execution_tickets_candidate",
+  "index:idx_relay_container_shard_placement_execution_tickets_plan",
   "table:relay_container_shard_placement_attestations",
   "table:relay_container_shard_placement_events",
+  "table:relay_container_shard_placement_execution_ticket_activations",
+  "table:relay_container_shard_placement_execution_ticket_authority_acks",
+  "table:relay_container_shard_placement_execution_tickets",
   "table:relay_container_shard_placement_mutation_authorizations",
   "trigger:relay_container_shard_activation_campaign_authorization_guard",
+  "trigger:relay_container_shard_activation_campaign_claim_execution_ticket_guard",
   "trigger:relay_container_shard_placement_attestation_delete_guard",
   "trigger:relay_container_shard_placement_attestation_event_append",
   "trigger:relay_container_shard_placement_attestation_insert_guard",
@@ -88,6 +172,15 @@ const EXPECTED_SCHEMA_OBJECTS = [
   "trigger:relay_container_shard_placement_event_delete_guard",
   "trigger:relay_container_shard_placement_event_insert_guard",
   "trigger:relay_container_shard_placement_event_update_guard",
+  "trigger:relay_container_shard_placement_execution_ticket_activation_delete_guard",
+  "trigger:relay_container_shard_placement_execution_ticket_activation_insert_guard",
+  "trigger:relay_container_shard_placement_execution_ticket_activation_update_guard",
+  "trigger:relay_container_shard_placement_execution_ticket_authority_ack_delete_guard",
+  "trigger:relay_container_shard_placement_execution_ticket_authority_ack_insert_guard",
+  "trigger:relay_container_shard_placement_execution_ticket_authority_ack_update_guard",
+  "trigger:relay_container_shard_placement_execution_ticket_delete_guard",
+  "trigger:relay_container_shard_placement_execution_ticket_insert_guard",
+  "trigger:relay_container_shard_placement_execution_ticket_update_guard",
 ].join("|");
 
 const SCHEMA_READINESS_SQL = `
@@ -96,7 +189,8 @@ SELECT
    WHERE name IN (
      '0061_relay_container_shard_placement_attestations.sql',
      '0062_relay_container_shard_placement_events.sql',
-     '0063_relay_container_shard_placement_mutation_authorizations.sql'
+     '0063_relay_container_shard_placement_mutation_authorizations.sql',
+     '0064_relay_container_shard_placement_execution_tickets.sql'
    ))
     AS migration_count,
   (SELECT group_concat(name, ',') FROM (
@@ -116,6 +210,27 @@ SELECT
      )
      ORDER BY cid
    )) AS authorization_columns,
+  (SELECT group_concat(name, ',') FROM (
+     SELECT name
+     FROM pragma_table_info(
+       'relay_container_shard_placement_execution_tickets'
+     )
+     ORDER BY cid
+   )) AS ticket_columns,
+  (SELECT group_concat(name, ',') FROM (
+     SELECT name
+     FROM pragma_table_info(
+       'relay_container_shard_placement_execution_ticket_activations'
+     )
+     ORDER BY cid
+   )) AS ticket_activation_columns,
+  (SELECT group_concat(name, ',') FROM (
+     SELECT name
+     FROM pragma_table_info(
+       'relay_container_shard_placement_execution_ticket_authority_acks'
+     )
+     ORDER BY cid
+   )) AS ticket_authority_ack_columns,
   (SELECT group_concat(type || ':' || name, '|') FROM (
      SELECT type, name
      FROM sqlite_master
@@ -123,10 +238,15 @@ SELECT
        tbl_name IN (
          'relay_container_shard_placement_attestations',
          'relay_container_shard_placement_events',
-         'relay_container_shard_placement_mutation_authorizations'
+         'relay_container_shard_placement_mutation_authorizations',
+         'relay_container_shard_placement_execution_tickets',
+         'relay_container_shard_placement_execution_ticket_activations',
+         'relay_container_shard_placement_execution_ticket_authority_acks'
        )
-       OR name =
-            'relay_container_shard_activation_campaign_authorization_guard'
+       OR name IN (
+            'relay_container_shard_activation_campaign_authorization_guard',
+            'relay_container_shard_activation_campaign_claim_execution_ticket_guard'
+       )
      )
        AND name NOT LIKE 'sqlite_autoindex_%'
      ORDER BY type || ':' || name
@@ -137,6 +257,18 @@ const AUTHORIZATION_READBACK_SQL = `
 SELECT
   authorization.authorization_id_sha256,
   authorization.subject_digest_sha256,
+  ticket.ticket_id_sha256,
+  ticket.ticket_digest_sha256,
+  ticket.activation_deadline_at,
+  ticket.execution_deadline_at,
+  activation.authority_claim_digest_sha256,
+  activation.authority_claim_acquired_receipt_sha256,
+  activation.activation_digest_sha256,
+  activation.activated_at,
+  acknowledgement.authority_activation_terminal_receipt_sha256,
+  acknowledgement.authority_ledger_head_sha256,
+  acknowledgement.acknowledgement_digest_sha256,
+  acknowledgement.acknowledged_at,
   authorization.consumed_at,
   authorization.campaign_expires_at,
   unixepoch() AS database_now
@@ -156,6 +288,45 @@ JOIN relay_container_shard_activation_campaigns AS campaign
  AND campaign.shard_count = authorization.shard_count
  AND campaign.environment = authorization.environment
  AND campaign.expires_at = authorization.campaign_expires_at
+JOIN relay_container_shard_placement_execution_tickets AS ticket
+  ON ticket.authorization_id_sha256 =
+       authorization.authorization_id_sha256
+ AND ticket.campaign_id = authorization.campaign_id
+ AND ticket.campaign_digest_sha256 =
+       authorization.campaign_digest_sha256
+ AND ticket.execution_nonce_sha256 =
+       authorization.execution_nonce_sha256
+ AND ticket.permit_subject_digest_sha256 =
+       authorization.subject_digest_sha256
+ AND ticket.controller_enabled_version_id =
+       authorization.controller_version_id
+ AND ticket.action_gate_inventory_sha256 =
+       authorization.action_gate_inventory_sha256
+ AND ticket.foundation_manifest_sha256 =
+       authorization.foundation_manifest_sha256
+ AND ticket.runtime_build_id = authorization.runtime_build_id
+ AND ticket.ring_generation = authorization.ring_generation
+ AND ticket.shard_count = authorization.shard_count
+ AND ticket.environment = authorization.environment
+JOIN relay_container_shard_placement_execution_ticket_activations AS activation
+  ON activation.ticket_id_sha256 = ticket.ticket_id_sha256
+ AND activation.authority_database_identity_sha256 =
+       ticket.authority_database_identity_sha256
+ AND activation.authority_claim_operation_id_sha256 =
+       ticket.claim_operation_id_sha256
+ AND activation.authority_activation_operation_id_sha256 =
+       ticket.activation_operation_id_sha256
+JOIN relay_container_shard_placement_execution_ticket_authority_acks AS acknowledgement
+  ON acknowledgement.ticket_id_sha256 = ticket.ticket_id_sha256
+ AND acknowledgement.authority_claim_digest_sha256 =
+       activation.authority_claim_digest_sha256
+ AND acknowledgement.application_ticket_digest_sha256 =
+       ticket.ticket_digest_sha256
+ AND acknowledgement.application_activation_digest_sha256 =
+       activation.activation_digest_sha256
+ AND acknowledgement.authority_database_identity_sha256 =
+       activation.authority_database_identity_sha256
+ AND acknowledgement.authority_version_id = activation.authority_version_id
 WHERE authorization.campaign_id = ?1
   AND authorization.controller_version_id = ?2
   AND authorization.action_gate_inventory_sha256 = ?3
@@ -163,6 +334,10 @@ WHERE authorization.campaign_id = ?1
   AND authorization.shard_count = ?5
   AND authorization.environment = ?6
   AND authorization.consumed_at <= unixepoch()
+  AND ticket.prepared_at <= unixepoch()
+  AND activation.activated_at <= unixepoch()
+  AND acknowledgement.acknowledged_at <= unixepoch()
+  AND unixepoch() < ticket.execution_deadline_at
   AND unixepoch() < authorization.campaign_expires_at
   AND NOT EXISTS (
     SELECT 1
@@ -280,6 +455,18 @@ export interface ShardPlacementMutationAuthorizationCandidate {
 interface PlacementAuthorizationRow extends Record<string, unknown> {
   authorization_id_sha256: string;
   subject_digest_sha256: string;
+  ticket_id_sha256: string;
+  ticket_digest_sha256: string;
+  activation_deadline_at: number;
+  execution_deadline_at: number;
+  authority_claim_digest_sha256: string;
+  authority_claim_acquired_receipt_sha256: string;
+  activation_digest_sha256: string;
+  activated_at: number;
+  authority_activation_terminal_receipt_sha256: string;
+  authority_ledger_head_sha256: string;
+  acknowledgement_digest_sha256: string;
+  acknowledged_at: number;
   consumed_at: number;
   campaign_expires_at: number;
   database_now: number;
@@ -336,6 +523,9 @@ export async function requireShardPlacementMutationAuthorization(
   }
   if (
     value.consumed_at > value.database_now ||
+    value.activated_at > value.database_now ||
+    value.acknowledged_at > value.database_now ||
+    value.database_now >= value.execution_deadline_at ||
     value.database_now >= value.campaign_expires_at
   ) {
     throw new ProtocolError(
@@ -414,11 +604,15 @@ async function placementSession(database: PlacementDatabase): Promise<PlacementS
     const schema = await session.prepare(SCHEMA_READINESS_SQL).first<Record<string, unknown>>();
     if (
       schema === null ||
-      Object.keys(schema).length !== 5 ||
-      schema.migration_count !== 3 ||
+      Object.keys(schema).length !== 8 ||
+      schema.migration_count !== 4 ||
       schema.placement_columns !== EXPECTED_COLUMNS ||
       schema.event_columns !== EXPECTED_EVENT_COLUMNS ||
       schema.authorization_columns !== EXPECTED_AUTHORIZATION_COLUMNS ||
+      schema.ticket_columns !== EXPECTED_TICKET_COLUMNS ||
+      schema.ticket_activation_columns !== EXPECTED_TICKET_ACTIVATION_COLUMNS ||
+      schema.ticket_authority_ack_columns !==
+        EXPECTED_TICKET_AUTHORITY_ACK_COLUMNS ||
       schema.schema_objects !== EXPECTED_SCHEMA_OBJECTS
     ) {
       throw new ProtocolError("shard_placement_attestation_schema_unavailable", 503);
@@ -435,11 +629,38 @@ function isPlacementAuthorizationRow(
 ): value is PlacementAuthorizationRow {
   return (
     value !== null &&
-    Object.keys(value).length === 5 &&
+    Object.keys(value).length === 17 &&
     typeof value.authorization_id_sha256 === "string" &&
     LOWER_HEX_64.test(value.authorization_id_sha256) &&
     typeof value.subject_digest_sha256 === "string" &&
     LOWER_HEX_64.test(value.subject_digest_sha256) &&
+    typeof value.ticket_id_sha256 === "string" &&
+    LOWER_HEX_64.test(value.ticket_id_sha256) &&
+    typeof value.ticket_digest_sha256 === "string" &&
+    LOWER_HEX_64.test(value.ticket_digest_sha256) &&
+    typeof value.authority_claim_digest_sha256 === "string" &&
+    LOWER_HEX_64.test(value.authority_claim_digest_sha256) &&
+    typeof value.authority_claim_acquired_receipt_sha256 === "string" &&
+    LOWER_HEX_64.test(value.authority_claim_acquired_receipt_sha256) &&
+    typeof value.activation_digest_sha256 === "string" &&
+    LOWER_HEX_64.test(value.activation_digest_sha256) &&
+    typeof value.authority_activation_terminal_receipt_sha256 === "string" &&
+    LOWER_HEX_64.test(
+      value.authority_activation_terminal_receipt_sha256,
+    ) &&
+    typeof value.authority_ledger_head_sha256 === "string" &&
+    LOWER_HEX_64.test(value.authority_ledger_head_sha256) &&
+    typeof value.acknowledgement_digest_sha256 === "string" &&
+    LOWER_HEX_64.test(value.acknowledgement_digest_sha256) &&
+    Number.isSafeInteger(value.activation_deadline_at) &&
+    (value.activation_deadline_at as number) > 0 &&
+    Number.isSafeInteger(value.execution_deadline_at) &&
+    (value.execution_deadline_at as number) >
+      (value.activation_deadline_at as number) &&
+    Number.isSafeInteger(value.activated_at) &&
+    (value.activated_at as number) > 0 &&
+    Number.isSafeInteger(value.acknowledged_at) &&
+    (value.acknowledged_at as number) > 0 &&
     Number.isSafeInteger(value.consumed_at) &&
     (value.consumed_at as number) > 0 &&
     Number.isSafeInteger(value.campaign_expires_at) &&

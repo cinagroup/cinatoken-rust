@@ -199,11 +199,27 @@ describe("shard placement Authority Workerd runtime", () => {
       state: {
         status: "claimed",
         leaseGeneration: 1,
-        nextOperationOrdinal: 3,
+        nextOperationOrdinal: 4,
         receiptCount: 1,
         receiptHeadSha256:
           claim.value.claimAcquiredReceiptSha256,
       },
+    });
+
+    const prematureEnable = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 2,
+      eventKind: "operation_started",
+      operationOrdinal: 5,
+    });
+    const prematureEnableResponse = await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "receipts",
+      prematureEnable,
+    );
+    expect(prematureEnableResponse.status).toBe(409);
+    expect(await prematureEnableResponse.json()).toEqual({
+      error: "execution_receipt_conflict",
     });
 
     await new Promise((resolve) => setTimeout(resolve, 1_100));
@@ -231,7 +247,7 @@ describe("shard placement Authority Workerd runtime", () => {
       claim: claim.value,
       sequence: 3,
       eventKind: "operation_started",
-      operationOrdinal: 3,
+      operationOrdinal: 4,
       predecessorReceiptSha256: renewal.value.receiptDigestSha256,
     });
     expect((await appendExecutionReceipt(
@@ -244,14 +260,49 @@ describe("shard placement Authority Workerd runtime", () => {
       claim: claim.value,
       sequence: 4,
       eventKind: "operation_terminal",
-      operationOrdinal: 3,
+      operationOrdinal: 4,
       predecessorReceiptSha256: started.value.receiptDigestSha256,
+      outcome: "exact_success",
+    });
+    const activated = await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "receipts",
+      terminal,
+    );
+    expect(activated.status).toBe(201);
+    expect(await activated.json()).toMatchObject({
+      nextOperationOrdinal: 5,
+      ticketActivationConfirmed: true,
+      applicationActivationDigestSha256:
+        terminal.value.evidenceSha256,
+    });
+
+    const enableStart = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 5,
+      eventKind: "operation_started",
+      operationOrdinal: 5,
+      predecessorReceiptSha256: terminal.value.receiptDigestSha256,
+    });
+    expect((await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "receipts",
+      enableStart,
+    )).status).toBe(201);
+
+    const enableTerminal = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 6,
+      eventKind: "operation_terminal",
+      operationOrdinal: 5,
+      predecessorReceiptSha256:
+        enableStart.value.receiptDigestSha256,
       outcome: "exact_success",
     });
     expect((await appendExecutionReceipt(
       claim.value.authorizationIdSha256,
       "receipts",
-      terminal,
+      enableTerminal,
     )).status).toBe(201);
 
     const revocation = await placementAuthorityRevocation({
@@ -272,10 +323,11 @@ describe("shard placement Authority Workerd runtime", () => {
 
     const forbiddenNext = await placementExecutionReceipt({
       claim: claim.value,
-      sequence: 5,
+      sequence: 7,
       eventKind: "operation_started",
-      operationOrdinal: 4,
-      predecessorReceiptSha256: terminal.value.receiptDigestSha256,
+      operationOrdinal: 6,
+      predecessorReceiptSha256:
+        enableTerminal.value.receiptDigestSha256,
     });
     const rejected = await appendExecutionReceipt(
       claim.value.authorizationIdSha256,
@@ -289,9 +341,10 @@ describe("shard placement Authority Workerd runtime", () => {
 
     const safety = await placementExecutionReceipt({
       claim: claim.value,
-      sequence: 5,
+      sequence: 7,
       eventKind: "safety_diverted",
-      predecessorReceiptSha256: terminal.value.receiptDigestSha256,
+      predecessorReceiptSha256:
+        enableTerminal.value.receiptDigestSha256,
       safetyReason: "lease_revoked",
     });
     const diverted = await appendExecutionReceipt(
@@ -303,14 +356,14 @@ describe("shard placement Authority Workerd runtime", () => {
     expect(await diverted.json()).toMatchObject({
       eventKind: "safety_diverted",
       status: "disable_required",
-      receiptCount: 5,
+      receiptCount: 7,
     });
 
     const disableStart = await placementExecutionReceipt({
       claim: claim.value,
-      sequence: 6,
+      sequence: 8,
       eventKind: "operation_started",
-      operationOrdinal: 13,
+      operationOrdinal: 14,
       predecessorReceiptSha256: safety.value.receiptDigestSha256,
     });
     const disable = await appendExecutionReceipt(
@@ -321,8 +374,8 @@ describe("shard placement Authority Workerd runtime", () => {
     expect(disable.status).toBe(201);
     expect(await disable.json()).toMatchObject({
       status: "disable_required",
-      nextOperationOrdinal: 13,
-      receiptCount: 6,
+      nextOperationOrdinal: 14,
+      receiptCount: 8,
     });
 
     const lateReplay = await createClaim(claim);
@@ -332,7 +385,7 @@ describe("shard placement Authority Workerd runtime", () => {
       snapshot: {
         state: {
           status: "disable_required",
-          receiptCount: 6,
+          receiptCount: 8,
         },
       },
     });

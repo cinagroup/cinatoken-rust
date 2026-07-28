@@ -380,7 +380,7 @@ function selfTestLockFetch(target, token, tokenId) {
     id: `cinatoken-s3-${target.statementSha256.slice(0, 24)}`,
     condition: {
       type: "Age",
-      maxAgeSeconds: target.policy.minimumRetentionSeconds,
+      maxAgeSeconds: target.policy.lockRetentionSeconds,
     },
     enabled: true,
     prefix: target.prefix,

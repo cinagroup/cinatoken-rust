@@ -168,7 +168,10 @@ describe("container runtime WORM lifecycle collector", () => {
       jurisdiction: "default",
       statementSha256: "a".repeat(64),
       prefix: `container-runtime/s3/v1/${"a".repeat(64)}/`,
-      policy: { minimumRetentionSeconds: 31_536_000 },
+      policy: {
+        minimumRetentionSeconds: 31_536_000,
+        lockRetentionSeconds: 34_560_000,
+      },
     };
     const wanted = expectedLockRule(stagingTarget);
     const lock = await collectAndConfigureLock({

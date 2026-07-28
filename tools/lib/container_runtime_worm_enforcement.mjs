@@ -1429,6 +1429,167 @@ export function normalizeFinalLockPredecessors(options) {
   };
 }
 
+export function normalizeFinalLockReadbackReceipt(options) {
+  const target = options.target;
+  const parsed = requireLiveReceipt(
+    options.receipt,
+    options.receiptText,
+    "lock-readback",
+    false,
+  );
+  requirePublicTarget(
+    parsed.receipt.target,
+    target,
+    "lock-readback",
+  );
+  const predecessors = requireObject(
+    parsed.receipt.predecessors,
+    "[predecessor] final lock predecessors",
+  );
+  exactKeys(
+    predecessors,
+    [
+      "lockReceiptSha256",
+      "postReadbackReceiptSha256",
+      "verifyReceiptSha256",
+    ],
+    "[predecessor] final lock predecessors",
+  );
+  requireCondition(
+    predecessors.lockReceiptSha256 === target.lockReceiptSha256 &&
+      predecessors.postReadbackReceiptSha256 ===
+        target.postReadbackReceiptSha256 &&
+      predecessors.verifyReceiptSha256 === target.verifyReceiptSha256,
+    "[predecessor] final lock receipt chain drifted",
+  );
+  const credential = requireObject(
+    parsed.receipt.credential,
+    "[predecessor] lock verifier credential",
+  );
+  const credentialIdSha256 = credential.credentialIdSha256;
+  requireCondition(
+    SHA256_PATTERN.test(credentialIdSha256) &&
+      !identityDigests(target).includes(credentialIdSha256),
+    "[predecessor] lock verifier identity is not independent",
+  );
+  const authority = normalizeAuthorityReceipt(
+    credential,
+    "lock-verifier",
+    "cloudflare-r2-admin-read-api-token",
+    credentialIdSha256,
+  );
+  const facts = requireObject(
+    parsed.receipt.facts,
+    "[predecessor] final lock facts",
+  );
+  exactKeys(
+    facts,
+    [
+      "mechanism",
+      "awsS3ObjectLockHeadersUsed",
+      "accountIdSha256",
+      "bucketName",
+      "jurisdiction",
+      "prefix",
+      "lockVerifierCredentialIdSha256",
+      "configuredAt",
+      "configurationRequestId",
+      "observedAt",
+      "readbackRequestId",
+      "httpStatus",
+      "selectedRuleId",
+      "rules",
+    ],
+    "[predecessor] final lock facts",
+  );
+  requireFactsTarget(facts, target, "lock-readback");
+  const configuredAt = requireCanonicalTimestamp(
+    facts.configuredAt,
+    "[predecessor] lock configured time",
+  );
+  const observedAt = requireCanonicalTimestamp(
+    facts.observedAt,
+    "[predecessor] lock observed time",
+  );
+  requireCondition(
+    facts.mechanism === "cloudflare-r2-bucket-lock-api" &&
+      facts.awsS3ObjectLockHeadersUsed === false &&
+      facts.lockVerifierCredentialIdSha256 === credentialIdSha256 &&
+      configuredAt === target.lockConfiguredAt &&
+      facts.configurationRequestId ===
+        target.lockConfigurationRequestId &&
+      observedAt === parsed.capturedAt &&
+      facts.httpStatus === 200 &&
+      facts.selectedRuleId === target.lockSelectedRuleId &&
+      canonicalJson(facts.rules) === canonicalJson(target.lockRules) &&
+      target.postReadbackCapturedAt < authority.selfVerifiedAt &&
+      authority.selfVerifiedAt < observedAt &&
+      observedAt < authority.expiresAt,
+    "[predecessor] final lock facts drifted",
+  );
+  requireCondition(
+    facts.rules.some(
+      (rule) =>
+        rule.id === target.lockSelectedRuleId &&
+        rule.enabled === true &&
+        rule.prefix === target.prefix,
+    ),
+    "[predecessor] selected final lock rule is absent",
+  );
+  const operations = parsed.receipt.providerOperations;
+  requireCondition(
+    Array.isArray(operations) && operations.length === 2,
+    "[predecessor] final lock operations are incomplete",
+  );
+  for (const [index, expected] of [
+    ["lock-verifier-preflight", 200],
+    ["lock-final-readback", 200],
+  ].entries()) {
+    const operation = requireObject(
+      operations[index],
+      "[predecessor] final lock operation",
+    );
+    exactKeys(
+      operation,
+      [
+        "method",
+        "operation",
+        "httpStatus",
+        "providerRequestId",
+        "responseBodySha256",
+      ],
+      "[predecessor] final lock operation",
+    );
+    requireCondition(
+      operation.method === "GET" &&
+        operation.operation === expected[0] &&
+        operation.httpStatus === expected[1] &&
+        validProviderId(operation.providerRequestId) &&
+        SHA256_PATTERN.test(operation.responseBodySha256),
+      "[predecessor] final lock operation drifted",
+    );
+  }
+  requireCondition(
+    operations[1].providerRequestId === facts.readbackRequestId &&
+      new Set([
+        facts.configurationRequestId,
+        operations[0].providerRequestId,
+        operations[1].providerRequestId,
+      ]).size === 3,
+    "[predecessor] final lock provider correlation drifted",
+  );
+  validateLimitsAndAuthority(parsed.receipt, "lock-readback");
+  return {
+    ...target,
+    lockReadbackReceiptSha256: parsed.receiptSha256,
+    lockReadbackCapturedAt: parsed.capturedAt,
+    lockVerifierCredentialIdSha256: credentialIdSha256,
+    lockVerifierSelfVerifiedAt: authority.selfVerifiedAt,
+    lockVerifierExpiresAt: authority.expiresAt,
+    lockReadbackFacts: facts,
+  };
+}
+
 export async function collectFinalLockReadback(options) {
   const {
     target,

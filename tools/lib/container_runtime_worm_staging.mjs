@@ -100,6 +100,7 @@ export function normalizeWormPolicy(value) {
       "maximumCredentialRemainingSeconds",
       "maximumManifestLifetimeSeconds",
       "minimumRetentionSeconds",
+      "lockRetentionSeconds",
       "prefixRoot",
       "provenanceBuilderId",
       "provenanceCertificateIdentity",
@@ -128,6 +129,12 @@ export function normalizeWormPolicy(value) {
       validEnforcementProbePolicy(policy.enforcementProbePolicy) &&
       Number.isSafeInteger(policy.minimumRetentionSeconds) &&
       policy.minimumRetentionSeconds >= 365 * 24 * 60 * 60 &&
+      Number.isSafeInteger(policy.lockRetentionSeconds) &&
+      policy.lockRetentionSeconds >=
+        policy.minimumRetentionSeconds +
+          policy.maximumEvidenceAgeSeconds +
+          policy.maximumManifestLifetimeSeconds +
+          policy.maximumClockSkewSeconds &&
       policy.maximumCredentialRemainingSeconds ===
         MAX_MUTABLE_CREDENTIAL_REMAINING_SECONDS &&
       sameJson(
@@ -635,7 +642,7 @@ export function expectedLockRule(target) {
     id: `cinatoken-s3-${target.statementSha256.slice(0, 24)}`,
     condition: {
       type: "Age",
-      maxAgeSeconds: target.policy.minimumRetentionSeconds,
+      maxAgeSeconds: target.policy.lockRetentionSeconds,
     },
     enabled: true,
     prefix: target.prefix,

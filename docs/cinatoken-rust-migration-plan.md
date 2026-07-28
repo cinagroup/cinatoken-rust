@@ -22117,3 +22117,76 @@ inventories, and B6/B7 canonical v2 evidence assembly, operations/security
 signing, and clean-host verification are not implemented. R3/C1, P5,
 customer traffic, billing authority, Go/VPS drain, and cutover remain blocked.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.312 WORM B6/B7 Offline Assembly And Dual Approval (2026-07-28)
+
+The remaining local B6/B7 implementation boundary is now present. It does not
+run Cloudflare operations or convert fixture evidence into production
+authority.
+
+### B6 deterministic source assembly
+
+`tools/assemble_container_runtime_worm_bundle.mjs` consumes exactly the 11
+positive B1-B5 receipts, a canonical account-ID file, one external trust
+policy, one canonical six-role authority review, and the six independently
+read-back B4 objects. The shared library:
+
+- uses bounded, canonical, single-link, stable source reads;
+- replays every B1-B5 predecessor normalizer rather than trusting collector
+  downstream flags;
+- revalidates all six provider identities, permission/capability matrices,
+  expiries, chronology, request-ID uniqueness, receipt-file hashes, and
+  provider operation correlations;
+- derives the six exact verifier-v2 evidence envelopes;
+- applies kind-specific object limits and aggregate bounds;
+- validates both packet ZIPs for directory/local-header consistency, safe
+  paths, compression/expansion bounds, no ZIP64/encryption/symlinks/overlap,
+  and at least one regular file;
+- snapshots every receipt and the authority review under `sources/` and emits
+  `unsigned-manifest.json` plus `signing-request.json`.
+
+The signing request binds protocol and trust policy hashes, ceremony and
+subject digests, the exact v2 anchor message, unsigned manifest, all 12 source
+files, six evidence files, and six retained objects.
+
+### B7 separate approval and clean-host replay
+
+`tools/sign_container_runtime_worm_anchor.mjs` runs once for operations and
+once for security. Each invocation accepts one PKCS#8 Ed25519 private key only
+from non-TTY stdin, derives and checks the configured public root and role,
+zeroes the input buffer, and writes an exclusive detached receipt. The receipt
+contains the verifier-v2 manifest signature plus a second ceremony signature
+that covers the complete B1-B6 source snapshot.
+
+`tools/finalize_container_runtime_worm_bundle.mjs` reads no private key and
+does not expose a historical clock. It revalidates the assembly and two
+distinct approval roots, creates a new final candidate using exclusive
+writes, writes the manifest last, invokes the production verifier, and emits
+an exclusive external report binding verification time, protocol, trust,
+signing request, source inventory, bundle tree, verifier kit, and both
+approvals. The verifier-kit digest must be identical before and after replay;
+stdout alone is not retained evidence.
+Production acceptance still requires repeating finalization on a clean host
+from the retained assembly and detached approvals.
+
+The protocol keeps the decision floor at 365 days remaining but configures
+the exact-prefix age lock for 400 days. The 35-day margin covers the bounded
+evidence age, manifest lifetime, and clock skew; an exact 365-day lock would
+be below the 365-day remaining floor after any nonzero ceremony.
+
+Focused verification passes final verifier v2 11 tests / 278 expectations and
+B6/B7 5 / 33. Negative coverage includes changed source receipts, wrong
+approval roots, forbidden key paths, object chronology after evidence
+capture, malformed/fake/traversal/local-header-drift ZIP packets, protocol
+source races, and the existing authority/lifecycle/enforcement negatives.
+
+The complete 11-suite container supply-chain aggregate passes 127 tests with
+1125 expectations. The full repository gate passes with exit code 0 in 587.1
+seconds; its 21 existing Rust `dead_code` findings remain warnings only.
+
+No live B1-B7 ceremony was executed. Real six-role permission inventories,
+provider receipts, separate production-held approval keys, clean-host replay,
+and independently retained decision evidence remain mandatory. Complete S3,
+R3/C1, P5, customer traffic, financial authority, Go/VPS drain, and cutover
+remain blocked. Go/VPS remains authoritative and production remains
+**NO-GO**.

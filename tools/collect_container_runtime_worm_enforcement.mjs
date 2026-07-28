@@ -1011,7 +1011,7 @@ async function runSelfTest() {
         id: "cinatoken-s3-self-test",
         condition: {
           type: "Age",
-          maxAgeSeconds: policy.minimumRetentionSeconds,
+          maxAgeSeconds: policy.lockRetentionSeconds,
         },
         enabled: true,
         prefix: target.prefix,

@@ -3688,3 +3688,36 @@ enforcement but not a stable error response tuple. Next is credential-free
 B6/B7 canonical evidence assembly, independent operations/security approval,
 and clean-host verifier replay. B2 permission inventories remain incomplete.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-28 WORM B6/B7 Offline Assembly And Approval
+
+Phase 1 now includes the complete local, credential-free bridge from the 11
+positive B1-B5 receipts to a verifier-v2 candidate bundle. The assembler
+replays all collector normalizers, ingests an exact six-role authority review,
+snapshots every receipt and retained object, derives six canonical evidence
+envelopes, validates retained ZIP structure, and emits an unsigned manifest
+plus a fully bound signing request.
+
+Operations and security approve in separate processes with distinct Ed25519
+roots and stdin-only private keys. Their detached receipts bind both the
+verifier-v2 anchor and the richer source ceremony. The finalizer has no
+private-key or historical-clock surface; it creates a new candidate, verifies
+both approvals, writes `manifest.json` last, runs the production verifier, and
+requires an exclusive external decision-report file. The verifier-kit digest
+must remain stable across replay. Clean-host replay remains mandatory.
+
+The protocol now distinguishes a 365-day minimum remaining-retention decision
+from the configured 400-day age lock. Stable protocol/source snapshots,
+per-object limits, JSON complexity limits, object-capture chronology, and
+bounded ZIP local/central structure all fail closed. Focused gates pass
+B6/B7 5/33 and verifier v2 11/278.
+
+This is local tooling readiness only. No live receipt, permission review,
+Cloudflare request, credential read, retention decision, complete S3, R3/C1,
+P5, traffic, billing, drain, or cutover authority was created. Next is an
+independently reviewed live staging B1-B7 ceremony with clean-host B7 replay.
+Go/VPS remains authoritative and production remains **NO-GO**.
+
+All 11 container supply-chain suites pass 127 tests with 1125 expectations.
+The complete repository gate passes with exit code 0 in 587.1 seconds; the 21
+existing Rust `dead_code` findings remain warnings only.

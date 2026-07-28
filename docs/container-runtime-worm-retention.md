@@ -2,12 +2,12 @@
 
 ## Status
 
-The repository implements the credential-free, fail-closed verifier contract
-and the first credentialed staging collector boundary for the container-runtime
-S3 immutable-retention subgate. The collector can prove an empty
-content-addressed prefix and can configure/read back one exact-prefix bucket
-lock, but no live phase has been run. The repository does not yet contain a
-real staging R2 evidence bundle or authorize production mutation.
+The repository implements the credential-free, fail-closed verifier contract,
+the complete B1-B5 collector boundary, and the B6/B7 offline
+assembly/signing/finalization path for the container-runtime S3
+immutable-retention subgate. No live phase has been run. The repository does
+not contain a real staging R2 evidence bundle or authorize production
+mutation.
 
 Current decision:
 
@@ -28,8 +28,9 @@ Current decision:
 - B5 overwrite/delete probes, publisher lifecycle revocation, post-probe
   readback, and final lock readback collector: implemented and locally
   tested; not executed against Cloudflare.
-- Canonical v2 evidence assembly and operations/security approval: not yet
-  implemented.
+- Canonical v2 evidence assembly, separate operations/security approval,
+  finalization, and local verifier replay: implemented and locally tested;
+  not executed with live receipts or production-held keys.
 - Real R2 bucket-lock evidence: not collected.
 - `wormRetentionVerified`: false.
 - `s3Complete`: false.
@@ -77,6 +78,11 @@ manifest. Every downstream authority remains false.
 | `tools/lib/container_runtime_worm_enforcement.mjs` | Injectable five-phase positive B5 state machine plus two non-promotable emergency revocation phases |
 | `tools/collect_container_runtime_worm_enforcement.mjs` | Default-dry-run SigV4 probe and lifecycle/readback CLI |
 | `tests/container-runtime-worm-enforcement-collector.test.mjs` | Role isolation, raw response, chronology, lifecycle, readback, and file-boundary tests |
+| `tools/lib/container_runtime_worm_bundle.mjs` | B6/B7 stable source snapshot, canonical assembly, rich approval, finalization, and replay library |
+| `tools/assemble_container_runtime_worm_bundle.mjs` | Credential-free 11-receipt and six-object B6 assembly CLI |
+| `tools/sign_container_runtime_worm_anchor.mjs` | Single-role, stdin-only Ed25519 signing CLI |
+| `tools/finalize_container_runtime_worm_bundle.mjs` | Two-approval finalizer using the real system clock in production CLI mode |
+| `tests/container-runtime-worm-bundle.test.mjs` | Full B1-B7 fixture, source-tamper, key-separation, CLI, and ZIP-boundary tests |
 | `package.json` | Focused and aggregate verification entry points |
 
 The protocol pins the repository, staging environment, Cloudflare R2 provider,
@@ -592,25 +598,158 @@ with 110 expectations. The ten-suite container supply-chain aggregate passes
 exit code 0 in 629.4 seconds; 21 existing Rust `dead_code` findings remain
 warnings only.
 
+## B6/B7 Offline Assembly And Approval
+
+The offline path consumes exactly 11 positive live receipts:
+
+1. B1 `baseline`;
+2. B3 `lock`;
+3. lock-operator `revoke` and `verify`;
+4. B4 `publish` and `readback`;
+5. B5 `probe`, publisher `revoke`, publisher `verify-revocation`,
+   post-probe `object-readback`, and final `lock-readback`.
+
+`tools/assemble_container_runtime_worm_bundle.mjs` also requires the raw
+account ID through a single-line file, the external canonical trust policy,
+one canonical authority review, and the exact six files produced by B4
+independent readback. It reads no environment credential and makes no network
+request. Every receipt is independently normalized again, every full
+receipt-file digest includes its trailing LF, all receipt digests and provider
+exchange IDs are globally distinct, and every object is copied with bounded
+stable-handle hashing and exclusive creation.
+
+The authority review contract is
+`cinatoken-container-runtime-worm-authority-review-v1`. It carries one
+ceremony UUID, review time, exact target, `secretMaterialCaptured=false`,
+`permissionInventoriesReviewed=true`, and the six ordered authority records.
+Publisher and object-verifier expiry are supplied by this reviewed inventory;
+the other four expiry values must exactly equal their provider self-verification
+receipts. All six provider-ID digests, permission arrays, scopes, capability
+matrices, and expiry bounds are rechecked rather than inferred from collector
+claims.
+
+The protocol distinguishes minimum remaining retention from configured lock
+duration. `minimumRetentionSeconds` remains 365 days while
+`lockRetentionSeconds` is 400 days. The 35-day safety margin prevents the
+impossible condition where a 365-day age rule has less than 365 days remaining
+as soon as the ceremony takes nonzero time.
+
+The assembly directory is an external audit artifact, not the final verifier
+bundle:
+
+```text
+assembly/
+  unsigned-manifest.json
+  signing-request.json
+  evidence/                  # six canonical v2 evidence files
+  objects/                   # six B4 independent-readback objects
+  sources/
+    authority-review.json
+    receipts/                # all 11 canonical source receipts
+```
+
+`signing-request.json` binds protocol-policy SHA-256, trust-policy SHA-256,
+ceremony and subject digests, the exact v2 anchor message, the unsigned
+manifest, all source files, all evidence files, and all objects. The two
+approval processes run separately. Each process requires an explicit role and
+key ID, reads one PKCS#8 Ed25519 private key only from non-TTY stdin, derives
+and matches the trusted SPKI, emits one new detached approval file, and clears
+the input buffer. Private-key values and paths are not accepted in argv or
+environment variables.
+
+Each detached approval contains both:
+
+- the v2 manifest signature required by the final verifier; and
+- a ceremony signature over role, key ID, protocol/trust digests, policy,
+  ceremony, subject, and signing-request digest.
+
+The ceremony signature cryptographically binds the external B1-B5 source
+snapshot and permission review even though the exact final v2 bundle layout
+does not permit those control files. `finalize` reads no private key. It
+revalidates both detached approvals and their distinct trust roots, copies
+evidence and objects into a new directory with exclusive writes, writes
+`manifest.json` last, and invokes the full retention verifier. Its production
+CLI exposes no historical clock override. The external decision report binds
+the protocol, trust policy, manifest, signing request, source inventory,
+bundle tree, approval receipts, verifier kit, and verification time.
+
+Example production ordering:
+
+```powershell
+node tools/assemble_container_runtime_worm_bundle.mjs `
+  --account-id-file <account-id-file> `
+  --trust-policy <trust-policy.json> `
+  --authority-review <authority-review.json> `
+  --objects-dir <b4-readback-dir> `
+  --baseline-receipt <baseline.json> `
+  --lock-receipt <lock.json> `
+  --lock-revoke-receipt <lock-revoke.json> `
+  --lock-verify-receipt <lock-verify.json> `
+  --publish-receipt <publish.json> `
+  --object-readback-receipt <object-readback.json> `
+  --probe-receipt <probe.json> `
+  --publisher-revoke-receipt <publisher-revoke.json> `
+  --publisher-verify-receipt <publisher-verify.json> `
+  --post-readback-receipt <post-readback.json> `
+  --final-lock-receipt <final-lock.json> `
+  --output <new-assembly-dir>
+
+<operations-secret-manager-command> | node tools/sign_container_runtime_worm_anchor.mjs `
+  --assembly <new-assembly-dir> --trust-policy <trust-policy.json> `
+  --role operations --key-id <operations-key-id> `
+  --private-key-stdin --approval-output <new-operations-approval.json>
+
+<security-secret-manager-command> | node tools/sign_container_runtime_worm_anchor.mjs `
+  --assembly <new-assembly-dir> --trust-policy <trust-policy.json> `
+  --role security --key-id <security-key-id> `
+  --private-key-stdin --approval-output <new-security-approval.json>
+
+node tools/finalize_container_runtime_worm_bundle.mjs `
+  --assembly <new-assembly-dir> --trust-policy <trust-policy.json> `
+  --operations-approval <new-operations-approval.json> `
+  --security-approval <new-security-approval.json> `
+  --output <new-final-candidate-dir> `
+  --decision-output <new-decision-report.json>
+```
+
+On Windows, Node does not provide a portable `renameat2(RENAME_NOREPLACE)`
+equivalent and `O_NOFOLLOW` may be unavailable. The implementation compensates
+with non-existing output requirements, `wx`, single-link checks, exact
+realpath/inode/size/mtime/ctime snapshots, post-read revalidation, and
+fail-closed layout checks. Production must use an ACL-controlled, same-volume,
+previously empty parent directory. A process crash can leave an incomplete
+candidate; it is never authoritative without the successful decision report
+and must be quarantined. Clean-host B7 repeats `finalize` from the retained
+assembly and detached approvals using the real system clock.
+
+The focused B6/B7 suite passes 5 tests with 33 expectations. It covers the
+complete B1-B7 positive path through the real verifier, changed source
+receipts, wrong approval roots, forbidden key-path CLI input, and fake/traversal
+or locally inconsistent ZIP packets. This proves local tooling behavior only.
+No Cloudflare resource,
+credential, bucket, token, object, registry, deployment, traffic, billing, or
+VPS state was touched.
+
+All 11 container supply-chain suites pass 127 tests with 1125 expectations.
+The complete repository gate passes with exit code 0 in 587.1 seconds; the 21
+existing Rust `dead_code` findings remain warnings only.
+
 ## Next Execution Unit
 
-The next implementation is B6/B7 offline assembly: consume the complete
-B1-B5 receipt chain, independently revalidate all receipt bytes/digests and
-reviewed permission inventories, emit the six canonical v2 evidence records
-plus manifest, then require separate operations/security signatures and a
-clean-host verifier replay. B6/B7 tooling must remain credential-free and
-must not infer authority from a collector receipt.
+The next production execution unit is the independently reviewed live staging
+ceremony, not further local authority claims. It must provision the dedicated
+bucket and six short-lived identities, calibrate the provider rejection tuple
+in a disposable prefix, run B1-B5, assemble and sign B6, and repeat B7 on a
+clean host. A complete real bundle must pass before Registry R3 can begin.
 
 Collector self-tests and dry-runs are not real evidence. The lock phase must
-not be run until the dedicated bucket, four ephemeral R2 credentials,
-separate lifecycle authority and independent revocation-readback owner,
-approval keys, artifact packet, and abort/cleanup runbook have independent
-review. The identity-preflight and lifecycle implementations have passed
-focused and aggregate local verification; the complete repository gate passes
-with exit code 0 in 611.2 seconds. No lifecycle phase has run against
-Cloudflare. Registry R3 remains blocked until a complete real bundle passes
-verifier v2. B2 is not complete, Go/VPS remains
-authoritative, and production remains **NO-GO**.
+not be run until the dedicated bucket, four short-lived R2 identities, two
+short-lived lifecycle identities, separate operations/security approval keys,
+artifact packet, and abort/cleanup runbook have independent review. No
+lifecycle or data phase has run against Cloudflare. Registry R3 remains
+blocked until a complete real bundle passes verifier v2. B2 remains
+operationally incomplete until real permission inventories and receipts exist.
+Go/VPS remains authoritative, and production remains **NO-GO**.
 
 Primary references:
 

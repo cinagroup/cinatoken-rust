@@ -4309,9 +4309,9 @@ unchanged and the decision remains
 
 The credential-free implementation is now specified in
 `docs/container-runtime-worm-retention.md`. The protocol policy requires one
-year of remaining retention, content-addressed keys, four evidence envelopes,
-six exact retained objects, two independent Ed25519 approvals, and complete
-time/identity binding.
+year of remaining retention at decision time, a 400-day configured age lock,
+content-addressed keys, six evidence envelopes, six exact retained objects,
+two independent Ed25519 approvals, and complete time/identity binding.
 
 Cloudflare's current R2 permission model prevents a lock writer from being
 lock-only: Admin Read & Write also grants object read/write. The ceremony now
@@ -4360,7 +4360,7 @@ The required staging order is now:
 3. run `baseline` live and reject any non-empty or incompletely paginated
    prefix;
 4. run `lock` live once and independently inspect the preserved rule set and
-   exact-prefix one-year rule;
+   exact-prefix 400-day age rule;
 5. a distinct lifecycle operator self-verifies, deletes the exact provider
    token ID bound by the lock receipt, and reads that exact resource as `404`;
 6. a distinct lifecycle verifier independently self-verifies and reads the
@@ -4495,8 +4495,55 @@ The complete repository gate passes with exit code 0 in 629.4 seconds; 21
 existing Rust `dead_code` findings remain warnings only. No live request or
 credential read occurred.
 
-The next implementation unit is B6/B7 canonical evidence assembly, reviewed
-permission-inventory ingestion, operations/security signatures, and
-clean-host replay. Until a real bundle passes, complete S3, R3/C1, P5,
-customer traffic, financial authority, Go/VPS drain, and cutover remain
-blocked. Go/VPS remains authoritative and production remains **NO-GO**.
+### B6/B7 offline assembly and finalization foundation
+
+The repository now implements the credential-free B6/B7 path. It consumes
+exactly the 11 positive B1-B5 receipts plus one independently reviewed,
+canonical six-role authority inventory. Assembly replays every predecessor
+normalizer, verifies all receipt-file digests and provider request-ID
+separation, derives six v2 evidence envelopes from provider-observed facts,
+structurally validates both retained ZIP packets, and snapshots all source
+receipts, authority review, evidence, and retained objects into a newly
+created external directory.
+
+`signing-request.json` binds the protocol policy, external trust policy,
+ceremony, subject, unsigned manifest, complete source inventory, evidence
+inventory, and object inventory. Operations and security sign in separate
+processes with distinct Ed25519 roots. Each signer accepts one PKCS#8 private
+key only through non-TTY stdin, derives and checks its configured public key,
+zeroes the key buffer, and writes one detached approval. It accepts no
+private-key path or environment variable.
+
+Finalization reads no private key and exposes no historical clock override.
+It revalidates the assembly and both detached approvals, creates a fresh
+candidate bundle with exclusive writes, writes the manifest last, and runs
+the production v2 verifier. Its CLI requires a separate new decision-report
+file; stdout alone is not evidence. The report binds verification time,
+protocol/trust/signing-request/source/bundle/verifier-kit digests and both
+approvals, and the verifier-kit digest must be stable across replay. A
+successful local report is still only a candidate:
+production acceptance requires a second clean-host replay from the retained
+assembly and approvals.
+
+The configured 400-day lock is intentionally longer than the 365-day minimum
+remaining-retention decision floor. The margin covers the bounded evidence
+age, manifest lifetime, and clock skew; a lock configured for exactly 365
+days could never retain 365 days after a nonzero ceremony.
+
+Focused local verification passes B6/B7 5 tests with 33 expectations and the
+final verifier 11 tests with 278 expectations. It includes source tamper,
+approval-root separation, forbidden key-path input, retained ZIP structure,
+object chronology, and complete positive replay. No credential or Cloudflare
+request was used.
+
+The 11-suite container supply-chain aggregate passes 127 tests with 1125
+expectations. The complete repository gate passes with exit code 0 in 587.1
+seconds; its 21 existing Rust `dead_code` findings remain warnings only.
+
+The next execution unit is the independently reviewed live staging ceremony:
+provision the dedicated bucket and six short-lived identities, calibrate the
+provider rejection tuple in a disposable prefix, execute B1-B5, assemble and
+sign B6, then repeat B7 on a clean host. Until a real bundle passes, complete
+S3, R3/C1, P5, customer traffic, financial authority, Go/VPS drain, and
+cutover remain blocked. Go/VPS remains authoritative and production remains
+**NO-GO**.

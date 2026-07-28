@@ -6,6 +6,7 @@
   "provider": "cloudflare-r2",
   "prefixRoot": "container-runtime/s3/v1/",
   "minimumRetentionSeconds": 31536000,
+  "lockRetentionSeconds": 34560000,
   "maximumClockSkewSeconds": 300,
   "maximumManifestLifetimeSeconds": 1800,
   "maximumEvidenceAgeSeconds": 3600,

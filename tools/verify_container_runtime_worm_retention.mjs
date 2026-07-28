@@ -65,7 +65,7 @@ export const REQUIRED_OBJECT_KINDS = Object.freeze([
   "cosign-verification-log",
 ]);
 
-const EXPECTED_AUTHORITIES = Object.freeze([
+export const REQUIRED_AUTHORITY_PROFILES = Object.freeze([
   {
     role: "publisher",
     credentialType: "r2-object-read-write-api-token",
@@ -163,6 +163,10 @@ const TEST_PATH = resolve(
   ROOT,
   "tests/container-runtime-worm-retention-gate.test.mjs",
 );
+const BUNDLE_TEST_PATH = resolve(
+  ROOT,
+  "tests/container-runtime-worm-bundle.test.mjs",
+);
 const VERIFIER_PATH = fileURLToPath(import.meta.url);
 
 const STATEMENT_TYPE = "https://in-toto.io/Statement/v1";
@@ -171,12 +175,23 @@ const BUILD_TYPE =
   "https://github.com/cinagroup/cinatoken-rust/blob/main/docs/container-runtime-provenance-build-type-v1.md";
 const BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json";
 const MINIMUM_RETENTION_SECONDS = 365 * 24 * 60 * 60;
+const LOCK_RETENTION_SECONDS = 400 * 24 * 60 * 60;
 const MAXIMUM_CREDENTIAL_REMAINING_SECONDS = 3_600;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
+const MAX_PROTOCOL_POLICY_BYTES = 256 * 1024;
 const MAX_TRUST_POLICY_BYTES = 256 * 1024;
 const MAX_EVIDENCE_BYTES = 2 * 1024 * 1024;
 const MAX_OBJECT_BYTES = 512 * 1024 * 1024;
 const MAX_TOTAL_OBJECT_BYTES = 768 * 1024 * 1024;
+const MAX_STATEMENT_BYTES = 4 * 1024 * 1024;
+const MAX_SIGSTORE_BUNDLE_BYTES = 32 * 1024 * 1024;
+const MAX_PROVENANCE_REPORT_BYTES = 16 * 1024 * 1024;
+const MAX_COSIGN_LOG_BYTES = 1024;
+const MAX_ZIP_ENTRIES = 10_000;
+const MAX_ZIP_NAME_BYTES = 512;
+const MAX_ZIP_COMMENT_BYTES = 1024;
+const MAX_ZIP_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_ZIP_COMPRESSION_RATIO = 1_000;
 const MAX_JSON_DEPTH = 32;
 const MAX_JSON_NODES = 200_000;
 const MAX_STRING_BYTES = 256 * 1024;
@@ -201,7 +216,7 @@ const EVIDENCE_PATH_PATTERN =
 const OBJECT_PATH_PATTERN =
   /^objects\/[a-z0-9][a-z0-9._-]{0,127}$/;
 
-const OBJECT_FILE_NAMES = Object.freeze({
+export const WORM_RETENTION_OBJECT_FILE_NAMES = Object.freeze({
   "source-evidence-packet": "container-runtime-source-evidence.zip",
   "provenance-evidence-packet":
     "container-runtime-provenance-evidence.zip",
@@ -211,7 +226,7 @@ const OBJECT_FILE_NAMES = Object.freeze({
     "container-runtime-provenance-verification.json",
   "cosign-verification-log": "cosign-verification.log",
 });
-const OBJECT_CONTENT_TYPES = Object.freeze({
+export const WORM_RETENTION_OBJECT_CONTENT_TYPES = Object.freeze({
   "source-evidence-packet": "application/zip",
   "provenance-evidence-packet": "application/zip",
   "provenance-statement": "application/json",
@@ -316,12 +331,19 @@ export function parseArgs(argv) {
 }
 
 export async function auditRepositoryContract() {
-  const [policyBytes, packageBytes, verifierSource, testSource] =
+  const [
+    policyBytes,
+    packageBytes,
+    verifierSource,
+    testSource,
+    bundleTestSource,
+  ] =
     await Promise.all([
       readFile(PROTOCOL_POLICY_PATH),
       readFile(PACKAGE_JSON_PATH),
       readFile(VERIFIER_PATH, "utf8"),
       readFile(TEST_PATH, "utf8"),
+      readFile(BUNDLE_TEST_PATH, "utf8"),
     ]);
   const policy = validateProtocolPolicy(
     parseJson(policyBytes, "protocol policy"),
@@ -342,8 +364,23 @@ export async function auditRepositoryContract() {
     typeof scripts.check === "string" &&
       scripts.check.includes(
         "bun run check:container-runtime:worm-retention-contract",
+      ) &&
+      scripts.check.includes(
+        "bun run check:container-runtime:worm-bundle",
       ),
     "aggregate check does not include WORM retention",
+  );
+  const expectedBundleScript =
+    'bun test --path-ignore-patterns="target/**" ' +
+    "tests/container-runtime-worm-bundle.test.mjs && " +
+    "node tools/assemble_container_runtime_worm_bundle.mjs " +
+    "--describe && " +
+    "node tools/sign_container_runtime_worm_anchor.mjs --describe && " +
+    "node tools/finalize_container_runtime_worm_bundle.mjs --describe";
+  requireCondition(
+    scripts["check:container-runtime:worm-bundle"] ===
+      expectedBundleScript,
+    "WORM bundle package script drifted",
   );
   for (const fragment of [
     "verifyWormRetentionBundle",
@@ -359,6 +396,20 @@ export async function auditRepositoryContract() {
     requireCondition(
       verifierSource.includes(fragment),
       `WORM retention verifier is missing ${fragment}`,
+    );
+  }
+  for (const fragment of [
+    "assembles B1-B5, binds two roots",
+    "rejects a changed source receipt",
+    "rejects a private key from the other approval root",
+    "privateKeyInput",
+    "externalDecisionOutput",
+    "--decision-output is required",
+    "retained packet parser rejects fake ZIP",
+  ]) {
+    requireCondition(
+      bundleTestSource.includes(fragment),
+      `WORM bundle suite is missing ${fragment}`,
     );
   }
   for (const fragment of [
@@ -383,6 +434,7 @@ export async function auditRepositoryContract() {
       provider: policy.provider,
       prefixRoot: policy.prefixRoot,
       minimumRetentionSeconds: policy.minimumRetentionSeconds,
+      lockRetentionSeconds: policy.lockRetentionSeconds,
       maximumCredentialRemainingSeconds:
         policy.maximumCredentialRemainingSeconds,
       requiredApprovalRoles: policy.requiredApprovalRoles,
@@ -419,6 +471,7 @@ export function validateProtocolPolicy(value) {
       "provider",
       "prefixRoot",
       "minimumRetentionSeconds",
+      "lockRetentionSeconds",
       "maximumClockSkewSeconds",
       "maximumManifestLifetimeSeconds",
       "maximumEvidenceAgeSeconds",
@@ -451,6 +504,7 @@ export function validateProtocolPolicy(value) {
       policy.prefixRoot === "container-runtime/s3/v1/" &&
       validEnforcementProbePolicy(policy.enforcementProbePolicy) &&
       policy.minimumRetentionSeconds === MINIMUM_RETENTION_SECONDS &&
+      policy.lockRetentionSeconds === LOCK_RETENTION_SECONDS &&
       policy.maximumClockSkewSeconds === 300 &&
       policy.maximumManifestLifetimeSeconds === 1800 &&
       policy.maximumEvidenceAgeSeconds === 3600 &&
@@ -555,9 +609,16 @@ export async function verifyWormRetentionBundle({
     now instanceof Date && Number.isFinite(now.getTime()),
     "verifier now must be a valid Date",
   );
-  const protocolBytes = await readFile(PROTOCOL_POLICY_PATH);
+  const stableFiles = [];
+  const protocolFile = await readStableFile(
+    PROTOCOL_POLICY_PATH,
+    "protocol policy",
+    MAX_PROTOCOL_POLICY_BYTES,
+    true,
+    stableFiles,
+  );
   const protocolPolicy = validateProtocolPolicy(
-    parseJson(protocolBytes, "protocol policy"),
+    parseJson(protocolFile.bytes, "protocol policy"),
   );
   const protocolPolicySha256 = sha256Hex(
     Buffer.from(canonicalJson(protocolPolicy), "utf8"),
@@ -566,11 +627,13 @@ export async function verifyWormRetentionBundle({
     manifestPath,
     "retention manifest",
     MAX_MANIFEST_BYTES,
+    stableFiles,
   );
   const trustFile = await readCanonicalJson(
     trustPolicyPath,
     "retention trust policy",
     MAX_TRUST_POLICY_BYTES,
+    stableFiles,
   );
   const manifestRoot = dirname(manifestFile.realPath);
   requireCondition(
@@ -600,6 +663,7 @@ export async function verifyWormRetentionBundle({
     subject: manifest.subject,
     trust,
     now,
+    stableFiles,
   });
   const authority = validateAuthorityBoundary(
     evidence.get("authority-boundary"),
@@ -616,6 +680,7 @@ export async function verifyWormRetentionBundle({
     manifestRoot,
     manifest.subject,
     authority,
+    stableFiles,
   );
   const probes = validateEnforcementProbes(
     evidence.get("enforcement-probes"),
@@ -659,6 +724,7 @@ export async function verifyWormRetentionBundle({
     manifest.subjectDigestSha256,
   );
   await validateExactBundleLayout(manifestRoot, manifestFile.realPath);
+  await revalidateStableFiles(stableFiles);
 
   return {
     contractVersion: WORM_RETENTION_CONTRACT_VERSION,
@@ -1071,6 +1137,7 @@ async function readEvidenceRecords({
   subject,
   trust,
   now,
+  stableFiles,
 }) {
   const result = new Map();
   for (const record of records) {
@@ -1078,6 +1145,7 @@ async function readEvidenceRecords({
       boundedBundlePath(manifestRoot, record.path, EVIDENCE_PATH_PATTERN),
       `${record.kind} evidence`,
       MAX_EVIDENCE_BYTES,
+      stableFiles,
     );
     requireCondition(
       isWithin(manifestRoot, file.realPath) &&
@@ -1178,7 +1246,7 @@ function validateAuthorityBoundary(evidence, subject) {
       facts.allCredentialIdsDistinct === true &&
       facts.permissionInventoriesReviewed === true &&
       Array.isArray(facts.authorities) &&
-      facts.authorities.length === EXPECTED_AUTHORITIES.length,
+      facts.authorities.length === REQUIRED_AUTHORITY_PROFILES.length,
     "authority boundary is not least privilege",
   );
   const capturedAtDate = requireTimestamp(
@@ -1187,7 +1255,11 @@ function validateAuthorityBoundary(evidence, subject) {
   );
   const credentialIds = new Set();
   const byRole = new Map();
-  for (let index = 0; index < EXPECTED_AUTHORITIES.length; index += 1) {
+  for (
+    let index = 0;
+    index < REQUIRED_AUTHORITY_PROFILES.length;
+    index += 1
+  ) {
     const authority = requireObject(
       facts.authorities[index],
       "authority identity",
@@ -1208,7 +1280,7 @@ function validateAuthorityBoundary(evidence, subject) {
       ],
       "authority identity",
     );
-    const wanted = EXPECTED_AUTHORITIES[index];
+    const wanted = REQUIRED_AUTHORITY_PROFILES[index];
     const r2Scoped = wanted.scopeType === "r2-bucket-prefix";
     requireCondition(
       authority.role === wanted.role &&
@@ -1483,6 +1555,7 @@ async function validateObjectReadback(
   manifestRoot,
   subject,
   authority,
+  stableFiles,
 ) {
   const facts = evidence.facts;
   exactKeys(
@@ -1526,6 +1599,10 @@ async function validateObjectReadback(
     facts.baselineObservedAt,
     "object baseline time",
   );
+  const evidenceCapturedAt = requireTimestamp(
+    evidence.capturedAt,
+    "object-readback evidence capturedAt",
+  );
   const records = [];
   const byKind = new Map();
   let totalBytes = 0;
@@ -1537,8 +1614,9 @@ async function validateObjectReadback(
       subject,
     );
     requireCondition(
-      baselineObservedAt <= record.uploadedAtDate,
-      `${expectedKind} was uploaded before the empty baseline`,
+      baselineObservedAt <= record.uploadedAtDate &&
+        record.readBackAtDate <= evidenceCapturedAt,
+      `${expectedKind} object chronology is invalid`,
     );
     const file = await readStableFile(
       boundedBundlePath(
@@ -1547,8 +1625,9 @@ async function validateObjectReadback(
         OBJECT_PATH_PATTERN,
       ),
       `${expectedKind} retained object`,
-      MAX_OBJECT_BYTES,
+      objectByteBound(expectedKind),
       true,
+      stableFiles,
     );
     totalBytes += file.bytes.length;
     requireCondition(
@@ -1589,16 +1668,17 @@ function validateObjectRecord(value, expectedKind, subject) {
     ],
     `${expectedKind} object record`,
   );
-  const fileName = OBJECT_FILE_NAMES[expectedKind];
+  const fileName = WORM_RETENTION_OBJECT_FILE_NAMES[expectedKind];
   requireCondition(
     record.kind === expectedKind &&
       record.path === `objects/${fileName}` &&
       OBJECT_PATH_PATTERN.test(record.path) &&
       record.key === `${subject.prefix}${fileName}` &&
-      record.contentType === OBJECT_CONTENT_TYPES[expectedKind] &&
+      record.contentType ===
+        WORM_RETENTION_OBJECT_CONTENT_TYPES[expectedKind] &&
       Number.isSafeInteger(record.bytes) &&
       record.bytes > 0 &&
-      record.bytes <= MAX_OBJECT_BYTES &&
+      record.bytes <= objectByteBound(expectedKind) &&
       Number.isSafeInteger(record.uploadHttpStatus) &&
       record.uploadHttpStatus >= 200 &&
       record.uploadHttpStatus <= 299 &&
@@ -1639,6 +1719,14 @@ function validateObjectRecord(value, expectedKind, subject) {
     `${expectedKind} custom metadata drifted`,
   );
   return { ...record, uploadedAtDate, readBackAtDate };
+}
+
+function objectByteBound(kind) {
+  if (kind === "provenance-statement") return MAX_STATEMENT_BYTES;
+  if (kind === "sigstore-bundle") return MAX_SIGSTORE_BUNDLE_BYTES;
+  if (kind === "provenance-report") return MAX_PROVENANCE_REPORT_BYTES;
+  if (kind === "cosign-verification-log") return MAX_COSIGN_LOG_BYTES;
+  return MAX_OBJECT_BYTES;
 }
 
 export function validateEnforcementProbes(
@@ -2096,6 +2184,14 @@ function validateRetainedProvenance({
   const reportObject = get("provenance-report");
   const cosignLogObject = get("cosign-verification-log");
   const expected = subject.provenance;
+  validateRetainedZipPacket(
+    sourcePacket.bytesValue,
+    "source evidence packet",
+  );
+  validateRetainedZipPacket(
+    provenancePacket.bytesValue,
+    "provenance evidence packet",
+  );
   requireCondition(
     sourcePacket.sha256 === expected.sourceArtifactSha256 &&
       provenancePacket.sha256 === expected.provenanceArtifactSha256 &&
@@ -2107,11 +2203,13 @@ function validateRetainedProvenance({
     statementObject.bytesValue,
     "retained provenance statement",
   );
+  auditJsonShape(statement, "retained provenance statement");
   validateRetainedStatement(statement, expected, protocolPolicy);
   const bundle = parseJson(
     bundleObject.bytesValue,
     "retained Sigstore bundle",
   );
+  auditJsonShape(bundle, "retained Sigstore bundle");
   const bundleFacts = validateSigstoreBundle(
     bundle,
     statementObject.bytesValue,
@@ -2120,6 +2218,7 @@ function validateRetainedProvenance({
     reportObject.bytesValue,
     "retained provenance report",
   );
+  auditJsonShape(report, "retained provenance report");
   validateRetainedProvenanceReport({
     report,
     expected,
@@ -2140,6 +2239,253 @@ function validateRetainedProvenance({
     transparencyLogIndex: bundleFacts.transparencyLogIndex,
     signedTimestampCount: bundleFacts.signedTimestampCount,
   };
+}
+
+export function validateRetainedZipPacket(bytes, label) {
+  requireCondition(
+    Buffer.isBuffer(bytes) && bytes.length >= 22,
+    `${label} is not a bounded ZIP archive`,
+  );
+  const minimumEocdOffset = Math.max(
+    0,
+    bytes.length - (65_535 + 22),
+  );
+  let eocdOffset = -1;
+  for (
+    let offset = bytes.length - 22;
+    offset >= minimumEocdOffset;
+    offset -= 1
+  ) {
+    if (bytes.readUInt32LE(offset) === 0x06054b50) {
+      eocdOffset = offset;
+      break;
+    }
+  }
+  requireCondition(eocdOffset >= 0, `${label} ZIP EOCD is absent`);
+  const diskNumber = bytes.readUInt16LE(eocdOffset + 4);
+  const centralDisk = bytes.readUInt16LE(eocdOffset + 6);
+  const diskEntries = bytes.readUInt16LE(eocdOffset + 8);
+  const totalEntries = bytes.readUInt16LE(eocdOffset + 10);
+  const centralBytes = bytes.readUInt32LE(eocdOffset + 12);
+  const centralOffset = bytes.readUInt32LE(eocdOffset + 16);
+  const commentBytes = bytes.readUInt16LE(eocdOffset + 20);
+  requireCondition(
+    diskNumber === 0 &&
+      centralDisk === 0 &&
+      diskEntries === totalEntries &&
+      totalEntries > 0 &&
+      totalEntries < 0xffff &&
+      totalEntries <= MAX_ZIP_ENTRIES &&
+      centralBytes !== 0xffffffff &&
+      centralOffset !== 0xffffffff &&
+      commentBytes <= MAX_ZIP_COMMENT_BYTES &&
+      eocdOffset + 22 + commentBytes === bytes.length &&
+      centralOffset + centralBytes === eocdOffset,
+    `${label} ZIP directory boundary is invalid`,
+  );
+
+  const names = new Set();
+  const localIntervals = [];
+  let offset = centralOffset;
+  let aggregateCompressed = 0;
+  let aggregateUncompressed = 0;
+  let regularFileCount = 0;
+  for (let index = 0; index < totalEntries; index += 1) {
+    requireCondition(
+      offset + 46 <= eocdOffset &&
+        bytes.readUInt32LE(offset) === 0x02014b50,
+      `${label} ZIP central entry is malformed`,
+    );
+    const versionMadeBy = bytes.readUInt16LE(offset + 4);
+    const flags = bytes.readUInt16LE(offset + 8);
+    const compressionMethod = bytes.readUInt16LE(offset + 10);
+    const crc32 = bytes.readUInt32LE(offset + 16);
+    const compressedBytes = bytes.readUInt32LE(offset + 20);
+    const uncompressedBytes = bytes.readUInt32LE(offset + 24);
+    const nameBytes = bytes.readUInt16LE(offset + 28);
+    const extraBytes = bytes.readUInt16LE(offset + 30);
+    const entryCommentBytes = bytes.readUInt16LE(offset + 32);
+    const diskStart = bytes.readUInt16LE(offset + 34);
+    const externalAttributes = bytes.readUInt32LE(offset + 38);
+    const localOffset = bytes.readUInt32LE(offset + 42);
+    const entryEnd =
+      offset + 46 + nameBytes + extraBytes + entryCommentBytes;
+    requireCondition(
+      (flags & 0x0001) === 0 &&
+        (flags & ~0x0808) === 0 &&
+        [0, 8].includes(compressionMethod) &&
+        compressedBytes !== 0xffffffff &&
+        uncompressedBytes !== 0xffffffff &&
+        localOffset !== 0xffffffff &&
+        diskStart === 0 &&
+        nameBytes > 0 &&
+        nameBytes <= MAX_ZIP_NAME_BYTES &&
+        entryCommentBytes <= MAX_ZIP_COMMENT_BYTES &&
+        entryEnd <= eocdOffset &&
+        localOffset + 30 <= centralOffset &&
+        bytes.readUInt32LE(localOffset) === 0x04034b50,
+      `${label} ZIP entry boundary is unsafe`,
+    );
+    const extraStart = offset + 46 + nameBytes;
+    rejectZip64Extra(
+      bytes.subarray(extraStart, extraStart + extraBytes),
+      label,
+    );
+    const nameBuffer = bytes.subarray(offset + 46, offset + 46 + nameBytes);
+    let name;
+    try {
+      name = new TextDecoder("utf-8", { fatal: true }).decode(nameBuffer);
+    } catch {
+      throw new Error(`${label} ZIP entry name is not UTF-8`);
+    }
+    requireCondition(
+      validZipEntryName(name) && !names.has(name),
+      `${label} ZIP entry name is unsafe or duplicated`,
+    );
+    const localNameBytes = bytes.readUInt16LE(localOffset + 26);
+    const localExtraBytes = bytes.readUInt16LE(localOffset + 28);
+    const localFlags = bytes.readUInt16LE(localOffset + 6);
+    const localCompressionMethod = bytes.readUInt16LE(localOffset + 8);
+    const localCrc32 = bytes.readUInt32LE(localOffset + 14);
+    const localCompressedBytes = bytes.readUInt32LE(localOffset + 18);
+    const localUncompressedBytes = bytes.readUInt32LE(localOffset + 22);
+    const localHeaderEnd =
+      localOffset + 30 + localNameBytes + localExtraBytes;
+    requireCondition(
+      localFlags === flags &&
+        localCompressionMethod === compressionMethod &&
+        localNameBytes === nameBytes &&
+        localHeaderEnd <= centralOffset &&
+        bytes
+          .subarray(localOffset + 30, localOffset + 30 + localNameBytes)
+          .equals(nameBuffer),
+      `${label} ZIP local header identity drifted`,
+    );
+    rejectZip64Extra(
+      bytes.subarray(
+        localOffset + 30 + localNameBytes,
+        localHeaderEnd,
+      ),
+      label,
+    );
+    const dataEnd = localHeaderEnd + compressedBytes;
+    requireCondition(
+      dataEnd <= centralOffset,
+      `${label} ZIP local data exceeds its boundary`,
+    );
+    let localEntryEnd = dataEnd;
+    if ((flags & 0x0008) !== 0) {
+      let descriptorOffset = dataEnd;
+      if (
+        descriptorOffset + 4 <= centralOffset &&
+        bytes.readUInt32LE(descriptorOffset) === 0x08074b50
+      ) {
+        descriptorOffset += 4;
+      }
+      requireCondition(
+        descriptorOffset + 12 <= centralOffset &&
+          bytes.readUInt32LE(descriptorOffset) === crc32 &&
+          bytes.readUInt32LE(descriptorOffset + 4) ===
+            compressedBytes &&
+          bytes.readUInt32LE(descriptorOffset + 8) ===
+            uncompressedBytes,
+        `${label} ZIP data descriptor drifted`,
+      );
+      localEntryEnd = descriptorOffset + 12;
+    } else {
+      requireCondition(
+        localCrc32 === crc32 &&
+          localCompressedBytes === compressedBytes &&
+          localUncompressedBytes === uncompressedBytes,
+        `${label} ZIP local size or CRC drifted`,
+      );
+    }
+    localIntervals.push({
+      start: localOffset,
+      end: localEntryEnd,
+    });
+    const creatorSystem = versionMadeBy >>> 8;
+    const unixMode = externalAttributes >>> 16;
+    requireCondition(
+      creatorSystem !== 3 || (unixMode & 0o170000) !== 0o120000,
+      `${label} ZIP contains a symbolic-link entry`,
+    );
+    requireCondition(
+      !name.endsWith("/") ||
+        (compressedBytes === 0 && uncompressedBytes === 0),
+      `${label} ZIP directory entry carries file data`,
+    );
+    if (!name.endsWith("/")) regularFileCount += 1;
+    aggregateCompressed += compressedBytes;
+    aggregateUncompressed += uncompressedBytes;
+    requireCondition(
+      aggregateUncompressed <= MAX_ZIP_UNCOMPRESSED_BYTES &&
+        (compressedBytes > 0
+          ? uncompressedBytes <=
+            compressedBytes * MAX_ZIP_COMPRESSION_RATIO
+          : uncompressedBytes === 0),
+      `${label} ZIP expansion exceeds its bound`,
+    );
+    names.add(name);
+    offset = entryEnd;
+  }
+  requireCondition(
+    offset === eocdOffset &&
+      aggregateCompressed <= MAX_OBJECT_BYTES &&
+      regularFileCount > 0,
+    `${label} ZIP central directory is incomplete`,
+  );
+  localIntervals.sort((left, right) => left.start - right.start);
+  for (let index = 1; index < localIntervals.length; index += 1) {
+    requireCondition(
+      localIntervals[index - 1].end <= localIntervals[index].start,
+      `${label} ZIP local entries overlap`,
+    );
+  }
+  return {
+    entryCount: totalEntries,
+    aggregateCompressedBytes: aggregateCompressed,
+    aggregateUncompressedBytes: aggregateUncompressed,
+  };
+}
+
+function rejectZip64Extra(extra, label) {
+  let offset = 0;
+  while (offset < extra.length) {
+    requireCondition(
+      offset + 4 <= extra.length,
+      `${label} ZIP extra field is malformed`,
+    );
+    const id = extra.readUInt16LE(offset);
+    const size = extra.readUInt16LE(offset + 2);
+    offset += 4;
+    requireCondition(
+      offset + size <= extra.length && id !== 0x0001,
+      `${label} ZIP64 or malformed extra field is forbidden`,
+    );
+    offset += size;
+  }
+}
+
+function validZipEntryName(value) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.includes("\\") ||
+    value.includes("\0") ||
+    value.startsWith("/") ||
+    /^[A-Za-z]:/.test(value)
+  ) {
+    return false;
+  }
+  const parts = value.split("/");
+  const directory = value.endsWith("/");
+  if (directory) parts.pop();
+  return (
+    parts.length > 0 &&
+    parts.every((part) => part.length > 0 && part !== "." && part !== "..") &&
+    !value.toLowerCase().endsWith(".zip")
+  );
 }
 
 function validateRetainedStatement(statementValue, expected, protocol) {
@@ -2593,7 +2939,7 @@ async function validateExactBundleLayout(
   );
   await validateExactDirectory(
     resolve(manifestRoot, "objects"),
-    Object.values(OBJECT_FILE_NAMES),
+    Object.values(WORM_RETENTION_OBJECT_FILE_NAMES),
     new Set(),
     "retention object directory",
   );
@@ -2628,8 +2974,19 @@ async function validateExactDirectory(
   }
 }
 
-async function readCanonicalJson(file, label, maxBytes) {
-  const read = await readStableFile(file, label, maxBytes, true);
+async function readCanonicalJson(
+  file,
+  label,
+  maxBytes,
+  stableFiles = null,
+) {
+  const read = await readStableFile(
+    file,
+    label,
+    maxBytes,
+    true,
+    stableFiles,
+  );
   const value = parseJson(read.bytes, label);
   auditJsonShape(value, label);
   const expected = `${canonicalJson(value)}\n`;
@@ -2640,7 +2997,13 @@ async function readCanonicalJson(file, label, maxBytes) {
   return { ...read, value };
 }
 
-async function readStableFile(file, label, maxBytes, requireSingleLink) {
+async function readStableFile(
+  file,
+  label,
+  maxBytes,
+  requireSingleLink,
+  stableFiles = null,
+) {
   const requested = resolve(file);
   const initial = await lstat(requested, { bigint: true }).catch(
     () => null,
@@ -2659,6 +3022,10 @@ async function readStableFile(file, label, maxBytes, requireSingleLink) {
   );
   try {
     const before = await handle.stat({ bigint: true });
+    requireCondition(
+      sameStableFileStat(initial, before, requireSingleLink),
+      `${label} changed before reading`,
+    );
     const bytes = await handle.readFile();
     const openedRealPath = await realpath(requested);
     const after = await handle.stat({ bigint: true });
@@ -2668,21 +3035,57 @@ async function readStableFile(file, label, maxBytes, requireSingleLink) {
     const finalRealPath = await realpath(requested).catch(() => null);
     requireCondition(
       before.isFile() &&
-        before.dev === after.dev &&
-        before.ino === after.ino &&
-        before.size === after.size &&
-        before.mtimeNs === after.mtimeNs &&
+        sameStableFileStat(before, after, requireSingleLink) &&
         BigInt(bytes.length) === before.size &&
-        final?.dev === before.dev &&
-        final?.ino === before.ino &&
-        final?.size === before.size &&
-        final?.mtimeNs === before.mtimeNs &&
+        sameStableFileStat(before, final, requireSingleLink) &&
         finalRealPath === openedRealPath,
       `${label} changed while reading`,
     );
-    return { bytes, realPath: openedRealPath };
+    const result = {
+      bytes,
+      realPath: openedRealPath,
+      snapshot: before,
+      label,
+      requireSingleLink,
+    };
+    if (Array.isArray(stableFiles)) stableFiles.push(result);
+    return result;
   } finally {
     await handle.close();
+  }
+}
+
+function sameStableFileStat(left, right, requireSingleLink) {
+  return (
+    left !== null &&
+    right !== null &&
+    left.isFile() &&
+    right.isFile() &&
+    !right.isSymbolicLink() &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs &&
+    left.nlink === right.nlink &&
+    (!requireSingleLink || right.nlink === 1n)
+  );
+}
+
+async function revalidateStableFiles(files) {
+  for (const file of files) {
+    const final = await lstat(file.realPath, { bigint: true }).catch(
+      () => null,
+    );
+    const finalRealPath = await realpath(file.realPath).catch(() => null);
+    requireCondition(
+      sameStableFileStat(
+        file.snapshot,
+        final,
+        file.requireSingleLink,
+      ) && finalRealPath === file.realPath,
+      `${file.label} changed before verification completed`,
+    );
   }
 }
 

@@ -11113,3 +11113,59 @@ No B5 live receipt exists. B6/B7 canonical assembly, reviewed permission
 inventories, operations/security signatures, and clean-host verifier replay
 remain pending. WORM, complete S3, registry, deployment, P5, traffic,
 financial, drain, and production authority remain false.
+
+## 2026-07-28 WORM B6/B7 Offline Bundle Verification
+
+The complete credential-free assembly, separate signing, finalization, and
+real-verifier replay path was verified locally:
+
+```powershell
+node --check tools/verify_container_runtime_worm_retention.mjs
+node --check tools/lib/container_runtime_worm_bundle.mjs
+npx.cmd --yes bun run check:container-runtime:worm-retention-contract
+npx.cmd --yes bun run check:container-runtime:worm-bundle
+```
+
+Focused results:
+
+| Gate | Tests | Expectations |
+| --- | ---: | ---: |
+| Final retention verifier v2 | 11 | 278 |
+| B6/B7 assembly, signing, and finalization | 5 | 33 |
+
+The B6 assembler consumes exactly 11 canonical B1-B5 receipts and one
+canonical six-role authority review, replays every predecessor normalizer,
+binds receipt-file and provider-operation identities, derives six evidence
+envelopes, snapshots the complete source inventory, and validates the six
+retained objects. The two retained packet objects must be bounded,
+single-disk, non-ZIP64, non-encrypted ZIP archives with safe unique UTF-8
+paths, supported compression, consistent local/central headers, bounded
+expansion, no overlaps, no symbolic links, and at least one regular file.
+
+The operations and security signers accept distinct configured Ed25519 roots
+and stdin-only PKCS#8 keys. Each detached receipt signs both the final v2
+manifest anchor and a richer ceremony message that binds protocol, trust,
+subject, signing request, source receipts, authority review, evidence, and
+objects. Finalization reads no key, accepts no historical production time,
+writes into a new candidate directory, verifies both signatures, and invokes
+the existing v2 verifier before producing its external decision report.
+
+The production finalizer also requires an exclusive external decision-report
+path; stdout alone is not retained evidence, and the verifier-kit hash must
+remain unchanged across replay. The verifier now keeps the repository protocol policy in its end-of-run
+inode/size/mtime/ctime snapshot set, rejects object readbacks later than their
+evidence capture, and enforces per-object/aggregate JSON and ZIP bounds. The
+policy uses a 400-day configured lock while retaining the 365-day minimum
+remaining-retention requirement.
+
+These tests use generated local fixtures and keys. They did not access
+Cloudflare or any credential and do not establish a real B1-B7 ceremony.
+`wormRetentionVerified`, complete S3, R3/C1, P5, traffic, financial, drain,
+and production authority remain false; Go/VPS remains authoritative and
+production remains **NO-GO**.
+
+The complete 11-suite container supply-chain aggregate passed 127 tests with
+1125 expectations. `npx.cmd --yes bun run check` then passed with exit code 0
+in 587.1 seconds, covering all repository JavaScript/TypeScript, frontend,
+Worker, Cloudflare configuration, Rust workspace, and required Wasm gates.
+The 21 existing Rust `dead_code` findings remained warnings only.

@@ -445,6 +445,22 @@ describe("container runtime WORM retention gate", () => {
       await driftedVerifier.cleanup();
     }
 
+    const futureReadback = await createFixture();
+    try {
+      await futureReadback.updateEvidence(
+        "object-readback",
+        (evidence) => {
+          evidence.facts.objects[0].readBackAt =
+            "2026-07-27T04:57:31Z";
+        },
+      );
+      await expect(futureReadback.verify()).rejects.toThrow(
+        /object chronology/i,
+      );
+    } finally {
+      await futureReadback.cleanup();
+    }
+
     const overclaim = await createFixture();
     try {
       const reportRecord =
@@ -738,13 +754,9 @@ async function createFixture() {
   const bundleBytes = Buffer.from(canonicalJson(bundle), "utf8");
   const bundleSha256 = sha256(bundleBytes);
   const cosignLogBytes = Buffer.from("Verified OK\n", "utf8");
-  const sourcePacketBytes = Buffer.from(
-    "source evidence packet fixture\n",
-    "utf8",
-  );
-  const provenancePacketBytes = Buffer.from(
-    "provenance evidence packet fixture\n",
-    "utf8",
+  const sourcePacketBytes = minimalZip("source-evidence.txt");
+  const provenancePacketBytes = minimalZip(
+    "provenance-evidence.txt",
   );
   const report = provenanceReportFixture({
     protocol,
@@ -1597,4 +1609,34 @@ async function loadProtocolPolicy() {
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function minimalZip(name) {
+  const nameBytes = Buffer.from(name, "utf8");
+  const local = Buffer.alloc(30 + nameBytes.length);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  local.writeUInt16LE(0x0800, 6);
+  local.writeUInt16LE(0, 8);
+  local.writeUInt16LE(nameBytes.length, 26);
+  nameBytes.copy(local, 30);
+
+  const central = Buffer.alloc(46 + nameBytes.length);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE((3 << 8) | 20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0x0800, 8);
+  central.writeUInt16LE(0, 10);
+  central.writeUInt16LE(nameBytes.length, 28);
+  central.writeUInt32LE((0o100644 << 16) >>> 0, 38);
+  central.writeUInt32LE(0, 42);
+  nameBytes.copy(central, 46);
+
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(1, 8);
+  eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(central.length, 12);
+  eocd.writeUInt32LE(local.length, 16);
+  return Buffer.concat([local, central, eocd]);
 }

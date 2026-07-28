@@ -50,6 +50,8 @@ export const REQUIRED_DISABLED_CONTROLLER_VARS = Object.freeze([
   "CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED",
   "CONTAINER_DURABLE_OBJECT_JURISDICTION_ENABLED",
   "CONTAINER_DURABLE_OBJECT_JURISDICTION_STAGING_VERIFIED",
+  "CONTAINER_SHARD_PLACEMENT_ATTESTATION_WRITE_ENABLED",
+  "CONTAINER_SHARD_PLACEMENT_ATTESTATION_STAGING_VERIFIED",
   "CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED",
 ]);
 export const REQUIRED_DISABLED_RING_TRANSITION_VARS = Object.freeze([
@@ -151,6 +153,11 @@ export function validateControllerConfig(config, environment) {
     throw new DeployPreflightError(`${environment} vars must be an object`);
   }
   requireEqual(config.vars.ENVIRONMENT, environment, `${environment} ENVIRONMENT`);
+  requireEqual(
+    config.vars.CONTAINER_CONTROLLER_SERVICE_NAME,
+    contract.controllerName,
+    `${environment} CONTAINER_CONTROLLER_SERVICE_NAME`,
+  );
   requireEqual(
     config.vars.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID,
     "",

@@ -34,6 +34,18 @@ const jurisdictionSource = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const placementAttestationSource = await Bun.file(
+  new URL(
+    "../services/container-controller/src/shard_placement_attestation.ts",
+    import.meta.url,
+  ),
+).text();
+const placementLedgerSource = await Bun.file(
+  new URL(
+    "../services/container-controller/src/shard_placement_ledger.ts",
+    import.meta.url,
+  ),
+).text();
 const providerAttemptGatewaySource = await Bun.file(
   new URL("../services/container-controller/src/provider_attempt_gateway.ts", import.meta.url),
 ).text();
@@ -78,6 +90,7 @@ describe("isolated container controller configuration", () => {
       expect(config.routes).toBeUndefined();
       expect(config.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
       expect(config.vars.ENVIRONMENT).toBe(controllerEnvironments[file]);
+      expect(config.vars.CONTAINER_CONTROLLER_SERVICE_NAME).toBe(config.name);
       expect(config.vars.CONTAINER_CONTROLLER_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_EXECUTION_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_READINESS_PROBE_ENABLED).toBe("false");
@@ -107,6 +120,12 @@ describe("isolated container controller configuration", () => {
       ).toBe("false");
       expect(
         config.vars.CONTAINER_DURABLE_OBJECT_JURISDICTION_STAGING_VERIFIED,
+      ).toBe("false");
+      expect(
+        config.vars.CONTAINER_SHARD_PLACEMENT_ATTESTATION_WRITE_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars.CONTAINER_SHARD_PLACEMENT_ATTESTATION_STAGING_VERIFIED,
       ).toBe("false");
       expect(config.vars.CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED).toBe("false");
       expect(
@@ -198,6 +217,40 @@ describe("isolated container controller configuration", () => {
     expect(controllerSource).not.toMatch(
       /env\.RELAY_SHARDS\.(?:getByName|idFromString|get\()/,
     );
+  });
+
+  test("shard placement evidence cross-checks object identity and remains default-off", () => {
+    expect(controllerSource).toContain("this.durableObjectId = ctx.id.toString()");
+    expect(controllerSource).toContain(
+      "this.ledger.replayReadinessProbeJournal(",
+    );
+    expect(controllerSource).toContain("durableObjectId: stub.id.toString()");
+    expect(controllerSource).toContain(
+      "assertRelayShardObjectJurisdiction(env, stub.id.jurisdiction)",
+    );
+    expect(controllerSource).toContain(
+      "verifyShardPlacementAttestationRpcV1(outcome",
+    );
+    expect(controllerSource).toContain(
+      "recordShardPlacementAttestation(",
+    );
+    expect(controllerSource).toContain(
+      "shard_placement_attestation_write_enabled",
+    );
+    expect(placementAttestationSource).toContain(
+      '"shard_placement_attestation_gate_mismatch"',
+    );
+    expect(placementAttestationSource).toContain(
+      "JSON.stringify(attestation) !== JSON.stringify(expected)",
+    );
+    expect(placementLedgerSource).toContain(
+      "0061_relay_container_shard_placement_attestations.sql",
+    );
+    expect(placementLedgerSource).toContain(
+      "consumption.readiness_result_sha256 = ?17",
+    );
+    expect(placementLedgerSource).not.toMatch(/console\.(?:log|error)/);
+    expect(controllerSource).not.toContain("object_id:");
   });
 
   test("edge and controller deployment identities are operator-visible", () => {

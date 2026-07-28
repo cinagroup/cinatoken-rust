@@ -44,6 +44,47 @@ export interface CreateShardPlacementAttestationV1Input {
   shard: OperationShard;
 }
 
+export interface ShardPlacementAttestationWriterEnvironment {
+  CONTAINER_SHARD_PLACEMENT_ATTESTATION_WRITE_ENABLED: string;
+  CONTAINER_SHARD_PLACEMENT_ATTESTATION_STAGING_VERIFIED: string;
+}
+
+export interface ShardPlacementAttestationWriterPolicy {
+  enabled: boolean;
+  staging_verified: boolean;
+}
+
+export type ShardPlacementAttestationRpcResultV1 =
+  | {
+      ok: true;
+      attestation: ShardPlacementAttestationV1;
+      attestation_digest_sha256: string;
+    }
+  | { ok: false; error: { code: string; status: number } };
+
+export interface VerifiedShardPlacementAttestationV1 {
+  attestation: ShardPlacementAttestationV1;
+  attestationDigestSha256: string;
+}
+
+export function shardPlacementAttestationWriterPolicy(
+  env: ShardPlacementAttestationWriterEnvironment,
+): ShardPlacementAttestationWriterPolicy {
+  const enabled = parseGate(
+    env.CONTAINER_SHARD_PLACEMENT_ATTESTATION_WRITE_ENABLED,
+  );
+  const stagingVerified = parseGate(
+    env.CONTAINER_SHARD_PLACEMENT_ATTESTATION_STAGING_VERIFIED,
+  );
+  if (enabled !== stagingVerified) {
+    throw new ProtocolError(
+      "shard_placement_attestation_gate_mismatch",
+      503,
+    );
+  }
+  return { enabled, staging_verified: stagingVerified };
+}
+
 export async function createShardPlacementAttestationV1(
   input: CreateShardPlacementAttestationV1Input,
 ): Promise<ShardPlacementAttestationV1> {
@@ -84,10 +125,36 @@ export async function parseShardPlacementAttestationV1(
   ) {
     invalid();
   }
-  await validateShardPlacementAttestationV1(
-    value as unknown as ShardPlacementAttestationV1,
-  );
-  return value as unknown as ShardPlacementAttestationV1;
+  if (
+    value.contract_version !==
+      SHARD_PLACEMENT_ATTESTATION_CONTRACT_VERSION ||
+    !isEnvironment(value.environment) ||
+    typeof value.controller_service_name !== "string" ||
+    typeof value.controller_version_id !== "string" ||
+    value.durable_object_namespace_binding !==
+      RELAY_SHARD_NAMESPACE_BINDING ||
+    value.durable_object_class !== RELAY_SHARD_DURABLE_OBJECT_CLASS ||
+    !isJurisdiction(value.jurisdiction) ||
+    typeof value.canonical_name_sha256 !== "string" ||
+    typeof value.object_id_sha256 !== "string" ||
+    !isCanonicalShard(value.shard)
+  ) {
+    invalid();
+  }
+  const attestation: ShardPlacementAttestationV1 = {
+    contract_version: value.contract_version,
+    environment: value.environment,
+    controller_service_name: value.controller_service_name,
+    controller_version_id: value.controller_version_id,
+    durable_object_namespace_binding: value.durable_object_namespace_binding,
+    durable_object_class: value.durable_object_class,
+    jurisdiction: value.jurisdiction,
+    canonical_name_sha256: value.canonical_name_sha256,
+    object_id_sha256: value.object_id_sha256,
+    shard: value.shard,
+  };
+  await validateShardPlacementAttestationV1(attestation);
+  return attestation;
 }
 
 export async function validateShardPlacementAttestationV1(
@@ -135,6 +202,44 @@ export async function shardPlacementAttestationDigest(
   ]);
 }
 
+export async function verifyShardPlacementAttestationRpcV1(
+  value: unknown,
+  expectedInput: CreateShardPlacementAttestationV1Input,
+): Promise<VerifiedShardPlacementAttestationV1> {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "ok",
+      "attestation",
+      "attestation_digest_sha256",
+    ]) ||
+    value.ok !== true ||
+    typeof value.attestation_digest_sha256 !== "string" ||
+    !LOWER_HEX_64.test(value.attestation_digest_sha256)
+  ) {
+    invalidRpc();
+  }
+  let attestation: ShardPlacementAttestationV1;
+  try {
+    attestation = await parseShardPlacementAttestationV1(value.attestation);
+  } catch {
+    invalidRpc();
+  }
+  const expected = await createShardPlacementAttestationV1(expectedInput);
+  const [actualDigest, expectedDigest] = await Promise.all([
+    shardPlacementAttestationDigest(attestation),
+    shardPlacementAttestationDigest(expected),
+  ]);
+  if (
+    value.attestation_digest_sha256 !== actualDigest ||
+    actualDigest !== expectedDigest ||
+    JSON.stringify(attestation) !== JSON.stringify(expected)
+  ) {
+    throw new ProtocolError("shard_placement_attestation_mismatch", 502);
+  }
+  return { attestation, attestationDigestSha256: actualDigest };
+}
+
 function isCanonicalShard(value: unknown): value is OperationShard {
   if (
     !isRecord(value) ||
@@ -160,6 +265,10 @@ function isCanonicalShard(value: unknown): value is OperationShard {
   );
 }
 
+function isEnvironment(value: unknown): value is ShardPlacementEnvironment {
+  return value === "staging" || value === "production";
+}
+
 function isJurisdiction(value: unknown): value is RelayShardJurisdiction {
   return (
     value === RELAY_SHARD_DEFAULT_JURISDICTION ||
@@ -167,6 +276,12 @@ function isJurisdiction(value: unknown): value is RelayShardJurisdiction {
       (jurisdiction) => jurisdiction === value,
     )
   );
+}
+
+function parseGate(value: string): boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new ProtocolError("shard_placement_attestation_gate_invalid", 503);
 }
 
 function integerInRange(value: unknown, min: number, max: number): boolean {
@@ -225,4 +340,8 @@ async function digestParts(parts: string[]): Promise<string> {
 
 function invalid(): never {
   throw new ProtocolError("invalid_shard_placement_attestation", 400);
+}
+
+function invalidRpc(): never {
+  throw new ProtocolError("shard_placement_attestation_rpc_invalid", 502);
 }

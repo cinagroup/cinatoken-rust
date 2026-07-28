@@ -3744,9 +3744,27 @@ The global schema candidate is now 61 migrations and 70 tables. P5 binds the
 SQLite, placement fixture/guard, P5, foundation, and ring-transition focused
 gates pass locally.
 
-No runtime writer or remote record exists. Next is reader-first isolated
-staging apply, exact empty-schema readback, a versioned object/stub ID
-cross-check RPC, default-false writer gates, idempotent post-0055 append, and a
-bounded P5 reader. Restricted relocation and shared D1/KV/R2 residency remain
-later, separately approved contracts. Go/VPS remains authoritative and
-production remains **NO-GO**.
+The default-only runtime writer now exists but is inert in every tracked
+environment. The object RPC proves the same completed readiness journal and
+derives identity from its actual `ctx.id`; the Controller separately derives
+the expected identity from the selected stub ID, verifies the stub
+jurisdiction, and requires exact canonical attestation and digest equality.
+After 0055 completion, the D1 repository probes the exact 0061 schema and
+appends or exactly replays one row with authoritative readback. Missing,
+conflicting, or malformed readback fails closed.
+
+Both placement-writer gates remain `false`, must change together, are visible
+on private status, and are pinned false by deploy preflight. No remote schema
+apply, gate change, object wake, or ledger record occurred. A separately
+signed, single-use isolated-staging mutation authorization is not implemented,
+so the ordinary deployment path cannot enable the writer. Next is reader-first
+isolated staging apply and empty-schema readback, that authorization boundary,
+one exact writer-version N/N campaign, and a bounded root-authenticated P5
+placement reader.
+Restricted relocation and shared D1/KV/R2 residency remain later, separately
+approved contracts. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
+Focused placement/campaign/config/preflight verification passes 86 tests with
+837 expectations. The complete repository gate passes with exit code 0 in 764
+seconds; 21 existing Rust `dead_code` findings remain warnings only.

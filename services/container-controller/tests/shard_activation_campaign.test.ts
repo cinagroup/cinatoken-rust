@@ -304,10 +304,14 @@ describe("relay Container shard activation campaign", () => {
     const v2CallStart = route.indexOf("stub.readinessProbeV2(");
     const v2CallEnd = route.indexOf(");", v2CallStart);
     const finalize = route.indexOf("finalizeClaimedShardActivationCampaign(");
+    const placement = route.indexOf(
+      "recordClaimedShardPlacementAttestation(",
+    );
     expect(acquire).toBeGreaterThan(-1);
     expect(firstDoLookup).toBeGreaterThan(acquire);
     expect(v2CallStart).toBeGreaterThan(firstDoLookup);
     expect(finalize).toBeGreaterThan(v2CallStart);
+    expect(placement).toBeGreaterThan(finalize);
 
     const v2Call = route.slice(v2CallStart, v2CallEnd + 2);
     expect(v2Call).toContain("shardProbe");
@@ -317,6 +321,13 @@ describe("relay Container shard activation campaign", () => {
     expect(route.indexOf("readinessResultSha256 !== outcome.result_sha256")).toBeGreaterThan(
       v2CallStart,
     );
+    const placementCall = route.slice(
+      placement,
+      route.indexOf(");", placement) + 2,
+    );
+    expect(placementCall).toContain("stub");
+    expect(placementCall).toContain("claim");
+    expect(placementCall).toContain("outcome.result_sha256");
   });
 });
 

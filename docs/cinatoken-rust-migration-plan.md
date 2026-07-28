@@ -22267,3 +22267,103 @@ credential was read and no remote mutation occurred. Restricted placement,
 shared-storage residency, P5, traffic, financial authority, Go/VPS drain, and
 cutover remain blocked. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.314 Default-Only Placement Runtime Writer (2026-07-28)
+
+The local Controller/DO/D1 write path for migration 0061 is now complete and
+default-inert. This advances implementation readiness only; it does not create
+Cloudflare placement evidence or production authority.
+
+### Runtime trust split
+
+`RelayShardContainer.shardPlacementAttestationV1` accepts only a canonical
+shard plus the exact probe, claim, and readiness hashes. Before attesting, the
+object:
+
+1. requires both placement-writer gates to be exact and enabled together;
+2. replays the completed Durable Object readiness journal for the same shard,
+   probe, and claim;
+3. requires the journal result hash to equal the 0055 readiness hash;
+4. derives the attestation from its constructor-captured `ctx.id`, configured
+   service name, immutable Worker Version Metadata ID, selected jurisdiction,
+   and frozen shard tuple.
+
+The Controller does not trust that result by origin alone. It rechecks the
+selected stub jurisdiction, independently constructs the expected attestation
+from `stub.id.toString()`, validates exact keys and canonical values, recomputes
+both digests, and requires byte-equivalent structured identity. The raw object
+ID is never logged or written to D1.
+
+### D1 append and replay boundary
+
+`shard_placement_ledger.ts` is the sole runtime repository for 0061. It opens a
+primary D1 session and requires the exact migration marker, 22 ordered columns,
+table, two indexes, and three immutable guards before writing. Its insert is an
+`INSERT ... SELECT` over the matching 0055 consumption and 0054 activation, so
+the caller cannot supply activation or consumption authority independently.
+
+The first exact write returns the database-assigned timestamp. A retry reads
+the existing campaign/shard row, reconstructs and revalidates the canonical
+attestation, recomputes its digest, and succeeds only on complete equality.
+Missing activation, schema drift, conflicting placement, unavailable readback,
+and successful insert without valid readback have distinct fail-closed errors.
+The readiness route invokes this boundary after either new 0055 finalization or
+an exact completed-campaign replay, which makes transient D1 failure retryable
+without waking a replacement shard or consuming a second campaign claim.
+
+### Configuration and rollout safety
+
+Two variables are required:
+
+- `CONTAINER_SHARD_PLACEMENT_ATTESTATION_WRITE_ENABLED`
+- `CONTAINER_SHARD_PLACEMENT_ATTESTATION_STAGING_VERIFIED`
+
+They accept only `true` or `false` and must always match. Local, staging, and
+production all track `false`; deploy preflight requires both false and requires
+the configured Controller service name to equal the Wrangler service identity.
+Private status exposes the validated policy and service name. The two fields
+remain outside the frozen 22-field activation-campaign-v1 inventory, preserving
+that campaign ABI.
+
+The production-grade activation sequence is:
+
+1. rotate the exposed historical credential and use a reviewed
+   least-privilege replacement;
+2. apply 0061 to isolated staging with both gates false;
+3. independently read back the exact migration, columns, indexes, triggers,
+   foreign keys, and zero placement rows;
+4. deploy a reader-first Controller version with both gates false and retain
+   its version ID, service name, build/provenance evidence, and private status
+   receipt;
+5. implement and approve a separate signed, single-use isolated-staging
+   mutation authorization; ordinary deploy preflight must continue rejecting
+   enabled gates and this authorization must not bypass it;
+6. use that authorization to deploy one immutable writer-enabled staging
+   version with both gates true, then bind one root-authorized
+   default-jurisdiction N/N activation campaign to that exact version;
+7. read the bounded 0061 ledger without enumerating or waking Durable Objects,
+   requiring one stable exact attestation per candidate shard;
+8. turn the evidence into a frozen P5 source, run lifecycle/fault/load/cost/SLO
+   campaigns, and obtain the existing operations/security approvals;
+9. keep production gates false until the complete candidate is approved, then
+   repeat reader-first migration, canary, rollback rehearsal, and post-canary
+   readback before any customer traffic.
+
+Any schema, service/version, stub/object, jurisdiction, journal, campaign,
+activation, consumption, row-count, digest, or readback drift stops the
+ceremony. A failed campaign is not repaired by editing immutable rows or
+widening accepted identity. Operators either replay the exact same evidence or
+retire the candidate and start with a new version/campaign.
+
+Focused placement/campaign/config/preflight verification passes 86 tests with
+837 expectations. The complete repository gate passes with exit code 0 in 764
+seconds; its 21 existing Rust `dead_code` findings remain warnings only.
+
+The separate staging mutation authorization in step 5 is not implemented, so
+the ordinary tracked deployment path cannot currently enable this writer.
+Restricted jurisdictions remain structurally blocked: campaign v1 cannot bind
+jurisdiction and the 0061 trigger accepts only `default`. Campaign v2,
+destination-versioned relocation/drain, old/new namespace coexistence,
+rollback, and separate D1/KV/R2 residency evidence must land before that guard
+can change. P5 placement reader/collector and all remote receipts are still
+absent. Go/VPS remains authoritative and production remains **NO-GO**.

@@ -1372,9 +1372,26 @@ campaign-v2 migration replaces that guard. The contract can represent those
 targets so their future digest format is already stable; representation alone
 grants no placement authority.
 
-Runtime collection is still pending. The next RPC must compare a hash of the
-object's actual `ctx.id` with a Controller-side hash of the selected stub ID,
-then append or exactly replay 0061 only after the matching 0055 consumption.
-P5 must read a bounded frozen ledger without waking objects and require one
-stable row per candidate shard. Relocation/drain and D1/KV/R2 residency remain
-separate protocols. Production remains **NO-GO**.
+The default-only runtime writer is now implemented but remains disabled in
+every tracked environment. A versioned object RPC replays the completed
+readiness journal and hashes the actual `ctx.id`; the Controller independently
+constructs the expected identity from the selected stub ID and rejects any
+field or digest mismatch. The Controller also rechecks the stub jurisdiction
+before invoking the RPC. Only after exact object/stub agreement and an exact
+0055 completion does the D1 repository append or exactly replay one 0061 row.
+Successful insertion followed by missing or malformed readback is treated as
+upstream corruption, not success.
+
+Two exact Boolean gates control the writer and must change together. They are
+false in local, staging, and production configuration, surfaced by the private
+status endpoint, and required false by deploy preflight. They remain outside
+the frozen 22-field campaign-v1 gate digest so this additive evidence path does
+not silently change the activation ABI. No separately signed, single-use
+staging mutation authorization exists yet, so the ordinary deployment path
+cannot enable this writer.
+
+Promotion still requires reader-first remote migration and empty-schema
+readback, one isolated same-version staging campaign, stable N/N ledger
+readback, and a bounded P5 collector that never wakes objects. Restricted
+relocation/drain and D1/KV/R2 residency remain separate protocols. No remote
+placement record has been collected, so production remains **NO-GO**.

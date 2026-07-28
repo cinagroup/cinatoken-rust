@@ -30,6 +30,7 @@ function validConfig(environment) {
     version_metadata: { binding: "CF_VERSION_METADATA" },
     vars: {
       ENVIRONMENT: environment,
+      CONTAINER_CONTROLLER_SERVICE_NAME: contract.controllerName,
       ...Object.fromEntries(
         REQUIRED_DISABLED_CONTROLLER_VARS.map((name) => [name, "false"]),
       ),

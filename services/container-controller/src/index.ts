@@ -124,12 +124,25 @@ import {
   type ShardActivationCampaignAcquire,
   type ShardActivationCampaignClaim,
 } from "./shard_activation_campaign";
+import {
+  createShardPlacementAttestationV1,
+  shardPlacementAttestationDigest,
+  shardPlacementAttestationWriterPolicy,
+  verifyShardPlacementAttestationRpcV1,
+  type ShardPlacementAttestationRpcResultV1,
+  type ShardPlacementAttestationWriterEnvironment,
+} from "./shard_placement_attestation";
+import { recordShardPlacementAttestation } from "./shard_placement_ledger";
 
 export { ContainerProxy };
 
 interface ControllerRuntimeEnvironment
-  extends AuthorityEnvironment, RelayShardJurisdictionEnvironment {
+  extends
+    AuthorityEnvironment,
+    RelayShardJurisdictionEnvironment,
+    ShardPlacementAttestationWriterEnvironment {
   ENVIRONMENT: string;
+  CONTAINER_CONTROLLER_SERVICE_NAME: string;
   CONTAINER_CONTROLLER_ENABLED: string;
   CONTAINER_EXECUTION_ENABLED: string;
   CONTAINER_READINESS_PROBE_ENABLED: string;
@@ -309,10 +322,12 @@ export class RelayShardContainer extends Container<ControllerEnv> {
   static override outbound = (): Response => jsonError("container_egress_denied", 403);
 
   private readonly ledger: RelayShardLedger;
+  private readonly durableObjectId: string;
 
   constructor(ctx: DurableObjectState<{}>, env: ControllerEnv) {
     super(ctx, env);
     assertRelayShardObjectJurisdiction(env, ctx.id.jurisdiction);
+    this.durableObjectId = ctx.id.toString();
     this.ledger = new RelayShardLedger(ctx.storage);
     ctx.blockConcurrencyWhile(async () => {
       this.ledger.ensureSchema();
@@ -925,6 +940,60 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     }
   }
 
+  async shardPlacementAttestationV1(
+    shard: OperationShard,
+    probeId: string,
+    claimDigestSha256: string,
+    readinessResultSha256: string,
+  ): Promise<ShardPlacementAttestationRpcResultV1> {
+    try {
+      if (
+        !/^[0-9a-f]{64}$/.test(probeId) ||
+        !/^[0-9a-f]{64}$/.test(claimDigestSha256) ||
+        !/^[0-9a-f]{64}$/.test(readinessResultSha256)
+      ) {
+        throw new ProtocolError("invalid_shard_placement_attestation", 400);
+      }
+      if (!shardPlacementAttestationWriterPolicy(this.env).enabled) {
+        throw new ProtocolError("shard_placement_attestation_disabled", 503);
+      }
+      const replay = await this.ledger.replayReadinessProbeJournal(
+        shard,
+        probeId,
+        claimDigestSha256,
+        Date.now(),
+      );
+      if (replay.resultSha256 !== readinessResultSha256) {
+        throw new ProtocolError("readiness_probe_result_mismatch", 502);
+      }
+      const attestation = await createShardPlacementAttestationV1({
+        environment: shardPlacementEnvironment(this.env.ENVIRONMENT),
+        controllerServiceName: this.env.CONTAINER_CONTROLLER_SERVICE_NAME,
+        controllerVersionId: this.env.CF_VERSION_METADATA.id,
+        jurisdiction: relayShardJurisdictionPolicy(this.env).jurisdiction,
+        durableObjectId: this.durableObjectId,
+        shard,
+      });
+      return {
+        ok: true,
+        attestation,
+        attestation_digest_sha256:
+          await shardPlacementAttestationDigest(attestation),
+      };
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        return { ok: false, error: { code: error.code, status: error.status } };
+      }
+      return {
+        ok: false,
+        error: {
+          code: "shard_placement_attestation_unavailable",
+          status: 503,
+        },
+      };
+    }
+  }
+
   private async observeContainerReadiness(
     probe: ShardReadinessProbe,
     startedAtMs: number,
@@ -1450,6 +1519,7 @@ async function claimShardActivationCampaignBeforeWake(
     }
     return null;
   }
+  shardPlacementAttestationWriterPolicy(env);
   if (relayShardJurisdictionPolicy(env).restricted) {
     throw new ProtocolError(
       "shard_activation_jurisdiction_contract_unavailable",
@@ -1477,6 +1547,76 @@ async function claimShardActivationCampaignBeforeWake(
     environment: env.ENVIRONMENT,
     probeId,
   });
+}
+
+async function recordClaimedShardPlacementAttestation(
+  env: ControllerEnv,
+  stub: DurableObjectStub<RelayShardContainer>,
+  claim: ShardActivationCampaignClaim,
+  readinessResultSha256: string,
+): Promise<void> {
+  if (!shardPlacementAttestationWriterPolicy(env).enabled) return;
+  assertRelayShardObjectJurisdiction(env, stub.id.jurisdiction);
+  let outcome: ShardPlacementAttestationRpcResultV1;
+  try {
+    outcome = await stub.shardPlacementAttestationV1(
+      claim.shard,
+      claim.probeId,
+      claim.claimDigestSha256,
+      readinessResultSha256,
+    );
+  } catch {
+    throw new ProtocolError(
+      "shard_placement_attestation_rpc_unavailable",
+      503,
+    );
+  }
+  if (!outcome.ok) {
+    throw new ProtocolError(outcome.error.code, outcome.error.status);
+  }
+  const verified = await verifyShardPlacementAttestationRpcV1(outcome, {
+    environment: shardPlacementEnvironment(env.ENVIRONMENT),
+    controllerServiceName: env.CONTAINER_CONTROLLER_SERVICE_NAME,
+    controllerVersionId: env.CF_VERSION_METADATA.id,
+    jurisdiction: relayShardJurisdictionPolicy(env).jurisdiction,
+    durableObjectId: stub.id.toString(),
+    shard: claim.shard,
+  });
+  const record = await recordShardPlacementAttestation(
+    env.DB,
+    claim,
+    readinessResultSha256,
+    verified,
+  );
+  console.log(
+    JSON.stringify({
+      event: "relay_container_shard_placement_attestation_recorded",
+      campaign_id: claim.campaignId,
+      claim_digest_sha256: claim.claimDigestSha256,
+      readiness_result_sha256: readinessResultSha256,
+      placement_attestation_digest_sha256:
+        verified.attestationDigestSha256,
+      activation_digest_sha256: record.activationDigestSha256,
+      consumption_digest_sha256: record.consumptionDigestSha256,
+      activation_id: record.activationId,
+      recorded_at: record.recordedAt,
+      duplicate: record.duplicate,
+      controller_version_id: env.CF_VERSION_METADATA.id,
+      jurisdiction: verified.attestation.jurisdiction,
+      ring_generation: claim.shard.ring_generation,
+      shard_index: claim.shard.shard_index,
+    }),
+  );
+}
+
+function shardPlacementEnvironment(
+  value: string,
+): "staging" | "production" {
+  if (value === "staging" || value === "production") return value;
+  throw new ProtocolError(
+    "shard_placement_attestation_environment_invalid",
+    503,
+  );
 }
 
 async function finalizeClaimedShardActivationCampaign(
@@ -1630,6 +1770,8 @@ const handler: ExportedHandler<ControllerEnv> = {
         await verifyStatusRequest(request, env);
         const actionGates = await campaignActionGateInventory(env);
         const jurisdictionPolicy = relayShardJurisdictionPolicy(env);
+        const placementPolicy =
+          shardPlacementAttestationWriterPolicy(env);
         const ringTransition = inspectRingTransition(
           env,
           Math.floor(Date.now() / 1000),
@@ -1663,6 +1805,12 @@ const handler: ExportedHandler<ControllerEnv> = {
               /^[0-9a-f]{64}$/.test(
                 env.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID,
               ),
+            shard_placement_attestation_write_enabled:
+              placementPolicy.enabled,
+            shard_placement_attestation_staging_verified:
+              placementPolicy.staging_verified,
+            controller_service_name:
+              env.CONTAINER_CONTROLLER_SERVICE_NAME,
             all_action_gates_false: actionGates.allActionGatesFalse,
             action_gate_inventory_sha256: actionGates.digestSha256,
             authority_current_secret_configured: authoritySecretConfigured(
@@ -1779,6 +1927,12 @@ const handler: ExportedHandler<ControllerEnv> = {
             throw error;
           }
         }
+        await recordClaimedShardPlacementAttestation(
+          env,
+          stub,
+          claim,
+          outcome.result_sha256,
+        );
         return readinessResponse(
           verified.probe,
           verified.claims.dispatch_id,

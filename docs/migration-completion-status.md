@@ -2397,7 +2397,7 @@ Go/VPS remains authoritative and production remains **NO-GO**.
 | Private status visibility | Validated target, restricted flag, and both gates |
 | Focused policy gate | 9 tests / 57 expectations |
 | Remote restricted object evidence | **NOT COLLECTED** |
-| Cross-language jurisdiction provenance | v1 contract and default-only D1 ledger implemented locally; runtime collection pending |
+| Cross-language jurisdiction provenance | v1 contract, default-only D1 ledger, and default-off runtime writer implemented locally |
 | Production eligibility | **NO-GO** |
 
 All Controller routes now use one selector for operation dispatch, status
@@ -2429,16 +2429,24 @@ Go/VPS stays authoritative and production remains **NO-GO**.
 | Activation linkage | Exact 0054 activation plus 0055 campaign consumption |
 | Immutability | One row per activation; replacement/update/delete rejected |
 | Restricted jurisdiction write | Rejected until campaign v2 |
-| Controller runtime writer | **NOT IMPLEMENTED** |
+| Controller runtime writer | Implemented locally; exact two-gate policy; disabled in all tracked environments |
+| Object/Controller identity cross-check | Implemented; actual `ctx.id` must equal independently selected stub identity |
+| Completed-readiness replay | Implemented; object RPC must replay the matching DO journal before attesting |
+| D1 writer readback | Implemented; exact 0061 schema, idempotent replay, conflict and malformed-readback rejection |
+| Writer-enabled staging deployment authorization | **NOT IMPLEMENTED**; ordinary deploy preflight requires both gates false |
+| Focused local gate | 86 tests / 837 expectations |
+| Complete repository gate | PASS, exit 0 in 764 seconds; 21 existing Rust warnings |
 | P5 placement reader/collector | **NOT IMPLEMENTED** |
 | Remote placement evidence | **NOT COLLECTED** |
 | Shared D1/KV/R2 residency evidence | **NOT COLLECTED** |
 | Production eligibility | **NO-GO** |
 
-This increment freezes how placement identity will be represented and stored;
-it does not claim where an object or shared store actually resides. Runtime
-collection still needs an object-side hash of actual `ctx.id`, a
-Controller-side hash of the selected stub ID, exact equality, default-false
-writer gates, idempotent linkage after campaign consumption, and bounded P5
-readback. Restricted relocation/drain requires a separate campaign v2 and
-shared-store residency proof. Go/VPS remains authoritative.
+This increment now closes the local default-jurisdiction write path, but it
+does not claim where an object or shared store actually resides. Both writer
+gates remain false and deploy preflight rejects enabling them. No remote 0061
+schema or placement row has been read back. Promotion still needs reader-first
+isolated staging migration, an exact empty-schema receipt, a separately signed
+single-use staging mutation authorization, an exact writer-version N/N
+campaign, stable bounded P5 readback, and independent review. Restricted
+relocation/drain requires a separate campaign v2 and shared-store residency
+proof. Go/VPS remains authoritative.

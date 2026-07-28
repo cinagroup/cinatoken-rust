@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { readFile } from "node:fs/promises";
 
 import fixture from "../../../tests/fixtures/container-shard-placement-attestation-v1.json";
 import { ProtocolError } from "../src/protocol";
+import type { ShardActivationCampaignClaim } from "../src/shard_activation_campaign";
 import {
   RELAY_SHARD_DURABLE_OBJECT_CLASS,
   RELAY_SHARD_NAMESPACE_BINDING,
@@ -10,12 +13,26 @@ import {
   createShardPlacementAttestationV1,
   parseShardPlacementAttestationV1,
   shardPlacementAttestationDigest,
+  shardPlacementAttestationWriterPolicy,
+  verifyShardPlacementAttestationRpcV1,
   type CreateShardPlacementAttestationV1Input,
   type ShardPlacementAttestationV1,
+  type VerifiedShardPlacementAttestationV1,
 } from "../src/shard_placement_attestation";
+import { recordShardPlacementAttestation } from "../src/shard_placement_ledger";
 
 const input = fixture.input as CreateShardPlacementAttestationV1Input;
 const expected = fixture.attestation as ShardPlacementAttestationV1;
+const CAMPAIGN_ID = "3".repeat(64);
+const CLAIM_DIGEST_SHA256 = "4".repeat(64);
+const READINESS_RESULT_SHA256 = "5".repeat(64);
+const placementMigration = await readFile(
+  new URL(
+    "../../../migrations/d1/0061_relay_container_shard_placement_attestations.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 async function expectInvalid(value: unknown): Promise<void> {
   try {
@@ -27,6 +44,21 @@ async function expectInvalid(value: unknown): Promise<void> {
       "invalid_shard_placement_attestation",
     );
     expect((error as ProtocolError).status).toBe(400);
+  }
+}
+
+function expectProtocolError(
+  callback: () => unknown,
+  code: string,
+  status: number,
+): void {
+  try {
+    callback();
+    throw new Error("expected ProtocolError");
+  } catch (error) {
+    expect(error).toBeInstanceOf(ProtocolError);
+    expect((error as ProtocolError).code).toBe(code);
+    expect((error as ProtocolError).status).toBe(status);
   }
 }
 
@@ -93,4 +125,381 @@ describe("relay shard placement attestation v1", () => {
       controller_service_name: "Cinatoken Controller",
     });
   });
+
+  test("requires an exact default-off two-gate writer policy", () => {
+    expect(
+      shardPlacementAttestationWriterPolicy({
+        CONTAINER_SHARD_PLACEMENT_ATTESTATION_WRITE_ENABLED: "false",
+        CONTAINER_SHARD_PLACEMENT_ATTESTATION_STAGING_VERIFIED: "false",
+      }),
+    ).toEqual({ enabled: false, staging_verified: false });
+    expect(
+      shardPlacementAttestationWriterPolicy({
+        CONTAINER_SHARD_PLACEMENT_ATTESTATION_WRITE_ENABLED: "true",
+        CONTAINER_SHARD_PLACEMENT_ATTESTATION_STAGING_VERIFIED: "true",
+      }),
+    ).toEqual({ enabled: true, staging_verified: true });
+    expectProtocolError(
+      () =>
+        shardPlacementAttestationWriterPolicy({
+          CONTAINER_SHARD_PLACEMENT_ATTESTATION_WRITE_ENABLED: "true",
+          CONTAINER_SHARD_PLACEMENT_ATTESTATION_STAGING_VERIFIED: "false",
+        }),
+      "shard_placement_attestation_gate_mismatch",
+      503,
+    );
+    expectProtocolError(
+      () =>
+        shardPlacementAttestationWriterPolicy({
+          CONTAINER_SHARD_PLACEMENT_ATTESTATION_WRITE_ENABLED: "1",
+          CONTAINER_SHARD_PLACEMENT_ATTESTATION_STAGING_VERIFIED: "false",
+        }),
+      "shard_placement_attestation_gate_invalid",
+      503,
+    );
+  });
+
+  test("requires the object RPC identity to equal the independently selected stub", async () => {
+    const verified = await verifiedAttestation();
+    expect(verified.attestation).toEqual(expected);
+    expect(verified.attestationDigestSha256).toBe(
+      fixture.attestation_digest_sha256,
+    );
+
+    const different = await createShardPlacementAttestationV1({
+      ...input,
+      durableObjectId: "f".repeat(64),
+    });
+    await expect(
+      verifyShardPlacementAttestationRpcV1(
+        {
+          ok: true,
+          attestation: different,
+          attestation_digest_sha256:
+            await shardPlacementAttestationDigest(different),
+        },
+        input,
+      ),
+    ).rejects.toMatchObject({
+      code: "shard_placement_attestation_mismatch",
+      status: 502,
+    });
+    await expect(
+      verifyShardPlacementAttestationRpcV1(
+        {
+          ok: true,
+          attestation: expected,
+          attestation_digest_sha256: "0".repeat(64),
+        },
+        input,
+      ),
+    ).rejects.toMatchObject({
+      code: "shard_placement_attestation_mismatch",
+      status: 502,
+    });
+    await expect(
+      verifyShardPlacementAttestationRpcV1(
+        {
+          ok: true,
+          attestation: expected,
+          attestation_digest_sha256: fixture.attestation_digest_sha256,
+          unexpected: true,
+        },
+        input,
+      ),
+    ).rejects.toMatchObject({
+      code: "shard_placement_attestation_rpc_invalid",
+      status: 502,
+    });
+  });
+
+  test("appends once after 0055 and exactly replays the same 0061 row", async () => {
+    const fixtureDatabase = placementDatabase();
+    try {
+      const verified = await verifiedAttestation();
+      const first = await recordShardPlacementAttestation(
+        fixtureDatabase.database as never,
+        placementClaim(),
+        READINESS_RESULT_SHA256,
+        verified,
+      );
+      expect(first).toMatchObject({
+        activationId: 1,
+        activationDigestSha256: "2".repeat(64),
+        consumptionDigestSha256: "6".repeat(64),
+        duplicate: false,
+      });
+      expect(first.recordedAt).toBeGreaterThan(0);
+
+      const replay = await recordShardPlacementAttestation(
+        fixtureDatabase.database as never,
+        placementClaim(),
+        READINESS_RESULT_SHA256,
+        verified,
+      );
+      expect(replay).toEqual({ ...first, duplicate: true });
+      expect(
+        fixtureDatabase.sqlite
+          .query(
+            "SELECT COUNT(*) AS count FROM relay_container_shard_placement_attestations",
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+    } finally {
+      fixtureDatabase.sqlite.close();
+    }
+  });
+
+  test("fails closed on missing activation, schema drift, and placement conflict", async () => {
+    const missing = placementDatabase({ includeParents: false });
+    try {
+      await expect(
+        recordShardPlacementAttestation(
+          missing.database as never,
+          placementClaim(),
+          READINESS_RESULT_SHA256,
+          await verifiedAttestation(),
+        ),
+      ).rejects.toMatchObject({
+        code: "shard_placement_attestation_activation_missing",
+        status: 409,
+      });
+    } finally {
+      missing.sqlite.close();
+    }
+
+    const schemaDrift = placementDatabase();
+    try {
+      schemaDrift.sqlite.exec(
+        "DELETE FROM d1_migrations WHERE name = '0061_relay_container_shard_placement_attestations.sql'",
+      );
+      await expect(
+        recordShardPlacementAttestation(
+          schemaDrift.database as never,
+          placementClaim(),
+          READINESS_RESULT_SHA256,
+          await verifiedAttestation(),
+        ),
+      ).rejects.toMatchObject({
+        code: "shard_placement_attestation_schema_unavailable",
+        status: 503,
+      });
+    } finally {
+      schemaDrift.sqlite.close();
+    }
+
+    const conflict = placementDatabase();
+    try {
+      await recordShardPlacementAttestation(
+        conflict.database as never,
+        placementClaim(),
+        READINESS_RESULT_SHA256,
+        await verifiedAttestation(),
+      );
+      const changedInput = {
+        ...input,
+        durableObjectId: "f".repeat(64),
+      };
+      const changedAttestation =
+        await createShardPlacementAttestationV1(changedInput);
+      const changed = await verifyShardPlacementAttestationRpcV1(
+        {
+          ok: true,
+          attestation: changedAttestation,
+          attestation_digest_sha256:
+            await shardPlacementAttestationDigest(changedAttestation),
+        },
+        changedInput,
+      );
+      await expect(
+        recordShardPlacementAttestation(
+          conflict.database as never,
+          placementClaim(),
+          READINESS_RESULT_SHA256,
+          changed,
+        ),
+      ).rejects.toMatchObject({
+        code: "shard_placement_attestation_conflict",
+        status: 409,
+      });
+    } finally {
+      conflict.sqlite.close();
+    }
+  });
+
+  test("classifies an inserted but unreadable row as invalid readback", async () => {
+    const unreadable = placementDatabase({ hidePlacementReadback: true });
+    try {
+      await expect(
+        recordShardPlacementAttestation(
+          unreadable.database as never,
+          placementClaim(),
+          READINESS_RESULT_SHA256,
+          await verifiedAttestation(),
+        ),
+      ).rejects.toMatchObject({
+        code: "shard_placement_attestation_readback_invalid",
+        status: 502,
+      });
+      expect(
+        unreadable.sqlite
+          .query(
+            "SELECT COUNT(*) AS count FROM relay_container_shard_placement_attestations",
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+    } finally {
+      unreadable.sqlite.close();
+    }
+  });
 });
+
+async function verifiedAttestation(): Promise<VerifiedShardPlacementAttestationV1> {
+  const attestation = await createShardPlacementAttestationV1(input);
+  return verifyShardPlacementAttestationRpcV1(
+    {
+      ok: true,
+      attestation,
+      attestation_digest_sha256:
+        await shardPlacementAttestationDigest(attestation),
+    },
+    input,
+  );
+}
+
+function placementClaim(): ShardActivationCampaignClaim {
+  return {
+    campaignId: CAMPAIGN_ID,
+    campaignDigestSha256: "7".repeat(64),
+    claimDigestSha256: CLAIM_DIGEST_SHA256,
+    controllerVersionId: input.controllerVersionId,
+    actionGateInventorySha256: "8".repeat(64),
+    actionGateCount: 22,
+    foundationManifestSha256: "9".repeat(64),
+    runtimeBuildId: "1".repeat(64),
+    shard: input.shard,
+    runtimeProtocolVersion: 1,
+    runtimeContractVersion: 1,
+    activationGeneration: 1,
+    probeId: "a".repeat(64),
+    environment: "staging",
+    claimedAt: 1_900_000_000,
+    recovered: false,
+  };
+}
+
+function placementDatabase({
+  includeParents = true,
+  hidePlacementReadback = false,
+}: {
+  includeParents?: boolean;
+  hidePlacementReadback?: boolean;
+} = {}) {
+  const sqlite = new Database(":memory:", { strict: true });
+  sqlite.exec("PRAGMA foreign_keys = ON");
+  sqlite.exec(`
+    CREATE TABLE d1_migrations (name TEXT NOT NULL);
+    INSERT INTO d1_migrations(name)
+    VALUES ('0061_relay_container_shard_placement_attestations.sql');
+    CREATE TABLE relay_container_shard_activations (
+      activation_id INTEGER PRIMARY KEY,
+      controller_version_id TEXT NOT NULL,
+      runtime_build_id TEXT NOT NULL,
+      ring_generation INTEGER NOT NULL,
+      shard_index INTEGER NOT NULL,
+      activation_digest_sha256 TEXT NOT NULL
+    );
+    CREATE TABLE relay_container_shard_activation_campaign_consumptions (
+      campaign_id TEXT NOT NULL,
+      shard_index INTEGER NOT NULL,
+      claim_digest_sha256 TEXT NOT NULL,
+      readiness_result_sha256 TEXT NOT NULL,
+      activation_digest_sha256 TEXT NOT NULL,
+      consumption_digest_sha256 TEXT NOT NULL,
+      environment TEXT NOT NULL,
+      controller_version_id TEXT NOT NULL,
+      shard_contract_version INTEGER NOT NULL,
+      ring_generation INTEGER NOT NULL,
+      shard_count INTEGER NOT NULL,
+      instance_name TEXT NOT NULL,
+      runtime_build_id TEXT NOT NULL,
+      PRIMARY KEY (campaign_id, shard_index)
+    ) WITHOUT ROWID;
+  `);
+  sqlite.exec(placementMigration);
+  if (includeParents) {
+    sqlite
+      .query(
+        `INSERT INTO relay_container_shard_activations (
+           activation_id, controller_version_id, runtime_build_id,
+           ring_generation, shard_index, activation_digest_sha256
+         ) VALUES (1, ?, ?, 7, 3, ?)`,
+      )
+      .run(input.controllerVersionId, "1".repeat(64), "2".repeat(64));
+    sqlite
+      .query(
+        `INSERT INTO relay_container_shard_activation_campaign_consumptions (
+           campaign_id, shard_index, claim_digest_sha256,
+           readiness_result_sha256, activation_digest_sha256,
+           consumption_digest_sha256, environment, controller_version_id,
+           shard_contract_version, ring_generation, shard_count,
+           instance_name, runtime_build_id
+         ) VALUES (?, 3, ?, ?, ?, ?, 'staging', ?, 1, 7, 32, ?, ?)`,
+      )
+      .run(
+        CAMPAIGN_ID,
+        CLAIM_DIGEST_SHA256,
+        READINESS_RESULT_SHA256,
+        "2".repeat(64),
+        "6".repeat(64),
+        input.controllerVersionId,
+        input.shard.instance_name,
+        "1".repeat(64),
+      );
+  }
+  return {
+    sqlite,
+    database: sqliteD1Database(sqlite, { hidePlacementReadback }),
+  };
+}
+
+function sqliteD1Database(
+  database: Database,
+  { hidePlacementReadback = false } = {},
+) {
+  return {
+    withSession: (bookmark: string) => {
+      if (bookmark !== "first-primary") throw new Error("unexpected bookmark");
+      return {
+        prepare: (sql: string) => {
+          let bindings: unknown[] = [];
+          const statement = {
+            bind: (...values: unknown[]) => {
+              bindings = values;
+              return statement;
+            },
+            first: async () => {
+              if (
+                hidePlacementReadback &&
+                sql.includes(
+                  "FROM relay_container_shard_placement_attestations\nWHERE campaign_id",
+                )
+              ) {
+                return null;
+              }
+              return database.query(sql).get(...bindings) as Record<
+                string,
+                unknown
+              > | null;
+            },
+            run: async () => {
+              const result = database.query(sql).run(...bindings);
+              return { success: true, meta: { changes: result.changes } };
+            },
+          };
+          return statement;
+        },
+      };
+    },
+  };
+}

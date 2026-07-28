@@ -72,6 +72,10 @@ pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_MIGRATION: &str =
     "0054_relay_container_shard_activations.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_MIGRATION: &str =
     "0055_relay_container_shard_activation_campaigns.sql";
+pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_ATTESTATION_MIGRATION: &str =
+    "0061_relay_container_shard_placement_attestations.sql";
+pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_EVENT_MIGRATION: &str =
+    "0062_relay_container_shard_placement_events.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT: i64 = 64;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
@@ -912,6 +916,47 @@ pub struct RelayContainerShardActivationRow {
     pub controller_execution_enabled: i64,
     pub activation_digest_sha256: String,
     pub activated_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementSnapshot {
+    pub high_watermark: i64,
+    pub record_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementRow {
+    pub placement_event_sequence: i64,
+    pub placement_attestation_digest_sha256: String,
+    pub contract_version: i64,
+    pub environment: String,
+    pub controller_service_name: String,
+    pub controller_version_id: String,
+    pub durable_object_namespace_binding: String,
+    pub durable_object_class: String,
+    pub jurisdiction: String,
+    pub canonical_name_sha256: String,
+    pub object_id_sha256: String,
+    pub shard_contract_version: i64,
+    pub ring_generation: i64,
+    pub shard_count: i64,
+    pub shard_index: i64,
+    pub instance_name: String,
+    pub activation_id: i64,
+    pub campaign_id: String,
+    pub claim_digest_sha256: String,
+    pub readiness_result_sha256: String,
+    pub activation_digest_sha256: String,
+    pub consumption_digest_sha256: String,
+    pub recorded_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerShardPlacementSchemaProbe {
+    migration_count: i64,
+    placement_columns: String,
+    event_columns: String,
+    schema_objects: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11699,6 +11744,196 @@ pub async fn list_relay_container_shard_activations(
     .all()
     .await?
     .results::<RelayContainerShardActivationRow>()
+}
+
+pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    const PLACEMENT_COLUMNS: &str = "placement_attestation_digest_sha256,contract_version,environment,controller_service_name,controller_version_id,durable_object_namespace_binding,durable_object_class,jurisdiction,canonical_name_sha256,object_id_sha256,shard_contract_version,ring_generation,shard_count,shard_index,instance_name,activation_id,campaign_id,claim_digest_sha256,readiness_result_sha256,activation_digest_sha256,consumption_digest_sha256,recorded_at";
+    const EVENT_COLUMNS: &str = "placement_event_sequence,placement_attestation_digest_sha256,controller_version_id,ring_generation,campaign_id,activation_id";
+    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_shard_placement_attestations_candidate|index:idx_relay_container_shard_placement_attestations_object|index:idx_relay_container_shard_placement_events_candidate|table:relay_container_shard_placement_attestations|table:relay_container_shard_placement_events|trigger:relay_container_shard_placement_attestation_delete_guard|trigger:relay_container_shard_placement_attestation_event_append|trigger:relay_container_shard_placement_attestation_insert_guard|trigger:relay_container_shard_placement_attestation_update_guard|trigger:relay_container_shard_placement_event_delete_guard|trigger:relay_container_shard_placement_event_insert_guard|trigger:relay_container_shard_placement_event_update_guard";
+    let migrations = [
+        D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_ATTESTATION_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_EVENT_MIGRATION),
+    ];
+    let row = db
+        .prepare(
+            r#"
+            SELECT
+              (SELECT COUNT(1)
+               FROM d1_migrations
+               WHERE name IN (?1, ?2)) AS migration_count,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_shard_placement_attestations'
+                 )
+                 ORDER BY cid
+               )) AS placement_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_shard_placement_events')
+                 ORDER BY cid
+               )) AS event_columns,
+              (SELECT group_concat(type || ':' || name, '|') FROM (
+                 SELECT type, name
+                 FROM sqlite_master
+                 WHERE tbl_name IN (
+                   'relay_container_shard_placement_attestations',
+                   'relay_container_shard_placement_events'
+                 )
+                   AND name NOT LIKE 'sqlite_autoindex_%'
+                 ORDER BY type || ':' || name
+               )) AS schema_objects
+            "#,
+        )
+        .bind_refs(&migrations)?
+        .first::<RelayContainerShardPlacementSchemaProbe>(None)
+        .await?;
+    Ok(row.is_some_and(|row| {
+        row.migration_count == 2
+            && row.placement_columns == PLACEMENT_COLUMNS
+            && row.event_columns == EVENT_COLUMNS
+            && row.schema_objects == SCHEMA_OBJECTS
+    }))
+}
+
+pub async fn relay_container_shard_placement_snapshot(
+    db: &D1Database,
+    controller_version_id: &str,
+    ring_generation: i64,
+    campaign_id: &str,
+    high_watermark: i64,
+) -> worker::Result<RelayContainerShardPlacementSnapshot> {
+    if !controller_version_id
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+    {
+        return Err(worker::Error::RustError(
+            "Controller version ID is invalid".to_string(),
+        ));
+    }
+    validate_relay_container_token(
+        controller_version_id,
+        "Controller version ID",
+        1,
+        128,
+        |byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'),
+    )?;
+    validate_relay_container_token(campaign_id, "Campaign ID", 64, 64, |byte| {
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+    })?;
+    if !(1..=1_000_000).contains(&ring_generation) || high_watermark < 0 {
+        return Err(worker::Error::RustError(
+            "relay container shard placement snapshot query is invalid".to_string(),
+        ));
+    }
+    let ring_generation = ring_generation.to_string();
+    let high_watermark = high_watermark.to_string();
+    let args = [
+        D1Type::Text(controller_version_id),
+        D1Type::Text(&ring_generation),
+        D1Type::Text(campaign_id),
+        D1Type::Text(&high_watermark),
+    ];
+    db.prepare(
+        r#"
+        SELECT COALESCE(MAX(placement_event_sequence), 0) AS high_watermark,
+               COUNT(1) AS record_count
+        FROM relay_container_shard_placement_events
+        WHERE controller_version_id = ?1
+          AND ring_generation = CAST(?2 AS INTEGER)
+          AND campaign_id = ?3
+          AND (CAST(?4 AS INTEGER) = 0
+               OR placement_event_sequence <= CAST(?4 AS INTEGER))
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerShardPlacementSnapshot>(None)
+    .await?
+    .ok_or_else(|| {
+        worker::Error::RustError(
+            "relay container shard placement snapshot is unavailable".to_string(),
+        )
+    })
+}
+
+pub async fn list_relay_container_shard_placements(
+    db: &D1Database,
+    controller_version_id: &str,
+    ring_generation: i64,
+    campaign_id: &str,
+    high_watermark: i64,
+    after_event_sequence: i64,
+    limit: i64,
+) -> worker::Result<Vec<RelayContainerShardPlacementRow>> {
+    if high_watermark <= 0 || after_event_sequence < 0 || after_event_sequence >= high_watermark {
+        return Err(worker::Error::RustError(
+            "relay container shard placement page query is invalid".to_string(),
+        ));
+    }
+    let snapshot = relay_container_shard_placement_snapshot(
+        db,
+        controller_version_id,
+        ring_generation,
+        campaign_id,
+        high_watermark,
+    )
+    .await?;
+    if snapshot.high_watermark != high_watermark {
+        return Err(worker::Error::RustError(
+            "relay container shard placement high watermark is invalid".to_string(),
+        ));
+    }
+    let ring_generation = ring_generation.to_string();
+    let high_watermark = high_watermark.to_string();
+    let after_event_sequence = after_event_sequence.to_string();
+    let limit = limit.clamp(1, 65).to_string();
+    let args = [
+        D1Type::Text(controller_version_id),
+        D1Type::Text(&ring_generation),
+        D1Type::Text(campaign_id),
+        D1Type::Text(&high_watermark),
+        D1Type::Text(&after_event_sequence),
+        D1Type::Text(&limit),
+    ];
+    db.prepare(
+        r#"
+        SELECT event.placement_event_sequence,
+               placement.placement_attestation_digest_sha256,
+               placement.contract_version, placement.environment,
+               placement.controller_service_name,
+               placement.controller_version_id,
+               placement.durable_object_namespace_binding,
+               placement.durable_object_class, placement.jurisdiction,
+               placement.canonical_name_sha256, placement.object_id_sha256,
+               placement.shard_contract_version, placement.ring_generation,
+               placement.shard_count, placement.shard_index,
+               placement.instance_name, placement.activation_id,
+               placement.campaign_id, placement.claim_digest_sha256,
+               placement.readiness_result_sha256,
+               placement.activation_digest_sha256,
+               placement.consumption_digest_sha256, placement.recorded_at
+        FROM relay_container_shard_placement_events AS event
+        JOIN relay_container_shard_placement_attestations AS placement
+          ON placement.placement_attestation_digest_sha256 =
+               event.placement_attestation_digest_sha256
+         AND placement.controller_version_id = event.controller_version_id
+         AND placement.ring_generation = event.ring_generation
+         AND placement.campaign_id = event.campaign_id
+         AND placement.activation_id = event.activation_id
+        WHERE event.controller_version_id = ?1
+          AND event.ring_generation = CAST(?2 AS INTEGER)
+          AND event.campaign_id = ?3
+          AND event.placement_event_sequence <= CAST(?4 AS INTEGER)
+          AND event.placement_event_sequence > CAST(?5 AS INTEGER)
+        ORDER BY event.placement_event_sequence ASC
+        LIMIT CAST(?6 AS INTEGER)
+        "#,
+    )
+    .bind_refs(&args)?
+    .all()
+    .await?
+    .results::<RelayContainerShardPlacementRow>()
 }
 
 pub async fn claim_relay_container_r2_inventory_run(

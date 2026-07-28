@@ -202,13 +202,15 @@ five independently identified source records:
 | --- | --- |
 | `actionGates` | every admission, execution, writer, retry, recovery, and wake gate is false |
 | `sbom` | exact image digest, runtime build ID, image-provenance digest and SBOM digest, verified signature/provenance, zero unapproved critical/high findings |
-| `shardRegistry` | stable embedded app-owned activation capture, exact Controller/runtime/ring candidate, derived N/N verified shards |
+| `shardRegistry` | stable sealed campaign plus activation and placement-event capture, exact Controller/runtime/ring candidate, derived N/N verified shards and placements |
 | `r2Inventory` | complete writer/object inventory with zero unknown writers and zero unknown objects |
 | `traffic` | zero customer traffic and verified staging isolation |
 
 Each source carries `status`, `collectorId`, `collectorVersion`, and
-`sourceArtifactSha256`. The source bundle is bounded to 4 MiB so a canonical
-1024-shard capture can fit without making input unbounded. For action gates,
+`sourceArtifactSha256`. The local canonical source bundle is bounded to 8 MiB
+so the v3 campaign/activation/placement evidence for 1024 shards fits without
+making input unbounded. Per-response and aggregate Cloudflare API readback
+bounds remain unchanged. For action gates,
 SBOM, R2, and traffic, the digest must equal canonical JSON of the exact source
 record with only `sourceArtifactSha256` removed. For `shardRegistry`, the
 foundation validator rebuilds the embedded capture and requires the digest to
@@ -218,7 +220,7 @@ and any external signature must still be retained for owner review.
 Omitting the bundle yields explicit blockers for all five sources and sets
 `binding.paginationComplete=false`.
 
-## Shard Activation Source
+## Shard Registry Source
 
 `tools/collect_relay_container_p5_shard_registry.mjs` is the concrete
 `shardRegistry` source collector. Its strict staging request binds Controller
@@ -236,27 +238,32 @@ bytes are cancelled above 1 MiB rather than buffered without a bound.
 For both before and after snapshots it first calls root-authenticated,
 `Cache-Control: no-store`
 `GET /api/platform/container/shards/activation-campaigns`, then calls
-`GET /api/platform/container/shards/activations`. The campaign readback must be
+`GET /api/platform/container/shards/activations` and
+`GET /api/platform/container/shards/placements`. The campaign readback must be
 `sealed_complete`, bind the exact candidate and foundation manifest, and carry
-one validated consumption receipt per shard. The first activation response freezes
-`high_watermark`; every later request sends that same value plus the previous
-page's keyset cursor. Pages contain at most 64 records, sequences and cursors
-must increase strictly, the terminal page must return `next_cursor=null`, and
-the flattened record count and last sequence must equal `total_records` and
-the frozen high watermark. The collector caps this evidence inventory at 4096
-ledger records and 65 pages; exceeding either bound fails closed.
+one validated consumption receipt per shard. The first activation response
+freezes its activation high watermark. The first placement response separately
+freezes the maximum database-assigned `placement_event_sequence`; it never uses
+`activation_id` as placement insertion order. Every later request sends the
+matching frozen watermark plus the previous page's keyset cursor. Pages contain
+at most 64 records, sequences and cursors must increase strictly, the terminal
+page must return `next_cursor=null`, and each flattened record count and last
+sequence must equal its `total_records` and frozen high watermark. The
+collector caps each evidence inventory at 4096 records and 65 pages.
 
 The Worker reader and the offline collector independently recompute every
-`activation_digest_sha256` and `consumption_digest_sha256` using the same
-length-prefixed domain-separated contracts as the Controller writer. Each
-receipt must match exactly one 0054 activation. The capture then compares
-before/after campaign snapshots, receipt sets, high watermarks, record counts,
-canonical entry digests, and records. From the
-validated records it derives, rather than trusts, `verifiedShardCount`,
-`missingShardCount`, `duplicateShardCount`, and `unknownShardCount`; rebuilding
-the capture rejects any forged derived count. Evidence is ready only for
-exactly one disabled-execution candidate row per shard index `0..N-1` and zero
-missing, duplicate, old-build, wrong-ring, or otherwise unknown rows.
+`activation_digest_sha256`, `consumption_digest_sha256`, canonical shard-name
+hash, and placement-attestation digest using the same length-prefixed
+domain-separated contracts as the Controller writer. Each receipt must match
+exactly one 0054 activation and exactly one 0062 event-backed 0061 placement.
+The capture then compares before/after campaign snapshots, receipt sets,
+activation/placement watermarks, record counts, canonical entry digests, and
+records. From validated records it derives, rather than trusts, both activation
+and placement verified/missing/duplicate/unknown counts; rebuilding the capture
+rejects any forged derived field. Evidence is ready only for exactly one
+disabled-execution activation and one default-jurisdiction placement per shard
+index `0..N-1`, with zero missing, duplicate, old-build, wrong-ring, mismatched,
+or otherwise unknown rows.
 
 Each accepted row must have `activation_generation=1` and be fresh for the
 capture: no more than two hours before the observation start and no more than
@@ -320,26 +327,29 @@ The evidence order is fixed:
 1. rotate the exposed credential and freeze commits, Worker versions, image,
    runtime build, provenance, SBOM, resources, migration, and rollback facts;
 2. with every tracked action gate at its default `false`, back up D1 and
-   apply/read back 0054 through 0060 in order, proving the 0060/60 and
-   69/909/101 baseline while retaining the sealed 0055 campaign evidence and
+   apply/read back 0054 through 0062 in order, proving the 0062/62 and
+   71/937/104 baseline while retaining the sealed 0055 campaign evidence and
    keeping every HTTP SSE and ring-transition producer disabled;
 3. deploy provider-egress, Controller reader, then edge reader while activation
    recording remains false;
 4. roll the Container image at 10% and 100% and prove its image/runtime identity
    with zero customer/provider/financial delta;
-5. create the implemented same-version, root-authorized one-time activation
-   campaign, keep its nonce out of files and command arguments, and consume one
-   D1-first/DO-journaled readiness claim per logical shard without changing a
-   static activation environment variable;
+5. implement and approve the separate signed, single-use isolated-staging
+   mutation authorization, then create the same-version, root-authorized
+   one-time activation campaign, keep its nonce out of files and command
+   arguments, and consume one D1-first/DO-journaled readiness claim plus one
+   0061/0062 placement pair per logical shard;
 6. only after the campaign is sealed and every effective action gate is false,
-   capture the sealed campaign receipts, fresh stable activation ledger, and
-   all other sources-v3
+   capture the sealed campaign receipts, fresh stable activation ledger,
+   insertion-ordered placement ledger, and all other sources-v3
    artifacts over the same 300-7200 second observation window; and
 7. run and archive the direct API before/after readback with explicit terminal
    pagination before attempting the remaining P5 campaigns, signatures, or
    isolated-canary review.
 
-Steps 5 and 7 are implemented locally but have not been deployed or exercised.
+The read-only endpoint and step 7 collector are implemented locally but have
+not been deployed or exercised. Step 5's signed single-use mutation
+authorization is not implemented, so the placement writer gates remain false.
 The exposed credential must first be revoked and replaced with a separately
 approved least-privilege readback identity. A live packet must then prove the
 real endpoints, permissions, exact before/after inventory, and every external

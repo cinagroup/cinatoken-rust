@@ -270,6 +270,7 @@ REQUIRED_TABLES = [
     "relay_container_ring_transition_steps",
     "relay_container_ring_transition_expiry_events",
     "relay_container_shard_placement_attestations",
+    "relay_container_shard_placement_events",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1303,6 +1304,14 @@ REQUIRED_COLUMNS = {
         "consumption_digest_sha256",
         "recorded_at",
     },
+    "relay_container_shard_placement_events": {
+        "placement_event_sequence",
+        "placement_attestation_digest_sha256",
+        "controller_version_id",
+        "ring_generation",
+        "campaign_id",
+        "activation_id",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -1480,6 +1489,9 @@ REQUIRED_INDEXES = {
     "relay_container_shard_placement_attestations": {
         "idx_relay_container_shard_placement_attestations_candidate": False,
         "idx_relay_container_shard_placement_attestations_object": False,
+    },
+    "relay_container_shard_placement_events": {
+        "idx_relay_container_shard_placement_events_candidate": False,
     },
 }
 
@@ -1815,7 +1827,10 @@ def main() -> int:
     if relay_container_ring_transition_claim_rollout_verified:
         message += " + 0059/0060 ring transition claim authority hardening"
     if relay_container_shard_placement_attestation_rollout_verified:
-        message += " + 0061 immutable shard placement attestations"
+        message += (
+            " + 0061 immutable shard placement attestations"
+            " + 0062 insertion-ordered placement events"
+        )
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -18666,14 +18681,23 @@ def verify_relay_container_ring_transition_claim_rollout(
         ),
         None,
     )
+    placement_event_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0062_relay_container_shard_placement_events.sql"
+        ),
+        None,
+    )
     if (
         claim_path is None
         or abort_path is None
         or authority_path is None
         or placement_path is None
+        or placement_event_path is None
     ):
         raise SystemExit(
-            "0058/0059/0060/0061 ring transition and placement migrations not found"
+            "0058..0062 ring transition and placement migrations not found"
         )
     claim_index = schema_paths.index(claim_path)
     if claim_index == 0 or schema_paths[claim_index - 1] != abort_path:
@@ -18682,10 +18706,16 @@ def verify_relay_container_ring_transition_claim_rollout(
     if authority_index == 0 or schema_paths[authority_index - 1] != claim_path:
         raise SystemExit("0060 ring transition authority hardening must follow 0059")
     placement_index = schema_paths.index(placement_path)
-    if placement_index != len(schema_paths) - 1:
-        raise SystemExit("0061 shard placement attestations must be the D1 head")
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
+    placement_event_index = schema_paths.index(placement_event_path)
+    if placement_event_index != len(schema_paths) - 1:
+        raise SystemExit("0062 shard placement events must be the D1 head")
+    if (
+        placement_event_index == 0
+        or schema_paths[placement_event_index - 1] != placement_path
+    ):
+        raise SystemExit("0062 shard placement events must follow 0061")
 
     claim_sql = claim_path.read_text(encoding="utf-8")
     if "if not exists" in claim_sql.lower():
@@ -19019,13 +19049,31 @@ def verify_relay_container_shard_placement_attestation_rollout(
         ),
         None,
     )
-    if placement_path is None or authority_path is None:
-        raise SystemExit("0060/0061 shard placement rollout migrations not found")
+    placement_event_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0062_relay_container_shard_placement_events.sql"
+        ),
+        None,
+    )
+    if (
+        placement_path is None
+        or authority_path is None
+        or placement_event_path is None
+    ):
+        raise SystemExit("0060/0061/0062 shard placement rollout migrations not found")
     placement_index = schema_paths.index(placement_path)
-    if placement_index != len(schema_paths) - 1:
-        raise SystemExit("0061 shard placement attestations must be the D1 head")
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
+    placement_event_index = schema_paths.index(placement_event_path)
+    if placement_event_index != len(schema_paths) - 1:
+        raise SystemExit("0062 shard placement events must be the D1 head")
+    if (
+        placement_event_index == 0
+        or schema_paths[placement_event_index - 1] != placement_path
+    ):
+        raise SystemExit("0062 shard placement events must follow 0061")
 
     placement_sql = placement_path.read_text(encoding="utf-8")
     if "if not exists" in placement_sql.lower():
@@ -19047,6 +19095,24 @@ def verify_relay_container_shard_placement_attestation_rollout(
     ):
         if fragment not in placement_sql:
             raise SystemExit(f"0061 shard placement rollout missing: {fragment}")
+
+    placement_event_sql = placement_event_path.read_text(encoding="utf-8")
+    if "if not exists" in placement_event_sql.lower():
+        raise SystemExit("0062 critical placement event objects must fail duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_shard_placement_events",
+        "placement_event_sequence INTEGER PRIMARY KEY AUTOINCREMENT",
+        "INSERT INTO relay_container_shard_placement_events",
+        "ORDER BY recorded_at, activation_id",
+        "idx_relay_container_shard_placement_events_candidate",
+        "relay_container_shard_placement_event_insert_guard",
+        "shard placement event does not match its attestation",
+        "relay_container_shard_placement_event_update_guard",
+        "relay_container_shard_placement_event_delete_guard",
+        "relay_container_shard_placement_attestation_event_append",
+    ):
+        if fragment not in placement_event_sql:
+            raise SystemExit(f"0062 shard placement event rollout missing: {fragment}")
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

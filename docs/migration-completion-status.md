@@ -2436,8 +2436,8 @@ Go/VPS stays authoritative and production remains **NO-GO**.
 | D1 writer readback | Implemented; exact 0061 attestation plus 0062 event append/readback, idempotent replay, conflict and malformed-readback rejection |
 | Writer-enabled staging deployment authorization | **NOT IMPLEMENTED**; ordinary deploy preflight requires both gates false |
 | Focused local gate | 86 tests / 837 expectations |
-| Complete repository gate | PASS, exit 0 in 764 seconds; 21 existing Rust warnings |
-| P5 placement reader/collector | v3 production contract documented; implementation verification is outside this docs-only increment |
+| Complete repository gate | PASS, exit 0 in 811 seconds; 21 existing Rust warnings |
+| P5 placement reader/collector | Implemented locally; root-only event-sequence reader and capture-v3 collector pass focused Rust/JS verification |
 | Placement read API | Root-only, D1-only, no-store bounded contract at `/api/platform/container/shards/placements` |
 | Shard registry capture | v3 requires stable campaign/activation/placement snapshots and strict 0054/0055 joins |
 | Remote placement evidence | **NOT COLLECTED** |
@@ -2472,15 +2472,16 @@ authoritative.
 | Registry source | `cinatoken-relay-container-shard-registry-capture-v3`, collector version 3 |
 | Stability | Sealed campaign, 0054 activations, and 0062 event-backed 0061 placements identical before/after one 300-7200 second window |
 | N/N join | One placement per shard, strictly matching its 0054 activation and 0055 receipt |
+| Local verification | `bun run check` PASS in 811 seconds; SQLite PASS at 62 migrations / 71 tables / 937 incremental columns / 104 key indexes; 21 existing Rust warnings |
 | Writer gates | Both remain false; ordinary deploy preflight rejects true |
 | Writer-enabled staging authorization | **NOT IMPLEMENTED**; must be separately signed and single-use |
 | Remote placement evidence | **NOT COLLECTED** |
 | Exposed Cloudflare credential | Must be revoked and rotated before staging access |
 | Production eligibility | **NO-GO** |
 
-This table records the production acceptance contract, not deployed state. The
-docs-only increment does not independently verify endpoint or collector code,
-does not apply 0061/0062 remotely, and does not create a v3 capture. A valid
+This table records the production acceptance contract and verified local
+implementation, not deployed state. The increment does not apply 0061/0062
+remotely and does not create a live v3 capture. A valid
 capture must freeze one exact candidate by `placement_event_sequence` and
 prove identical before/after canonical campaign, activation, event, and
 attestation records. Every placement must match the same-shard 0054 activation

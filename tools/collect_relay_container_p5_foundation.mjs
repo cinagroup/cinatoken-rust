@@ -32,7 +32,7 @@ export const FOUNDATION_SOURCES_CONTRACT =
 export const REPLACEMENT_TOKEN_ENV = "CINATOKEN_P5_READBACK_TOKEN";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const FOUNDATION_MAX_INPUT_BYTES = 4 * 1024 * 1024;
+export const FOUNDATION_MAX_INPUT_BYTES = 8 * 1024 * 1024;
 const minObservationSeconds = 5 * 60;
 const maxObservationSeconds = 2 * 60 * 60;
 const sourceClockSkewMs = 60_000;
@@ -1069,8 +1069,8 @@ function selfTestRequest() {
       ringGeneration: 1,
       shardCount: 8,
       migrationHead:
-        "0061_relay_container_shard_placement_attestations.sql",
-      migrationCount: 61,
+        "0062_relay_container_shard_placement_events.sql",
+      migrationCount: 62,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,

@@ -1718,11 +1718,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       success: true,
       data: {
         d1_migration_status_available: true,
-        d1_migration_applied_count: 61,
+        d1_migration_applied_count: 62,
         d1_migration_latest:
-          "0061_relay_container_shard_placement_attestations.sql",
+          "0062_relay_container_shard_placement_events.sql",
         d1_expected_migration:
-          "0061_relay_container_shard_placement_attestations.sql",
+          "0062_relay_container_shard_placement_events.sql",
         d1_expected_migration_applied: true,
         d1_migration_set_matches: true,
         d1_migration_ready: true,

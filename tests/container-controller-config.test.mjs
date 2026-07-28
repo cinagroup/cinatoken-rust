@@ -247,6 +247,9 @@ describe("isolated container controller configuration", () => {
       "0061_relay_container_shard_placement_attestations.sql",
     );
     expect(placementLedgerSource).toContain(
+      "0062_relay_container_shard_placement_events.sql",
+    );
+    expect(placementLedgerSource).toContain(
       "consumption.readiness_result_sha256 = ?17",
     );
     expect(placementLedgerSource).not.toMatch(/console\.(?:log|error)/);

@@ -22383,9 +22383,9 @@ preserving the published 0061 attestation ABI. The production readback
 contract now freezes database-assigned `placement_event_sequence`; it never
 uses `activation_id` for placement ordering or pagination.
 
-This section defines the implementation and evidence boundary; the document
-update does not claim that a Worker was deployed, that a remote migration was
-applied, or that staging evidence was collected.
+The local implementation accompanies this evidence boundary. It does not
+claim that a Worker was deployed, that a remote migration was applied, or that
+staging evidence was collected.
 
 ### Root-only D1 projection
 
@@ -22473,6 +22473,11 @@ false in tracked environments and ordinary deploy preflight must continue to
 reject enabled gates. The separately signed, single-use isolated-staging
 mutation authorization required for one writer-enabled staging version is
 still not implemented.
+
+Local acceptance passed `bun run check` in 811 seconds, including the complete
+Worker/Controller/frontend/workspace/WASM gates. SQLite independently verifies
+62 migrations, 71 tables, 937 incremental columns, and 104 key indexes. The
+21 reported Rust findings remain existing `dead_code` warnings.
 
 The exposed Cloudflare credential must be revoked and rotated before any
 authenticated readback or mutation. No replacement credential, remote

@@ -34,30 +34,55 @@ const EXPECTED_COLUMNS = [
   "consumption_digest_sha256",
   "recorded_at",
 ].join(",");
+const EXPECTED_EVENT_COLUMNS = [
+  "placement_event_sequence",
+  "placement_attestation_digest_sha256",
+  "controller_version_id",
+  "ring_generation",
+  "campaign_id",
+  "activation_id",
+].join(",");
 const EXPECTED_SCHEMA_OBJECTS = [
   "index:idx_relay_container_shard_placement_attestations_candidate",
   "index:idx_relay_container_shard_placement_attestations_object",
+  "index:idx_relay_container_shard_placement_events_candidate",
   "table:relay_container_shard_placement_attestations",
+  "table:relay_container_shard_placement_events",
   "trigger:relay_container_shard_placement_attestation_delete_guard",
+  "trigger:relay_container_shard_placement_attestation_event_append",
   "trigger:relay_container_shard_placement_attestation_insert_guard",
   "trigger:relay_container_shard_placement_attestation_update_guard",
+  "trigger:relay_container_shard_placement_event_delete_guard",
+  "trigger:relay_container_shard_placement_event_insert_guard",
+  "trigger:relay_container_shard_placement_event_update_guard",
 ].join("|");
 
 const SCHEMA_READINESS_SQL = `
 SELECT
   (SELECT COUNT(1) FROM d1_migrations
-   WHERE name = '0061_relay_container_shard_placement_attestations.sql')
+   WHERE name IN (
+     '0061_relay_container_shard_placement_attestations.sql',
+     '0062_relay_container_shard_placement_events.sql'
+   ))
     AS migration_count,
   (SELECT group_concat(name, ',') FROM (
      SELECT name
      FROM pragma_table_info('relay_container_shard_placement_attestations')
      ORDER BY cid
    )) AS placement_columns,
+  (SELECT group_concat(name, ',') FROM (
+     SELECT name
+     FROM pragma_table_info('relay_container_shard_placement_events')
+     ORDER BY cid
+   )) AS event_columns,
   (SELECT group_concat(type || ':' || name, '|') FROM (
      SELECT type, name
      FROM sqlite_master
-     WHERE name LIKE 'relay_container_shard_placement_attestation%'
-        OR name LIKE 'idx_relay_container_shard_placement_attestation%'
+     WHERE tbl_name IN (
+       'relay_container_shard_placement_attestations',
+       'relay_container_shard_placement_events'
+     )
+       AND name NOT LIKE 'sqlite_autoindex_%'
      ORDER BY type || ':' || name
    )) AS schema_objects
 `.trim();
@@ -98,19 +123,33 @@ WHERE consumption.campaign_id = ?15
 
 const READBACK_SQL = `
 SELECT
-  placement_attestation_digest_sha256, contract_version, environment,
-  controller_service_name, controller_version_id,
-  durable_object_namespace_binding, durable_object_class, jurisdiction,
-  canonical_name_sha256, object_id_sha256, shard_contract_version,
-  ring_generation, shard_count, shard_index, instance_name, activation_id,
-  campaign_id, claim_digest_sha256, readiness_result_sha256,
-  activation_digest_sha256, consumption_digest_sha256, recorded_at
-FROM relay_container_shard_placement_attestations
-WHERE campaign_id = ?1 AND shard_index = ?2
+  event.placement_event_sequence,
+  placement.placement_attestation_digest_sha256,
+  placement.contract_version, placement.environment,
+  placement.controller_service_name, placement.controller_version_id,
+  placement.durable_object_namespace_binding,
+  placement.durable_object_class, placement.jurisdiction,
+  placement.canonical_name_sha256, placement.object_id_sha256,
+  placement.shard_contract_version, placement.ring_generation,
+  placement.shard_count, placement.shard_index, placement.instance_name,
+  placement.activation_id, placement.campaign_id,
+  placement.claim_digest_sha256, placement.readiness_result_sha256,
+  placement.activation_digest_sha256, placement.consumption_digest_sha256,
+  placement.recorded_at
+FROM relay_container_shard_placement_attestations AS placement
+JOIN relay_container_shard_placement_events AS event
+  ON event.placement_attestation_digest_sha256 =
+       placement.placement_attestation_digest_sha256
+ AND event.controller_version_id = placement.controller_version_id
+ AND event.ring_generation = placement.ring_generation
+ AND event.campaign_id = placement.campaign_id
+ AND event.activation_id = placement.activation_id
+WHERE placement.campaign_id = ?1 AND placement.shard_index = ?2
 LIMIT 1
 `.trim();
 
 interface PlacementStoredRow extends Record<string, unknown> {
+  placement_event_sequence: number;
   placement_attestation_digest_sha256: string;
   contract_version: number;
   environment: string;
@@ -136,6 +175,7 @@ interface PlacementStoredRow extends Record<string, unknown> {
 }
 
 export interface RecordShardPlacementAttestationResult {
+  placementEventSequence: number;
   activationId: number;
   activationDigestSha256: string;
   consumptionDigestSha256: string;
@@ -163,9 +203,14 @@ export async function recordShardPlacementAttestation(
       .bind(...bindings)
       .run();
     const changes = result?.meta?.changes;
-    if (result?.success !== true || changes !== 1) {
+    if (
+      result?.success !== true ||
+      typeof changes !== "number" ||
+      changes < 1 ||
+      changes > 2
+    ) {
       missingActivation = result?.success === true && changes === 0;
-      throw new Error("placement insert did not append one row");
+      throw new Error("placement insert did not append its attestation event pair");
     }
     inserted = true;
   } catch {
@@ -192,6 +237,7 @@ export async function recordShardPlacementAttestation(
     );
   }
   return {
+    placementEventSequence: row.placement_event_sequence,
     activationId: row.activation_id,
     activationDigestSha256: row.activation_digest_sha256,
     consumptionDigestSha256: row.consumption_digest_sha256,
@@ -206,9 +252,10 @@ async function placementSession(database: PlacementDatabase): Promise<PlacementS
     const schema = await session.prepare(SCHEMA_READINESS_SQL).first<Record<string, unknown>>();
     if (
       schema === null ||
-      Object.keys(schema).length !== 3 ||
-      schema.migration_count !== 1 ||
+      Object.keys(schema).length !== 4 ||
+      schema.migration_count !== 2 ||
       schema.placement_columns !== EXPECTED_COLUMNS ||
+      schema.event_columns !== EXPECTED_EVENT_COLUMNS ||
       schema.schema_objects !== EXPECTED_SCHEMA_OBJECTS
     ) {
       throw new ProtocolError("shard_placement_attestation_schema_unavailable", 503);
@@ -271,6 +318,7 @@ async function placementMatches(
 ): Promise<boolean> {
   if (
     row.activation_id < 1 ||
+    row.placement_event_sequence < 1 ||
     row.recorded_at < 1 ||
     row.campaign_id !== claim.campaignId ||
     row.claim_digest_sha256 !== claim.claimDigestSha256 ||
@@ -310,8 +358,9 @@ async function placementMatches(
 }
 
 function isPlacementStoredRow(value: Record<string, unknown> | null): value is PlacementStoredRow {
-  if (value === null || Object.keys(value).length !== 22) return false;
+  if (value === null || Object.keys(value).length !== 23) return false;
   return (
+    Number.isSafeInteger(value.placement_event_sequence) &&
     typeof value.placement_attestation_digest_sha256 === "string" &&
     typeof value.contract_version === "number" &&
     typeof value.environment === "string" &&

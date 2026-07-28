@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeAll, describe, expect, test } from "bun:test";
@@ -7,10 +8,16 @@ const migrationPath = path.resolve(
   import.meta.dir,
   "../migrations/d1/0061_relay_container_shard_placement_attestations.sql",
 );
+const eventMigrationPath = path.resolve(
+  import.meta.dir,
+  "../migrations/d1/0062_relay_container_shard_placement_events.sql",
+);
 let migrationSql;
+let eventMigrationSql;
 
 beforeAll(async () => {
   migrationSql = await readFile(migrationPath, "utf8");
+  eventMigrationSql = await readFile(eventMigrationPath, "utf8");
 });
 
 describe("Relay Container shard placement attestation D1 ledger", () => {
@@ -125,6 +132,76 @@ describe("Relay Container shard placement attestation D1 ledger", () => {
     ).toThrow("shard placement attestations are append-preserved");
     db.close();
   });
+
+  test("backfills and appends a true insertion-order placement event ledger", () => {
+    const backfill = readyDatabase();
+    insertAttestation(backfill);
+    backfill.exec(eventMigrationSql);
+    expect(placementEvents(backfill)).toEqual([
+      {
+        placement_event_sequence: 1,
+        activation_id: 1,
+        shard_index: 3,
+      },
+    ]);
+    backfill.close();
+
+    const db = databaseWithParents();
+    db.exec(migrationSql);
+    db.exec(eventMigrationSql);
+    insertParentEvidence(db, { activationId: 100, shardIndex: 3 });
+    insertAttestation(db, { activationId: 100, shardIndex: 3 });
+    insertParentEvidence(db, { activationId: 2, shardIndex: 4 });
+    insertAttestation(db, {
+      placementDigestSha256: "8".repeat(64),
+      objectIdSha256: "b".repeat(64),
+      activationId: 2,
+      shardIndex: 4,
+    });
+    expect(placementEvents(db)).toEqual([
+      {
+        placement_event_sequence: 1,
+        activation_id: 100,
+        shard_index: 3,
+      },
+      {
+        placement_event_sequence: 2,
+        activation_id: 2,
+        shard_index: 4,
+      },
+    ]);
+    const queryPlan = db
+      .query(
+        `EXPLAIN QUERY PLAN
+         SELECT placement_event_sequence
+         FROM relay_container_shard_placement_events
+         WHERE controller_version_id = ?
+           AND ring_generation = 7
+           AND campaign_id = ?
+           AND placement_event_sequence <= 2
+           AND placement_event_sequence > 0
+         ORDER BY placement_event_sequence`,
+      )
+      .all("controller-version-001", "3".repeat(64))
+      .map(({ detail }) => detail)
+      .join(" ");
+    expect(queryPlan).toContain(
+      "idx_relay_container_shard_placement_events_candidate",
+    );
+    expect(() =>
+      db
+        .query(
+          `UPDATE relay_container_shard_placement_events
+           SET activation_id = 3
+           WHERE placement_event_sequence = 1`,
+        )
+        .run(),
+    ).toThrow("shard placement events are immutable");
+    expect(() =>
+      db.query("DELETE FROM relay_container_shard_placement_events").run(),
+    ).toThrow("shard placement events are append-preserved");
+    db.close();
+  });
 });
 
 function databaseWithParents() {
@@ -162,30 +239,45 @@ function databaseWithParents() {
 function readyDatabase() {
   const db = databaseWithParents();
   db.exec(migrationSql);
+  insertParentEvidence(db, { activationId: 1, shardIndex: 3 });
+  return db;
+}
+
+function insertParentEvidence(
+  db,
+  { activationId, shardIndex, campaignId = "3".repeat(64) },
+) {
+  const activationDigest = hash(`activation:${activationId}:${shardIndex}`);
   db.query(
     `INSERT INTO relay_container_shard_activations (
        activation_id, controller_version_id, runtime_build_id, ring_generation,
        shard_index, activation_digest_sha256
-     ) VALUES (1, ?, ?, 7, 3, ?)`,
-  ).run("controller-version-001", "1".repeat(64), "2".repeat(64));
+     ) VALUES (?, ?, ?, 7, ?, ?)`,
+  ).run(
+    activationId,
+    "controller-version-001",
+    "1".repeat(64),
+    shardIndex,
+    activationDigest,
+  );
   db.query(
     `INSERT INTO relay_container_shard_activation_campaign_consumptions (
        campaign_id, shard_index, claim_digest_sha256, readiness_result_sha256,
        activation_digest_sha256, consumption_digest_sha256, environment,
        controller_version_id, shard_contract_version, ring_generation,
        shard_count, instance_name, runtime_build_id
-     ) VALUES (?, 3, ?, ?, ?, ?, 'staging', ?, 1, 7, 32, ?, ?)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, 'staging', ?, 1, 7, 32, ?, ?)`,
   ).run(
-    "3".repeat(64),
-    "4".repeat(64),
-    "5".repeat(64),
-    "2".repeat(64),
-    "6".repeat(64),
+    campaignId,
+    shardIndex,
+    hash(`claim:${shardIndex}`),
+    hash(`readiness:${shardIndex}`),
+    activationDigest,
+    hash(`consumption:${shardIndex}`),
     "controller-version-001",
-    "cinatoken-relay-shard-v1-0003",
+    instanceName(shardIndex),
     "1".repeat(64),
   );
-  return db;
 }
 
 function insertAttestation(
@@ -194,9 +286,13 @@ function insertAttestation(
     placementDigestSha256 = "7".repeat(64),
     jurisdiction = "default",
     objectIdSha256 = "a".repeat(64),
-    readinessResultSha256 = "5".repeat(64),
+    activationId = 1,
+    shardIndex = 3,
+    campaignId = "3".repeat(64),
+    readinessResultSha256 = hash(`readiness:${shardIndex}`),
   } = {},
 ) {
+  const instance = instanceName(shardIndex);
   db.query(
     `INSERT INTO relay_container_shard_placement_attestations (
        placement_attestation_digest_sha256, contract_version, environment,
@@ -209,20 +305,44 @@ function insertAttestation(
      ) VALUES (
        ?, 1, 'staging', 'cinatoken-container-controller-staging',
        'controller-version-001', 'RELAY_SHARDS', 'RelayShardContainer', ?,
-       ?, ?, 1, 7, 32, 3, 'cinatoken-relay-shard-v1-0003', 1,
+       ?, ?, 1, 7, 32, ?, ?, ?,
        ?, ?, ?, ?, ?
      )`,
   ).run(
     placementDigestSha256,
     jurisdiction,
-    "0f7b57fb099ff92837664e800c3aa8066adf3040415dd98d00263a00e09adca4",
+    hash(instance),
     objectIdSha256,
-    "3".repeat(64),
-    "4".repeat(64),
+    shardIndex,
+    instance,
+    activationId,
+    campaignId,
+    hash(`claim:${shardIndex}`),
     readinessResultSha256,
-    "2".repeat(64),
-    "6".repeat(64),
+    hash(`activation:${activationId}:${shardIndex}`),
+    hash(`consumption:${shardIndex}`),
   );
+}
+
+function placementEvents(db) {
+  return db
+    .query(
+      `SELECT event.placement_event_sequence, event.activation_id,
+              placement.shard_index
+       FROM relay_container_shard_placement_events AS event
+       JOIN relay_container_shard_placement_attestations AS placement
+         USING (placement_attestation_digest_sha256)
+       ORDER BY event.placement_event_sequence`,
+    )
+    .all();
+}
+
+function instanceName(shardIndex) {
+  return `cinatoken-relay-shard-v1-${String(shardIndex).padStart(4, "0")}`;
+}
+
+function hash(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 function schemaObjects(db) {

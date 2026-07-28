@@ -33,6 +33,13 @@ const placementMigration = await readFile(
   ),
   "utf8",
 );
+const placementEventMigration = await readFile(
+  new URL(
+    "../../../migrations/d1/0062_relay_container_shard_placement_events.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 async function expectInvalid(value: unknown): Promise<void> {
   try {
@@ -213,7 +220,7 @@ describe("relay shard placement attestation v1", () => {
     });
   });
 
-  test("appends once after 0055 and exactly replays the same 0061 row", async () => {
+  test("appends and exactly replays the same 0061/0062 evidence pair", async () => {
     const fixtureDatabase = placementDatabase();
     try {
       const verified = await verifiedAttestation();
@@ -224,6 +231,7 @@ describe("relay shard placement attestation v1", () => {
         verified,
       );
       expect(first).toMatchObject({
+        placementEventSequence: 1,
         activationId: 1,
         activationDigestSha256: "2".repeat(64),
         consumptionDigestSha256: "6".repeat(64),
@@ -242,6 +250,13 @@ describe("relay shard placement attestation v1", () => {
         fixtureDatabase.sqlite
           .query(
             "SELECT COUNT(*) AS count FROM relay_container_shard_placement_attestations",
+          )
+          .get(),
+      ).toEqual({ count: 1 });
+      expect(
+        fixtureDatabase.sqlite
+          .query(
+            "SELECT COUNT(*) AS count FROM relay_container_shard_placement_events",
           )
           .get(),
       ).toEqual({ count: 1 });
@@ -286,6 +301,27 @@ describe("relay shard placement attestation v1", () => {
       });
     } finally {
       schemaDrift.sqlite.close();
+    }
+
+    const extraSchema = placementDatabase();
+    try {
+      extraSchema.sqlite.exec(
+        `CREATE INDEX unexpected_shard_placement_index
+         ON relay_container_shard_placement_attestations(recorded_at)`,
+      );
+      await expect(
+        recordShardPlacementAttestation(
+          extraSchema.database as never,
+          placementClaim(),
+          READINESS_RESULT_SHA256,
+          await verifiedAttestation(),
+        ),
+      ).rejects.toMatchObject({
+        code: "shard_placement_attestation_schema_unavailable",
+        status: 503,
+      });
+    } finally {
+      extraSchema.sqlite.close();
     }
 
     const conflict = placementDatabase();
@@ -400,7 +436,8 @@ function placementDatabase({
   sqlite.exec(`
     CREATE TABLE d1_migrations (name TEXT NOT NULL);
     INSERT INTO d1_migrations(name)
-    VALUES ('0061_relay_container_shard_placement_attestations.sql');
+    VALUES ('0061_relay_container_shard_placement_attestations.sql'),
+           ('0062_relay_container_shard_placement_events.sql');
     CREATE TABLE relay_container_shard_activations (
       activation_id INTEGER PRIMARY KEY,
       controller_version_id TEXT NOT NULL,
@@ -427,6 +464,7 @@ function placementDatabase({
     ) WITHOUT ROWID;
   `);
   sqlite.exec(placementMigration);
+  sqlite.exec(placementEventMigration);
   if (includeParents) {
     sqlite
       .query(
@@ -482,7 +520,7 @@ function sqliteD1Database(
               if (
                 hidePlacementReadback &&
                 sql.includes(
-                  "FROM relay_container_shard_placement_attestations\nWHERE campaign_id",
+                  "FROM relay_container_shard_placement_attestations AS placement",
                 )
               ) {
                 return null;

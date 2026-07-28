@@ -3,17 +3,21 @@ import { describe, expect, test } from "bun:test";
 import {
   SHARD_ACTIVATION_CAMPAIGN_CONTRACT,
   SHARD_ACTIVATION_LEDGER_CONTRACT,
+  SHARD_PLACEMENT_ATTESTATION_CONTRACT,
   activationDigestSha256,
   buildActivationSnapshot,
   buildCampaignSnapshot,
+  buildPlacementSnapshot,
   buildShardRegistryCapture,
   campaignConsumptionDigestSha256,
+  placementAttestationDigestSha256,
   validateRegistryCandidate,
   validateShardRegistryCapture,
 } from "../tools/lib/relay_container_shard_registry.mjs";
 import {
   SHARD_REGISTRY_REQUEST_CONTRACT,
   collectActivationSnapshot,
+  collectPlacementSnapshot,
   collectShardRegistry,
   validateCollectorRequest,
 } from "../tools/collect_relay_container_p5_shard_registry.mjs";
@@ -26,10 +30,11 @@ describe("P5 relay Container sealed campaign evidence", () => {
     const after = { ...before, capturedAt: "2026-07-19T10:05:00.000Z" };
     const capture = buildCapture(candidate, campaign, before, after);
 
-    expect(capture.schemaVersion).toBe(2);
+    expect(capture.schemaVersion).toBe(3);
     expect(capture.evidenceReady).toBe(true);
     expect(capture.verifiedShardCount).toBe(candidate.shardCount);
     expect(capture.verifiedReceiptCount).toBe(candidate.shardCount);
+    expect(capture.verifiedPlacementCount).toBe(candidate.shardCount);
     expect(capture.campaign.state).toBe("sealed_complete");
     expect(capture.campaign.receiptCount).toBe(candidate.shardCount);
     expect(validateShardRegistryCapture(capture, candidate)).toEqual(capture);
@@ -163,6 +168,29 @@ describe("P5 relay Container sealed campaign evidence", () => {
     expect(capture.blockers).toContain("activation-high-watermark-drift");
     expect(capture.blockers).toContain("activation-entry-drift");
 
+    const stableAfter = { ...before, capturedAt: "2026-07-19T10:05:00.000Z" };
+    const placementBefore = placementSnapshotFixture(candidate, campaign);
+    const changedPlacements = structuredClone(placementBefore.records);
+    changedPlacements[0].object_id_sha256 = hash("replacement-object");
+    changedPlacements[0].placement_attestation_digest_sha256 =
+      placementAttestationDigestSha256(changedPlacements[0]);
+    const placementAfter = buildPlacementSnapshot({
+      capturedAt: stableAfter.capturedAt,
+      pages: [placementPageFixture(candidate, campaign, changedPlacements)],
+    });
+    const placementDrift = buildShardRegistryCapture({
+      candidate,
+      observationStartedAt: before.capturedAt,
+      observationEndedAt: stableAfter.capturedAt,
+      campaignBefore: campaignSnapshot(candidate, campaign, before.capturedAt),
+      campaignAfter: campaignSnapshot(candidate, campaign, stableAfter.capturedAt),
+      before,
+      after: stableAfter,
+      placementBefore,
+      placementAfter,
+    });
+    expect(placementDrift.blockers).toContain("placement-entry-drift");
+
     const campaignBefore = campaignSnapshot(candidate, campaign);
     const changed = structuredClone(campaign);
     changed.action_gate_inventory_sha256 = "8".repeat(64);
@@ -182,6 +210,16 @@ describe("P5 relay Container sealed campaign evidence", () => {
         }),
         before,
         after: { ...before, capturedAt: "2026-07-19T10:05:00.000Z" },
+        placementBefore: placementSnapshotFixture(
+          candidate,
+          campaign,
+          "2026-07-19T10:00:00.000Z",
+        ),
+        placementAfter: placementSnapshotFixture(
+          candidate,
+          campaign,
+          "2026-07-19T10:05:00.000Z",
+        ),
       }),
     ).toThrow(/campaign readback drifted/);
   });
@@ -200,6 +238,16 @@ describe("P5 relay Container sealed campaign evidence", () => {
         campaignAfter: campaignSnapshot(candidate, campaign, after.capturedAt),
         before,
         after,
+        placementBefore: placementSnapshotFixture(
+          candidate,
+          campaign,
+          before.capturedAt,
+        ),
+        placementAfter: placementSnapshotFixture(
+          candidate,
+          campaign,
+          after.capturedAt,
+        ),
       }),
     ).toThrow(/before campaign observation boundary/);
   });
@@ -242,10 +290,59 @@ describe("P5 relay Container sealed campaign evidence", () => {
     }
   });
 
+  test("freezes placement pagination by event sequence, not activation ID", async () => {
+    const candidate = candidateFixture();
+    const campaign = campaignFixture(candidate);
+    const rows = placementRecords(campaign.receipts).map((record, index) => ({
+      ...record,
+      activation_id: index < 4 ? 100 + index : 3 + index,
+    }));
+    const calls = [];
+    const snapshot = await collectPlacementSnapshot(
+      {
+        origin: "https://staging.cinatoken.com",
+        candidate,
+        campaignId: campaign.campaign_id,
+        capturedAt: "2026-07-19T10:00:00.000Z",
+      },
+      {
+        cookie: "session=self-test-secret-cookie-value",
+        fetchImpl: async (url) => {
+          calls.push(String(url));
+          const cursor = url.searchParams.get("cursor");
+          const records = cursor === null ? rows.slice(0, 4) : rows.slice(4);
+          return jsonResponse({
+            success: true,
+            message: "",
+            data: placementPageFixture(candidate, campaign, records, {
+              totalRecords: rows.length,
+              highWatermark: rows.at(-1).placement_event_sequence,
+              nextCursor:
+                cursor === null
+                  ? String(records.at(-1).placement_event_sequence)
+                  : null,
+            }),
+          });
+        },
+      },
+    );
+    expect(snapshot.totalRecords).toBe(8);
+    expect(snapshot.records.map((record) => record.activation_id)).toEqual([
+      100, 101, 102, 103, 7, 8, 9, 10,
+    ]);
+    expect(calls[1]).toContain("high_watermark=8");
+    expect(calls[1]).toContain("cursor=4");
+  });
+
   test("collects sealed campaign and 0054 snapshots without a wake request", async () => {
     const candidate = candidateFixture();
     const campaign = campaignFixture(candidate);
     const page = pageFixture(candidate, activationRecords(campaign.receipts));
+    const placementPage = placementPageFixture(
+      candidate,
+      campaign,
+      placementRecords(campaign.receipts),
+    );
     const times = [
       new Date("2026-07-19T10:00:00.000Z"),
       new Date("2026-07-19T10:05:00.000Z"),
@@ -255,13 +352,18 @@ describe("P5 relay Container sealed campaign evidence", () => {
       cookie: "session=self-test-secret-cookie-value",
       fetchImpl: async (url) => {
         calls.push(String(url));
-        const data = url.pathname.endsWith("activation-campaigns") ? campaign : page;
+        const data = url.pathname.endsWith("activation-campaigns")
+          ? campaign
+          : url.pathname.endsWith("/placements")
+            ? placementPage
+            : page;
         return jsonResponse({ success: true, message: "", data });
       },
       now: () => times.shift(),
       sleep: async () => {},
     });
     expect(calls.filter((url) => url.includes("activation-campaigns"))).toHaveLength(2);
+    expect(calls.filter((url) => url.includes("/placements"))).toHaveLength(2);
     expect(capture.evidenceReady).toBe(true);
     expect(capture.safetyBoundary.shardDoOrContainerWakePerformed).toBe(false);
   });
@@ -483,6 +585,15 @@ function campaignSnapshot(candidate, campaign, capturedAt = "2026-07-19T10:00:00
 }
 
 function buildCapture(candidate, campaign, before, after) {
+  const placementBefore = placementSnapshotFixture(
+    candidate,
+    campaign,
+    before.capturedAt,
+  );
+  const placementAfter = {
+    ...placementBefore,
+    capturedAt: after.capturedAt,
+  };
   return buildShardRegistryCapture({
     candidate,
     observationStartedAt: before.capturedAt,
@@ -491,6 +602,8 @@ function buildCapture(candidate, campaign, before, after) {
     campaignAfter: campaignSnapshot(candidate, campaign, after.capturedAt),
     before,
     after,
+    placementBefore,
+    placementAfter,
   });
 }
 
@@ -519,6 +632,76 @@ function pageFixture(
 
 function snapshotFixture(candidate, records, capturedAt = "2026-07-19T10:00:00.000Z") {
   return buildActivationSnapshot({ capturedAt, pages: [pageFixture(candidate, records)] });
+}
+
+function placementRecords(receipts) {
+  return receipts.map((receipt, index) => {
+    const record = {
+      placement_event_sequence: index + 1,
+      placement_attestation_digest_sha256: "0".repeat(64),
+      contract_version: 1,
+      environment: receipt.environment,
+      controller_service_name: "cinatoken-container-controller-staging",
+      controller_version_id: receipt.controller_version_id,
+      durable_object_namespace_binding: "RELAY_SHARDS",
+      durable_object_class: "RelayShardContainer",
+      jurisdiction: "default",
+      canonical_name_sha256: hash(receipt.instance_name),
+      object_id_sha256: hash(`object:${receipt.shard_index}`),
+      shard_contract_version: receipt.shard_contract_version,
+      ring_generation: receipt.ring_generation,
+      shard_count: receipt.shard_count,
+      shard_index: receipt.shard_index,
+      instance_name: receipt.instance_name,
+      activation_id: index + 1,
+      campaign_id: receipt.campaign_id,
+      claim_digest_sha256: receipt.claim_digest_sha256,
+      readiness_result_sha256: receipt.readiness_result_sha256,
+      activation_digest_sha256: receipt.activation_digest_sha256,
+      consumption_digest_sha256: receipt.consumption_digest_sha256,
+      recorded_at: receipt.consumed_at,
+    };
+    record.placement_attestation_digest_sha256 =
+      placementAttestationDigestSha256(record);
+    return record;
+  });
+}
+
+function placementPageFixture(
+  candidate,
+  campaign,
+  records,
+  {
+    totalRecords = records.length,
+    highWatermark = records.at(-1)?.placement_event_sequence ?? 0,
+    nextCursor = null,
+  } = {},
+) {
+  return {
+    contract_version: 1,
+    placement_contract: SHARD_PLACEMENT_ATTESTATION_CONTRACT,
+    controller_version_id: candidate.controllerVersionId,
+    ring_generation: candidate.ringGeneration,
+    campaign_id: campaign.campaign_id,
+    high_watermark: highWatermark,
+    total_records: totalRecords,
+    count: records.length,
+    next_cursor: nextCursor,
+    pagination_complete: nextCursor === null,
+    records,
+  };
+}
+
+function placementSnapshotFixture(
+  candidate,
+  campaign,
+  capturedAt = "2026-07-19T10:00:00.000Z",
+) {
+  const records = placementRecords(campaign.receipts);
+  return buildPlacementSnapshot({
+    capturedAt,
+    pages: [placementPageFixture(candidate, campaign, records)],
+  });
 }
 
 function hash(value) {

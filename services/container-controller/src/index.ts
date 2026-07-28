@@ -1598,6 +1598,7 @@ async function recordClaimedShardPlacementAttestation(
         verified.attestationDigestSha256,
       activation_digest_sha256: record.activationDigestSha256,
       consumption_digest_sha256: record.consumptionDigestSha256,
+      placement_event_sequence: record.placementEventSequence,
       activation_id: record.activationId,
       recorded_at: record.recordedAt,
       duplicate: record.duplicate,

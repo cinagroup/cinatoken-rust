@@ -1,16 +1,19 @@
 import { createHash } from "node:crypto";
 
 export const SHARD_REGISTRY_CAPTURE_CONTRACT =
-  "cinatoken-relay-container-shard-registry-capture-v2";
+  "cinatoken-relay-container-shard-registry-capture-v3";
 export const SHARD_ACTIVATION_LEDGER_CONTRACT =
   "cinatoken-relay-container-shard-activation-v1";
 export const SHARD_ACTIVATION_CAMPAIGN_CONTRACT =
   "cinatoken-relay-container-shard-activation-campaign-v1";
-export const SHARD_REGISTRY_COLLECTOR_VERSION = 2;
+export const SHARD_PLACEMENT_ATTESTATION_CONTRACT =
+  "cinatoken-relay-shard-placement-attestation-v1";
+export const SHARD_REGISTRY_COLLECTOR_VERSION = 3;
 
 export const MAX_SHARD_COUNT = 1_024;
 export const MAX_LEDGER_RECORDS = 4_096;
 export const ACTIVATION_PAGE_SIZE = 64;
+export const PLACEMENT_PAGE_SIZE = 64;
 
 const MIN_OBSERVATION_SECONDS = 5 * 60;
 const MAX_OBSERVATION_SECONDS = 2 * 60 * 60;
@@ -23,9 +26,15 @@ const consumptionDigestDomain = Buffer.from(
   "cinatoken:relay-container-shard-activation-campaign-consumption:v1\0",
   "utf8",
 );
+const placementAttestationDigestDomain = Buffer.from(
+  SHARD_PLACEMENT_ATTESTATION_CONTRACT,
+  "utf8",
+);
 const lowerSha256Pattern = /^[0-9a-f]{64}$/;
 const versionIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const imageDigestPattern = /^sha256:[0-9a-f]{64}$/;
+const controllerServiceNamePattern =
+  /^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/;
 
 const activationRecordKeys = Object.freeze([
   "registry_event_sequence",
@@ -46,6 +55,32 @@ const activationRecordKeys = Object.freeze([
   "controller_execution_enabled",
   "activation_digest_sha256",
   "activated_at",
+]);
+
+const placementRecordKeys = Object.freeze([
+  "placement_event_sequence",
+  "placement_attestation_digest_sha256",
+  "contract_version",
+  "environment",
+  "controller_service_name",
+  "controller_version_id",
+  "durable_object_namespace_binding",
+  "durable_object_class",
+  "jurisdiction",
+  "canonical_name_sha256",
+  "object_id_sha256",
+  "shard_contract_version",
+  "ring_generation",
+  "shard_count",
+  "shard_index",
+  "instance_name",
+  "activation_id",
+  "campaign_id",
+  "claim_digest_sha256",
+  "readiness_result_sha256",
+  "activation_digest_sha256",
+  "consumption_digest_sha256",
+  "recorded_at",
 ]);
 
 const campaignReadbackKeys = Object.freeze([
@@ -396,6 +431,178 @@ export function buildActivationSnapshot({ capturedAt, pages }) {
   };
 }
 
+export function placementAttestationDigestSha256(record) {
+  validatePlacementAttestationFields(record);
+  return digestParts(placementAttestationDigestDomain, [
+    record.contract_version,
+    record.environment,
+    record.controller_service_name,
+    record.controller_version_id,
+    record.durable_object_namespace_binding,
+    record.durable_object_class,
+    record.jurisdiction,
+    record.canonical_name_sha256,
+    record.object_id_sha256,
+    record.shard_contract_version,
+    record.ring_generation,
+    record.shard_count,
+    record.shard_index,
+    record.instance_name,
+  ]);
+}
+
+export function validatePlacementPage(value, expected = {}) {
+  const page = requireObject(value, "placement page");
+  exactKeys(
+    page,
+    [
+      "contract_version",
+      "placement_contract",
+      "controller_version_id",
+      "ring_generation",
+      "campaign_id",
+      "high_watermark",
+      "total_records",
+      "count",
+      "next_cursor",
+      "pagination_complete",
+      "records",
+    ],
+    "placement page",
+  );
+  requireExact(page.contract_version, 1, "placement page contract version");
+  requireExact(
+    page.placement_contract,
+    SHARD_PLACEMENT_ATTESTATION_CONTRACT,
+    "placement attestation contract",
+  );
+  requireToken(page.controller_version_id, versionIdPattern, "placement Controller version ID");
+  requireInteger(page.ring_generation, 1, 1_000_000, "placement ring generation");
+  requireToken(page.campaign_id, lowerSha256Pattern, "placement campaign ID");
+  requireInteger(page.high_watermark, 0, Number.MAX_SAFE_INTEGER, "placement high watermark");
+  requireInteger(page.total_records, 0, MAX_LEDGER_RECORDS, "placement total records");
+  requireInteger(page.count, 0, PLACEMENT_PAGE_SIZE, "placement page count");
+  requireBoolean(page.pagination_complete, "placement pagination status");
+  if (page.next_cursor !== null) {
+    requireToken(page.next_cursor, /^[1-9][0-9]{0,15}$/, "placement next cursor");
+  }
+  if (!Array.isArray(page.records) || page.records.length !== page.count) {
+    throw new ShardRegistryError("placement page count does not match records");
+  }
+  if (page.pagination_complete !== (page.next_cursor === null)) {
+    throw new ShardRegistryError("placement page terminal cursor is inconsistent");
+  }
+  if (expected.controllerVersionId !== undefined) {
+    requireExact(
+      page.controller_version_id,
+      expected.controllerVersionId,
+      "placement Controller version ID",
+    );
+  }
+  if (expected.ringGeneration !== undefined) {
+    requireExact(page.ring_generation, expected.ringGeneration, "placement ring generation");
+  }
+  if (expected.campaignId !== undefined) {
+    requireExact(page.campaign_id, expected.campaignId, "placement campaign ID");
+  }
+  if (expected.highWatermark !== undefined) {
+    requireExact(page.high_watermark, expected.highWatermark, "placement high watermark");
+  }
+  if (expected.totalRecords !== undefined) {
+    requireExact(page.total_records, expected.totalRecords, "placement total records");
+  }
+
+  let previousSequence = expected.afterSequence ?? 0;
+  const records = page.records.map((record) => {
+    validatePlacementRecord(record, {
+      controllerVersionId: page.controller_version_id,
+      ringGeneration: page.ring_generation,
+      campaignId: page.campaign_id,
+      highWatermark: page.high_watermark,
+    });
+    if (record.placement_event_sequence <= previousSequence) {
+      throw new ShardRegistryError("placement records are not strictly ordered");
+    }
+    previousSequence = record.placement_event_sequence;
+    return record;
+  });
+  if (page.next_cursor !== null) {
+    if (records.length === 0 || page.next_cursor !== String(previousSequence)) {
+      throw new ShardRegistryError("placement next cursor does not match the last record");
+    }
+  }
+  return { ...page, records };
+}
+
+export function buildPlacementSnapshot({ capturedAt, pages }) {
+  requireTimestamp(capturedAt, "placement snapshot capturedAt");
+  if (!Array.isArray(pages) || pages.length === 0 || pages.length > 65) {
+    throw new ShardRegistryError("placement snapshot page inventory is invalid");
+  }
+  const normalizedPages = [];
+  const seenCursors = new Set();
+  let controllerVersionId;
+  let ringGeneration;
+  let campaignId;
+  let highWatermark;
+  let totalRecords;
+  let afterSequence = 0;
+  for (let index = 0; index < pages.length; index += 1) {
+    const page = validatePlacementPage(pages[index], {
+      ...(index === 0
+        ? {}
+        : {
+            controllerVersionId,
+            ringGeneration,
+            campaignId,
+            highWatermark,
+            totalRecords,
+          }),
+      afterSequence,
+    });
+    if (index === 0) {
+      controllerVersionId = page.controller_version_id;
+      ringGeneration = page.ring_generation;
+      campaignId = page.campaign_id;
+      highWatermark = page.high_watermark;
+      totalRecords = page.total_records;
+    }
+    if (index + 1 < pages.length && page.pagination_complete) {
+      throw new ShardRegistryError("placement pagination ended before the final page");
+    }
+    if (index + 1 === pages.length && !page.pagination_complete) {
+      throw new ShardRegistryError("placement pagination did not reach a terminal page");
+    }
+    if (page.next_cursor !== null && !seenCursors.add(page.next_cursor)) {
+      throw new ShardRegistryError("placement pagination repeated a cursor");
+    }
+    if (page.records.length > 0) {
+      afterSequence = page.records.at(-1).placement_event_sequence;
+    }
+    normalizedPages.push(page);
+  }
+  const records = normalizedPages.flatMap((page) => page.records);
+  if (records.length !== totalRecords) {
+    throw new ShardRegistryError("placement snapshot did not enumerate every record");
+  }
+  if ((records.at(-1)?.placement_event_sequence ?? 0) !== highWatermark) {
+    throw new ShardRegistryError("placement snapshot did not reach the frozen high watermark");
+  }
+  validatePlacementRecordUniqueness(records);
+  return {
+    capturedAt,
+    controllerVersionId,
+    ringGeneration,
+    campaignId,
+    highWatermark,
+    totalRecords,
+    pageCount: normalizedPages.length,
+    paginationComplete: true,
+    entriesSha256: sha256Canonical(records),
+    records,
+  };
+}
+
 export function buildShardRegistryCapture({
   candidate,
   observationStartedAt,
@@ -404,6 +611,8 @@ export function buildShardRegistryCapture({
   campaignAfter,
   before,
   after,
+  placementBefore,
+  placementAfter,
 }) {
   candidate = validateRegistryCandidate(candidate);
   requireTimestamp(observationStartedAt, "registry observation start");
@@ -420,6 +629,18 @@ export function buildShardRegistryCapture({
   campaignAfter = validateCampaignSnapshot(campaignAfter, candidate);
   before = validateSnapshot(before, candidate, "before");
   after = validateSnapshot(after, candidate, "after");
+  placementBefore = validatePlacementSnapshot(
+    placementBefore,
+    candidate,
+    campaignBefore.campaignId,
+    "before",
+  );
+  placementAfter = validatePlacementSnapshot(
+    placementAfter,
+    candidate,
+    campaignAfter.campaignId,
+    "after",
+  );
   requireExact(
     campaignBefore.capturedAt,
     observationStartedAt,
@@ -440,6 +661,16 @@ export function buildShardRegistryCapture({
     observationEndedAt,
     "after activation observation boundary",
   );
+  requireExact(
+    placementBefore.capturedAt,
+    observationStartedAt,
+    "before placement observation boundary",
+  );
+  requireExact(
+    placementAfter.capturedAt,
+    observationEndedAt,
+    "after placement observation boundary",
+  );
 
   if (campaignBefore.snapshotSha256 !== campaignAfter.snapshotSha256) {
     throw new ShardRegistryError("activation campaign readback drifted");
@@ -451,6 +682,18 @@ export function buildShardRegistryCapture({
   if (canonicalJson(before.records) !== canonicalJson(after.records)) {
     blockers.push("activation-record-drift");
   }
+  if (placementBefore.highWatermark !== placementAfter.highWatermark) {
+    blockers.push("placement-high-watermark-drift");
+  }
+  if (placementBefore.totalRecords !== placementAfter.totalRecords) {
+    blockers.push("placement-record-count-drift");
+  }
+  if (placementBefore.entriesSha256 !== placementAfter.entriesSha256) {
+    blockers.push("placement-entry-drift");
+  }
+  if (canonicalJson(placementBefore.records) !== canonicalJson(placementAfter.records)) {
+    blockers.push("placement-record-drift");
+  }
 
   const assessment = assessCampaignReceipts(
     after.records,
@@ -458,9 +701,17 @@ export function buildShardRegistryCapture({
     candidate,
   );
   blockers.push(...assessment.blockers);
+  const placementAssessment = assessPlacements(
+    placementAfter.records,
+    after.records,
+    campaignAfter.receipts,
+    candidate,
+    campaignAfter.campaignId,
+  );
+  blockers.push(...placementAssessment.blockers);
   const uniqueBlockers = [...new Set(blockers)].sort();
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     contract: SHARD_REGISTRY_CAPTURE_CONTRACT,
     environment: "staging",
     collectorVersion: SHARD_REGISTRY_COLLECTOR_VERSION,
@@ -477,13 +728,20 @@ export function buildShardRegistryCapture({
     observationEndedAt,
     before,
     after,
+    placementBefore,
+    placementAfter,
     stableCampaignSha256: campaignBefore.snapshotSha256,
     stableEntriesSha256: before.entriesSha256,
+    stablePlacementEntriesSha256: placementBefore.entriesSha256,
     verifiedShardCount: assessment.verifiedShardCount,
     verifiedReceiptCount: assessment.verifiedReceiptCount,
     missingShardCount: assessment.missingShardCount,
     duplicateShardCount: assessment.duplicateShardCount,
     unknownShardCount: assessment.unknownShardCount,
+    verifiedPlacementCount: placementAssessment.verifiedPlacementCount,
+    missingPlacementCount: placementAssessment.missingPlacementCount,
+    duplicatePlacementCount: placementAssessment.duplicatePlacementCount,
+    unknownPlacementCount: placementAssessment.unknownPlacementCount,
     paginationComplete: true,
     evidenceReady: uniqueBlockers.length === 0,
     blockers: uniqueBlockers,
@@ -513,13 +771,20 @@ export function validateShardRegistryCapture(value, expectedCandidate = undefine
       "observationEndedAt",
       "before",
       "after",
+      "placementBefore",
+      "placementAfter",
       "stableCampaignSha256",
       "stableEntriesSha256",
+      "stablePlacementEntriesSha256",
       "verifiedShardCount",
       "verifiedReceiptCount",
       "missingShardCount",
       "duplicateShardCount",
       "unknownShardCount",
+      "verifiedPlacementCount",
+      "missingPlacementCount",
+      "duplicatePlacementCount",
+      "unknownPlacementCount",
       "paginationComplete",
       "evidenceReady",
       "blockers",
@@ -552,6 +817,8 @@ export function validateShardRegistryCapture(value, expectedCandidate = undefine
     campaignAfter,
     before: capture.before,
     after: capture.after,
+    placementBefore: capture.placementBefore,
+    placementAfter: capture.placementAfter,
   });
   if (canonicalJson(capture) !== canonicalJson(rebuilt)) {
     throw new ShardRegistryError("shard registry capture contains derived-field drift");
@@ -799,6 +1066,189 @@ function validateSnapshot(snapshot, candidate, label) {
   return snapshot;
 }
 
+function validatePlacementSnapshot(snapshot, candidate, campaignId, label) {
+  snapshot = requireObject(snapshot, `${label} placement snapshot`);
+  exactKeys(
+    snapshot,
+    [
+      "capturedAt",
+      "controllerVersionId",
+      "ringGeneration",
+      "campaignId",
+      "highWatermark",
+      "totalRecords",
+      "pageCount",
+      "paginationComplete",
+      "entriesSha256",
+      "records",
+    ],
+    `${label} placement snapshot`,
+  );
+  requireTimestamp(snapshot.capturedAt, `${label} placement capturedAt`);
+  requireExact(
+    snapshot.controllerVersionId,
+    candidate.controllerVersionId,
+    `${label} placement Controller version`,
+  );
+  requireExact(
+    snapshot.ringGeneration,
+    candidate.ringGeneration,
+    `${label} placement ring generation`,
+  );
+  requireExact(snapshot.campaignId, campaignId, `${label} placement campaign ID`);
+  requireInteger(
+    snapshot.highWatermark,
+    0,
+    Number.MAX_SAFE_INTEGER,
+    `${label} placement high watermark`,
+  );
+  requireInteger(
+    snapshot.totalRecords,
+    0,
+    MAX_LEDGER_RECORDS,
+    `${label} placement total records`,
+  );
+  requireInteger(snapshot.pageCount, 1, 65, `${label} placement page count`);
+  requireExact(
+    snapshot.paginationComplete,
+    true,
+    `${label} placement pagination complete`,
+  );
+  requireToken(
+    snapshot.entriesSha256,
+    lowerSha256Pattern,
+    `${label} placement entries digest`,
+  );
+  if (!Array.isArray(snapshot.records) || snapshot.records.length !== snapshot.totalRecords) {
+    throw new ShardRegistryError(`${label} placement record count is invalid`);
+  }
+  let previousSequence = 0;
+  for (const record of snapshot.records) {
+    validatePlacementRecord(record, {
+      controllerVersionId: candidate.controllerVersionId,
+      ringGeneration: candidate.ringGeneration,
+      campaignId,
+      highWatermark: snapshot.highWatermark,
+    });
+    requireExact(record.environment, "staging", `${label} placement environment`);
+    requireExact(record.shard_count, candidate.shardCount, `${label} placement shard count`);
+    if (record.placement_event_sequence <= previousSequence) {
+      throw new ShardRegistryError(`${label} placement records are not strictly ordered`);
+    }
+    previousSequence = record.placement_event_sequence;
+  }
+  requireExact(
+    previousSequence,
+    snapshot.highWatermark,
+    `${label} placement frozen high watermark`,
+  );
+  validatePlacementRecordUniqueness(snapshot.records);
+  requireExact(
+    snapshot.entriesSha256,
+    sha256Canonical(snapshot.records),
+    `${label} placement entries digest`,
+  );
+  return snapshot;
+}
+
+function assessPlacements(placements, activationRecords, receipts, candidate, campaignId) {
+  const receiptByShard = new Map(receipts.map((receipt) => [receipt.shard_index, receipt]));
+  const activationById = new Map(
+    activationRecords.map((record) => [record.registry_event_sequence, record]),
+  );
+  const associatedByShard = new Map();
+  const controllerServiceNames = new Set();
+  let unknownPlacementCount = 0;
+  for (const placement of placements) {
+    const receipt = receiptByShard.get(placement.shard_index);
+    const activation = activationById.get(placement.activation_id);
+    if (
+      !receipt ||
+      !activation ||
+      !placementMatchesEvidence(
+        placement,
+        activation,
+        receipt,
+        candidate,
+        campaignId,
+      )
+    ) {
+      unknownPlacementCount += 1;
+      continue;
+    }
+    controllerServiceNames.add(placement.controller_service_name);
+    const rows = associatedByShard.get(placement.shard_index) ?? [];
+    rows.push(placement);
+    associatedByShard.set(placement.shard_index, rows);
+  }
+
+  let verifiedPlacementCount = 0;
+  let missingPlacementCount = 0;
+  let duplicatePlacementCount = 0;
+  for (let shardIndex = 0; shardIndex < candidate.shardCount; shardIndex += 1) {
+    const rows = associatedByShard.get(shardIndex) ?? [];
+    if (rows.length === 0) missingPlacementCount += 1;
+    else if (rows.length === 1) verifiedPlacementCount += 1;
+    else duplicatePlacementCount += rows.length - 1;
+  }
+
+  const blockers = [];
+  if (verifiedPlacementCount !== candidate.shardCount) {
+    blockers.push("campaign-receipt-placements-incomplete");
+  }
+  if (missingPlacementCount !== 0) {
+    blockers.push("campaign-receipt-placements-missing");
+  }
+  if (duplicatePlacementCount !== 0) {
+    blockers.push("campaign-receipt-placements-duplicated");
+  }
+  if (unknownPlacementCount !== 0) {
+    blockers.push("unknown-shard-placements-present");
+  }
+  if (controllerServiceNames.size > 1) {
+    blockers.push("placement-controller-service-drift");
+  }
+  return {
+    verifiedPlacementCount,
+    missingPlacementCount,
+    duplicatePlacementCount,
+    unknownPlacementCount,
+    blockers,
+  };
+}
+
+function placementMatchesEvidence(
+  placement,
+  activation,
+  receipt,
+  candidate,
+  campaignId,
+) {
+  return (
+    placement.environment === "staging" &&
+    placement.controller_version_id === candidate.controllerVersionId &&
+    placement.ring_generation === candidate.ringGeneration &&
+    placement.shard_count === candidate.shardCount &&
+    placement.campaign_id === campaignId &&
+    placement.shard_index === receipt.shard_index &&
+    placement.shard_contract_version === receipt.shard_contract_version &&
+    placement.instance_name === receipt.instance_name &&
+    placement.claim_digest_sha256 === receipt.claim_digest_sha256 &&
+    placement.readiness_result_sha256 === receipt.readiness_result_sha256 &&
+    placement.activation_digest_sha256 === receipt.activation_digest_sha256 &&
+    placement.consumption_digest_sha256 === receipt.consumption_digest_sha256 &&
+    placement.activation_id === activation.registry_event_sequence &&
+    placement.activation_digest_sha256 === activation.activation_digest_sha256 &&
+    placement.shard_count === activation.shard_count &&
+    placement.shard_index === activation.shard_index &&
+    placement.instance_name === activation.instance_name &&
+    placement.shard_contract_version === activation.shard_contract_version &&
+    placement.environment === activation.environment &&
+    placement.recorded_at >= receipt.consumed_at &&
+    activationMatchesReceipt(activation, receipt, candidate)
+  );
+}
+
 function assessCampaignReceipts(records, receipts, candidate) {
   const receiptByDigest = new Map(
     receipts.map((receipt) => [receipt.activation_digest_sha256, receipt]),
@@ -837,6 +1287,130 @@ function assessCampaignReceipts(records, receipts, candidate) {
     unknownShardCount,
     blockers,
   };
+}
+
+function validatePlacementRecord(
+  record,
+  { controllerVersionId, ringGeneration, campaignId, highWatermark },
+) {
+  validatePlacementAttestationFields(record);
+  requireExact(
+    record.controller_version_id,
+    controllerVersionId,
+    "placement Controller version ID",
+  );
+  requireExact(record.ring_generation, ringGeneration, "placement ring generation");
+  requireExact(record.campaign_id, campaignId, "placement campaign ID");
+  requireInteger(
+    record.placement_event_sequence,
+    1,
+    highWatermark,
+    "placement event sequence",
+  );
+  requireExact(
+    record.placement_attestation_digest_sha256,
+    placementAttestationDigestSha256(record),
+    "placement attestation digest",
+  );
+}
+
+function validatePlacementAttestationFields(record) {
+  record = requireObject(record, "placement record");
+  exactKeys(record, placementRecordKeys, "placement record");
+  requireInteger(
+    record.placement_event_sequence,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    "placement event sequence",
+  );
+  requireToken(
+    record.placement_attestation_digest_sha256,
+    lowerSha256Pattern,
+    "placement attestation digest",
+  );
+  requireExact(record.contract_version, 1, "placement contract version");
+  if (!["staging", "production"].includes(record.environment)) {
+    throw new ShardRegistryError("placement environment is invalid");
+  }
+  requireToken(
+    record.controller_service_name,
+    controllerServiceNamePattern,
+    "placement Controller service name",
+  );
+  requireToken(
+    record.controller_version_id,
+    versionIdPattern,
+    "placement Controller version ID",
+  );
+  requireExact(
+    record.durable_object_namespace_binding,
+    "RELAY_SHARDS",
+    "placement Durable Object namespace binding",
+  );
+  requireExact(
+    record.durable_object_class,
+    "RelayShardContainer",
+    "placement Durable Object class",
+  );
+  requireExact(record.jurisdiction, "default", "placement jurisdiction");
+  requireToken(
+    record.canonical_name_sha256,
+    lowerSha256Pattern,
+    "placement canonical name digest",
+  );
+  requireToken(record.object_id_sha256, lowerSha256Pattern, "placement object ID digest");
+  requireExact(record.shard_contract_version, 1, "placement shard contract");
+  requireInteger(record.ring_generation, 1, 1_000_000, "placement ring generation");
+  requireInteger(record.shard_count, 1, MAX_SHARD_COUNT, "placement shard count");
+  requireInteger(record.shard_index, 0, record.shard_count - 1, "placement shard index");
+  requireExact(
+    record.instance_name,
+    `cinatoken-relay-shard-v1-${String(record.shard_index).padStart(4, "0")}`,
+    "placement instance name",
+  );
+  requireExact(
+    record.canonical_name_sha256,
+    createHash("sha256").update(record.instance_name, "utf8").digest("hex"),
+    "placement canonical name digest",
+  );
+  requireInteger(record.activation_id, 1, Number.MAX_SAFE_INTEGER, "placement activation ID");
+  for (const [field, label] of [
+    ["campaign_id", "placement campaign ID"],
+    ["claim_digest_sha256", "placement claim digest"],
+    ["readiness_result_sha256", "placement readiness result digest"],
+    ["activation_digest_sha256", "placement activation digest"],
+    ["consumption_digest_sha256", "placement consumption digest"],
+  ]) {
+    requireToken(record[field], lowerSha256Pattern, label);
+  }
+  requireInteger(record.recorded_at, 1, Number.MAX_SAFE_INTEGER, "placement timestamp");
+}
+
+function validatePlacementRecordUniqueness(records) {
+  const attestationDigests = new Set();
+  const activationIds = new Set();
+  const canonicalNames = new Set();
+  const objectIds = new Set();
+  const placementSequences = new Set();
+  for (const record of records) {
+    requireUnique(
+      placementSequences,
+      record.placement_event_sequence,
+      "placement event sequence",
+    );
+    requireUnique(
+      attestationDigests,
+      record.placement_attestation_digest_sha256,
+      "placement attestation digest",
+    );
+    requireUnique(activationIds, record.activation_id, "placement activation ID");
+    requireUnique(
+      canonicalNames,
+      record.canonical_name_sha256,
+      "placement canonical name digest",
+    );
+    requireUnique(objectIds, record.object_id_sha256, "placement object ID digest");
+  }
 }
 
 function activationMatchesReceipt(record, receipt, candidate) {

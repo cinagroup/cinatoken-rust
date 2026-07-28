@@ -24,11 +24,14 @@ import {
 import {
   SHARD_ACTIVATION_CAMPAIGN_CONTRACT,
   SHARD_ACTIVATION_LEDGER_CONTRACT,
+  SHARD_PLACEMENT_ATTESTATION_CONTRACT,
   activationDigestSha256,
   buildActivationSnapshot,
   buildCampaignSnapshot,
+  buildPlacementSnapshot,
   buildShardRegistryCapture,
   campaignConsumptionDigestSha256,
+  placementAttestationDigestSha256,
   sha256Canonical,
 } from "../tools/lib/relay_container_shard_registry.mjs";
 
@@ -1202,8 +1205,8 @@ function requestFixture() {
       ringGeneration: 1,
       shardCount: 8,
       migrationHead:
-        "0061_relay_container_shard_placement_attestations.sql",
-      migrationCount: 61,
+        "0062_relay_container_shard_placement_events.sql",
+      migrationCount: 62,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,
@@ -1314,6 +1317,15 @@ function shardRegistryCaptureFixture(request) {
     ...before,
     capturedAt: "2026-07-19T10:05:00.000Z",
   };
+  const placementBefore = placementSnapshotFixture(
+    candidate,
+    campaign,
+    before.capturedAt,
+  );
+  const placementAfter = {
+    ...placementBefore,
+    capturedAt: after.capturedAt,
+  };
   return buildShardRegistryCapture({
     candidate,
     observationStartedAt: before.capturedAt,
@@ -1330,6 +1342,8 @@ function shardRegistryCaptureFixture(request) {
     }),
     before,
     after,
+    placementBefore,
+    placementAfter,
   });
 }
 
@@ -1351,6 +1365,14 @@ function retimeShardCapture(sources, observationStartedAt, observationEndedAt) {
     ...current.campaign,
     capturedAt: observationEndedAt,
   };
+  const placementBefore = {
+    ...current.placementBefore,
+    capturedAt: observationStartedAt,
+  };
+  const placementAfter = {
+    ...current.placementAfter,
+    capturedAt: observationEndedAt,
+  };
   const capture = buildShardRegistryCapture({
     candidate: current.candidate,
     observationStartedAt,
@@ -1359,6 +1381,8 @@ function retimeShardCapture(sources, observationStartedAt, observationEndedAt) {
     campaignAfter,
     before,
     after,
+    placementBefore,
+    placementAfter,
   });
   sources.sources.shardRegistry.capture = capture;
   sources.sources.shardRegistry.sourceArtifactSha256 = sha256Canonical(capture);
@@ -1465,6 +1489,65 @@ function activationRecordFromReceipt(receipt, sequence) {
     activation_digest_sha256: receipt.activation_digest_sha256,
     activated_at: receipt.readiness_checked_at,
   };
+}
+
+function placementSnapshotFixture(candidate, campaign, capturedAt) {
+  const records = campaign.receipts.map((receipt, index) => {
+    const record = {
+      placement_event_sequence: index + 1,
+      placement_attestation_digest_sha256: "0".repeat(64),
+      contract_version: 1,
+      environment: receipt.environment,
+      controller_service_name: "cinatoken-container-controller-staging",
+      controller_version_id: receipt.controller_version_id,
+      durable_object_namespace_binding: "RELAY_SHARDS",
+      durable_object_class: "RelayShardContainer",
+      jurisdiction: "default",
+      canonical_name_sha256: createHash("sha256")
+        .update(receipt.instance_name, "utf8")
+        .digest("hex"),
+      object_id_sha256: createHash("sha256")
+        .update(`object:${receipt.shard_index}`, "utf8")
+        .digest("hex"),
+      shard_contract_version: receipt.shard_contract_version,
+      ring_generation: receipt.ring_generation,
+      shard_count: receipt.shard_count,
+      shard_index: receipt.shard_index,
+      instance_name: receipt.instance_name,
+      activation_id: index + 1,
+      campaign_id: receipt.campaign_id,
+      claim_digest_sha256: receipt.claim_digest_sha256,
+      readiness_result_sha256: receipt.readiness_result_sha256,
+      activation_digest_sha256: receipt.activation_digest_sha256,
+      consumption_digest_sha256: receipt.consumption_digest_sha256,
+      recorded_at: receipt.consumed_at,
+    };
+    record.placement_attestation_digest_sha256 =
+      placementAttestationDigestSha256(record);
+    return record;
+  });
+  const highWatermark = records.at(-1).placement_event_sequence;
+  const pages = [];
+  for (let offset = 0; offset < records.length; offset += 64) {
+    const pageRecords = records.slice(offset, offset + 64);
+    const terminal = offset + pageRecords.length === records.length;
+    pages.push({
+        contract_version: 1,
+        placement_contract: SHARD_PLACEMENT_ATTESTATION_CONTRACT,
+        controller_version_id: candidate.controllerVersionId,
+        ring_generation: candidate.ringGeneration,
+        campaign_id: campaign.campaign_id,
+        high_watermark: highWatermark,
+        total_records: records.length,
+        count: pageRecords.length,
+        next_cursor: terminal
+          ? null
+          : String(pageRecords.at(-1).placement_event_sequence),
+        pagination_complete: terminal,
+        records: pageRecords,
+      });
+  }
+  return buildPlacementSnapshot({ capturedAt, pages });
 }
 
 function epoch(value) {

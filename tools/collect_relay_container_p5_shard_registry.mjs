@@ -5,12 +5,15 @@ import path from "node:path";
 import {
   ACTIVATION_PAGE_SIZE,
   MAX_LEDGER_RECORDS,
+  PLACEMENT_PAGE_SIZE,
   SHARD_REGISTRY_CAPTURE_CONTRACT,
   ShardRegistryError,
   buildActivationSnapshot,
   buildCampaignSnapshot,
+  buildPlacementSnapshot,
   buildShardRegistryCapture,
   canonicalJson,
+  validatePlacementPage,
   validateRegistryCandidate,
 } from "./lib/relay_container_shard_registry.mjs";
 
@@ -24,6 +27,8 @@ const maxRequestBytes = 256 * 1024;
 const maxResponseBytes = 1024 * 1024;
 const maxCampaignResponseBytes = 4 * 1024 * 1024;
 const maxPages = Math.ceil(MAX_LEDGER_RECORDS / ACTIVATION_PAGE_SIZE) + 1;
+const maxPlacementPages =
+  Math.ceil(MAX_LEDGER_RECORDS / PLACEMENT_PAGE_SIZE) + 1;
 const lowerSha256Pattern = /^[0-9a-f]{64}$/;
 
 if (import.meta.main) {
@@ -204,6 +209,68 @@ export async function collectActivationSnapshot(
   throw new ShardRegistryError("activation pagination exceeded its page bound");
 }
 
+export async function collectPlacementSnapshot(
+  { origin, candidate, campaignId, capturedAt },
+  { cookie, fetchImpl = fetch } = {},
+) {
+  validateStagingOrigin(origin);
+  candidate = validateRegistryCandidate(candidate);
+  requireSha256(campaignId, "placement campaign ID");
+  requireCookie(cookie);
+  if (typeof fetchImpl !== "function") {
+    throw new ShardRegistryError("fetch implementation is invalid");
+  }
+  const pages = [];
+  const seenCursors = new Set();
+  let highWatermark = null;
+  let totalRecords = null;
+  let afterSequence = 0;
+  let cursor = null;
+  for (let index = 0; index < maxPlacementPages; index += 1) {
+    const url = new URL("/api/platform/container/shards/placements", origin);
+    url.searchParams.set("controller_version_id", candidate.controllerVersionId);
+    url.searchParams.set("ring_generation", String(candidate.ringGeneration));
+    url.searchParams.set("campaign_id", campaignId);
+    url.searchParams.set("limit", String(PLACEMENT_PAGE_SIZE));
+    if (highWatermark !== null && highWatermark > 0) {
+      url.searchParams.set("high_watermark", String(highWatermark));
+    }
+    if (cursor !== null) url.searchParams.set("cursor", cursor);
+    const page = validatePlacementPage(
+      await fetchEnvelopeData(
+        url,
+        cookie,
+        fetchImpl,
+        maxResponseBytes,
+        "placement",
+      ),
+      {
+        controllerVersionId: candidate.controllerVersionId,
+        ringGeneration: candidate.ringGeneration,
+        campaignId,
+        ...(highWatermark === null
+          ? {}
+          : { highWatermark, totalRecords }),
+        afterSequence,
+      },
+    );
+    if (highWatermark === null) {
+      highWatermark = page.high_watermark;
+      totalRecords = page.total_records;
+    }
+    pages.push(page);
+    if (page.pagination_complete) {
+      return buildPlacementSnapshot({ capturedAt, pages });
+    }
+    if (page.next_cursor === null || !seenCursors.add(page.next_cursor)) {
+      throw new ShardRegistryError("placement pagination cursor is invalid");
+    }
+    cursor = page.next_cursor;
+    afterSequence = page.records.at(-1).placement_event_sequence;
+  }
+  throw new ShardRegistryError("placement pagination exceeded its page bound");
+}
+
 export async function collectShardRegistry(
   request,
   { cookie, fetchImpl = fetch, now = () => new Date(), sleep = delay } = {},
@@ -223,6 +290,15 @@ export async function collectShardRegistry(
   );
   const before = await collectActivationSnapshot(
     { origin: request.origin, candidate: request.candidate, capturedAt: observationStartedAt },
+    { cookie, fetchImpl },
+  );
+  const placementBefore = await collectPlacementSnapshot(
+    {
+      origin: request.origin,
+      candidate: request.candidate,
+      campaignId: request.campaignId,
+      capturedAt: observationStartedAt,
+    },
     { cookie, fetchImpl },
   );
   await sleep(request.observationSeconds * 1_000);
@@ -245,6 +321,15 @@ export async function collectShardRegistry(
     { origin: request.origin, candidate: request.candidate, capturedAt: observationEndedAt },
     { cookie, fetchImpl },
   );
+  const placementAfter = await collectPlacementSnapshot(
+    {
+      origin: request.origin,
+      candidate: request.candidate,
+      campaignId: request.campaignId,
+      capturedAt: observationEndedAt,
+    },
+    { cookie, fetchImpl },
+  );
   return buildShardRegistryCapture({
     candidate: request.candidate,
     observationStartedAt,
@@ -253,6 +338,8 @@ export async function collectShardRegistry(
     campaignAfter,
     before,
     after,
+    placementBefore,
+    placementAfter,
   });
 }
 

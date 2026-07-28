@@ -36,6 +36,33 @@ fn describe_ignores_runtime_trust_and_secret_poisoning() {
 }
 
 #[test]
+fn describe_placement_is_inert_zero_retry_and_secret_free() {
+    let output = Command::new(BINARY)
+        .arg("--describe-placement")
+        .env("CINATOKEN_SHARD_PLACEMENT_RUNNER_ENABLED", "true")
+        .env(
+            "CINATOKEN_SHARD_PLACEMENT_DEPLOY_TOKEN",
+            "poison-enable-token",
+        )
+        .env(
+            "CINATOKEN_SHARD_PLACEMENT_ROLLBACK_TOKEN",
+            "poison-rollback-token",
+        )
+        .output()
+        .expect("runner must start");
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).expect("stdout must be UTF-8 JSON");
+    assert!(stdout.contains("\"initialShardCount\": 8"));
+    assert!(stdout.contains("\"mutationSendAttemptLimit\": 1"));
+    assert!(stdout.contains("\"mutationRetryLimit\": 0"));
+    assert!(stdout.contains("\"edgeMutationAllowed\": false"));
+    assert!(stdout.contains("\"remoteExecutionAuthorized\": false"));
+    assert!(stdout.contains("\"credentialsRead\": false"));
+    assert!(!stdout.contains("poison"));
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
 fn execute_and_override_arguments_fail_closed() {
     let execute = Command::new(BINARY)
         .arg("--execute")
@@ -62,7 +89,7 @@ fn execute_and_override_arguments_fail_closed() {
         assert!(rejected.stdout.is_empty());
         assert_eq!(
             String::from_utf8(rejected.stderr).expect("stderr must be UTF-8"),
-            "usage: cinatoken-ring-transition-runner --describe|--execute\n"
+            "usage: cinatoken-ring-transition-runner --describe|--describe-placement|--execute\n"
         );
     }
 }

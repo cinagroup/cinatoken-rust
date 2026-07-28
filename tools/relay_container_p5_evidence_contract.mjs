@@ -16,7 +16,7 @@ export const APPROVAL_DOMAIN =
   "cinatoken-relay-container-p5-approval-v1";
 export const FOUNDATION_CAPTURE_CONTRACT =
   "cinatoken-relay-container-p5-foundation-capture-v1";
-export const FOUNDATION_COLLECTOR_VERSION = 5;
+export const FOUNDATION_COLLECTOR_VERSION = 6;
 
 const FOUNDATION_READBACK_KEYS = Object.freeze([
   "edge-version",
@@ -1490,6 +1490,7 @@ function validateShardActivationCampaignEvidence(value, candidate, label) {
       "sealedAt",
       "receiptCount",
       "receiptSetSha256",
+      "placementMutationAuthorization",
     ],
     `[${label}] shard activation campaign`,
   );
@@ -1555,7 +1556,241 @@ function validateShardActivationCampaignEvidence(value, candidate, label) {
   requireInteger(campaign.sealedAt, 1, Number.MAX_SAFE_INTEGER, `[${label}] sealed timestamp`);
   requireExact(campaign.receiptCount, candidate.shardCount, `[${label}] receipt count`);
   requireSha256(campaign.receiptSetSha256, `[${label}] receipt set digest`);
+  validatePlacementMutationAuthorizationEvidence(
+    campaign.placementMutationAuthorization,
+    campaign,
+    candidate,
+    label,
+  );
   return campaign;
+}
+
+function validatePlacementMutationAuthorizationEvidence(
+  value,
+  campaign,
+  candidate,
+  label,
+) {
+  const authorization = requireObject(
+    value,
+    `[${label}] placement mutation authorization`,
+  );
+  exactKeys(
+    authorization,
+    [
+      "storageMigration",
+      "contractVersion",
+      "authorizationContract",
+      "authorizationIdSha256",
+      "executionNonceSha256",
+      "campaignNonceSha256",
+      "subjectDigestSha256",
+      "issuer",
+      "keyId",
+      "signerSpkiSha256",
+      "environment",
+      "controllerServiceName",
+      "controllerVersionId",
+      "actionGateInventorySha256",
+      "foundationManifestSha256",
+      "runtimeBuildId",
+      "ringGeneration",
+      "shardCount",
+      "campaignLifetimeSeconds",
+      "permitIssuedAt",
+      "permitExpiresAt",
+      "campaignId",
+      "campaignDigestSha256",
+      "campaignExpiresAt",
+      "consumedByAdminId",
+      "consumedAt",
+      "rowSha256",
+    ],
+    `[${label}] placement mutation authorization`,
+  );
+  requireExact(
+    authorization.storageMigration,
+    EXPECTED_MIGRATION_HEAD,
+    `[${label}] placement authorization storage migration`,
+  );
+  requireExact(
+    authorization.contractVersion,
+    1,
+    `[${label}] placement authorization contract version`,
+  );
+  requireExact(
+    authorization.authorizationContract,
+    "cinatoken-relay-shard-placement-mutation-authorization-v1",
+    `[${label}] placement authorization contract`,
+  );
+  for (const [field, fieldLabel] of [
+    ["authorizationIdSha256", "authorization ID"],
+    ["executionNonceSha256", "execution nonce digest"],
+    ["campaignNonceSha256", "campaign nonce digest"],
+    ["subjectDigestSha256", "subject digest"],
+    ["signerSpkiSha256", "signer SPKI digest"],
+    ["actionGateInventorySha256", "action gate inventory digest"],
+    ["foundationManifestSha256", "foundation manifest digest"],
+    ["runtimeBuildId", "runtime build ID"],
+    ["campaignId", "campaign ID"],
+    ["campaignDigestSha256", "campaign digest"],
+    ["rowSha256", "row digest"],
+  ]) {
+    requireSha256(
+      authorization[field],
+      `[${label}] placement authorization ${fieldLabel}`,
+    );
+  }
+  if (
+    new Set([
+      authorization.authorizationIdSha256,
+      authorization.executionNonceSha256,
+      authorization.campaignNonceSha256,
+    ]).size !== 3
+  ) {
+    throw new Error(
+      `[${label}] placement authorization identity digests are not distinct`,
+    );
+  }
+  requireToken(
+    authorization.issuer,
+    opaqueIdPattern,
+    `[${label}] placement authorization issuer`,
+  );
+  requireToken(
+    authorization.keyId,
+    keyIdPattern,
+    `[${label}] placement authorization key ID`,
+  );
+  requireExact(
+    authorization.environment,
+    "staging",
+    `[${label}] placement authorization environment`,
+  );
+  requireExact(
+    authorization.controllerServiceName,
+    candidate.controllerServiceName,
+    `[${label}] placement authorization Controller service`,
+  );
+  requireExact(
+    authorization.controllerVersionId,
+    campaign.controllerVersionId,
+    `[${label}] placement authorization Controller version`,
+  );
+  requireExact(
+    authorization.actionGateInventorySha256,
+    campaign.actionGateInventorySha256,
+    `[${label}] placement authorization action gates`,
+  );
+  requireExact(
+    authorization.foundationManifestSha256,
+    campaign.foundationManifestSha256,
+    `[${label}] placement authorization foundation manifest`,
+  );
+  requireExact(
+    authorization.runtimeBuildId,
+    campaign.runtimeBuildId,
+    `[${label}] placement authorization runtime build`,
+  );
+  requireExact(
+    authorization.ringGeneration,
+    campaign.ringGeneration,
+    `[${label}] placement authorization ring generation`,
+  );
+  requireExact(
+    authorization.shardCount,
+    campaign.shardCount,
+    `[${label}] placement authorization shard count`,
+  );
+  requireExact(
+    authorization.campaignId,
+    campaign.campaignId,
+    `[${label}] placement authorization campaign ID`,
+  );
+  requireExact(
+    authorization.campaignDigestSha256,
+    campaign.campaignDigestSha256,
+    `[${label}] placement authorization campaign digest`,
+  );
+  requireInteger(
+    authorization.campaignLifetimeSeconds,
+    60,
+    3_600,
+    `[${label}] placement authorization campaign lifetime`,
+  );
+  for (const [field, fieldLabel] of [
+    ["permitIssuedAt", "permit issued timestamp"],
+    ["permitExpiresAt", "permit expiry timestamp"],
+    ["campaignExpiresAt", "campaign expiry timestamp"],
+    ["consumedAt", "consumption timestamp"],
+  ]) {
+    requireInteger(
+      authorization[field],
+      1,
+      Number.MAX_SAFE_INTEGER,
+      `[${label}] placement authorization ${fieldLabel}`,
+    );
+  }
+  requireInteger(
+    authorization.consumedByAdminId,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    `[${label}] placement authorization admin ID`,
+  );
+  if (
+    authorization.permitExpiresAt < authorization.permitIssuedAt + 60 ||
+    authorization.permitExpiresAt > authorization.permitIssuedAt + 600 ||
+    authorization.permitIssuedAt > authorization.consumedAt + 120 ||
+    authorization.permitExpiresAt < authorization.consumedAt + 60
+  ) {
+    throw new Error(`[${label}] placement authorization permit window is invalid`);
+  }
+  const campaignCreatedAt =
+    authorization.campaignExpiresAt -
+    authorization.campaignLifetimeSeconds;
+  if (
+    Math.abs(authorization.consumedAt - campaignCreatedAt) > 5 ||
+    campaign.sealedAt < campaignCreatedAt ||
+    campaign.sealedAt > authorization.campaignExpiresAt
+  ) {
+    throw new Error(
+      `[${label}] placement authorization campaign timing is invalid`,
+    );
+  }
+  const row = {
+    authorization_id_sha256: authorization.authorizationIdSha256,
+    execution_nonce_sha256: authorization.executionNonceSha256,
+    campaign_nonce_sha256: authorization.campaignNonceSha256,
+    subject_digest_sha256: authorization.subjectDigestSha256,
+    contract_version: authorization.contractVersion,
+    authorization_contract: authorization.authorizationContract,
+    issuer: authorization.issuer,
+    key_id: authorization.keyId,
+    signer_spki_sha256: authorization.signerSpkiSha256,
+    environment: authorization.environment,
+    controller_service_name: authorization.controllerServiceName,
+    controller_version_id: authorization.controllerVersionId,
+    action_gate_inventory_sha256:
+      authorization.actionGateInventorySha256,
+    foundation_manifest_sha256: authorization.foundationManifestSha256,
+    runtime_build_id: authorization.runtimeBuildId,
+    ring_generation: authorization.ringGeneration,
+    shard_count: authorization.shardCount,
+    campaign_lifetime_seconds: authorization.campaignLifetimeSeconds,
+    permit_issued_at: authorization.permitIssuedAt,
+    permit_expires_at: authorization.permitExpiresAt,
+    campaign_id: authorization.campaignId,
+    campaign_digest_sha256: authorization.campaignDigestSha256,
+    campaign_expires_at: authorization.campaignExpiresAt,
+    consumed_by_admin_id: authorization.consumedByAdminId,
+    consumed_at: authorization.consumedAt,
+  };
+  requireExact(
+    authorization.rowSha256,
+    sha256Hex(Buffer.from(canonicalJson(row), "utf8")),
+    `[${label}] placement authorization row digest`,
+  );
+  return authorization;
 }
 
 function validateFoundationBinding(facts, evidence, label) {

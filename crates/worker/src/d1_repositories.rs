@@ -1013,7 +1013,7 @@ pub struct RelayContainerShardPlacementMutationAuthorization<'a> {
     pub consumed_by_admin_id: i64,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct RelayContainerShardPlacementMutationAuthorizationRow {
     pub authorization_id_sha256: String,
     pub execution_nonce_sha256: String,
@@ -11513,6 +11513,71 @@ pub async fn relay_container_shard_activation_campaign_status(
     relay_container_shard_activation_campaign_status_statement(db, campaign_id)?
         .first::<RelayContainerShardActivationCampaignStatusRow>(None)
         .await
+}
+
+pub async fn relay_container_shard_placement_authorization_by_campaign(
+    db: &D1Database,
+    campaign_id: &str,
+) -> worker::Result<Option<RelayContainerShardPlacementMutationAuthorizationRow>> {
+    validate_relay_container_sha256(campaign_id, "shard placement authorization campaign ID")?;
+    db.prepare(
+        r#"
+        SELECT authorization.authorization_id_sha256,
+               authorization.execution_nonce_sha256,
+               authorization.campaign_nonce_sha256,
+               authorization.subject_digest_sha256,
+               authorization.contract_version,
+               authorization.authorization_contract,
+               authorization.issuer,
+               authorization.key_id,
+               authorization.signer_spki_sha256,
+               authorization.environment,
+               authorization.controller_service_name,
+               authorization.controller_version_id,
+               authorization.action_gate_inventory_sha256,
+               authorization.foundation_manifest_sha256,
+               authorization.runtime_build_id,
+               authorization.ring_generation,
+               authorization.shard_count,
+               authorization.campaign_lifetime_seconds,
+               authorization.permit_issued_at,
+               authorization.permit_expires_at,
+               authorization.campaign_id,
+               authorization.campaign_digest_sha256,
+               authorization.campaign_expires_at,
+               authorization.consumed_by_admin_id,
+               authorization.consumed_at
+        FROM relay_container_shard_placement_mutation_authorizations
+             AS authorization
+        INNER JOIN relay_container_shard_activation_campaigns AS campaign
+          ON campaign.campaign_id = authorization.campaign_id
+         AND campaign.campaign_nonce_sha256 =
+               authorization.campaign_nonce_sha256
+         AND campaign.controller_version_id =
+               authorization.controller_version_id
+         AND campaign.action_gate_inventory_sha256 =
+               authorization.action_gate_inventory_sha256
+         AND campaign.foundation_manifest_sha256 =
+               authorization.foundation_manifest_sha256
+         AND campaign.runtime_build_id = authorization.runtime_build_id
+         AND campaign.ring_generation = authorization.ring_generation
+         AND campaign.shard_count = authorization.shard_count
+         AND campaign.environment = authorization.environment
+         AND campaign.created_by_admin_id =
+               authorization.consumed_by_admin_id
+         AND campaign.campaign_digest_sha256 =
+               authorization.campaign_digest_sha256
+         AND campaign.expires_at = authorization.campaign_expires_at
+         AND campaign.expires_at - campaign.created_at =
+               authorization.campaign_lifetime_seconds
+         AND abs(campaign.created_at - authorization.consumed_at) <= 5
+        WHERE authorization.campaign_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&D1Type::Text(campaign_id))?
+    .first::<RelayContainerShardPlacementMutationAuthorizationRow>(None)
+    .await
 }
 
 pub async fn relay_container_shard_activation_campaign_receipts(

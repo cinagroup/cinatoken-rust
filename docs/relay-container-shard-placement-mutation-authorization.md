@@ -2,10 +2,15 @@
 
 Date: 2026-07-28
 
-Status: local implementation complete for staging-only permit verification,
-atomic D1 consumption, and Controller pre-wake enforcement. No permit issuer,
-deployment runner, remote schema, live permit, writer-enabled deployment, or
-placement evidence is claimed. Production remains **NO-GO**.
+Status: local implementation now includes staging-only permit verification,
+atomic application-D1 consumption, Controller pre-wake enforcement, a private
+four-role Authority foundation, an inert zero-retry runner plan, root-only
+0063 readback, and P5 v4 authorization-row binding. The Authority is not a
+private-key signer, its issuance/revocation ledger is not yet atomically joined
+to application D1, and the runner has no live claim, workload routes, or
+mutation capability. No remote schema, live permit, writer-enabled deployment,
+placement evidence, or production authority is claimed. Production remains
+**NO-GO**.
 
 ## Purpose
 
@@ -15,17 +20,23 @@ campaign request authenticated only as root. This contract adds a separate,
 short-lived, single-use Ed25519 authorization that binds one exact staging
 Controller candidate and one exact activation campaign.
 
-The boundary has four independent layers:
+The target boundary has five independent layers:
 
-1. an external Authority process approves and signs one canonical permit;
-2. the edge Worker verifies the permit against deployment-pinned public trust;
-3. D1 atomically consumes the permit before creating its campaign; and
-4. the Controller and final placement trigger require the consumed permit
+1. four independent owners approve a canonical subject and an external
+   private-key system signs the compatibility permit;
+2. a private Authority verifies the four approvals and permit, then records
+   one append-only issuance or revocation;
+3. the edge Worker verifies the permit against deployment-pinned public trust;
+4. application D1 atomically consumes the permit before creating its campaign;
+5. the Controller and final placement trigger require the consumed permit
    before any Durable Object lookup, wake, or placement append.
 
-Only layers 2-4 are implemented. The repository's offline JavaScript verifier
-is a cross-runtime reference and release test. It is not an Authority service
-and cannot authorize a Cloudflare mutation.
+Layers 3-5 are connected locally. Layer 2 has an isolated service/D1
+foundation, but it is intentionally unreachable from a public route and is
+not yet the atomic campaign-consumption authority. Layer 1 private keys remain
+external by design. The repository's offline JavaScript verifier remains a
+cross-runtime reference and release test; it cannot authorize a Cloudflare
+mutation.
 
 ## Fixed Scope
 
@@ -165,28 +176,66 @@ atomic D1 batch is resolved through exact readback; the same permit cannot be
 consumed for another campaign. Any signature, trust, schema, identity, time,
 campaign, or readback drift fails closed.
 
-## Required Authority And Runner
+## Authority Foundation And Remaining Work
 
-Production readiness still requires a separate staging Authority and
-deployment runner. The Authority must:
+`services/shard-placement-authority` now provides a staging-only, default-off
+foundation. It has:
+
+- one isolated D1 and Worker version metadata, with no application D1, KV, R2,
+  Queue, Durable Object, Container, asset, or outbound service binding;
+- no `workers.dev`, preview URL, custom route, or production configuration;
+  staging ingress is service-binding-only;
+- distinct HMAC caller roles for read, issue, and revoke, including
+  current/previous credential identity slots;
+- five distinct deployment-pinned Ed25519 public identities: permit signer
+  plus security, operations, release, and rollback approval roots;
+- bounded canonical JSON, strict UTF-8, exact fields, request-body and time
+  limits, HMAC request binding, fixed role order, key/fingerprint isolation,
+  and canonical SPKI verification;
+- create-new issuance, exact replay, conflict, outcome-unknown, revocation,
+  expiry, and no-store readback behavior; and
+- append-preserved D1 rows containing safe digests, IDs, fingerprints, times,
+  approval-set digest, and revocation evidence, never private key material or
+  raw nonce/signature/SPKI bodies.
+
+The Authority verifies an externally signed permit; it does not and must not
+hold the permit private key. HMAC read/issue/revoke caller roles are transport
+roles and never substitute for the four Ed25519 owner approvals.
+
+Production readiness still requires the Authority boundary to:
 
 1. pin its policy and public approval keys outside caller input;
 2. require distinct security, operations, release, and rollback approvals;
 3. bind the exact immutable Controller deployment version, source/provenance,
    runtime build, gate inventory, foundation manifest, ring, shard count,
    campaign ID, and expiry;
-4. issue one permit only after the exposed historical credential is revoked
-   and replacement credential scopes are independently reviewed;
-5. persist a create-only issuance/revocation audit without private material;
-6. support key rotation and emergency revocation; and
-7. expose a bounded read-only receipt for an independent verifier.
+4. atomically join issuance, revocation, consumption, campaign, and placement
+   enforcement in one dedicated control D1, or provide a formally proven
+   cross-database protocol; the current two-D1 foundation does neither;
+5. add an exclusive execution claim and predecessor-bound append-only step
+   ledger so two hosts cannot run one authorization concurrently;
+6. preserve replayable signed approval evidence in reviewed WORM storage while
+   keeping private material out of Workers and D1;
+7. support current/next-or-previous approval keys with explicit validity,
+   status, retirement, and emergency revocation; and
+8. sit behind a separately Access-protected approval gateway that holds no D1
+   binding and reaches the Authority only through an exact Service Binding.
 
-The deployment runner must pin the Authority trust identity, use separate
-least-privilege read and deploy credentials, consume one execution nonce,
-deploy Controller before edge, perform zero-retry writes, classify response
-loss through authenticated version readback, and never enable production
-placement gates. It must restore both staging writer gates to false after the
-campaign, even when collection or rollback fails.
+The Rust runner now freezes the first safe plan as
+`cinatoken-relay-container-shard-placement-execution-plan-v1`: staging,
+Controller-only, exactly eight shards, 13 deterministic mutation operation
+slots, one send attempt per slot, zero retries, start receipt before send,
+readback-only recovery for ambiguous outcomes, no resend when evidence is
+missing, disable-first after the enable intent, and no Edge mutation. The
+checked-in description explicitly reports Authority claim and workload routes
+as uncompiled, reads no credentials, performs no network request or mutation,
+and grants no remote or production authority.
+
+Executable runner work still requires compile-time trust pins; separate
+read/enable/rollback/Authority/gateway credentials; the exclusive Authority
+claim/step ledger; non-root workload-authenticated campaign/readiness/status/
+abort routes; complete Cloudflare deployment pagination; stable double
+readback; and crash/fault tests at every persisted operation boundary.
 
 ## Staging Ceremony
 
@@ -203,8 +252,9 @@ The first eligible live ceremony is:
    immutable version, settings, source, build, image, SBOM, and provenance;
 6. collect four independent approvals and obtain one short-lived permit;
 7. atomically consume the permit and create the exact campaign;
-8. deploy the exact staging Controller version with both writer gates true;
-9. run one default-jurisdiction N/N activation campaign and collect stable
+8. use the zero-retry runner to deploy the exact staging Controller version
+   with both writer gates true; Edge remains on its signed baseline;
+9. run one default-jurisdiction 8/8 activation campaign and collect stable
    campaign, activation, authorization, placement, event, runtime, lifecycle,
    accounting, SLO, fault, load, and cost evidence;
 10. restore both gates to false, read back the disabled deployment, and revoke
@@ -219,12 +269,16 @@ drain, or DNS cutover authority.
 
 ## Acceptance And Rollback
 
-A staging campaign is `proven` only when the permit, D1 authorization row,
+A staging campaign is `proven` only when the four-role issuance, permit,
+D1 authorization row,
 campaign, N/N 0054 activations, N/N 0055 consumptions, N/N 0061 placements,
 N/N 0062 events, Controller deployment, runtime image, and before/after
-snapshots all bind the same candidate. The P5 collector does not yet ingest
-the 0063 authorization row, so P5 remains incomplete even though runtime
-consumption is implemented.
+snapshots all bind the same candidate. The P5 shard registry now advances to
+capture v4 and reads the same safe 25-column 0063 row before and after the
+bounded observation. It requires a stable canonical row digest and exact
+candidate/campaign/time linkage, and Foundation source v4 binds that evidence
+into both candidate-freeze and remote-inventory facts. This closes the local
+authorization-row join only; no live P5 evidence exists.
 
 Rollback means disabling both writer gates, retaining the immutable failed
 campaign and authorization, preventing new wakes, preserving Go/VPS authority,
@@ -233,7 +287,7 @@ It never means deleting or rewriting 0063, 0062, 0061, 0055, or 0054 evidence.
 
 ## Local Verification
 
-The local gate covers:
+The local gate additionally covers:
 
 - canonical Ed25519 verification in Rust and JavaScript;
 - fixed-vector parity and signed-field tampering;
@@ -243,16 +297,22 @@ The local gate covers:
 - campaign authorization insert/readback ordering;
 - Controller schema/readback validation before Durable Object lookup; and
 - Worker/Controller configuration default-off behavior.
+- private Authority binding inventory, no-public-route policy, secret
+  redaction, canonical four-role verification, concurrent exact replay,
+  revocation, and append-only migration guards;
+- root-first D1-only no-store 0063 readback with an exact safe projection; and
+- the staging/eight-shard/Controller-only runner plan, deterministic operation
+  IDs, receipt-capacity bound, single-send policy, ambiguous readback-only
+  recovery, disable-first rule, and inert CLI description.
 
 These tests prove local implementation consistency only. They do not prove
 Cloudflare account state, credential rotation, remote D1 schema, an Authority
 deployment, a live signature, a writer-enabled version, a Container wake, P5,
 customer traffic, billing, Go/VPS drain, DNS cutover, or production readiness.
 
-The complete repository gate passes with exit code 0 in 849.1 seconds. The
-focused authorization gate passes 15 Bun tests and 22 Rust tests; Controller
-portable/runtime suites pass 178 and 46 tests; the DO runtime suite passes 53
-tests; the Worker library passes 872 tests; and the WASM target check passes.
-SQLite independently proves 63 migrations, 72 tables, 962 checked incremental
-columns, and 105 key indexes. Existing Rust `dead_code` findings remain
-warnings only.
+Current focused verification passes the Authority type/dry-run/protocol/
+Workerd/config/migration aggregate, the three P5 suites, the new Worker
+authorization-reader tests, and the runner placement-plan/CLI tests. The full
+repository aggregate passes with exit code 0 in 1000.6 seconds. The remote
+staging ceremony must still be run for the final candidate. Existing Rust
+`dead_code` findings remain warnings only.

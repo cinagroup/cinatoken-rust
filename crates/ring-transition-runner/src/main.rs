@@ -1,4 +1,4 @@
-use cinatoken_ring_transition_runner::{authorize_execution, describe};
+use cinatoken_ring_transition_runner::{authorize_execution, describe, placement};
 
 #[tokio::main]
 async fn main() {
@@ -13,6 +13,18 @@ async fn main() {
                 1
             }
         },
+        Ok(Command::DescribePlacement) => {
+            match serde_json::to_string_pretty(&placement::describe()) {
+                Ok(output) => {
+                    println!("{output}");
+                    0
+                }
+                Err(_) => {
+                    eprintln!("shard placement runner description failed closed");
+                    1
+                }
+            }
+        }
         Ok(Command::Execute) => match authorize_execution().await {
             Ok(_) => {
                 eprintln!("ring transition identities verified; claim execution remains disabled");
@@ -34,6 +46,7 @@ async fn main() {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
     Describe,
+    DescribePlacement,
     Execute,
 }
 
@@ -41,8 +54,11 @@ fn parse_command(arguments: impl Iterator<Item = String>) -> Result<Command, &'s
     let values: Vec<String> = arguments.collect();
     match values.as_slice() {
         [value] if value == "--describe" => Ok(Command::Describe),
+        [value] if value == "--describe-placement" => Ok(Command::DescribePlacement),
         [value] if value == "--execute" => Ok(Command::Execute),
-        _ => Err("usage: cinatoken-ring-transition-runner --describe|--execute"),
+        _ => {
+            Err("usage: cinatoken-ring-transition-runner --describe|--describe-placement|--execute")
+        }
     }
 }
 
@@ -59,6 +75,10 @@ mod tests {
         assert_eq!(
             parse_command(["--execute".to_owned()].into_iter()),
             Ok(Command::Execute)
+        );
+        assert_eq!(
+            parse_command(["--describe-placement".to_owned()].into_iter()),
+            Ok(Command::DescribePlacement)
         );
         for rejected in [
             vec![],

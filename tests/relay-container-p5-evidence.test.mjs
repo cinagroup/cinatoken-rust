@@ -188,7 +188,34 @@ describe("Relay Container P5 evidence contract", () => {
           "f".repeat(64);
       },
     });
-    await expect(verify(crossCampaign)).rejects.toThrow(/same sealed activation campaign/);
+    await expect(verify(crossCampaign)).rejects.toThrow(
+      /placement authorization campaign ID|same sealed activation campaign/,
+    );
+  });
+
+  test("rejects historical foundation facts without 0063 authorization evidence", async () => {
+    const historical = await createBundle({
+      mutateFoundationCapture: (capture) => {
+        delete capture.subject.evidenceFacts.candidateFreeze
+          .shardActivationCampaign.placementMutationAuthorization;
+        delete capture.subject.evidenceFacts.remoteInventory
+          .shardActivationCampaign.placementMutationAuthorization;
+      },
+    });
+    await expect(verify(historical)).rejects.toThrow(
+      /shard activation campaign.*unknown or missing fields/,
+    );
+
+    const rawMaterial = await createBundle({
+      mutateFoundationCapture: (capture) => {
+        capture.subject.evidenceFacts.candidateFreeze
+          .shardActivationCampaign.placementMutationAuthorization.signature =
+          "must-never-be-retained";
+      },
+    });
+    await expect(verify(rawMaterial)).rejects.toThrow(
+      /placement mutation authorization.*unknown or missing fields/,
+    );
   });
 
   test("rejects the pre-0060 schema totals", async () => {
@@ -974,6 +1001,86 @@ function shardActivationCampaignFixture(candidate) {
     sealedAt: Math.floor(Date.parse("2026-07-19T09:49:00.000Z") / 1_000),
     receiptCount: candidate.shardCount,
     receiptSetSha256: "b".repeat(64),
+    placementMutationAuthorization:
+      placementMutationAuthorizationFixture(candidate),
+  };
+}
+
+function placementMutationAuthorizationFixture(candidate) {
+  const consumedAt = Math.floor(
+    Date.parse("2026-07-19T09:45:00.000Z") / 1_000,
+  );
+  const authorization = {
+    storageMigration:
+      "0063_relay_container_shard_placement_mutation_authorizations.sql",
+    contractVersion: 1,
+    authorizationContract:
+      "cinatoken-relay-shard-placement-mutation-authorization-v1",
+    authorizationIdSha256: sha256Hex(
+      Buffer.from("placement-authorization-id", "utf8"),
+    ),
+    executionNonceSha256: sha256Hex(
+      Buffer.from("placement-execution-nonce", "utf8"),
+    ),
+    campaignNonceSha256: sha256Hex(
+      Buffer.from("placement-campaign-nonce", "utf8"),
+    ),
+    subjectDigestSha256: sha256Hex(
+      Buffer.from("placement-authorization-subject", "utf8"),
+    ),
+    issuer: "cinatoken-ring-transition-authority",
+    keyId: "staging-placement-2026-07",
+    signerSpkiSha256: sha256Hex(
+      Buffer.from("placement-authority-spki", "utf8"),
+    ),
+    environment: "staging",
+    controllerServiceName: candidate.controllerServiceName,
+    controllerVersionId: candidate.controllerWorkerVersionId,
+    actionGateInventorySha256: "9".repeat(64),
+    foundationManifestSha256: "6".repeat(64),
+    runtimeBuildId: candidate.containerRuntimeBuildId,
+    ringGeneration: candidate.ringGeneration,
+    shardCount: candidate.shardCount,
+    campaignLifetimeSeconds: 3_600,
+    permitIssuedAt: consumedAt - 30,
+    permitExpiresAt: consumedAt + 120,
+    campaignId: "c".repeat(64),
+    campaignDigestSha256: "d".repeat(64),
+    campaignExpiresAt: consumedAt + 3_600,
+    consumedByAdminId: 7,
+    consumedAt,
+  };
+  const row = {
+    authorization_id_sha256: authorization.authorizationIdSha256,
+    execution_nonce_sha256: authorization.executionNonceSha256,
+    campaign_nonce_sha256: authorization.campaignNonceSha256,
+    subject_digest_sha256: authorization.subjectDigestSha256,
+    contract_version: authorization.contractVersion,
+    authorization_contract: authorization.authorizationContract,
+    issuer: authorization.issuer,
+    key_id: authorization.keyId,
+    signer_spki_sha256: authorization.signerSpkiSha256,
+    environment: authorization.environment,
+    controller_service_name: authorization.controllerServiceName,
+    controller_version_id: authorization.controllerVersionId,
+    action_gate_inventory_sha256:
+      authorization.actionGateInventorySha256,
+    foundation_manifest_sha256: authorization.foundationManifestSha256,
+    runtime_build_id: authorization.runtimeBuildId,
+    ring_generation: authorization.ringGeneration,
+    shard_count: authorization.shardCount,
+    campaign_lifetime_seconds: authorization.campaignLifetimeSeconds,
+    permit_issued_at: authorization.permitIssuedAt,
+    permit_expires_at: authorization.permitExpiresAt,
+    campaign_id: authorization.campaignId,
+    campaign_digest_sha256: authorization.campaignDigestSha256,
+    campaign_expires_at: authorization.campaignExpiresAt,
+    consumed_by_admin_id: authorization.consumedByAdminId,
+    consumed_at: authorization.consumedAt,
+  };
+  return {
+    ...authorization,
+    rowSha256: sha256Hex(Buffer.from(canonicalJson(row), "utf8")),
   };
 }
 

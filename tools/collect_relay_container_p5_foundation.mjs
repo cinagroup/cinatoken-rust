@@ -20,15 +20,17 @@ import {
   sha256,
 } from "./lib/cloudflare_readback.mjs";
 import {
-  SHARD_REGISTRY_CAPTURE_CONTRACT,
   sha256Canonical,
-  validateShardRegistryCapture,
 } from "./lib/relay_container_shard_registry.mjs";
+import {
+  SHARD_REGISTRY_CAPTURE_CONTRACT,
+  validateShardRegistryCapture,
+} from "./collect_relay_container_p5_shard_registry.mjs";
 
 export const FOUNDATION_REQUEST_CONTRACT =
   "cinatoken-relay-container-p5-foundation-request-v1";
 export const FOUNDATION_SOURCES_CONTRACT =
-  "cinatoken-relay-container-p5-foundation-sources-v3";
+  "cinatoken-relay-container-p5-foundation-sources-v4";
 export const REPLACEMENT_TOKEN_ENV = "CINATOKEN_P5_READBACK_TOKEN";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -243,7 +245,7 @@ export function validateFoundationSources(value, candidateDigestSha256, candidat
     ],
     "foundation sources",
   );
-  requireExact(bundle.schemaVersion, 3, "source schemaVersion");
+  requireExact(bundle.schemaVersion, 4, "source schemaVersion");
   requireExact(bundle.contract, FOUNDATION_SOURCES_CONTRACT, "source contract");
   requireExact(bundle.environment, "staging", "source environment");
   requireExact(
@@ -569,11 +571,12 @@ function collectBlockers({
     if (source.status !== "pass") blockers.push(`${name}-source-not-pass`);
   }
   const { actionGates, sbom, shardRegistry, r2Inventory, traffic } = sources.sources;
+  const registryCore = shardRegistry.capture.registryCore;
   const shardObservationStartedAt = new Date(
-    shardRegistry.capture.observationStartedAt,
+    registryCore.observationStartedAt,
   ).getTime();
   const shardObservationEndedAt = new Date(
-    shardRegistry.capture.observationEndedAt,
+    registryCore.observationEndedAt,
   ).getTime();
   if (
     shardObservationStartedAt > startedAt + sourceClockSkewMs ||
@@ -593,12 +596,12 @@ function collectBlockers({
   if (actionGates.allActionGatesFalse !== true) blockers.push("action-gates-not-false");
   if (
     actionGates.actionGateInventorySha256 !==
-      shardRegistry.capture.campaign.actionGateInventorySha256 ||
-    actionGates.actionGateCount !== shardRegistry.capture.campaign.actionGateCount ||
+      registryCore.campaign.actionGateInventorySha256 ||
+    actionGates.actionGateCount !== registryCore.campaign.actionGateCount ||
     actionGates.allActionGatesFalse !==
-      shardRegistry.capture.campaign.allActionGatesFalse ||
+      registryCore.campaign.allActionGatesFalse ||
     actionGates.controllerVersionId !==
-      shardRegistry.capture.campaign.controllerVersionId
+      registryCore.campaign.controllerVersionId
   ) {
     blockers.push("action-gates-campaign-mismatch");
   }
@@ -621,17 +624,17 @@ function collectBlockers({
   }
   if (
     shardRegistry.doNamespaceIdSha256 !== request.candidate.doNamespaceIdSha256 ||
-    shardRegistry.capture.candidate.controllerVersionId !==
+    registryCore.candidate.controllerVersionId !==
       request.candidate.controllerWorkerVersionId ||
-    shardRegistry.capture.candidate.runtimeBuildId !==
+    registryCore.candidate.runtimeBuildId !==
       request.candidate.containerRuntimeBuildId ||
-    shardRegistry.capture.candidate.containerImageDigest !==
+    registryCore.candidate.containerImageDigest !==
       request.candidate.containerImageDigest ||
-    shardRegistry.capture.candidate.imageProvenanceSha256 !==
+    registryCore.candidate.imageProvenanceSha256 !==
       request.candidate.containerImageProvenanceSha256 ||
-    shardRegistry.capture.candidate.ringGeneration !== request.candidate.ringGeneration ||
-    shardRegistry.capture.candidate.shardCount !== request.candidate.shardCount ||
-    shardRegistry.capture.verifiedShardCount !== request.candidate.shardCount ||
+    registryCore.candidate.ringGeneration !== request.candidate.ringGeneration ||
+    registryCore.candidate.shardCount !== request.candidate.shardCount ||
+    registryCore.verifiedShardCount !== request.candidate.shardCount ||
     shardRegistry.capture.evidenceReady !== true
   ) {
     blockers.push("shard-registry-incomplete");
@@ -685,12 +688,13 @@ function buildEvidenceFacts({ request, sources, artifactInventorySha256 }) {
       doClass: request.candidate.doClass,
       containerClass: request.candidate.containerClass,
       containerRuntimeBuildId:
-        shardRegistry.capture.candidate.runtimeBuildId,
+        shardRegistry.capture.registryCore.candidate.runtimeBuildId,
       containerImageProvenanceSha256:
-        shardRegistry.capture.candidate.imageProvenanceSha256,
+        shardRegistry.capture.registryCore.candidate.imageProvenanceSha256,
       ringGeneration: request.candidate.ringGeneration,
       shardCount: request.candidate.shardCount,
-      verifiedShardCount: shardRegistry.capture.verifiedShardCount,
+      verifiedShardCount:
+        shardRegistry.capture.registryCore.verifiedShardCount,
       shardActivationCampaign,
       unknownWriterCount: r2Inventory.unknownWriterCount,
       unknownObjectCount: r2Inventory.unknownObjectCount,
@@ -701,7 +705,9 @@ function buildEvidenceFacts({ request, sources, artifactInventorySha256 }) {
 }
 
 function campaignEvidenceFromCapture(capture) {
-  const campaign = capture.campaign;
+  const campaign = capture.registryCore.campaign;
+  const authorization = capture.placementMutationAuthorization;
+  const row = authorization.row;
   return {
     campaignContract: campaign.campaignContract,
     state: campaign.state,
@@ -728,6 +734,35 @@ function campaignEvidenceFromCapture(capture) {
     sealedAt: campaign.sealedAt,
     receiptCount: campaign.receiptCount,
     receiptSetSha256: campaign.receiptSetSha256,
+    placementMutationAuthorization: {
+      storageMigration: authorization.migration,
+      contractVersion: row.contract_version,
+      authorizationContract: row.authorization_contract,
+      authorizationIdSha256: row.authorization_id_sha256,
+      executionNonceSha256: row.execution_nonce_sha256,
+      campaignNonceSha256: row.campaign_nonce_sha256,
+      subjectDigestSha256: row.subject_digest_sha256,
+      issuer: row.issuer,
+      keyId: row.key_id,
+      signerSpkiSha256: row.signer_spki_sha256,
+      environment: row.environment,
+      controllerServiceName: row.controller_service_name,
+      controllerVersionId: row.controller_version_id,
+      actionGateInventorySha256: row.action_gate_inventory_sha256,
+      foundationManifestSha256: row.foundation_manifest_sha256,
+      runtimeBuildId: row.runtime_build_id,
+      ringGeneration: row.ring_generation,
+      shardCount: row.shard_count,
+      campaignLifetimeSeconds: row.campaign_lifetime_seconds,
+      permitIssuedAt: row.permit_issued_at,
+      permitExpiresAt: row.permit_expires_at,
+      campaignId: row.campaign_id,
+      campaignDigestSha256: row.campaign_digest_sha256,
+      campaignExpiresAt: row.campaign_expires_at,
+      consumedByAdminId: row.consumed_by_admin_id,
+      consumedAt: row.consumed_at,
+      rowSha256: authorization.rowSha256,
+    },
   };
 }
 

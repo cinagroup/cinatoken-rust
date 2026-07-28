@@ -8,18 +8,21 @@ import {
   buildActivationSnapshot,
   buildCampaignSnapshot,
   buildPlacementSnapshot,
-  buildShardRegistryCapture,
+  buildShardRegistryCapture as buildHistoricalShardRegistryCapture,
   campaignConsumptionDigestSha256,
   placementAttestationDigestSha256,
   validateRegistryCandidate,
-  validateShardRegistryCapture,
+  validateShardRegistryCapture as validateHistoricalShardRegistryCapture,
 } from "../tools/lib/relay_container_shard_registry.mjs";
 import {
   SHARD_REGISTRY_REQUEST_CONTRACT,
+  buildAuthorizedShardRegistryCapture,
+  buildPlacementMutationAuthorizationSnapshot,
   collectActivationSnapshot,
   collectPlacementSnapshot,
   collectShardRegistry,
   validateCollectorRequest,
+  validateShardRegistryCapture,
 } from "../tools/collect_relay_container_p5_shard_registry.mjs";
 
 describe("P5 relay Container sealed campaign evidence", () => {
@@ -37,13 +40,74 @@ describe("P5 relay Container sealed campaign evidence", () => {
     expect(capture.verifiedPlacementCount).toBe(candidate.shardCount);
     expect(capture.campaign.state).toBe("sealed_complete");
     expect(capture.campaign.receiptCount).toBe(candidate.shardCount);
-    expect(validateShardRegistryCapture(capture, candidate)).toEqual(capture);
+    expect(validateHistoricalShardRegistryCapture(capture, candidate)).toEqual(
+      capture,
+    );
 
     const forged = structuredClone(capture);
     forged.verifiedReceiptCount = 999;
-    expect(() => validateShardRegistryCapture(forged, candidate)).toThrow(
+    expect(() =>
+      validateHistoricalShardRegistryCapture(forged, candidate),
+    ).toThrow(
       "derived-field drift",
     );
+  });
+
+  test("requires a stable, exact 0063 row in the current v4 capture", () => {
+    const candidate = candidateFixture();
+    const campaign = campaignFixture(candidate);
+    const before = snapshotFixture(candidate, activationRecords(campaign.receipts));
+    const after = { ...before, capturedAt: "2026-07-19T10:05:00.000Z" };
+    const registryCore = buildCapture(candidate, campaign, before, after);
+    const authorization = placementAuthorizationRowFixture(candidate, campaign);
+    const authorizationBefore = buildPlacementMutationAuthorizationSnapshot({
+      capturedAt: before.capturedAt,
+      row: authorization,
+      expected: { candidate, campaign: registryCore.campaign },
+    });
+    const authorizationAfter = buildPlacementMutationAuthorizationSnapshot({
+      capturedAt: after.capturedAt,
+      row: authorization,
+      expected: { candidate, campaign: registryCore.campaign },
+    });
+    const capture = buildAuthorizedShardRegistryCapture({
+      registryCore,
+      authorizationBefore,
+      authorizationAfter,
+    });
+
+    expect(capture.schemaVersion).toBe(4);
+    expect(capture.evidenceReady).toBe(true);
+    expect(capture.placementMutationAuthorization.migration).toBe(
+      "0063_relay_container_shard_placement_mutation_authorizations.sql",
+    );
+    expect(
+      capture.placementMutationAuthorization.row.authorization_id_sha256,
+    ).toBe(authorization.authorization_id_sha256);
+    expect(validateShardRegistryCapture(capture, candidate)).toEqual(capture);
+    expect(() => validateShardRegistryCapture(registryCore, candidate)).toThrow(
+      /shard registry capture fields are invalid/,
+    );
+
+    const row = capture.placementMutationAuthorization.row;
+    expect(row).not.toHaveProperty("execution_nonce");
+    expect(row).not.toHaveProperty("campaign_nonce");
+    expect(row).not.toHaveProperty("signature");
+    expect(row).not.toHaveProperty("signer_spki");
+
+    const authorizationAfterDrift =
+      buildPlacementMutationAuthorizationSnapshot({
+        capturedAt: after.capturedAt,
+        row: { ...authorization, subject_digest_sha256: "e".repeat(64) },
+        expected: { candidate, campaign: registryCore.campaign },
+      });
+    expect(() =>
+      buildAuthorizedShardRegistryCapture({
+        registryCore,
+        authorizationBefore,
+        authorizationAfter: authorizationAfterDrift,
+      }),
+    ).toThrow(/authorization readback drifted/);
   });
 
   test("shares activation and consumption digest vectors", () => {
@@ -178,7 +242,7 @@ describe("P5 relay Container sealed campaign evidence", () => {
       capturedAt: stableAfter.capturedAt,
       pages: [placementPageFixture(candidate, campaign, changedPlacements)],
     });
-    const placementDrift = buildShardRegistryCapture({
+    const placementDrift = buildHistoricalShardRegistryCapture({
       candidate,
       observationStartedAt: before.capturedAt,
       observationEndedAt: stableAfter.capturedAt,
@@ -198,7 +262,7 @@ describe("P5 relay Container sealed campaign evidence", () => {
       receipt.action_gate_inventory_sha256 = changed.action_gate_inventory_sha256;
     }
     expect(() =>
-      buildShardRegistryCapture({
+      buildHistoricalShardRegistryCapture({
         candidate,
         observationStartedAt: before.capturedAt,
         observationEndedAt: "2026-07-19T10:05:00.000Z",
@@ -230,7 +294,7 @@ describe("P5 relay Container sealed campaign evidence", () => {
     const before = snapshotFixture(candidate, activationRecords(campaign.receipts));
     const after = { ...before, capturedAt: "2026-07-19T10:05:00.000Z" };
     expect(() =>
-      buildShardRegistryCapture({
+      buildHistoricalShardRegistryCapture({
         candidate,
         observationStartedAt: "2026-07-19T09:55:00.000Z",
         observationEndedAt: after.capturedAt,
@@ -354,6 +418,8 @@ describe("P5 relay Container sealed campaign evidence", () => {
         calls.push(String(url));
         const data = url.pathname.endsWith("activation-campaigns")
           ? campaign
+          : url.pathname.endsWith("placement-mutation-authorizations")
+            ? placementAuthorizationRowFixture(candidate, campaign)
           : url.pathname.endsWith("/placements")
             ? placementPage
             : page;
@@ -363,8 +429,14 @@ describe("P5 relay Container sealed campaign evidence", () => {
       sleep: async () => {},
     });
     expect(calls.filter((url) => url.includes("activation-campaigns"))).toHaveLength(2);
+    expect(
+      calls.filter((url) =>
+        url.includes("placement-mutation-authorizations"),
+      ),
+    ).toHaveLength(2);
     expect(calls.filter((url) => url.includes("/placements"))).toHaveLength(2);
     expect(capture.evidenceReady).toBe(true);
+    expect(capture.schemaVersion).toBe(4);
     expect(capture.safetyBoundary.shardDoOrContainerWakePerformed).toBe(false);
   });
 
@@ -481,6 +553,39 @@ function campaignFixture(candidate) {
   return campaign;
 }
 
+function placementAuthorizationRowFixture(candidate, campaign) {
+  return {
+    authorization_id_sha256: hash("placement-authorization-id"),
+    execution_nonce_sha256: hash("placement-execution-nonce"),
+    campaign_nonce_sha256: hash("placement-campaign-nonce"),
+    subject_digest_sha256: hash("placement-authorization-subject"),
+    contract_version: 1,
+    authorization_contract:
+      "cinatoken-relay-shard-placement-mutation-authorization-v1",
+    issuer: "cinatoken-ring-transition-authority",
+    key_id: "staging-placement-2026-07",
+    signer_spki_sha256: hash("placement-authority-spki"),
+    environment: "staging",
+    controller_service_name: "cinatoken-container-controller-staging",
+    controller_version_id: candidate.controllerVersionId,
+    action_gate_inventory_sha256:
+      campaign.action_gate_inventory_sha256,
+    foundation_manifest_sha256: campaign.foundation_manifest_sha256,
+    runtime_build_id: candidate.runtimeBuildId,
+    ring_generation: candidate.ringGeneration,
+    shard_count: candidate.shardCount,
+    campaign_lifetime_seconds:
+      campaign.expires_at - campaign.created_at,
+    permit_issued_at: campaign.created_at - 30,
+    permit_expires_at: campaign.created_at + 120,
+    campaign_id: campaign.campaign_id,
+    campaign_digest_sha256: campaign.campaign_digest_sha256,
+    campaign_expires_at: campaign.expires_at,
+    consumed_by_admin_id: 7,
+    consumed_at: campaign.created_at,
+  };
+}
+
 function receiptFixture(campaign, shardIndex) {
   const receipt = {
     campaign_id: campaign.campaign_id,
@@ -594,7 +699,7 @@ function buildCapture(candidate, campaign, before, after) {
     ...placementBefore,
     capturedAt: after.capturedAt,
   };
-  return buildShardRegistryCapture({
+  return buildHistoricalShardRegistryCapture({
     candidate,
     observationStartedAt: before.capturedAt,
     observationEndedAt: after.capturedAt,

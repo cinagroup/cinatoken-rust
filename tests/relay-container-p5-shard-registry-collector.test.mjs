@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   SHARD_REGISTRY_REQUEST_CONTRACT,
   collectCampaignSnapshot,
+  collectPlacementMutationAuthorizationSnapshot,
   validateCollectorRequest,
 } from "../tools/collect_relay_container_p5_shard_registry.mjs";
 import {
@@ -104,6 +105,67 @@ describe("P5 sealed campaign collector", () => {
         foundationManifestSha256: "A".repeat(64),
       }),
     ).toThrow(/foundation manifest digest/);
+  });
+
+  test("collects only the exact 0063 row and rejects raw authorization material", async () => {
+    const candidate = candidateFixture();
+    const campaign = campaignFixture(candidate);
+    const campaignSnapshot = {
+      campaignId: campaign.campaign_id,
+      campaignDigestSha256: campaign.campaign_digest_sha256,
+      controllerVersionId: campaign.controller_version_id,
+      actionGateInventorySha256: campaign.action_gate_inventory_sha256,
+      foundationManifestSha256: campaign.foundation_manifest_sha256,
+      runtimeBuildId: campaign.runtime_build_id,
+      ringGeneration: campaign.ring_generation,
+      shardCount: campaign.shard_count,
+      createdAt: campaign.created_at,
+      expiresAt: campaign.expires_at,
+    };
+    const row = placementAuthorizationRowFixture(candidate, campaign);
+    const snapshot = await collectPlacementMutationAuthorizationSnapshot(
+      {
+        origin: "https://staging.cinatoken.com",
+        candidate,
+        campaign: campaignSnapshot,
+        capturedAt: "2026-07-19T10:00:00.000Z",
+      },
+      {
+        cookie: "session=self-test-secret-cookie-value",
+        fetchImpl: async (url) => {
+          expect(String(url)).toContain(
+            `campaign_id=${campaign.campaign_id}`,
+          );
+          return jsonResponse({ success: true, message: "", data: row });
+        },
+      },
+    );
+    expect(snapshot.row).toEqual(row);
+    expect(snapshot.rowSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(snapshot.row).not.toHaveProperty("signature");
+    expect(snapshot.row).not.toHaveProperty("execution_nonce");
+    expect(snapshot.row).not.toHaveProperty("campaign_nonce");
+    expect(snapshot.row).not.toHaveProperty("signer_spki");
+
+    await expect(
+      collectPlacementMutationAuthorizationSnapshot(
+        {
+          origin: "https://staging.cinatoken.com",
+          candidate,
+          campaign: campaignSnapshot,
+          capturedAt: "2026-07-19T10:00:00.000Z",
+        },
+        {
+          cookie: "session=self-test-secret-cookie-value",
+          fetchImpl: async () =>
+            jsonResponse({
+              success: true,
+              message: "",
+              data: { ...row, signature: "must-never-be-retained" },
+            }),
+        },
+      ),
+    ).rejects.toThrow(/row fields are invalid/);
   });
 });
 
@@ -209,6 +271,39 @@ function campaignFixture(candidate) {
   campaign.receipts = [receipt];
   campaign.last_consumption_digest_sha256 = receipt.consumption_digest_sha256;
   return campaign;
+}
+
+function placementAuthorizationRowFixture(candidate, campaign) {
+  return {
+    authorization_id_sha256: hash("placement-authorization-id"),
+    execution_nonce_sha256: hash("placement-execution-nonce"),
+    campaign_nonce_sha256: hash("placement-campaign-nonce"),
+    subject_digest_sha256: hash("placement-authorization-subject"),
+    contract_version: 1,
+    authorization_contract:
+      "cinatoken-relay-shard-placement-mutation-authorization-v1",
+    issuer: "cinatoken-ring-transition-authority",
+    key_id: "staging-placement-2026-07",
+    signer_spki_sha256: hash("placement-authority-spki"),
+    environment: "staging",
+    controller_service_name: "cinatoken-container-controller-staging",
+    controller_version_id: candidate.controllerVersionId,
+    action_gate_inventory_sha256:
+      campaign.action_gate_inventory_sha256,
+    foundation_manifest_sha256: campaign.foundation_manifest_sha256,
+    runtime_build_id: candidate.runtimeBuildId,
+    ring_generation: candidate.ringGeneration,
+    shard_count: candidate.shardCount,
+    campaign_lifetime_seconds:
+      campaign.expires_at - campaign.created_at,
+    permit_issued_at: campaign.created_at - 30,
+    permit_expires_at: campaign.created_at + 120,
+    campaign_id: campaign.campaign_id,
+    campaign_digest_sha256: campaign.campaign_digest_sha256,
+    campaign_expires_at: campaign.expires_at,
+    consumed_by_admin_id: 7,
+    consumed_at: campaign.created_at,
+  };
 }
 
 function hash(value) {

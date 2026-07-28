@@ -3858,3 +3858,87 @@ remotely, and no permit, campaign, placement, Container wake, customer
 traffic, provider effect, or financial authority was created. The exposed
 historical credential must be revoked and replaced before staging. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-28 Private Placement Authority, Runner Plan, And P5 v4
+
+Phase 1 now has three additional local foundations, all intentionally inert:
+
+1. `services/shard-placement-authority` verifies one externally signed v1
+   permit plus fixed-order security, operations, release, and rollback
+   Ed25519 approvals. It stores only safe issuance/revocation digests and
+   fingerprints in an isolated append-only D1. Read, issue, and revoke callers
+   use separate body-bound HMAC roles; these machine roles never replace the
+   four human-owner approvals.
+2. `cinatoken-relay-container-shard-placement-execution-plan-v1` freezes the
+   first runner cohort to staging, Controller-only, and exactly eight shards.
+   It derives 13 deterministic mutation operation IDs, permits one send and
+   zero retries per operation, requires a persisted start receipt before
+   send, allows only exact GET readback after ambiguity, forbids resend when
+   readback is absent, forbids Edge mutation, and requires disable-first after
+   an enable intent.
+3. P5 shard registry capture v4 and collector version 6 retain the historical
+   v3 campaign/activation/placement core and add the exact safe 25-column 0063
+   row before and after the same observation. Foundation source v4 binds its
+   canonical row digest into candidate-freeze and remote-inventory evidence.
+
+The new root route
+`GET /api/platform/container/shards/placement-mutation-authorizations`
+authenticates before D1, accepts only one lowercase 64-hex `campaign_id`,
+probes the exact 0061-0063 schema, joins the authorization to its immutable
+campaign, returns only the 25 safe fields, and applies `Cache-Control:
+no-store` to every outcome. It has no DO, Container, service-binding, D1-write,
+deployment, campaign-create, or gate-change path.
+
+The Authority has no public staging route, `workers.dev`, preview URL, or
+production configuration. Its only intended ingress is a future exact Service
+Binding from a separately Access-protected approval/workload gateway. The
+checked-in trust placeholders and all four Authority gates remain false. The
+runner description also reports exclusive Authority claim and workload routes
+as uncompiled, reads no credential, performs no network request or mutation,
+and grants no remote or production authority.
+
+These foundations do not yet form a production transaction. Authority
+issuance/revocation and application-D1 consumption remain separate ledgers;
+revocation cannot yet block an already authorized 0063 campaign; no
+cross-host exclusive execution claim or predecessor-bound step ledger exists;
+campaign/readiness still depend on root session; approval-key overlap rotation
+and WORM retention of replayable signed evidence are absent; and Cloudflare
+deployment inventory pagination is not yet independently complete.
+
+The next production-critical implementation order is:
+
+1. revoke the exposed historical Cloudflare credential and independently
+   prove absence before reading or mutating staging;
+2. select one dedicated placement-control D1 for Authority subject, approvals,
+   issuance, revocation, execution claim/steps, campaign, activation,
+   placement, and immutable events, or formally prove an alternative
+   cross-database protocol;
+3. add an Access-protected gateway with no D1 and one private Authority Service
+   Binding; verify Access `aud`, stable owner identity, group-to-role mapping,
+   and four distinct owner identities;
+4. add current/next-or-previous approval-key validity and revocation policy,
+   external WORM retention of canonical signed evidence, and a two-owner
+   security+rollback revocation ceremony;
+5. implement an exclusive Authority claim and predecessor-bound execution
+   steps, then compile the runner's read, enable, rollback, Authority, and
+   gateway credential typestates and trust pins;
+6. replace root runner access with path/body/role-bound workload HMAC plus
+   Access, and add read-only recovery plus zero-retry abort/disable routes;
+7. apply 0061-0063 reader-first to isolated staging with every writer gate
+   false, prove exact catalog and zero rows, then run one Controller-only 8/8
+   synthetic campaign with Edge held to its signed baseline;
+8. disable the Controller first on every success, rejection, timeout, response
+   loss, or local crash; seal success only after stable disabled readback,
+   unchanged Edge readback, sealed 8/8 campaign, exact 0063 row, and complete
+   0054/0055/0061/0062 evidence; and
+9. collect fault/load/cost/SLO/security/privacy/rollback evidence, five P5
+   owner signatures, clean-host replay, and Go/VPS drain/reverse-sync evidence
+   before any production review.
+
+Focused Authority, Workerd, migration/config, P5, Worker-reader, and runner
+plan tests pass locally, and the complete repository gate passes with exit
+code 0 in 1000.6 seconds. No Cloudflare credential was read, no remote request
+or migration was made, no gate changed, and no permit, campaign, placement,
+Container wake, customer traffic, financial authority, Go/VPS drain, DNS
+change, or production cutover occurred. Go/VPS remains authoritative and
+production remains **NO-GO**.

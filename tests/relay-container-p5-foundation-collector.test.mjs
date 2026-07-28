@@ -29,11 +29,15 @@ import {
   buildActivationSnapshot,
   buildCampaignSnapshot,
   buildPlacementSnapshot,
-  buildShardRegistryCapture,
+  buildShardRegistryCapture as buildHistoricalShardRegistryCapture,
   campaignConsumptionDigestSha256,
   placementAttestationDigestSha256,
   sha256Canonical,
 } from "../tools/lib/relay_container_shard_registry.mjs";
+import {
+  buildAuthorizedShardRegistryCapture,
+  buildPlacementMutationAuthorizationSnapshot,
+} from "../tools/collect_relay_container_p5_shard_registry.mjs";
 
 const replacementToken = "rotated-readback-token-value-001";
 const collectorDigest = "f".repeat(64);
@@ -795,6 +799,15 @@ describe("Relay Container P5 foundation collector", () => {
     expect(JSON.stringify(result)).not.toContain(request.accountId);
     expect(JSON.stringify(result)).not.toContain(request.configKvNamespaceId);
     expect(JSON.stringify(result)).not.toContain(request.containerApplicationId);
+    const authorization =
+      result.subject.evidenceFacts.candidateFreeze.shardActivationCampaign
+        .placementMutationAuthorization;
+    expect(authorization.authorizationIdSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(authorization.rowSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(authorization).not.toHaveProperty("executionNonce");
+    expect(authorization).not.toHaveProperty("campaignNonce");
+    expect(authorization).not.toHaveProperty("signature");
+    expect(authorization).not.toHaveProperty("signerSpki");
   });
 
   test("measures the bounded observation between complete readback snapshots", async () => {
@@ -883,8 +896,8 @@ describe("Relay Container P5 foundation collector", () => {
 
     const staleShardSources = retimeShardCapture(
       sourcesFixture(request),
-      "2026-07-19T09:00:00.000Z",
-      "2026-07-19T09:05:00.000Z",
+      "2026-07-19T09:55:00.000Z",
+      "2026-07-19T10:00:00.000Z",
     );
     const staleShard = await collectWith({
       request,
@@ -916,6 +929,50 @@ describe("Relay Container P5 foundation collector", () => {
         request.candidate,
       ),
     ).toThrow(/unknown or missing fields/);
+
+    const historicalSourceV3 = {
+      ...structuredClone(sources),
+      schemaVersion: 3,
+      contract: "cinatoken-relay-container-p5-foundation-sources-v3",
+    };
+    expect(() =>
+      validateFoundationSources(
+        historicalSourceV3,
+        candidateDigest,
+        request.candidate,
+      ),
+    ).toThrow(/source schemaVersion/);
+
+    const historicalRegistryV3 = structuredClone(sources);
+    historicalRegistryV3.sources.shardRegistry.capture =
+      sources.sources.shardRegistry.capture.registryCore;
+    historicalRegistryV3.sources.shardRegistry.sourceArtifactSha256 =
+      sha256Canonical(
+        historicalRegistryV3.sources.shardRegistry.capture,
+      );
+    expect(() =>
+      validateFoundationSources(
+        historicalRegistryV3,
+        candidateDigest,
+        request.candidate,
+      ),
+    ).toThrow(/shard registry capture fields are invalid/);
+
+    const rawAuthorizationMaterial = structuredClone(sources);
+    rawAuthorizationMaterial.sources.shardRegistry.capture
+      .placementMutationAuthorization.row.signature =
+      "must-never-be-retained";
+    rawAuthorizationMaterial.sources.shardRegistry.sourceArtifactSha256 =
+      sha256Canonical(
+        rawAuthorizationMaterial.sources.shardRegistry.capture,
+      );
+    expect(() =>
+      validateFoundationSources(
+        rawAuthorizationMaterial,
+        candidateDigest,
+        request.candidate,
+      ),
+    ).toThrow(/placement mutation authorization row fields are invalid/);
   });
 
   test("fits the full 1024-shard capture inside the bounded source input", () => {
@@ -1224,7 +1281,7 @@ function sourcesFixture(request) {
   });
   const shardCapture = shardRegistryCaptureFixture(request);
   const sources = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     contract: FOUNDATION_SOURCES_CONTRACT,
     environment: "staging",
     candidateDigestSha256: p5CandidateDigestSha256(request.candidate),
@@ -1326,7 +1383,7 @@ function shardRegistryCaptureFixture(request) {
     ...placementBefore,
     capturedAt: after.capturedAt,
   };
-  return buildShardRegistryCapture({
+  const registryCore = buildHistoricalShardRegistryCapture({
     candidate,
     observationStartedAt: before.capturedAt,
     observationEndedAt: after.capturedAt,
@@ -1345,36 +1402,51 @@ function shardRegistryCaptureFixture(request) {
     placementBefore,
     placementAfter,
   });
+  const authorization = placementAuthorizationRowFixture(candidate, campaign);
+  return buildAuthorizedShardRegistryCapture({
+    registryCore,
+    authorizationBefore: buildPlacementMutationAuthorizationSnapshot({
+      capturedAt: before.capturedAt,
+      row: authorization,
+      expected: { candidate, campaign: registryCore.campaign },
+    }),
+    authorizationAfter: buildPlacementMutationAuthorizationSnapshot({
+      capturedAt: after.capturedAt,
+      row: authorization,
+      expected: { candidate, campaign: registryCore.campaign },
+    }),
+  });
 }
 
 function retimeShardCapture(sources, observationStartedAt, observationEndedAt) {
   const current = sources.sources.shardRegistry.capture;
+  const currentCore = current.registryCore;
   const before = {
-    ...current.before,
+    ...currentCore.before,
     capturedAt: observationStartedAt,
   };
   const after = {
-    ...current.after,
+    ...currentCore.after,
     capturedAt: observationEndedAt,
   };
   const campaignBefore = {
-    ...current.campaign,
+    ...currentCore.campaign,
     capturedAt: observationStartedAt,
   };
   const campaignAfter = {
-    ...current.campaign,
+    ...currentCore.campaign,
     capturedAt: observationEndedAt,
   };
   const placementBefore = {
-    ...current.placementBefore,
+    ...currentCore.placementBefore,
     capturedAt: observationStartedAt,
   };
   const placementAfter = {
-    ...current.placementAfter,
+    ...currentCore.placementAfter,
     capturedAt: observationEndedAt,
   };
-  const capture = buildShardRegistryCapture({
-    candidate: current.candidate,
+  const registryCore = buildHistoricalShardRegistryCapture({
+    candidate: currentCore.candidate,
     observationStartedAt,
     observationEndedAt,
     campaignBefore,
@@ -1383,6 +1455,26 @@ function retimeShardCapture(sources, observationStartedAt, observationEndedAt) {
     after,
     placementBefore,
     placementAfter,
+  });
+  const authorization = current.placementMutationAuthorization.row;
+  const capture = buildAuthorizedShardRegistryCapture({
+    registryCore,
+    authorizationBefore: buildPlacementMutationAuthorizationSnapshot({
+      capturedAt: observationStartedAt,
+      row: authorization,
+      expected: {
+        candidate: registryCore.candidate,
+        campaign: registryCore.campaign,
+      },
+    }),
+    authorizationAfter: buildPlacementMutationAuthorizationSnapshot({
+      capturedAt: observationEndedAt,
+      row: authorization,
+      expected: {
+        candidate: registryCore.candidate,
+        campaign: registryCore.campaign,
+      },
+    }),
   });
   sources.sources.shardRegistry.capture = capture;
   sources.sources.shardRegistry.sourceArtifactSha256 = sha256Canonical(capture);
@@ -1424,6 +1516,39 @@ function campaignFixture(candidate) {
   );
   campaign.last_consumption_digest_sha256 = campaign.receipts.at(-1).consumption_digest_sha256;
   return campaign;
+}
+
+function placementAuthorizationRowFixture(candidate, campaign) {
+  return {
+    authorization_id_sha256: digest("placement-authorization-id"),
+    execution_nonce_sha256: digest("placement-execution-nonce"),
+    campaign_nonce_sha256: digest("placement-campaign-nonce"),
+    subject_digest_sha256: digest("placement-authorization-subject"),
+    contract_version: 1,
+    authorization_contract:
+      "cinatoken-relay-shard-placement-mutation-authorization-v1",
+    issuer: "cinatoken-ring-transition-authority",
+    key_id: "staging-placement-2026-07",
+    signer_spki_sha256: digest("placement-authority-spki"),
+    environment: "staging",
+    controller_service_name: "cinatoken-container-controller-staging",
+    controller_version_id: candidate.controllerVersionId,
+    action_gate_inventory_sha256:
+      campaign.action_gate_inventory_sha256,
+    foundation_manifest_sha256: campaign.foundation_manifest_sha256,
+    runtime_build_id: candidate.runtimeBuildId,
+    ring_generation: candidate.ringGeneration,
+    shard_count: candidate.shardCount,
+    campaign_lifetime_seconds:
+      campaign.expires_at - campaign.created_at,
+    permit_issued_at: campaign.created_at - 30,
+    permit_expires_at: campaign.created_at + 120,
+    campaign_id: campaign.campaign_id,
+    campaign_digest_sha256: campaign.campaign_digest_sha256,
+    campaign_expires_at: campaign.expires_at,
+    consumed_by_admin_id: 7,
+    consumed_at: campaign.created_at,
+  };
 }
 
 function receiptFixture(campaign, shardIndex) {

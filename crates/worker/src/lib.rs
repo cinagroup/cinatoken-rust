@@ -35,6 +35,7 @@ mod container_scheduler;
 mod container_shard_activation_admin;
 mod container_shard_activation_campaign_admin;
 mod container_shard_placement_admin;
+mod container_shard_placement_authorization_admin;
 #[allow(dead_code)]
 pub(crate) mod container_shard_placement_mutation_authorization;
 mod container_terminal_outbox;
@@ -211,6 +212,12 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
         .get_async(
             "/api/platform/container/shards/placements",
             |req, ctx| async move { container_shard_placement_admin::list(req, ctx.env).await },
+        )
+        .get_async(
+            "/api/platform/container/shards/placement-mutation-authorizations",
+            |req, ctx| async move {
+                container_shard_placement_authorization_admin::get(req, ctx.env).await
+            },
         )
         .get_async(
             "/api/platform/container/shards/activation-campaigns",
@@ -2459,6 +2466,7 @@ mod tests {
             "/api/platform/capabilities",
             "/api/platform/container/shards/activations",
             "/api/platform/container/shards/placements",
+            "/api/platform/container/shards/placement-mutation-authorizations",
             "/api/platform/container/shards/activation-campaigns",
             "/api/platform/container/shards/readiness",
             "/api/platform/container/reconciliation/status",

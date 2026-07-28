@@ -6,19 +6,29 @@ import {
   ACTIVATION_PAGE_SIZE,
   MAX_LEDGER_RECORDS,
   PLACEMENT_PAGE_SIZE,
-  SHARD_REGISTRY_CAPTURE_CONTRACT,
+  SHARD_REGISTRY_CAPTURE_CONTRACT as HISTORICAL_SHARD_REGISTRY_CAPTURE_CONTRACT,
+  SHARD_REGISTRY_COLLECTOR_VERSION as HISTORICAL_SHARD_REGISTRY_COLLECTOR_VERSION,
   ShardRegistryError,
   buildActivationSnapshot,
   buildCampaignSnapshot,
   buildPlacementSnapshot,
   buildShardRegistryCapture,
   canonicalJson,
+  sha256Canonical,
   validatePlacementPage,
   validateRegistryCandidate,
+  validateShardRegistryCapture as validateHistoricalShardRegistryCapture,
 } from "./lib/relay_container_shard_registry.mjs";
 
 export const SHARD_REGISTRY_REQUEST_CONTRACT =
   "cinatoken-relay-container-shard-registry-request-v1";
+export const SHARD_REGISTRY_CAPTURE_CONTRACT =
+  "cinatoken-relay-container-shard-registry-capture-v4";
+export const SHARD_REGISTRY_COLLECTOR_VERSION = 4;
+export const PLACEMENT_MUTATION_AUTHORIZATION_EVIDENCE_CONTRACT =
+  "cinatoken-relay-container-shard-placement-mutation-authorization-evidence-v1";
+export const PLACEMENT_MUTATION_AUTHORIZATION_MIGRATION =
+  "0063_relay_container_shard_placement_mutation_authorizations.sql";
 export const SHARD_REGISTRY_COOKIE_ENV = "CINATOKEN_P5_SHARD_REGISTRY_COOKIE";
 
 const minObservationSeconds = 5 * 60;
@@ -26,10 +36,41 @@ const maxObservationSeconds = 2 * 60 * 60;
 const maxRequestBytes = 256 * 1024;
 const maxResponseBytes = 1024 * 1024;
 const maxCampaignResponseBytes = 4 * 1024 * 1024;
+const maxAuthorizationResponseBytes = 128 * 1024;
 const maxPages = Math.ceil(MAX_LEDGER_RECORDS / ACTIVATION_PAGE_SIZE) + 1;
 const maxPlacementPages =
   Math.ceil(MAX_LEDGER_RECORDS / PLACEMENT_PAGE_SIZE) + 1;
 const lowerSha256Pattern = /^[0-9a-f]{64}$/;
+const issuerPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const keyIdPattern = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const versionIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const placementMutationAuthorizationRowKeys = Object.freeze([
+  "authorization_id_sha256",
+  "execution_nonce_sha256",
+  "campaign_nonce_sha256",
+  "subject_digest_sha256",
+  "contract_version",
+  "authorization_contract",
+  "issuer",
+  "key_id",
+  "signer_spki_sha256",
+  "environment",
+  "controller_service_name",
+  "controller_version_id",
+  "action_gate_inventory_sha256",
+  "foundation_manifest_sha256",
+  "runtime_build_id",
+  "ring_generation",
+  "shard_count",
+  "campaign_lifetime_seconds",
+  "permit_issued_at",
+  "permit_expires_at",
+  "campaign_id",
+  "campaign_digest_sha256",
+  "campaign_expires_at",
+  "consumed_by_admin_id",
+  "consumed_at",
+]);
 
 if (import.meta.main) {
   try {
@@ -168,6 +209,166 @@ export async function collectCampaignSnapshot(
   });
 }
 
+export async function collectPlacementMutationAuthorizationSnapshot(
+  { origin, candidate, campaign, capturedAt },
+  { cookie, fetchImpl = fetch } = {},
+) {
+  validateStagingOrigin(origin);
+  candidate = validateRegistryCandidate(candidate);
+  campaign = requireObject(campaign, "placement authorization campaign");
+  requireSha256(campaign.campaignId, "placement authorization campaign ID");
+  requireCookie(cookie);
+  if (typeof fetchImpl !== "function") {
+    throw new ShardRegistryError("fetch implementation is invalid");
+  }
+  const url = new URL(
+    "/api/platform/container/shards/placement-mutation-authorizations",
+    origin,
+  );
+  url.searchParams.set("campaign_id", campaign.campaignId);
+  const row = await fetchEnvelopeData(
+    url,
+    cookie,
+    fetchImpl,
+    maxAuthorizationResponseBytes,
+    "placement mutation authorization",
+  );
+  return buildPlacementMutationAuthorizationSnapshot({
+    capturedAt,
+    row,
+    expected: { candidate, campaign },
+  });
+}
+
+export function buildPlacementMutationAuthorizationSnapshot({
+  capturedAt,
+  row,
+  expected,
+}) {
+  capturedAt = timestamp(new Date(capturedAt), "placement authorization capturedAt");
+  row = validatePlacementMutationAuthorizationRow(row, expected);
+  return {
+    capturedAt,
+    row,
+    rowSha256: sha256Canonical(row),
+  };
+}
+
+export function validatePlacementMutationAuthorizationRow(
+  value,
+  { candidate, campaign },
+) {
+  const row = requireObject(value, "placement mutation authorization row");
+  exactKeys(
+    row,
+    placementMutationAuthorizationRowKeys,
+    "placement mutation authorization row",
+  );
+  for (const [field, label] of [
+    ["authorization_id_sha256", "authorization ID"],
+    ["execution_nonce_sha256", "execution nonce digest"],
+    ["campaign_nonce_sha256", "campaign nonce digest"],
+    ["subject_digest_sha256", "subject digest"],
+    ["signer_spki_sha256", "signer SPKI digest"],
+    ["action_gate_inventory_sha256", "action gate inventory digest"],
+    ["foundation_manifest_sha256", "foundation manifest digest"],
+    ["runtime_build_id", "runtime build ID"],
+    ["campaign_id", "campaign ID"],
+    ["campaign_digest_sha256", "campaign digest"],
+  ]) {
+    requireSha256(row[field], `placement authorization ${label}`);
+  }
+  if (
+    new Set([
+      row.authorization_id_sha256,
+      row.execution_nonce_sha256,
+      row.campaign_nonce_sha256,
+    ]).size !== 3
+  ) {
+    throw new ShardRegistryError(
+      "placement authorization identity digests must be distinct",
+    );
+  }
+  requireExact(row.contract_version, 1, "placement authorization contract version");
+  requireExact(
+    row.authorization_contract,
+    "cinatoken-relay-shard-placement-mutation-authorization-v1",
+    "placement authorization contract",
+  );
+  requireToken(row.issuer, issuerPattern, "placement authorization issuer");
+  requireToken(row.key_id, keyIdPattern, "placement authorization key ID");
+  requireExact(row.environment, "staging", "placement authorization environment");
+  requireExact(
+    row.controller_service_name,
+    "cinatoken-container-controller-staging",
+    "placement authorization Controller service",
+  );
+  requireToken(
+    row.controller_version_id,
+    versionIdPattern,
+    "placement authorization Controller version",
+  );
+  for (const [field, minimum, maximum, label] of [
+    ["ring_generation", 1, 1_000_000, "ring generation"],
+    ["shard_count", 1, 1_024, "shard count"],
+    ["campaign_lifetime_seconds", 60, 3_600, "campaign lifetime"],
+    ["permit_issued_at", 1, Number.MAX_SAFE_INTEGER, "permit issued timestamp"],
+    ["permit_expires_at", 1, Number.MAX_SAFE_INTEGER, "permit expiry timestamp"],
+    ["campaign_expires_at", 1, Number.MAX_SAFE_INTEGER, "campaign expiry timestamp"],
+    ["consumed_by_admin_id", 1, Number.MAX_SAFE_INTEGER, "admin ID"],
+    ["consumed_at", 1, Number.MAX_SAFE_INTEGER, "consumption timestamp"],
+  ]) {
+    requireInteger(
+      row[field],
+      minimum,
+      maximum,
+      `placement authorization ${label}`,
+    );
+  }
+  if (
+    row.permit_expires_at < row.permit_issued_at + 60 ||
+    row.permit_expires_at > row.permit_issued_at + 600
+  ) {
+    throw new ShardRegistryError(
+      "placement authorization permit window is invalid",
+    );
+  }
+  candidate = validateRegistryCandidate(candidate);
+  campaign = requireObject(campaign, "placement authorization campaign");
+  for (const [actual, wanted, label] of [
+    [row.controller_version_id, candidate.controllerVersionId, "Controller version"],
+    [row.runtime_build_id, candidate.runtimeBuildId, "runtime build"],
+    [row.ring_generation, candidate.ringGeneration, "ring generation"],
+    [row.shard_count, candidate.shardCount, "shard count"],
+    [row.campaign_id, campaign.campaignId, "campaign ID"],
+    [row.campaign_digest_sha256, campaign.campaignDigestSha256, "campaign digest"],
+    [
+      row.action_gate_inventory_sha256,
+      campaign.actionGateInventorySha256,
+      "action gate inventory",
+    ],
+    [
+      row.foundation_manifest_sha256,
+      campaign.foundationManifestSha256,
+      "foundation manifest",
+    ],
+    [row.campaign_expires_at, campaign.expiresAt, "campaign expiry"],
+    [
+      row.campaign_lifetime_seconds,
+      campaign.expiresAt - campaign.createdAt,
+      "campaign lifetime",
+    ],
+  ]) {
+    requireExact(actual, wanted, `placement authorization ${label}`);
+  }
+  if (Math.abs(row.consumed_at - campaign.createdAt) > 5) {
+    throw new ShardRegistryError(
+      "placement authorization consumption does not match campaign creation",
+    );
+  }
+  return row;
+}
+
 export async function collectActivationSnapshot(
   { origin, candidate, capturedAt },
   { cookie, fetchImpl = fetch } = {},
@@ -288,6 +489,16 @@ export async function collectShardRegistry(
     },
     { cookie, fetchImpl },
   );
+  const authorizationBefore =
+    await collectPlacementMutationAuthorizationSnapshot(
+      {
+        origin: request.origin,
+        candidate: request.candidate,
+        campaign: campaignBefore,
+        capturedAt: observationStartedAt,
+      },
+      { cookie, fetchImpl },
+    );
   const before = await collectActivationSnapshot(
     { origin: request.origin, candidate: request.candidate, capturedAt: observationStartedAt },
     { cookie, fetchImpl },
@@ -317,6 +528,16 @@ export async function collectShardRegistry(
     },
     { cookie, fetchImpl },
   );
+  const authorizationAfter =
+    await collectPlacementMutationAuthorizationSnapshot(
+      {
+        origin: request.origin,
+        candidate: request.candidate,
+        campaign: campaignAfter,
+        capturedAt: observationEndedAt,
+      },
+      { cookie, fetchImpl },
+    );
   const after = await collectActivationSnapshot(
     { origin: request.origin, candidate: request.candidate, capturedAt: observationEndedAt },
     { cookie, fetchImpl },
@@ -330,7 +551,7 @@ export async function collectShardRegistry(
     },
     { cookie, fetchImpl },
   );
-  return buildShardRegistryCapture({
+  const registryCore = buildShardRegistryCapture({
     candidate: request.candidate,
     observationStartedAt,
     observationEndedAt,
@@ -341,6 +562,261 @@ export async function collectShardRegistry(
     placementBefore,
     placementAfter,
   });
+  return buildAuthorizedShardRegistryCapture({
+    registryCore,
+    authorizationBefore,
+    authorizationAfter,
+  });
+}
+
+export function buildAuthorizedShardRegistryCapture({
+  registryCore,
+  authorizationBefore,
+  authorizationAfter,
+}) {
+  registryCore = validateHistoricalShardRegistryCapture(registryCore);
+  authorizationBefore = validatePlacementMutationAuthorizationSnapshot(
+    authorizationBefore,
+    registryCore,
+    "before",
+  );
+  authorizationAfter = validatePlacementMutationAuthorizationSnapshot(
+    authorizationAfter,
+    registryCore,
+    "after",
+  );
+  const authorizationStable =
+    authorizationBefore.rowSha256 === authorizationAfter.rowSha256;
+  if (!authorizationStable) {
+    throw new ShardRegistryError(
+      "placement mutation authorization readback drifted",
+    );
+  }
+  return {
+    schemaVersion: 4,
+    contract: SHARD_REGISTRY_CAPTURE_CONTRACT,
+    environment: "staging",
+    collectorVersion: SHARD_REGISTRY_COLLECTOR_VERSION,
+    registryCore,
+    placementMutationAuthorization: {
+      schemaVersion: 1,
+      contract: PLACEMENT_MUTATION_AUTHORIZATION_EVIDENCE_CONTRACT,
+      migration: PLACEMENT_MUTATION_AUTHORIZATION_MIGRATION,
+      row: authorizationBefore.row,
+      rowSha256: authorizationBefore.rowSha256,
+      readback: {
+        beforeCapturedAt: authorizationBefore.capturedAt,
+        afterCapturedAt: authorizationAfter.capturedAt,
+        beforeRowSha256: authorizationBefore.rowSha256,
+        afterRowSha256: authorizationAfter.rowSha256,
+        stable: authorizationStable,
+      },
+    },
+    paginationComplete: registryCore.paginationComplete,
+    evidenceReady: registryCore.evidenceReady,
+    blockers: registryCore.blockers,
+    safetyBoundary: registryCore.safetyBoundary,
+  };
+}
+
+export function validateShardRegistryCapture(value, expectedCandidate = undefined) {
+  const capture = requireObject(value, "shard registry capture");
+  exactKeys(
+    capture,
+    [
+      "schemaVersion",
+      "contract",
+      "environment",
+      "collectorVersion",
+      "registryCore",
+      "placementMutationAuthorization",
+      "paginationComplete",
+      "evidenceReady",
+      "blockers",
+      "safetyBoundary",
+    ],
+    "shard registry capture",
+  );
+  requireExact(capture.schemaVersion, 4, "shard registry capture schemaVersion");
+  requireExact(
+    capture.contract,
+    SHARD_REGISTRY_CAPTURE_CONTRACT,
+    "shard registry capture contract",
+  );
+  requireExact(capture.environment, "staging", "shard registry capture environment");
+  requireExact(
+    capture.collectorVersion,
+    SHARD_REGISTRY_COLLECTOR_VERSION,
+    "shard registry collector version",
+  );
+  const registryCore = validateHistoricalShardRegistryCapture(
+    capture.registryCore,
+    expectedCandidate,
+  );
+  requireExact(
+    registryCore.schemaVersion,
+    3,
+    "historical shard registry core schemaVersion",
+  );
+  requireExact(
+    registryCore.contract,
+    HISTORICAL_SHARD_REGISTRY_CAPTURE_CONTRACT,
+    "historical shard registry core contract",
+  );
+  requireExact(
+    registryCore.collectorVersion,
+    HISTORICAL_SHARD_REGISTRY_COLLECTOR_VERSION,
+    "historical shard registry core collector version",
+  );
+  const authorization = validatePlacementMutationAuthorizationEvidence(
+    capture.placementMutationAuthorization,
+    registryCore,
+  );
+  const rebuilt = buildAuthorizedShardRegistryCapture({
+    registryCore,
+    authorizationBefore: {
+      capturedAt: authorization.readback.beforeCapturedAt,
+      row: authorization.row,
+      rowSha256: authorization.readback.beforeRowSha256,
+    },
+    authorizationAfter: {
+      capturedAt: authorization.readback.afterCapturedAt,
+      row: authorization.row,
+      rowSha256: authorization.readback.afterRowSha256,
+    },
+  });
+  if (canonicalJson(capture) !== canonicalJson(rebuilt)) {
+    throw new ShardRegistryError(
+      "shard registry capture contains derived-field drift",
+    );
+  }
+  return rebuilt;
+}
+
+function validatePlacementMutationAuthorizationSnapshot(
+  value,
+  registryCore,
+  label,
+) {
+  const snapshot = requireObject(
+    value,
+    `${label} placement mutation authorization snapshot`,
+  );
+  exactKeys(
+    snapshot,
+    ["capturedAt", "row", "rowSha256"],
+    `${label} placement mutation authorization snapshot`,
+  );
+  const capturedAt = timestamp(
+    new Date(snapshot.capturedAt),
+    `${label} placement authorization capturedAt`,
+  );
+  requireExact(
+    capturedAt,
+    label === "before"
+      ? registryCore.observationStartedAt
+      : registryCore.observationEndedAt,
+    `${label} placement authorization observation boundary`,
+  );
+  const row = validatePlacementMutationAuthorizationRow(snapshot.row, {
+    candidate: registryCore.candidate,
+    campaign: registryCore.campaign,
+  });
+  requireExact(
+    snapshot.rowSha256,
+    sha256Canonical(row),
+    `${label} placement authorization row digest`,
+  );
+  if (row.consumed_at > Math.floor(Date.parse(capturedAt) / 1_000)) {
+    throw new ShardRegistryError(
+      `${label} placement authorization was consumed after capture`,
+    );
+  }
+  return { capturedAt, row, rowSha256: snapshot.rowSha256 };
+}
+
+function validatePlacementMutationAuthorizationEvidence(value, registryCore) {
+  const evidence = requireObject(
+    value,
+    "placement mutation authorization evidence",
+  );
+  exactKeys(
+    evidence,
+    [
+      "schemaVersion",
+      "contract",
+      "migration",
+      "row",
+      "rowSha256",
+      "readback",
+    ],
+    "placement mutation authorization evidence",
+  );
+  requireExact(
+    evidence.schemaVersion,
+    1,
+    "placement mutation authorization evidence schemaVersion",
+  );
+  requireExact(
+    evidence.contract,
+    PLACEMENT_MUTATION_AUTHORIZATION_EVIDENCE_CONTRACT,
+    "placement mutation authorization evidence contract",
+  );
+  requireExact(
+    evidence.migration,
+    PLACEMENT_MUTATION_AUTHORIZATION_MIGRATION,
+    "placement mutation authorization evidence migration",
+  );
+  const row = validatePlacementMutationAuthorizationRow(evidence.row, {
+    candidate: registryCore.candidate,
+    campaign: registryCore.campaign,
+  });
+  requireExact(
+    evidence.rowSha256,
+    sha256Canonical(row),
+    "placement mutation authorization evidence row digest",
+  );
+  const readback = requireObject(
+    evidence.readback,
+    "placement mutation authorization readback",
+  );
+  exactKeys(
+    readback,
+    [
+      "beforeCapturedAt",
+      "afterCapturedAt",
+      "beforeRowSha256",
+      "afterRowSha256",
+      "stable",
+    ],
+    "placement mutation authorization readback",
+  );
+  requireExact(
+    readback.beforeCapturedAt,
+    registryCore.observationStartedAt,
+    "placement authorization before observation boundary",
+  );
+  requireExact(
+    readback.afterCapturedAt,
+    registryCore.observationEndedAt,
+    "placement authorization after observation boundary",
+  );
+  requireExact(
+    readback.beforeRowSha256,
+    evidence.rowSha256,
+    "placement authorization before row digest",
+  );
+  requireExact(
+    readback.afterRowSha256,
+    evidence.rowSha256,
+    "placement authorization after row digest",
+  );
+  requireExact(
+    readback.stable,
+    true,
+    "placement mutation authorization readback stability",
+  );
+  return { ...evidence, row, readback };
 }
 
 async function fetchEnvelopeData(url, cookie, fetchImpl, maximumBytes, label) {
@@ -571,11 +1047,40 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
+function requireObject(value, label) {
+  if (!isPlainObject(value)) {
+    throw new ShardRegistryError(`${label} must be an object`);
+  }
+  return value;
+}
+
 function exactKeys(value, expected, label) {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
   if (actual.length !== wanted.length || actual.some((key, index) => key !== wanted[index])) {
     throw new ShardRegistryError(`${label} fields are invalid`);
+  }
+}
+
+function requireExact(actual, expected, label) {
+  if (actual !== expected) {
+    throw new ShardRegistryError(`${label} is invalid`);
+  }
+}
+
+function requireToken(value, pattern, label) {
+  if (typeof value !== "string" || !pattern.test(value)) {
+    throw new ShardRegistryError(`${label} is invalid`);
+  }
+}
+
+function requireInteger(value, minimum, maximum, label) {
+  if (
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > maximum
+  ) {
+    throw new ShardRegistryError(`${label} is invalid`);
   }
 }
 

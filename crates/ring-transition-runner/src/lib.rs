@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub mod credentials;
 pub mod execution_activation;
 pub mod orchestrator;
+pub mod placement;
 pub mod publication;
 pub mod readback;
 pub mod receipt;

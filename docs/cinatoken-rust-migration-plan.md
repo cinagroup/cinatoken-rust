@@ -22594,3 +22594,199 @@ remote migration was applied, and no permit, campaign, placement, Container
 wake, P5 item, customer traffic, financial authority, Go/VPS drain, DNS
 change, or production cutover occurred. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.317 Private Placement Authority, Zero-Retry Plan, And P5 v4 (2026-07-28)
+
+This increment supersedes only the local "Authority absent", "runner contract
+absent", and "P5 0063 join absent" statements in 22.314-22.316. It does not
+supersede credential rotation, live Access policy, remote migration,
+exclusive execution, Container lifecycle, fault/load/cost/SLO, security,
+signed P5, Go/VPS drain, DNS, financial, or production blockers.
+
+### Production topology decision
+
+The approved target topology is:
+
+```text
+owner browser / native runner
+          |
+          | Cloudflare Access, exact aud and role
+          v
+shard-placement approval/workload gateway
+          |
+          | exact Service Binding, no public Authority route
+          v
+private shard-placement Authority
+          |
+          | exclusive placement-control D1
+          v
+subject -> approvals -> issuance/revocation -> execution claim/steps
+          -> campaign -> activation -> placement -> immutable events
+```
+
+The gateway must hold no D1, KV, R2, Queue, Durable Object, Container, deploy
+token, or signing private key. Its duties are bounded-body parsing, Access JWT
+verification, stable owner/workload identity, group-to-role authorization,
+path/body/role binding, and forwarding over one exact Service Binding.
+
+The Authority must have no public route, `workers.dev`, preview URL, asset
+binding, or production configuration during this phase. It may bind only its
+dedicated D1 and Worker version metadata. The current staging config now
+enforces that private shape. The Authority verifies an externally signed
+compatibility permit and four independent approvals; it never owns the permit
+or approval private keys.
+
+### Implemented local Authority foundation
+
+The Authority foundation has strict canonical JSON/UTF-8/exact-key parsing,
+64 KiB streamed body bounds, HMAC method/path/body/request/time binding, fixed
+read/issue/revoke caller roles, current/previous caller identity slots,
+canonical Ed25519 SPKI verification, five-way key/fingerprint isolation,
+fixed security/operations/release/rollback order, external policy pinning,
+permit lifetime and remaining-time checks, and safe no-store responses.
+
+Its D1 uses first-primary sessions, ordinary create-new inserts, exact
+readback, and explicit created/exact-replay/conflict/unavailable/
+outcome-unknown classifications. Issuance and revocation rows are append
+preserved and contain only IDs, digests, fingerprints, roles, deployment
+version, and D1 times. Raw nonces, signatures, SPKI bodies, private keys,
+HMAC secrets, cookies, and request/response bodies are neither stored nor
+returned.
+
+This is not yet the final Authority boundary. The application 0063 row lives
+in another D1, so Authority revocation cannot atomically block consumption or
+placement. The four signed approval artifacts are represented by their
+canonical digests in D1 and still require reviewed WORM retention for future
+clean-host replay. Each approval role currently has one pinned key; production
+requires current plus next-or-previous validity windows, status, retirement,
+and emergency revocation.
+
+### Frozen runner v1 contract
+
+The first runner cohort is deliberately small:
+
+| Property | Frozen value |
+| --- | --- |
+| Environment | `staging` only |
+| Scope | Controller-only; Edge remains on exact signed baseline |
+| Shards | exactly 8 |
+| Mutation slots | 13 deterministic operation IDs |
+| Send attempts | 1 per mutation |
+| Retries | 0 |
+| Before send | durable start receipt required |
+| Ambiguous result | exact predefined GET readback only |
+| Missing evidence | does not restore send authority |
+| After enable intent | disable-first on all success/failure/unknown paths |
+| Receipt capacity | 26 start/terminal records, below the frozen 128 limit |
+| Checked-in execution | disabled; no credentials, network, mutation, or remote authority |
+
+The 13 slots are one disabled-deploy permission proof, one exclusive Authority
+claim, one enabled Controller deploy, one campaign create, eight single-send
+shard readiness probes in canonical `0..7` order, and one disabled Controller
+deploy. Every operation ID is domain-separated from the canonical plan digest
+and ordinal. The plan binds release/publication/execution activation/runner
+build digests, authorization and nonce digests, permit subject, campaign,
+claim owner, Controller baseline/enabled/disabled versions, Edge baseline,
+gate inventory, foundation, runtime build, ring, shard count, and validity
+windows. It contains no raw secret or nonce.
+
+The checked-in CLI exposes only an inert `--describe-placement` report. It
+explicitly states that exclusive Authority claim and workload routes are not
+compiled, and that remote execution and production cutover are unauthorized.
+The existing ring-transition v1 execution ABI remains unchanged.
+
+### P5 authorization-row closure
+
+The application Worker now exposes a root-first, D1-only, no-store endpoint:
+
+```text
+GET /api/platform/container/shards/placement-mutation-authorizations
+    ?campaign_id=<64 lowercase hex>
+```
+
+It accepts one exact query, probes the 0061-0063 schema, reads one 0063 row
+through an inner join to the exact campaign, and returns the existing 25 safe
+columns. It rejects unknown/duplicate query keys, missing schema, missing row,
+join drift, malformed identities/times, and any D1 failure. It has no DO,
+Container, service binding, write, deploy, gate, or campaign authority.
+
+Shard registry capture advances to v4 and collector version 6. The historical
+v3 campaign/activation/placement capture is retained only as `registryCore`.
+The collector reads the 0063 row before and after the same bounded observation,
+requires identical canonical row digests, and checks exact Controller,
+foundation, runtime, ring, shard, campaign, permit, consumption, and expiry
+relationships. Raw nonce, signature, and SPKI fields fail the exact projection.
+Foundation source v4 requires candidate-freeze and remote-inventory facts to
+bind this same authorization evidence. Older v3 source input and missing 0063
+evidence fail closed.
+
+### Remaining executable work
+
+Before a runner may send even one staging mutation:
+
+1. revoke the exposed historical Cloudflare credential and archive independent
+   absence proof; never reuse or inspect it;
+2. create separate least-privilege read, enable-deploy, rollback-deploy,
+   Authority caller, gateway workload, Access service, migration, and
+   independent collector identities, and bind only their SHA-256 identities
+   into the signed plan;
+3. move the placement control chain into one dedicated D1 or finish a reviewed
+   cross-database protocol with equivalent atomic revocation/consumption
+   guarantees;
+4. implement create-new exclusive execution claims, predecessor-bound steps,
+   expiry, abort, disable, and exact readback; concurrent runners must yield at
+   most one owner;
+5. add the Access-protected gateway, verify exact `aud`, group, stable `sub`,
+   distinct owner identities, no bypass policy, and Service Binding graph by
+   independent remote readback;
+6. replace root session mutation paths with bounded workload HMAC plus Access;
+   response loss, 408/425/429/5xx, malformed/oversized 2xx, redirect, proxy,
+   and connection interruption must never authorize resend;
+7. fix Cloudflare deployment inventory to prove complete pagination and stable
+   two-snapshot version/percentage/annotation/detail equality;
+8. add compiled trust-pin generation, placement-specific DSSE release,
+   publication, execution activation, credential typestates, and create-new
+   receipt installation without modifying ring v1 artifacts;
+9. add crash/fault injection at every persist/send/readback/seal boundary,
+   double-runner races, revocation/consume races, disable ambiguity, 8/16/17/
+   1024 capacity tests, and secret/log scans; and
+10. independently review and deploy only after all tracked gates still read
+    false and exact remote D1 catalogs contain zero placement-control rows.
+
+### First isolated staging ceremony
+
+The first eligible campaign remains reader-first and reversible:
+
+1. collect two stable Controller and Edge baseline snapshots;
+2. use the rollback credential once to deploy the already disabled Controller
+   version and prove actual disable authority;
+3. create one exclusive execution claim bound to the signed plan;
+4. deploy the exact enabled Controller candidate once and read back a stable
+   100% exact version/annotation; do not mutate Edge;
+5. create the exact campaign once, then read back both campaign and safe 0063
+   authorization;
+6. send readiness once for each shard `0..7`; after any uncertain result, read
+   the exact receipt and never resend;
+7. require sealed-complete 8/8 receipts and exact 0054/0055/0061/0062/0063
+   joins;
+8. enter disable-first after the enable intent regardless of intermediate
+   outcome, deploy the pre-released disabled Controller once, and require two
+   stable disabled snapshots;
+9. prove Edge baseline unchanged, revoke mutation credentials, archive WORM
+   evidence, and collect independent P5 signatures; and
+10. keep Go/VPS authoritative until a later production packet separately
+    proves traffic, financial, drain, reverse-sync, DNS, and rollback gates.
+
+Any inability to prove the disabled Controller state produces
+`disable_unproven` or `recovery_required`, never success. Missing shard
+evidence, Authority/campaign mismatch, Edge drift, credential uncertainty,
+schema drift, or expired approval retires the candidate; immutable evidence is
+not edited and mutation is not retried.
+
+Focused Authority aggregate, P5 evidence/foundation/registry, Worker
+authorization-reader, and Rust runner plan/CLI verification pass locally. The
+complete repository gate also passes with exit code 0 in 1000.6 seconds. No
+credential was read, no remote state was queried or mutated, no migration was
+applied, no gate changed, and no permit, campaign, placement, Container wake,
+customer traffic, financial authority, Go/VPS drain, DNS change, or production
+cutover occurred. Production remains **NO-GO**.

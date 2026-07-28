@@ -1432,14 +1432,16 @@ digest; and returns only hashed object identity. There is no raw Durable
 Object ID and no write, gate-change, campaign, deployment, or traffic
 authority on this route.
 
-### Registry v3 evidence join
+### Registry v4 authorization evidence join
 
 The placement projection becomes evidence only inside
-`cinatoken-relay-container-shard-registry-capture-v3`. Collector version 3
-must capture the sealed 0055 campaign plus frozen 0054 activation and 0062
-event-backed 0061 placement snapshots before and after the same 300-7200
-second interval. All three sources must be stable as complete canonical
-records, not only as counts.
+`cinatoken-relay-container-shard-registry-capture-v4`. It retains the
+historical v3 campaign/activation/placement capture as `registryCore` and adds
+one exact 0063 authorization evidence object. Collector version 6 must read
+the sealed 0055 campaign, the safe 25-column 0063 row, frozen 0054 activation,
+and 0062-event-backed 0061 placement snapshots before and after the same
+300-7200 second interval. Campaign, authorization, activation, and placement
+sources must be stable as complete canonical records, not only as counts.
 
 For each candidate shard there must be exactly one 0054 row, one 0055 receipt,
 one 0061 attestation, and its one 0062 event. The collector cross-checks
@@ -1449,11 +1451,19 @@ event sequences, placement-attestation, object-ID, and canonical-name hashes
 across N/N. Any missing, duplicate, unknown, mismatched, non-default, or
 drifting placement blocks the registry source and P5.
 
+The authorization readback is root-only, D1-only, no-store, and joined to the
+exact campaign. It exposes only digests, public key identity, immutable
+candidate/campaign fields, and D1 times; raw nonces, signatures, SPKI bodies,
+cookies, and request bodies cannot enter the capture. Foundation source v4
+requires the same authorization row digest in candidate-freeze and
+remote-inventory evidence.
+
 This read-only contract does not enable the default-only writer. Both tracked
 placement-writer gates remain false and ordinary deploy preflight rejects them
-when true. The 0063 verifier, append-preserved authorization row, campaign
-guard, Controller pre-wake readback, and final placement guard exist locally;
-the four-role Authority, deployment runner, and P5 authorization-row join do
-not. No remote 0061/0062/0063 readback or v3 capture has been performed. The
-exposed Cloudflare token must be revoked and replaced with a reviewed
-least-privilege credential before staging work; production remains **NO-GO**.
+when true. A private, default-off four-role Authority foundation and an inert
+staging/eight-shard/Controller-only zero-retry runner plan now exist locally.
+They are not connected by an exclusive execution claim or atomic consumption
+boundary and therefore authorize no deployment. No remote 0061/0062/0063
+readback or v4 capture has been performed. The exposed Cloudflare token must
+be revoked and replaced with reviewed least-privilege credentials before
+staging work; production remains **NO-GO**.

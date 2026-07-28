@@ -271,6 +271,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
                 .await
             },
         )
+        .get_async(
+            "/internal/v1/shard-placement/execution-ticket-authority-acks/:ticket_id",
+            |req, ctx| async move {
+                let ticket_id = ctx.param("ticket_id").cloned();
+                container_shard_placement_activation_read::read_exact_ack(
+                    req,
+                    ctx.env,
+                    ticket_id,
+                )
+                .await
+            },
+        )
         .post_async(
             "/api/platform/container/shards/readiness",
             |req, ctx| async move {
@@ -2535,6 +2547,7 @@ mod tests {
             "/internal/v1/status",
             "/internal/v1/operations",
             "/internal/v1/shard-placement/execution-ticket-activations/:ticket_id",
+            "/internal/v1/shard-placement/execution-ticket-authority-acks/:ticket_id",
             "/v1/models",
             "/v1/chat/completions",
             "/v1/completions",

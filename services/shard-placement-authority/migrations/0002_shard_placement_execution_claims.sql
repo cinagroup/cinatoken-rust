@@ -651,6 +651,247 @@ ON shard_placement_authority_execution_receipts(
 )
 WHERE event_kind = 'operation_terminal';
 
+CREATE TABLE shard_placement_authority_operation_five_admissions (
+  authorization_id_sha256 TEXT PRIMARY KEY NOT NULL
+    CHECK (
+      length(authorization_id_sha256) = 64
+      AND authorization_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  contract_version INTEGER NOT NULL CHECK (contract_version = 1),
+  confirmation_contract TEXT NOT NULL
+    CHECK (
+      confirmation_contract =
+        'cinatoken-shard-placement-authority-operation-five-admission-v1'
+    ),
+  claim_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(claim_digest_sha256) = 64
+      AND claim_digest_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_ticket_id_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_ticket_id_sha256) = 64
+      AND application_ticket_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_ticket_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_ticket_digest_sha256) = 64
+      AND application_ticket_digest_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_database_identity_sha256 TEXT NOT NULL
+    CHECK (
+      length(application_database_identity_sha256) = 64
+      AND application_database_identity_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_activation_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_activation_digest_sha256) = 64
+      AND application_activation_digest_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  authority_activation_terminal_receipt_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(authority_activation_terminal_receipt_sha256) = 64
+      AND authority_activation_terminal_receipt_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  authority_ledger_head_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(authority_ledger_head_sha256) = 64
+      AND authority_ledger_head_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  authority_database_identity_sha256 TEXT NOT NULL
+    CHECK (
+      length(authority_database_identity_sha256) = 64
+      AND authority_database_identity_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  authority_version_id TEXT NOT NULL
+    CHECK (
+      length(authority_version_id) BETWEEN 1 AND 128
+      AND authority_version_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+    ),
+  application_acknowledgement_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_acknowledgement_digest_sha256) = 64
+      AND application_acknowledgement_digest_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_version_id TEXT NOT NULL
+    CHECK (
+      length(application_version_id) BETWEEN 1 AND 128
+      AND application_version_id NOT GLOB '*[^A-Za-z0-9._:-]*'
+    ),
+  application_read_credential_id_sha256 TEXT NOT NULL
+    CHECK (
+      length(application_read_credential_id_sha256) = 64
+      AND application_read_credential_id_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_read_request_id_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_read_request_id_sha256) = 64
+      AND application_read_request_id_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_response_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(application_response_sha256) = 64
+      AND application_response_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  application_response_bytes INTEGER NOT NULL
+    CHECK (
+      typeof(application_response_bytes) = 'integer'
+      AND application_response_bytes BETWEEN 1 AND 65536
+    ),
+  enable_credential_id_sha256 TEXT NOT NULL
+    CHECK (
+      length(enable_credential_id_sha256) = 64
+      AND enable_credential_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  enable_request_id_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(enable_request_id_sha256) = 64
+      AND enable_request_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  command_enable_request_id_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(command_enable_request_id_sha256) = 64
+      AND command_enable_request_id_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  enable_operation_request_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(enable_operation_request_sha256) = 64
+      AND enable_operation_request_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  confirmation_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(confirmation_digest_sha256) = 64
+      AND confirmation_digest_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+  operation_start_receipt_digest_sha256 TEXT NOT NULL UNIQUE
+    CHECK (
+      length(operation_start_receipt_digest_sha256) = 64
+      AND operation_start_receipt_digest_sha256
+        NOT GLOB '*[^0-9a-f]*'
+    ),
+  confirmed_at INTEGER NOT NULL DEFAULT (unixepoch())
+    CHECK (typeof(confirmed_at) = 'integer' AND confirmed_at > 0),
+  FOREIGN KEY (authorization_id_sha256)
+    REFERENCES shard_placement_authority_execution_claims(
+      authorization_id_sha256
+    )
+    ON UPDATE RESTRICT
+    ON DELETE RESTRICT
+) WITHOUT ROWID;
+
+CREATE TRIGGER shard_placement_authority_operation_five_admission_insert_guard
+BEFORE INSERT ON shard_placement_authority_operation_five_admissions
+FOR EACH ROW
+BEGIN
+  SELECT CASE WHEN NEW.confirmed_at <> unixepoch()
+  THEN RAISE(
+    ABORT,
+    'placement operation-five admission time must come from D1'
+  ) END;
+
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM shard_placement_authority_execution_claims AS claim
+    JOIN shard_placement_authority_execution_operations AS operation
+      ON operation.authorization_id_sha256 =
+        claim.authorization_id_sha256
+      AND operation.ordinal = 5
+      AND operation.kind = 'enable_controller_deployment'
+      AND operation.shard_index IS NULL
+    JOIN shard_placement_authority_execution_receipts AS terminal
+      ON terminal.authorization_id_sha256 =
+        claim.authorization_id_sha256
+      AND terminal.sequence = 3
+      AND terminal.event_kind = 'operation_terminal'
+      AND terminal.operation_ordinal = 4
+      AND terminal.operation_kind = 'activate_execution_ticket'
+      AND terminal.shard_index IS NULL
+      AND terminal.outcome IN (
+        'exact_success',
+        'exact_replay',
+        'ambiguous_recovered'
+      )
+      AND terminal.response_sha256 IS NOT NULL
+      AND terminal.receipt_digest_sha256 =
+        claim.ledger_head_sha256
+      AND terminal.evidence_sha256 =
+        claim.application_activation_digest_sha256
+    WHERE claim.authorization_id_sha256 =
+      NEW.authorization_id_sha256
+      AND claim.claim_digest_sha256 =
+        NEW.claim_digest_sha256
+      AND claim.application_ticket_id_sha256 =
+        NEW.application_ticket_id_sha256
+      AND claim.application_ticket_digest_sha256 =
+        NEW.application_ticket_digest_sha256
+      AND claim.application_database_identity_sha256 =
+        NEW.application_database_identity_sha256
+      AND claim.application_activation_digest_sha256 =
+        NEW.application_activation_digest_sha256
+      AND claim.authority_database_identity_sha256 =
+        NEW.authority_database_identity_sha256
+      AND terminal.receipt_digest_sha256 =
+        NEW.authority_activation_terminal_receipt_sha256
+      AND claim.ledger_head_sha256 =
+        NEW.authority_ledger_head_sha256
+      AND claim.status = 'running'
+      AND claim.ledger_version = 3
+      AND claim.last_completed_ordinal = 4
+      AND claim.inflight_operation_ordinal IS NULL
+      AND claim.inflight_operation_id_sha256 IS NULL
+      AND claim.inflight_request_sha256 IS NULL
+      AND claim.inflight_readback_only = 0
+      AND claim.lease_generation = 1
+      AND claim.lease_owner_sha256 = claim.claim_owner_sha256
+      AND claim.renewal_count = 0
+      AND claim.takeover_count = 0
+      AND claim.ticket_activation_confirmed = 1
+      AND claim.enable_intent_seen = 0
+      AND claim.disable_confirmed = 1
+      AND unixepoch() < claim.lease_expires_at
+      AND unixepoch() < claim.normal_deadline_at
+      AND unixepoch() < claim.permit_expires_at
+      AND NOT EXISTS (
+        SELECT 1
+        FROM shard_placement_authority_revocations AS revocation
+        WHERE revocation.authorization_id_sha256 =
+          claim.authorization_id_sha256
+          AND revocation.permit_subject_digest_sha256 =
+            claim.permit_subject_digest_sha256
+      )
+  ) THEN RAISE(
+    ABORT,
+    'placement operation-five admission is not authorized'
+  ) END;
+END;
+
+CREATE TRIGGER shard_placement_authority_operation_five_admission_update_guard
+BEFORE UPDATE ON shard_placement_authority_operation_five_admissions
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'placement operation-five admissions are immutable'
+  );
+END;
+
+CREATE TRIGGER shard_placement_authority_operation_five_admission_delete_guard
+BEFORE DELETE ON shard_placement_authority_operation_five_admissions
+FOR EACH ROW
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'placement operation-five admissions are append-preserved'
+  );
+END;
+
 CREATE TRIGGER shard_placement_authority_execution_claim_insert_guard
 BEFORE INSERT ON shard_placement_authority_execution_claims
 FOR EACH ROW
@@ -1118,8 +1359,57 @@ BEGIN
           AND (
             NEW.operation_ordinal <> 5
             OR (
-              claim.ticket_activation_confirmed = 1
+              claim.status = 'running'
+              AND claim.ledger_version = 3
+              AND claim.last_completed_ordinal = 4
+              AND claim.inflight_readback_only = 0
+              AND claim.lease_generation = 1
+              AND claim.lease_owner_sha256 =
+                claim.claim_owner_sha256
+              AND claim.renewal_count = 0
+              AND claim.takeover_count = 0
+              AND claim.ticket_activation_confirmed = 1
               AND claim.application_activation_digest_sha256 IS NOT NULL
+              AND claim.enable_intent_seen = 0
+              AND claim.disable_confirmed = 1
+              AND NEW.sequence = 4
+              AND NEW.predecessor_receipt_sha256 =
+                claim.ledger_head_sha256
+              AND EXISTS (
+                SELECT 1
+                FROM shard_placement_authority_operation_five_admissions
+                  AS admission
+                WHERE admission.authorization_id_sha256 =
+                  claim.authorization_id_sha256
+                  AND admission.claim_digest_sha256 =
+                    claim.claim_digest_sha256
+                  AND admission.application_ticket_id_sha256 =
+                    claim.application_ticket_id_sha256
+                  AND admission.application_ticket_digest_sha256 =
+                    claim.application_ticket_digest_sha256
+                  AND admission.application_database_identity_sha256 =
+                    claim.application_database_identity_sha256
+                  AND admission.application_activation_digest_sha256 =
+                    claim.application_activation_digest_sha256
+                  AND admission.authority_ledger_head_sha256 =
+                    claim.ledger_head_sha256
+                  AND admission.authority_activation_terminal_receipt_sha256 =
+                    claim.ledger_head_sha256
+                  AND admission.authority_database_identity_sha256 =
+                    claim.authority_database_identity_sha256
+                  AND admission.enable_credential_id_sha256 =
+                    NEW.receipt_credential_id_sha256
+                  AND admission.enable_request_id_sha256 =
+                    NEW.request_id_sha256
+                  AND admission.enable_operation_request_sha256 =
+                    NEW.request_sha256
+                  AND admission.confirmation_digest_sha256 =
+                    NEW.evidence_sha256
+                  AND admission.operation_start_receipt_digest_sha256 =
+                    NEW.receipt_digest_sha256
+                  AND NEW.recorded_at >= admission.confirmed_at
+                  AND NEW.recorded_at <= admission.confirmed_at + 1
+              )
             )
           )
           AND NEW.recorded_at < claim.normal_deadline_at
@@ -1202,6 +1492,47 @@ BEGIN
               claim.authorization_id_sha256
               AND revocation.permit_subject_digest_sha256 =
                 claim.permit_subject_digest_sha256
+          )
+        )
+      )
+      AND (
+        NEW.operation_ordinal <> 5
+        OR (
+          NEW.evidence_sha256 = started.evidence_sha256
+          AND NEW.receipt_credential_id_sha256 =
+            started.receipt_credential_id_sha256
+          AND NEW.request_id_sha256 =
+            started.request_id_sha256
+          AND claim.inflight_started_generation =
+            started.lease_generation
+          AND claim.inflight_started_owner_sha256 =
+            started.lease_owner_sha256
+          AND claim.inflight_started_lease_token_sha256 =
+            started.lease_token_sha256
+          AND (
+            (
+              claim.inflight_readback_only = 0
+              AND claim.status = 'running'
+              AND claim.lease_generation = 1
+              AND claim.renewal_count = 0
+              AND claim.takeover_count = 0
+              AND NOT EXISTS (
+                SELECT 1
+                FROM shard_placement_authority_revocations AS revocation
+                WHERE revocation.authorization_id_sha256 =
+                  claim.authorization_id_sha256
+                  AND revocation.permit_subject_digest_sha256 =
+                    claim.permit_subject_digest_sha256
+              )
+            )
+            OR (
+              claim.inflight_readback_only = 1
+              AND claim.status = 'disable_required'
+              AND NEW.outcome IN (
+                'ambiguous_recovered',
+                'unresolved'
+              )
+            )
           )
         )
       )

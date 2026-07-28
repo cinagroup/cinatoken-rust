@@ -37,6 +37,10 @@ export default defineConfig({
           SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED: "true",
           SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED: "true",
           SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: "true",
+          SHARD_PLACEMENT_AUTHORITY_ACTIVATION_READ_ENABLED: "false",
+          SHARD_PLACEMENT_AUTHORITY_ACTIVATION_WRITE_ENABLED: "false",
+          SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_READ_ENABLED: "false",
+          SHARD_PLACEMENT_AUTHORITY_ENABLE_INTENT_WRITE_ENABLED: "false",
           SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256:
             "6".repeat(64),
           SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256:
@@ -82,6 +86,14 @@ export default defineConfig({
           ...hmacBindings("ISSUE", SHARD_PLACEMENT_AUTHORITY_HMAC.issue),
           ...hmacBindings("REVOKE", SHARD_PLACEMENT_AUTHORITY_HMAC.revoke),
           ...hmacBindings("CLAIM", SHARD_PLACEMENT_AUTHORITY_HMAC.claim),
+          ...hmacBindings(
+            "ACTIVATE",
+            SHARD_PLACEMENT_AUTHORITY_HMAC.activate,
+          ),
+          ...hmacBindings(
+            "ENABLE",
+            SHARD_PLACEMENT_AUTHORITY_HMAC.enable,
+          ),
           ...hmacBindings(
             "RECEIPT",
             SHARD_PLACEMENT_AUTHORITY_HMAC.receipt,

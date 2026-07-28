@@ -219,7 +219,7 @@ describe("shard placement Authority Workerd runtime", () => {
     );
     expect(prematureEnableResponse.status).toBe(409);
     expect(await prematureEnableResponse.json()).toEqual({
-      error: "execution_receipt_conflict",
+      error: "dedicated_operation_route_required",
     });
 
     const applicationActivationDigestSha256 = "d".repeat(64);
@@ -232,86 +232,14 @@ describe("shard placement Authority Workerd runtime", () => {
       evidenceSha256: applicationActivationDigestSha256,
       requestId: operationFourRequestId,
     });
-    expect((await appendExecutionReceipt(
+    const genericOperationFour = await appendExecutionReceipt(
       claim.value.authorizationIdSha256,
       "receipts",
       started,
-    )).status).toBe(201);
-
-    const terminal = await placementExecutionReceipt({
-      claim: claim.value,
-      sequence: 3,
-      eventKind: "operation_terminal",
-      operationOrdinal: 4,
-      predecessorReceiptSha256: started.value.receiptDigestSha256,
-      outcome: "exact_success",
-      evidenceSha256: applicationActivationDigestSha256,
-      requestId: operationFourRequestId,
-    });
-    const activated = await appendExecutionReceipt(
-      claim.value.authorizationIdSha256,
-      "receipts",
-      terminal,
     );
-    expect(activated.status).toBe(201);
-    expect(await activated.json()).toMatchObject({
-      nextOperationOrdinal: 5,
-      ticketActivationConfirmed: true,
-      applicationActivationDigestSha256:
-        terminal.value.evidenceSha256,
-    });
-
-    const enableStart = await placementExecutionReceipt({
-      claim: claim.value,
-      sequence: 4,
-      eventKind: "operation_started",
-      operationOrdinal: 5,
-      predecessorReceiptSha256: terminal.value.receiptDigestSha256,
-    });
-    expect((await appendExecutionReceipt(
-      claim.value.authorizationIdSha256,
-      "receipts",
-      enableStart,
-    )).status).toBe(201);
-
-    const enableTerminal = await placementExecutionReceipt({
-      claim: claim.value,
-      sequence: 5,
-      eventKind: "operation_terminal",
-      operationOrdinal: 5,
-      predecessorReceiptSha256:
-        enableStart.value.receiptDigestSha256,
-      outcome: "exact_success",
-    });
-    expect((await appendExecutionReceipt(
-      claim.value.authorizationIdSha256,
-      "receipts",
-      enableTerminal,
-    )).status).toBe(201);
-
-    await waitForDatabaseTimeAfter(
-      claimPayloads[0].snapshot.state.leaseExpiresAt - 60,
-    );
-    const renewal = await placementExecutionReceipt({
-      claim: claim.value,
-      sequence: 6,
-      eventKind: "lease_renewed",
-      predecessorReceiptSha256:
-        enableTerminal.value.receiptDigestSha256,
-    });
-    const renewed = await appendExecutionReceipt(
-      claim.value.authorizationIdSha256,
-      "renew",
-      renewal,
-    );
-    expect(renewed.status).toBe(201);
-    const renewedPayload = await renewed.json();
-    expect(renewedPayload).toMatchObject({
-      result: "receipt_appended",
-      eventKind: "lease_renewed",
-      leaseGeneration: 1,
-      receiptCount: 6,
-      receiptDigestSha256: renewal.value.receiptDigestSha256,
+    expect(genericOperationFour.status).toBe(409);
+    expect(await genericOperationFour.json()).toEqual({
+      error: "dedicated_operation_route_required",
     });
 
     const revocation = await placementAuthorityRevocation({
@@ -329,89 +257,22 @@ describe("shard placement Authority Workerd runtime", () => {
       requestId: "execution-revoke",
     }));
     expect(revoke.status).toBe(201);
-
-    const forbiddenNext = await placementExecutionReceipt({
-      claim: claim.value,
-      sequence: 7,
-      eventKind: "operation_started",
-      operationOrdinal: 6,
-      predecessorReceiptSha256:
-        renewal.value.receiptDigestSha256,
-    });
-    const rejected = await appendExecutionReceipt(
-      claim.value.authorizationIdSha256,
-      "receipts",
-      forbiddenNext,
-    );
-    expect(rejected.status).toBe(409);
-    expect(await rejected.json()).toEqual({
-      error: "execution_receipt_conflict",
-    });
-
-    const safety = await placementExecutionReceipt({
-      claim: claim.value,
-      sequence: 7,
-      eventKind: "safety_diverted",
-      predecessorReceiptSha256:
-        renewal.value.receiptDigestSha256,
-      safetyReason: "lease_revoked",
-    });
-    const diverted = await appendExecutionReceipt(
-      claim.value.authorizationIdSha256,
-      "safety-divert",
-      safety,
-    );
-    expect(diverted.status).toBe(201);
-    expect(await diverted.json()).toMatchObject({
-      eventKind: "safety_diverted",
-      status: "disable_required",
-      receiptCount: 7,
-    });
-
-    const disableStart = await placementExecutionReceipt({
-      claim: claim.value,
-      sequence: 8,
-      eventKind: "operation_started",
-      operationOrdinal: 14,
-      predecessorReceiptSha256: safety.value.receiptDigestSha256,
-    });
-    const disable = await appendExecutionReceipt(
-      claim.value.authorizationIdSha256,
-      "receipts",
-      disableStart,
-    );
-    expect(disable.status).toBe(201);
-    expect(await disable.json()).toMatchObject({
-      status: "disable_required",
-      nextOperationOrdinal: 14,
-      receiptCount: 8,
-    });
-
-    const lateReplay = await createClaim(claim);
-    expect(lateReplay.status).toBe(200);
-    expect(await lateReplay.json()).toMatchObject({
-      result: "exact_replay",
-      snapshot: {
-        state: {
-          status: "disable_required",
-          receiptCount: 8,
-        },
-      },
+    const fenced = await env.DB.prepare(
+      `SELECT status, ledger_version, enable_intent_seen,
+              ticket_activation_confirmed
+       FROM shard_placement_authority_execution_claims
+       WHERE authorization_id_sha256 = ?1`,
+    )
+      .bind(claim.value.authorizationIdSha256)
+      .first();
+    expect(fenced).toEqual({
+      status: "revoked",
+      ledger_version: 1,
+      enable_intent_seen: 0,
+      ticket_activation_confirmed: 0,
     });
   });
 });
-
-async function waitForDatabaseTimeAfter(previousSecond) {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    const row = await env.DB.prepare(
-      "SELECT unixepoch() AS database_now",
-    ).first();
-    if (row?.database_now > previousSecond) return;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error("D1 database time did not advance");
-}
 
 async function issue(body, requestId) {
   return SELF.fetch(await signedAuthorityRequest({

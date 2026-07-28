@@ -428,6 +428,96 @@ describe("shard placement Authority migration", () => {
       receiptDigestSha256: "4".repeat(64),
     })).toThrow("placement execution operation start is invalid");
   });
+
+  test("atomically fences operation 5 with ACK admission and revocation", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    const issuance = validIssuance();
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+    const claim = completeOperationFour(database, issuance);
+    const admission = operationFiveAdmission(issuance);
+    const start = operationFiveStart(issuance, claim, admission);
+
+    expect(() => insertExecutionReceipt(database, start)).toThrow(
+      "placement execution operation start is invalid",
+    );
+    expect(database.query(`
+      SELECT COUNT(*) AS count
+      FROM shard_placement_authority_operation_five_admissions
+    `).get().count).toBe(0);
+
+    database.transaction(() => {
+      insertOperationFiveAdmission(database, admission);
+      insertExecutionReceipt(database, start);
+    })();
+    expect(readExecutionClaim(database)).toMatchObject({
+      status: "running",
+      ledger_version: 4,
+      inflight_operation_ordinal: 5,
+      enable_intent_seen: 1,
+      disable_confirmed: 0,
+    });
+    expect(() => database.query(`
+      UPDATE shard_placement_authority_operation_five_admissions
+      SET authority_version_id = 'replacement'
+      WHERE authorization_id_sha256 = ?
+    `).run(issuance.authorization_id_sha256)).toThrow(
+      "placement operation-five admissions are immutable",
+    );
+  });
+
+  test("rolls back operation-5 admission when revocation wins", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    const issuance = validIssuance();
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+    const claim = completeOperationFour(database, issuance);
+    const admission = operationFiveAdmission(issuance);
+    const start = operationFiveStart(issuance, claim, admission);
+    database.query(`
+      INSERT INTO shard_placement_authority_revocations (
+        authorization_id_sha256, permit_subject_digest_sha256,
+        reason_code, evidence_sha256, revocation_event_sha256,
+        revoke_credential_id_sha256
+      ) VALUES (?, ?, 'operator_abort', ?, ?, ?)
+    `).run(
+      issuance.authorization_id_sha256,
+      issuance.permit_subject_digest_sha256,
+      "3".repeat(64),
+      "4".repeat(64),
+      "5".repeat(64),
+    );
+
+    expect(() => database.transaction(() => {
+      insertOperationFiveAdmission(database, admission);
+      insertExecutionReceipt(database, start);
+    })()).toThrow(
+      "placement operation-five admission is not authorized",
+    );
+    expect(database.query(`
+      SELECT
+        (SELECT COUNT(*)
+         FROM shard_placement_authority_operation_five_admissions)
+          AS admissions,
+        (SELECT COUNT(*)
+         FROM shard_placement_authority_execution_receipts
+         WHERE operation_ordinal = 5) AS starts
+    `).get()).toEqual({ admissions: 0, starts: 0 });
+    expect(readExecutionClaim(database)).toMatchObject({
+      status: "revoked",
+      ledger_version: 3,
+      enable_intent_seen: 0,
+      disable_confirmed: 1,
+    });
+  });
 });
 
 function validIssuance() {
@@ -608,10 +698,115 @@ function insertExecutionReceipt(database, receipt) {
     receipt.leaseTokenSha256,
     receipt.leaseGeneration,
     receipt.leaseExpiresAt,
-    "9".repeat(64),
-    "0".repeat(64),
+    receipt.receiptCredentialIdSha256 ?? "9".repeat(64),
+    receipt.requestIdSha256 ?? "0".repeat(64),
     receipt.receiptDigestSha256,
   );
+}
+
+function completeOperationFour(database, issuance) {
+  const claimed = readExecutionClaim(database);
+  insertExecutionReceipt(database, {
+    authorizationIdSha256: issuance.authorization_id_sha256,
+    sequence: 2,
+    eventKind: "operation_started",
+    operationOrdinal: 4,
+    operationIdSha256: "4".repeat(64),
+    operationKind: "activate_execution_ticket",
+    predecessorReceiptSha256: "b".repeat(64),
+    requestSha256: "c".repeat(64),
+    responseSha256: null,
+    evidenceSha256: "d".repeat(64),
+    outcome: "pending",
+    leaseOwnerSha256: claimed.lease_owner_sha256,
+    leaseTokenSha256: claimed.lease_token_sha256,
+    leaseGeneration: 1,
+    leaseExpiresAt: claimed.lease_expires_at,
+    receiptDigestSha256: "e".repeat(64),
+  });
+  insertExecutionReceipt(database, {
+    authorizationIdSha256: issuance.authorization_id_sha256,
+    sequence: 3,
+    eventKind: "operation_terminal",
+    operationOrdinal: 4,
+    operationIdSha256: "4".repeat(64),
+    operationKind: "activate_execution_ticket",
+    predecessorReceiptSha256: "e".repeat(64),
+    requestSha256: "c".repeat(64),
+    responseSha256: "f".repeat(64),
+    evidenceSha256: "d".repeat(64),
+    outcome: "exact_success",
+    leaseOwnerSha256: claimed.lease_owner_sha256,
+    leaseTokenSha256: claimed.lease_token_sha256,
+    leaseGeneration: 1,
+    leaseExpiresAt: claimed.lease_expires_at,
+    receiptDigestSha256: "1".repeat(64),
+  });
+  return readExecutionClaim(database);
+}
+
+function operationFiveAdmission(issuance) {
+  return {
+    authorization_id_sha256: issuance.authorization_id_sha256,
+    contract_version: 1,
+    confirmation_contract:
+      "cinatoken-shard-placement-authority-operation-five-admission-v1",
+    claim_digest_sha256: "8".repeat(64),
+    application_ticket_id_sha256: "c".repeat(64),
+    application_ticket_digest_sha256: "d".repeat(64),
+    application_database_identity_sha256: "e".repeat(64),
+    application_activation_digest_sha256: "d".repeat(64),
+    authority_activation_terminal_receipt_sha256: "1".repeat(64),
+    authority_ledger_head_sha256: "1".repeat(64),
+    authority_database_identity_sha256: "f".repeat(64),
+    authority_version_id: "authority-test-v1",
+    application_acknowledgement_digest_sha256: "2".repeat(64),
+    application_version_id: "application-test-v1",
+    application_read_credential_id_sha256: "3".repeat(64),
+    application_read_request_id_sha256: "4".repeat(64),
+    application_response_sha256: "5".repeat(64),
+    application_response_bytes: 1024,
+    enable_credential_id_sha256: "6".repeat(64),
+    enable_request_id_sha256: "7".repeat(64),
+    command_enable_request_id_sha256: "8".repeat(64),
+    enable_operation_request_sha256: "9".repeat(64),
+    confirmation_digest_sha256: "a".repeat(64),
+    operation_start_receipt_digest_sha256: "0".repeat(64),
+  };
+}
+
+function insertOperationFiveAdmission(database, admission) {
+  const columns = Object.keys(admission);
+  database.query(`
+    INSERT INTO shard_placement_authority_operation_five_admissions (
+      ${columns.join(", ")}
+    ) VALUES (${columns.map(() => "?").join(", ")})
+  `).run(...columns.map((column) => admission[column]));
+}
+
+function operationFiveStart(issuance, claim, admission) {
+  return {
+    authorizationIdSha256: issuance.authorization_id_sha256,
+    sequence: 4,
+    eventKind: "operation_started",
+    operationOrdinal: 5,
+    operationIdSha256: "5".repeat(64),
+    operationKind: "enable_controller_deployment",
+    predecessorReceiptSha256: "1".repeat(64),
+    requestSha256: admission.enable_operation_request_sha256,
+    responseSha256: null,
+    evidenceSha256: admission.confirmation_digest_sha256,
+    outcome: "pending",
+    leaseOwnerSha256: claim.lease_owner_sha256,
+    leaseTokenSha256: claim.lease_token_sha256,
+    leaseGeneration: 1,
+    leaseExpiresAt: claim.lease_expires_at,
+    receiptCredentialIdSha256:
+      admission.enable_credential_id_sha256,
+    requestIdSha256: admission.enable_request_id_sha256,
+    receiptDigestSha256:
+      admission.operation_start_receipt_digest_sha256,
+  };
 }
 
 function readExecutionClaim(database) {

@@ -23310,3 +23310,143 @@ dry-run build checks pass locally. No credential was read, no remote request,
 migration, gate change, Container wake, customer traffic, billing authority,
 Go/VPS drain, DNS change, or production mutation occurred. Production remains
 **NO-GO**.
+
+## 22.322 Operation-5 ACK Admission And Workload Isolation (2026-07-29)
+
+This checkpoint closes the local Authority-side pre-enable admission that
+22.321 left open. It records operation-5 enable intent but deliberately does
+not call the Controller, wake a Container, change a deployment, or authorize
+staging or production.
+
+### Independent private identities
+
+Authority HMAC roles now separate:
+
+- `activate` for the dedicated operation-4 route;
+- `enable` for the dedicated operation-5 admission route;
+- `receipt` for later ordinary receipt traffic; and
+- `recovery` for lease and safety-diversion traffic.
+
+Each role has independent current/previous key IDs, credential fingerprints,
+and secret bindings. Runtime validation rejects a duplicate key ID,
+credential fingerprint, or secret across any active role. The generic
+`/receipts` route rejects operation 4 and operation 5 before repository
+mutation; callers must use their dedicated route and identity.
+
+The application ACK exact-read has its own `authority_ack_read` role and
+current/previous verifier overlap. Its secret remains a Worker secret, never a
+tracked variable. Local and staging declare blank identities and false gates;
+production still has no placement Authority configuration.
+
+### Operation-5 protocol
+
+The private Authority route is:
+
+`POST /internal/v1/shard-placement/execution-claims/:authorization/begin-enable`
+
+Its canonical command binds the authorization, claim digest/owner,
+application acknowledgement digest, and a caller-frozen enable request
+digest. Processing is ordered:
+
+1. read the exact current Authority claim and operation-4 terminal;
+2. reject anything except the pristine generation-1 post-operation-4 state;
+3. read the exact immutable ACK through the application Service Binding;
+4. validate strict no-store JSON, bounded bytes, application D1 time,
+   unsealed campaign, every deadline, ticket/database/ledger identity,
+   operation-4 terminal/head, Authority version, and ACK digest;
+5. re-read Authority D1 and reject any ledger, owner, token, generation,
+   expiry, activation, renewal, or takeover drift; and
+6. use one D1 `batch()` to create the immutable operation-5 admission and the
+   sequence-4 `operation_started` receipt.
+
+The admission binds the application ACK and exact response bytes, application
+version and ACK-reader credential/request, Authority claim/ticket/database/
+version/operation-4 head, the independent enable credential/request, the
+operation-5 request digest, confirmation digest, and expected start receipt.
+The receipt uses the confirmation digest as evidence. D1 requires the two
+rows to agree and admits neither if revocation, lease drift, expiry, schedule
+drift, predecessor drift, or any identity mismatch wins the race.
+
+The persisted operation-5 start receipt is the local irreversible
+linearization point. After it exists, ambiguity grants only exact readback and
+operation-14 disable authority. Exact replay returns stored identities; it
+does not authorize a new enable send. Operation-5 terminal fencing already
+requires the original start credential, request, evidence, owner/generation
+tuple, and readback-only recovery outcomes after takeover.
+
+### Source architecture applied
+
+The source repositories inform the runner without becoming its control-plane
+truth:
+
+- cinaVibeSDK's deterministic DO-by-name ownership is retained as the
+  single-writer model.
+- Its `hash(session) % instanceCount` routing is rejected because changing
+  the count remaps most tenants. Placement freezes tenant key, hash domain,
+  ring generation, shard count, and shard ID in signed evidence.
+- Its process-local maps, intervals, promises, unlimited retries, and
+  container-filesystem metadata are unsuitable for recovery. Authority D1,
+  DO durable state, and exact Controller readback remain authoritative.
+- Its bounded process restart states are useful only as local Container
+  health signals; PID or port liveness never proves shard readiness.
+- cinatoken-go's affinity-hit revalidation becomes a mandatory ring,
+  candidate, shard, version, and action-gate recheck before every terminal
+  receipt.
+- cinatoken-go's affected-row CAS winner rule becomes the runner rule: only
+  the writer that advances the expected ledger head may own the next external
+  side effect.
+
+### Proven local fences
+
+Tests prove:
+
+- generic operation-4 and operation-5 receipt submissions are rejected;
+- missing admission rejects operation-5 start;
+- matching admission and start are committed together;
+- revocation before the batch rolls back both rows and leaves
+  `enable_intent_seen=0`;
+- admission rows are immutable and append-preserved;
+- operation-5 call order is ACK read, Authority reread, then one admission/
+  start batch;
+- Rust and TypeScript compute the same ACK digest fixed vector; and
+- Worker Wasm, Authority dry-run build, generated bindings, config audit, and
+  Workerd runtime remain valid.
+
+Successful admission/replay emits one canonical structured event containing
+only digests, versions, result classification, bounded response size, and
+elapsed time. It excludes HMAC values, raw request IDs, request bodies, and SQL
+text. Deployed failure-path metrics and alerts remain required before staging.
+
+### Remaining P0 before any Controller dispatch
+
+1. Add a durable create-only dispatch/outbox record before the only eligible
+   Controller enable call. A timeout or lost response must perform status
+   readback and must never resend enable.
+2. Re-read the application admission/seal context immediately before
+   dispatch. Because application D1 and Authority D1 cannot share a
+   transaction, a seal after ACK read must divert to disable recovery rather
+   than permit mutation.
+3. Implement the resumable operation 5-14 runner. Operations 6-13 prove
+   shards 0-7 in order against the frozen ring/candidate/version; operation 14
+   must have reserved ledger, lease, deadline, credential, and Cloudflare
+   quota capacity before operation 5.
+4. Persist every dispatch/readback/terminal state needed for process death,
+   Worker version rollout, lease takeover, and response-loss recovery. No
+   local timer, promise, PID, file, or in-memory retry counter may grant send
+   authority.
+5. Run deployed cross-Worker fault campaigns for ACK/read/start/dispatch/
+   terminal response loss, stale Service Binding responses, deadline
+   equality, renewal/takeover, concurrent revocation, Controller ambiguity,
+   and operation-14 failure.
+6. Collect independent remote bindings, Access policies, D1 catalogs,
+   zero-row baselines, versions, identity rotation, audit/WORM, and historical
+   token revocation evidence. Caller workload manifests must prove that the
+   operation-4 workload receives only `ACTIVATE` credentials and the
+   operation-5 workload receives only `ENABLE` credentials; neither secret may
+   be co-injected into one execution workload.
+7. Keep Go/VPS authoritative through shadow comparison, rollback, reverse
+   sync, operation-14 disable proof, old-ring drain, and traffic/DNS approval.
+
+All new gates remain false. No credential or remote Cloudflare state was read,
+and no migration, gate, Container, traffic, billing, DNS, or Go/VPS state was
+changed. Production remains **NO-GO**.

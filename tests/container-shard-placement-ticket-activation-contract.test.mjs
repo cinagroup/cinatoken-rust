@@ -243,7 +243,13 @@ describe("application placement execution ticket activation contract", () => {
       "cinatoken-shard-placement-application-v1\\n",
     );
     expect(activationReadSource).toContain(
-      'claims.role != "activation_read"',
+      "claims.role != expected_role",
+    );
+    expect(activationReadSource).toContain(
+      '"authority_ack_read"',
+    );
+    expect(activationReadSource).toContain(
+      "ACK_HMAC_PREVIOUS_SECRET_ENV",
     );
     expect(activationReadSource).toContain(
       "request_has_forbidden_ambient_headers(&req)",
@@ -337,13 +343,32 @@ describe("application placement execution ticket activation contract", () => {
       ).toBe("false");
       expect(
         scope.vars
+          .RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_ENABLED,
+      ).toBe("false");
+      expect(
+        scope.vars
           .RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_AUTHORITY_ACK_WRITE_ENABLED,
       ).toBe("false");
+      for (const prefix of [
+        "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC",
+        "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC",
+      ]) {
+        expect(scope.vars[`${prefix}_PREVIOUS_KID`]).toBe("");
+        expect(
+          scope.vars[`${prefix}_PREVIOUS_CREDENTIAL_ID_SHA256`],
+        ).toBe("");
+        expect(scope.vars[`${prefix}_CURRENT_SECRET`]).toBeUndefined();
+        expect(scope.vars[`${prefix}_PREVIOUS_SECRET`]).toBeUndefined();
+      }
     }
     for (const name of [
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ENABLED",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_AUTHORITY_ACK_WRITE_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_SECRET",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_SECRET",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_CURRENT_SECRET",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_PREVIOUS_SECRET",
     ]) {
       expect(rootConfig.env.production.vars[name]).toBeUndefined();
     }

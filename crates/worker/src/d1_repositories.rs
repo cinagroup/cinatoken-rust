@@ -1144,6 +1144,14 @@ pub struct RelayContainerShardPlacementExecutionTicketActivationReadSnapshot {
     pub context: RelayContainerShardPlacementExecutionTicketActivationContextRow,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementExecutionTicketAuthorityAckReadSnapshot {
+    pub ticket: RelayContainerShardPlacementExecutionTicketRow,
+    pub activation: RelayContainerShardPlacementExecutionTicketActivationRow,
+    pub acknowledgement: RelayContainerShardPlacementExecutionTicketAuthorityAckRow,
+    pub context: RelayContainerShardPlacementExecutionTicketActivationContextRow,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RelayContainerShardPlacementExecutionTicketActivation<'a> {
     pub ticket_id_sha256: &'a str,
@@ -12502,6 +12510,87 @@ pub async fn relay_container_shard_placement_execution_ticket_activation_read_sn
             RelayContainerShardPlacementExecutionTicketActivationReadSnapshot {
                 ticket,
                 activation,
+                context,
+            },
+        )),
+        _ => Ok(None),
+    }
+}
+
+pub async fn relay_container_shard_placement_execution_ticket_authority_ack_read_snapshot(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<Option<RelayContainerShardPlacementExecutionTicketAuthorityAckReadSnapshot>> {
+    validate_relay_container_sha256(ticket_id_sha256, "shard placement execution ticket id")?;
+    let results = db
+        .batch(vec![
+            relay_container_shard_placement_execution_ticket_statement(db, ticket_id_sha256)?,
+            relay_container_shard_placement_execution_ticket_activation_statement(
+                db,
+                ticket_id_sha256,
+            )?,
+            relay_container_shard_placement_execution_ticket_authority_ack_statement(
+                db,
+                ticket_id_sha256,
+            )?,
+            relay_container_shard_placement_execution_ticket_activation_context_statement(
+                db,
+                ticket_id_sha256,
+            )?,
+        ])
+        .await?;
+    if results.len() != 4 {
+        return Err(worker::Error::RustError(
+            "shard placement Authority acknowledgement snapshot is incomplete".to_string(),
+        ));
+    }
+    let mut results = results.into_iter();
+    let ticket = results
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement execution ticket snapshot is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementExecutionTicketRow>()?
+        .into_iter()
+        .next();
+    let activation = results
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement execution ticket activation snapshot is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementExecutionTicketActivationRow>()?
+        .into_iter()
+        .next();
+    let acknowledgement = results
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement Authority acknowledgement snapshot is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementExecutionTicketAuthorityAckRow>()?
+        .into_iter()
+        .next();
+    let context = results
+        .next()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement execution ticket activation context is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementExecutionTicketActivationContextRow>()?
+        .into_iter()
+        .next();
+    match (ticket, activation, acknowledgement, context) {
+        (Some(ticket), Some(activation), Some(acknowledgement), Some(context)) => Ok(Some(
+            RelayContainerShardPlacementExecutionTicketAuthorityAckReadSnapshot {
+                ticket,
+                activation,
+                acknowledgement,
                 context,
             },
         )),

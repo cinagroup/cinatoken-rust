@@ -228,7 +228,7 @@ describe("Authority operation 4", () => {
       } as ActivateTicketEnv,
       command,
       {
-        role: "receipt",
+        role: "activate",
         credentialIdSha256: digest("0"),
         keyId: "receipt-current-v1",
         bodySha256: digest("1"),

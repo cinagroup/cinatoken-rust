@@ -10,27 +10,53 @@ use worker::{Env, Request, Response, Result as WorkerResult, WorkerVersionMetada
 
 use crate::d1_repositories::{
     relay_container_shard_placement_execution_ticket_activation_read_snapshot,
+    relay_container_shard_placement_execution_ticket_authority_ack_read_snapshot,
     RelayContainerShardPlacementExecutionTicketActivationReadSnapshot,
+    RelayContainerShardPlacementExecutionTicketAuthorityAckReadSnapshot,
 };
 
 const READ_ENABLED_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ENABLED";
+const ACK_READ_ENABLED_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_ENABLED";
 const ISSUER_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ISSUER";
 const AUDIENCE_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_AUDIENCE";
 const HMAC_KID_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_KID";
 const HMAC_CREDENTIAL_ID_ENV: &str =
     "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256";
 const HMAC_SECRET_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_SECRET";
+const HMAC_PREVIOUS_KID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_KID";
+const HMAC_PREVIOUS_CREDENTIAL_ID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256";
+const HMAC_PREVIOUS_SECRET_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_SECRET";
+const ACK_HMAC_KID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_CURRENT_KID";
+const ACK_HMAC_CREDENTIAL_ID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256";
+const ACK_HMAC_SECRET_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_CURRENT_SECRET";
+const ACK_HMAC_PREVIOUS_KID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_PREVIOUS_KID";
+const ACK_HMAC_PREVIOUS_CREDENTIAL_ID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256";
+const ACK_HMAC_PREVIOUS_SECRET_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_PREVIOUS_SECRET";
 const APPLICATION_DATABASE_IDENTITY_ENV: &str =
     "RELAY_CONTAINER_SHARD_APPLICATION_DATABASE_IDENTITY_SHA256";
 const APPLICATION_HEADER: &str = "x-cinatoken-shard-placement-application";
 const HMAC_DOMAIN: &[u8] = b"cinatoken-shard-placement-application-v1\n";
 const ACTIVATION_DIGEST_DOMAIN: &[u8] =
     b"cinatoken:relay-container-shard-placement-execution-ticket-activation:v1\0";
+const ACKNOWLEDGEMENT_DIGEST_DOMAIN: &[u8] =
+    b"cinatoken:relay-container-shard-placement-authority-ack:v1\0";
 const EMPTY_BODY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const SNAPSHOT_CONTRACT: &str =
     "cinatoken-relay-container-shard-placement-execution-ticket-activation-snapshot-v1";
+const ACK_SNAPSHOT_CONTRACT: &str =
+    "cinatoken-relay-container-shard-placement-authority-ack-snapshot-v1";
 const ACTIVATION_CONTRACT: &str =
     "cinatoken-relay-container-shard-placement-execution-ticket-activation-v1";
+const ACKNOWLEDGEMENT_CONTRACT: &str = "cinatoken-relay-container-shard-placement-authority-ack-v1";
 const TICKET_CONTRACT: &str = "cinatoken-relay-container-shard-placement-execution-ticket-v1";
 const HMAC_WINDOW_SECONDS: i64 = 60;
 const HMAC_CLOCK_SKEW_SECONDS: i64 = 5;
@@ -75,6 +101,14 @@ struct ExactReadQuery {
     activation_digest_sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExactAckReadQuery {
+    ticket_digest_sha256: String,
+    claim_digest_sha256: String,
+    activation_digest_sha256: String,
+    acknowledgement_digest_sha256: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExactActivationSnapshot<'a> {
@@ -107,6 +141,42 @@ struct ExactActivationSnapshot<'a> {
     database_now: i64,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExactAuthorityAckSnapshot<'a> {
+    schema_version: u32,
+    contract: &'static str,
+    ticket_id_sha256: &'a str,
+    ticket_digest_sha256: &'a str,
+    authorization_id_sha256: &'a str,
+    campaign_id: &'a str,
+    application_database_identity_sha256: &'a str,
+    authority_database_identity_sha256: &'a str,
+    authority_ledger_identity_sha256: &'a str,
+    operation_schedule_sha256: &'a str,
+    authority_claim_digest_sha256: &'a str,
+    authority_claim_acquired_receipt_sha256: &'a str,
+    authority_claim_operation_id_sha256: &'a str,
+    authority_activation_operation_id_sha256: &'a str,
+    application_activation_digest_sha256: &'a str,
+    authority_activation_terminal_receipt_sha256: &'a str,
+    authority_ledger_head_sha256: &'a str,
+    authority_version_id: &'a str,
+    authority_read_credential_id_sha256: &'a str,
+    authority_read_request_id_sha256: &'a str,
+    acknowledgement_digest_sha256: &'a str,
+    acknowledged_by_admin_id: i64,
+    prepared_at: i64,
+    activated_at: i64,
+    acknowledged_at: i64,
+    activation_deadline_at: i64,
+    execution_deadline_at: i64,
+    permit_expires_at: i64,
+    campaign_expires_at: i64,
+    campaign_sealed_at: Option<i64>,
+    database_now: i64,
+}
+
 pub async fn read_exact(
     mut req: Request,
     env: Env,
@@ -125,7 +195,7 @@ pub async fn read_exact(
         Some(value) => value,
         None => return protocol_error(400, "invalid_request_url"),
     };
-    let config = match read_config(&env) {
+    let configs = match read_activation_configs(&env) {
         Some(value) => value,
         None => return protocol_error(503, "activation_read_configuration_invalid"),
     };
@@ -134,7 +204,10 @@ pub async fn read_exact(
         None => return protocol_error(403, "invalid_authority"),
     };
     let now = (worker::Date::now().as_millis() / 1_000) as i64;
-    let request_id = match verify_token(&token, &config, &path_and_query, now) {
+    let (request_id, config) = match configs.iter().find_map(|config| {
+        verify_token(&token, config, "activation_read", &path_and_query, now)
+            .map(|request_id| (request_id, config))
+    }) {
         Some(value) => value,
         None => return protocol_error(403, "invalid_authority"),
     };
@@ -230,6 +303,144 @@ pub async fn read_exact(
     )
 }
 
+pub async fn read_exact_ack(
+    mut req: Request,
+    env: Env,
+    ticket_id_sha256: Option<String>,
+) -> WorkerResult<Response> {
+    if !runtime_flag(&env, ACK_READ_ENABLED_ENV) {
+        return protocol_error(404, "authority_ack_read_disabled");
+    }
+    if request_has_forbidden_ambient_headers(&req) {
+        return protocol_error(400, "forbidden_request_header");
+    }
+    if !request_body_is_empty(&mut req).await {
+        return protocol_error(400, "unexpected_body");
+    }
+    let path_and_query = match request_path_and_query(&req) {
+        Some(value) => value,
+        None => return protocol_error(400, "invalid_request_url"),
+    };
+    let configs = match read_ack_configs(&env) {
+        Some(value) => value,
+        None => return protocol_error(503, "authority_ack_read_configuration_invalid"),
+    };
+    let token = match req.headers().get(APPLICATION_HEADER).ok().flatten() {
+        Some(value) => value,
+        None => return protocol_error(403, "invalid_authority"),
+    };
+    let now = (worker::Date::now().as_millis() / 1_000) as i64;
+    let (request_id, config) = match configs.iter().find_map(|config| {
+        verify_token(&token, config, "authority_ack_read", &path_and_query, now)
+            .map(|request_id| (request_id, config))
+    }) {
+        Some(value) => value,
+        None => return protocol_error(403, "invalid_authority"),
+    };
+    let ticket_id_sha256 = match ticket_id_sha256 {
+        Some(value) if valid_sha256(&value) => value,
+        _ => return protocol_error(400, "invalid_ticket_id"),
+    };
+    let query = match parse_exact_ack_query(&path_and_query, &ticket_id_sha256) {
+        Some(value) => value,
+        None => return protocol_error(400, "invalid_exact_read_query"),
+    };
+    let db = match env.d1("DB") {
+        Ok(value) => value,
+        Err(_) => return protocol_error(503, "authority_ack_ledger_unavailable"),
+    };
+    let snapshot =
+        match relay_container_shard_placement_execution_ticket_authority_ack_read_snapshot(
+            &db,
+            &ticket_id_sha256,
+        )
+        .await
+        {
+            Ok(Some(value)) => value,
+            Ok(None) => return protocol_error(404, "authority_ack_not_found"),
+            Err(err) => {
+                worker::console_error!(
+                    "Placement Authority acknowledgement exact-read D1 failed: {err}"
+                );
+                return protocol_error(503, "authority_ack_ledger_unavailable");
+            }
+        };
+    if !ack_snapshot_is_exact(
+        &snapshot,
+        &query,
+        &config.application_database_identity_sha256,
+    ) {
+        return protocol_error(409, "authority_ack_snapshot_mismatch");
+    }
+    let application_version_id = match env
+        .get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")
+        .map(|metadata| metadata.id())
+        .ok()
+        .filter(|value| valid_identity(value))
+    {
+        Some(value) => value,
+        None => return protocol_error(503, "application_version_unavailable"),
+    };
+    let ticket = &snapshot.ticket;
+    let activation = &snapshot.activation;
+    let acknowledgement = &snapshot.acknowledgement;
+    let context = &snapshot.context;
+    protocol_json(
+        200,
+        &json!({
+            "result": "exact_execution_ticket_authority_ack",
+            "requestId": request_id,
+            "snapshot": ExactAuthorityAckSnapshot {
+                schema_version: 1,
+                contract: ACK_SNAPSHOT_CONTRACT,
+                ticket_id_sha256: &ticket.ticket_id_sha256,
+                ticket_digest_sha256: &ticket.ticket_digest_sha256,
+                authorization_id_sha256: &ticket.authorization_id_sha256,
+                campaign_id: &ticket.campaign_id,
+                application_database_identity_sha256:
+                    &ticket.application_database_identity_sha256,
+                authority_database_identity_sha256:
+                    &ticket.authority_database_identity_sha256,
+                authority_ledger_identity_sha256:
+                    &ticket.authority_ledger_identity_sha256,
+                operation_schedule_sha256: &ticket.operation_schedule_sha256,
+                authority_claim_digest_sha256:
+                    &activation.authority_claim_digest_sha256,
+                authority_claim_acquired_receipt_sha256:
+                    &activation.authority_claim_acquired_receipt_sha256,
+                authority_claim_operation_id_sha256:
+                    &activation.authority_claim_operation_id_sha256,
+                authority_activation_operation_id_sha256:
+                    &activation.authority_activation_operation_id_sha256,
+                application_activation_digest_sha256:
+                    &activation.activation_digest_sha256,
+                authority_activation_terminal_receipt_sha256:
+                    &acknowledgement.authority_activation_terminal_receipt_sha256,
+                authority_ledger_head_sha256:
+                    &acknowledgement.authority_ledger_head_sha256,
+                authority_version_id: &acknowledgement.authority_version_id,
+                authority_read_credential_id_sha256:
+                    &acknowledgement.authority_read_credential_id_sha256,
+                authority_read_request_id_sha256:
+                    &acknowledgement.authority_read_request_id_sha256,
+                acknowledgement_digest_sha256:
+                    &acknowledgement.acknowledgement_digest_sha256,
+                acknowledged_by_admin_id: acknowledgement.acknowledged_by_admin_id,
+                prepared_at: ticket.prepared_at,
+                activated_at: activation.activated_at,
+                acknowledged_at: acknowledgement.acknowledged_at,
+                activation_deadline_at: ticket.activation_deadline_at,
+                execution_deadline_at: ticket.execution_deadline_at,
+                permit_expires_at: context.permit_expires_at,
+                campaign_expires_at: context.campaign_expires_at,
+                campaign_sealed_at: context.campaign_sealed_at,
+                database_now: context.database_now,
+            },
+            "applicationVersionId": application_version_id,
+        }),
+    )
+}
+
 fn request_has_forbidden_ambient_headers(req: &Request) -> bool {
     ["content-encoding", "cookie", "origin"]
         .iter()
@@ -299,14 +510,193 @@ fn parse_exact_query(path_and_query: &str, ticket_id_sha256: &str) -> Option<Exa
     })
 }
 
-fn read_config(env: &Env) -> Option<ReadConfig> {
+fn parse_exact_ack_query(
+    path_and_query: &str,
+    ticket_id_sha256: &str,
+) -> Option<ExactAckReadQuery> {
+    let prefix =
+        format!("/internal/v1/shard-placement/execution-ticket-authority-acks/{ticket_id_sha256}?");
+    let query = path_and_query.strip_prefix(&prefix)?;
+    let mut fields = query.split('&');
+    let ticket_digest_sha256 = fields
+        .next()?
+        .strip_prefix("ticketDigestSha256=")?
+        .to_string();
+    let claim_digest_sha256 = fields
+        .next()?
+        .strip_prefix("claimDigestSha256=")?
+        .to_string();
+    let activation_digest_sha256 = fields
+        .next()?
+        .strip_prefix("activationDigestSha256=")?
+        .to_string();
+    let acknowledgement_digest_sha256 = fields
+        .next()?
+        .strip_prefix("acknowledgementDigestSha256=")?
+        .to_string();
+    if fields.next().is_some()
+        || !valid_sha256(&ticket_digest_sha256)
+        || !valid_sha256(&claim_digest_sha256)
+        || !valid_sha256(&activation_digest_sha256)
+        || !valid_sha256(&acknowledgement_digest_sha256)
+    {
+        return None;
+    }
+    Some(ExactAckReadQuery {
+        ticket_digest_sha256,
+        claim_digest_sha256,
+        activation_digest_sha256,
+        acknowledgement_digest_sha256,
+    })
+}
+
+fn read_activation_configs(env: &Env) -> Option<Vec<ReadConfig>> {
+    let configs = read_rotating_configs(
+        env,
+        (HMAC_KID_ENV, HMAC_CREDENTIAL_ID_ENV, HMAC_SECRET_ENV),
+        (
+            HMAC_PREVIOUS_KID_ENV,
+            HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    if let Some(acknowledgement) = read_optional_rotating_configs(
+        env,
+        (
+            ACK_HMAC_KID_ENV,
+            ACK_HMAC_CREDENTIAL_ID_ENV,
+            ACK_HMAC_SECRET_ENV,
+        ),
+        (
+            ACK_HMAC_PREVIOUS_KID_ENV,
+            ACK_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            ACK_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )? {
+        if !configs_are_disjoint(&configs, &acknowledgement) {
+            return None;
+        }
+    }
+    Some(configs)
+}
+
+fn read_ack_configs(env: &Env) -> Option<Vec<ReadConfig>> {
+    let configs = read_rotating_configs(
+        env,
+        (
+            ACK_HMAC_KID_ENV,
+            ACK_HMAC_CREDENTIAL_ID_ENV,
+            ACK_HMAC_SECRET_ENV,
+        ),
+        (
+            ACK_HMAC_PREVIOUS_KID_ENV,
+            ACK_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            ACK_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    if let Some(activation) = read_optional_rotating_configs(
+        env,
+        (HMAC_KID_ENV, HMAC_CREDENTIAL_ID_ENV, HMAC_SECRET_ENV),
+        (
+            HMAC_PREVIOUS_KID_ENV,
+            HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )? {
+        if !configs_are_disjoint(&activation, &configs) {
+            return None;
+        }
+    }
+    Some(configs)
+}
+
+fn read_optional_rotating_configs(
+    env: &Env,
+    current_names: (&str, &str, &str),
+    previous_names: (&str, &str, &str),
+) -> Option<Option<Vec<ReadConfig>>> {
+    let configured = [
+        runtime_value(env, current_names.0),
+        runtime_value(env, current_names.1),
+        env.secret(current_names.2)
+            .ok()
+            .map(|value| value.to_string()),
+        runtime_value(env, previous_names.0),
+        runtime_value(env, previous_names.1),
+        env.secret(previous_names.2)
+            .ok()
+            .map(|value| value.to_string()),
+    ]
+    .iter()
+    .any(Option::is_some);
+    if !configured {
+        return Some(None);
+    }
+    read_rotating_configs(env, current_names, previous_names).map(Some)
+}
+
+fn read_rotating_configs(
+    env: &Env,
+    current_names: (&str, &str, &str),
+    previous_names: (&str, &str, &str),
+) -> Option<Vec<ReadConfig>> {
+    let current =
+        read_config_with_credential(env, current_names.0, current_names.1, current_names.2)?;
+    let previous_fields = [
+        runtime_value(env, previous_names.0),
+        runtime_value(env, previous_names.1),
+        env.secret(previous_names.2)
+            .ok()
+            .map(|value| value.to_string()),
+    ];
+    let previous_configured = previous_fields.iter().any(Option::is_some);
+    let previous = if previous_configured {
+        Some(read_config_with_credential(
+            env,
+            previous_names.0,
+            previous_names.1,
+            previous_names.2,
+        )?)
+    } else {
+        None
+    };
+    if previous.as_ref().is_some_and(|value| {
+        value.kid == current.kid
+            || value.credential_id_sha256 == current.credential_id_sha256
+            || value.secret == current.secret
+    }) {
+        return None;
+    }
+    let mut configs = vec![current];
+    if let Some(previous) = previous {
+        configs.push(previous);
+    }
+    Some(configs)
+}
+
+fn configs_are_disjoint(left: &[ReadConfig], right: &[ReadConfig]) -> bool {
+    left.iter().all(|left| {
+        right.iter().all(|right| {
+            left.kid != right.kid
+                && left.credential_id_sha256 != right.credential_id_sha256
+                && left.secret != right.secret
+        })
+    })
+}
+
+fn read_config_with_credential(
+    env: &Env,
+    kid_env: &str,
+    credential_id_env: &str,
+    secret_env: &str,
+) -> Option<ReadConfig> {
     let issuer = runtime_value(env, ISSUER_ENV)?;
     let audience = runtime_value(env, AUDIENCE_ENV)?;
-    let kid = runtime_value(env, HMAC_KID_ENV)?;
-    let credential_id_sha256 = runtime_value(env, HMAC_CREDENTIAL_ID_ENV)?;
+    let kid = runtime_value(env, kid_env)?;
+    let credential_id_sha256 = runtime_value(env, credential_id_env)?;
     let application_database_identity_sha256 =
         runtime_value(env, APPLICATION_DATABASE_IDENTITY_ENV)?;
-    let secret = env.secret(HMAC_SECRET_ENV).ok()?.to_string();
+    let secret = env.secret(secret_env).ok()?.to_string();
     if !valid_identity(&issuer)
         || !valid_identity(&audience)
         || !valid_key_id(&kid)
@@ -329,6 +719,7 @@ fn read_config(env: &Env) -> Option<ReadConfig> {
 fn verify_token(
     token: &str,
     config: &ReadConfig,
+    expected_role: &str,
     path_and_query: &str,
     now: i64,
 ) -> Option<String> {
@@ -363,7 +754,7 @@ fn verify_token(
         || header.kid != config.kid
         || claims.issuer != config.issuer
         || claims.audience != config.audience
-        || claims.role != "activation_read"
+        || claims.role != expected_role
         || claims.credential_id_sha256 != config.credential_id_sha256
         || !valid_identity(&claims.request_id)
         || claims.method != "GET"
@@ -443,6 +834,77 @@ fn snapshot_is_exact(
         && ticket.execution_deadline_at == context.campaign_expires_at
         && ticket.execution_deadline_at <= context.permit_expires_at
         && context.database_now > 0
+}
+
+fn ack_snapshot_is_exact(
+    snapshot: &RelayContainerShardPlacementExecutionTicketAuthorityAckReadSnapshot,
+    query: &ExactAckReadQuery,
+    application_database_identity_sha256: &str,
+) -> bool {
+    let activation_snapshot = RelayContainerShardPlacementExecutionTicketActivationReadSnapshot {
+        ticket: snapshot.ticket.clone(),
+        activation: snapshot.activation.clone(),
+        context: snapshot.context.clone(),
+    };
+    let activation_query = ExactReadQuery {
+        ticket_digest_sha256: query.ticket_digest_sha256.clone(),
+        claim_digest_sha256: query.claim_digest_sha256.clone(),
+        activation_digest_sha256: query.activation_digest_sha256.clone(),
+    };
+    if !snapshot_is_exact(
+        &activation_snapshot,
+        &activation_query,
+        application_database_identity_sha256,
+    ) {
+        return false;
+    }
+    let ticket = &snapshot.ticket;
+    let activation = &snapshot.activation;
+    let acknowledgement = &snapshot.acknowledgement;
+    let context = &snapshot.context;
+    let admin_id = acknowledgement.acknowledged_by_admin_id.to_string();
+    let expected_acknowledgement_digest = sha256_len_prefixed(
+        ACKNOWLEDGEMENT_DIGEST_DOMAIN,
+        &[
+            ACKNOWLEDGEMENT_CONTRACT,
+            &ticket.ticket_id_sha256,
+            &ticket.ticket_digest_sha256,
+            &acknowledgement.authority_claim_digest_sha256,
+            &acknowledgement.application_activation_digest_sha256,
+            &acknowledgement.authority_activation_terminal_receipt_sha256,
+            &acknowledgement.authority_ledger_head_sha256,
+            &acknowledgement.authority_database_identity_sha256,
+            &acknowledgement.authority_version_id,
+            &acknowledgement.authority_read_credential_id_sha256,
+            &admin_id,
+            &acknowledgement.authority_read_request_id_sha256,
+        ],
+    );
+    acknowledgement.contract_version == 1
+        && acknowledgement.acknowledgement_contract == ACKNOWLEDGEMENT_CONTRACT
+        && acknowledgement.ticket_id_sha256 == ticket.ticket_id_sha256
+        && acknowledgement.application_ticket_digest_sha256 == ticket.ticket_digest_sha256
+        && acknowledgement.authority_claim_digest_sha256 == activation.authority_claim_digest_sha256
+        && acknowledgement.application_activation_digest_sha256
+            == activation.activation_digest_sha256
+        && acknowledgement.authority_database_identity_sha256
+            == ticket.authority_database_identity_sha256
+        && acknowledgement.authority_version_id == activation.authority_version_id
+        && acknowledgement.authority_activation_terminal_receipt_sha256
+            == acknowledgement.authority_ledger_head_sha256
+        && acknowledgement.acknowledgement_digest_sha256 == query.acknowledgement_digest_sha256
+        && acknowledgement.acknowledgement_digest_sha256 == expected_acknowledgement_digest
+        && valid_sha256(&acknowledgement.authority_activation_terminal_receipt_sha256)
+        && valid_sha256(&acknowledgement.authority_read_credential_id_sha256)
+        && valid_sha256(&acknowledgement.authority_read_request_id_sha256)
+        && acknowledgement.acknowledged_by_admin_id > 0
+        && acknowledgement.acknowledged_at >= activation.activated_at
+        && acknowledgement.acknowledged_at < ticket.activation_deadline_at
+        && context.campaign_sealed_at.is_none()
+        && context.database_now < ticket.activation_deadline_at
+        && context.database_now < ticket.execution_deadline_at
+        && context.database_now < context.permit_expires_at
+        && context.database_now < context.campaign_expires_at
 }
 
 fn decode_canonical_base64url(value: &str, max_bytes: usize) -> Option<Vec<u8>> {
@@ -607,16 +1069,65 @@ mod tests {
     }
 
     #[test]
+    fn exact_ack_query_is_canonical_and_rejects_extras() {
+        let path = format!(
+            "/internal/v1/shard-placement/execution-ticket-authority-acks/{}?ticketDigestSha256={}&claimDigestSha256={}&activationDigestSha256={}&acknowledgementDigestSha256={}",
+            "1".repeat(64),
+            "2".repeat(64),
+            "3".repeat(64),
+            "4".repeat(64),
+            "5".repeat(64),
+        );
+        let parsed = parse_exact_ack_query(&path, &"1".repeat(64)).expect("acknowledgement query");
+        assert_eq!(parsed.ticket_digest_sha256, "2".repeat(64));
+        assert_eq!(parsed.claim_digest_sha256, "3".repeat(64));
+        assert_eq!(parsed.activation_digest_sha256, "4".repeat(64));
+        assert_eq!(parsed.acknowledgement_digest_sha256, "5".repeat(64));
+        assert!(parse_exact_ack_query(&(path + "&extra=1"), &"1".repeat(64)).is_none());
+    }
+
+    #[test]
+    fn authority_ack_digest_matches_authority_client_fixed_vector() {
+        assert_eq!(
+            sha256_len_prefixed(
+                ACKNOWLEDGEMENT_DIGEST_DOMAIN,
+                &[
+                    ACKNOWLEDGEMENT_CONTRACT,
+                    &"1".repeat(64),
+                    &"2".repeat(64),
+                    &"9".repeat(64),
+                    &"d".repeat(64),
+                    &"e".repeat(64),
+                    &"e".repeat(64),
+                    &"6".repeat(64),
+                    "authority-version-1",
+                    &"f".repeat(64),
+                    "7",
+                    &"0".repeat(64),
+                ],
+            ),
+            "afd96cd6232295c41963fb3c9f88916aa3a131ab7a66d027b3dfed85665be02c"
+        );
+    }
+
+    #[test]
     fn authority_hmac_binds_exact_path_and_time_window() {
         let now = 1_750_000_000;
         let exact_path = path();
         let token = sign(&exact_path, now);
         assert_eq!(
-            verify_token(&token, &config(), &exact_path, now).as_deref(),
+            verify_token(&token, &config(), "activation_read", &exact_path, now,).as_deref(),
             Some("operation-4-activation-read-1")
         );
-        assert!(verify_token(&token, &config(), &(exact_path + "&drift=1"), now).is_none());
-        assert!(verify_token(&token, &config(), &path(), now + 120).is_none());
+        assert!(verify_token(
+            &token,
+            &config(),
+            "activation_read",
+            &(exact_path + "&drift=1"),
+            now
+        )
+        .is_none());
+        assert!(verify_token(&token, &config(), "activation_read", &path(), now + 120).is_none());
     }
 
     #[test]
@@ -626,21 +1137,49 @@ mod tests {
         let token = sign(&path, now);
         let mut wrong_secret = config();
         wrong_secret.secret = "fedcba9876543210fedcba9876543210".to_string();
-        assert!(verify_token(&token, &wrong_secret, &path, now).is_none());
+        assert!(verify_token(&token, &wrong_secret, "activation_read", &path, now).is_none());
         let mut wrong_credential = config();
         wrong_credential.credential_id_sha256 = "c".repeat(64);
-        assert!(verify_token(&token, &wrong_credential, &path, now).is_none());
+        assert!(verify_token(&token, &wrong_credential, "activation_read", &path, now).is_none());
+        assert!(verify_token(&token, &config(), "authority_ack_read", &path, now).is_none());
+    }
+
+    #[test]
+    fn activation_and_acknowledgement_credentials_are_disjoint() {
+        let activation = config();
+        let mut acknowledgement = config();
+        acknowledgement.kid = "ack-read-current-v1".to_string();
+        acknowledgement.credential_id_sha256 = "c".repeat(64);
+        acknowledgement.secret = "abcdef0123456789abcdef0123456789".to_string();
+        assert!(configs_are_disjoint(
+            std::slice::from_ref(&activation),
+            std::slice::from_ref(&acknowledgement),
+        ));
+        acknowledgement.credential_id_sha256 = activation.credential_id_sha256.clone();
+        assert!(!configs_are_disjoint(
+            std::slice::from_ref(&activation),
+            std::slice::from_ref(&acknowledgement),
+        ));
     }
 
     #[test]
     fn protocol_source_enforces_default_gate_and_no_store() {
         let source = include_str!("container_shard_placement_activation_read.rs");
         assert!(source.contains("RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ENABLED"));
-        assert!(source.contains("env.secret(HMAC_SECRET_ENV)"));
+        assert!(source.contains("RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_ENABLED"));
+        assert!(
+            source.contains("RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_SECRET")
+        );
+        assert!(source
+            .contains("RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_PREVIOUS_SECRET"));
+        assert!(source.contains("env.secret(secret_env)"));
         assert!(source.contains("Cache-Control\", \"no-store"));
         assert!(source.contains("X-Content-Type-Options"));
         assert!(source
             .contains("relay_container_shard_placement_execution_ticket_activation_read_snapshot"));
+        assert!(source.contains(
+            "relay_container_shard_placement_execution_ticket_authority_ack_read_snapshot"
+        ));
     }
 
     #[test]

@@ -7,6 +7,14 @@ import {
   type ApplicationActivationClientEnv,
 } from "./application_activation_client";
 import {
+  validateApplicationAuthorityAckClientConfig,
+  type ApplicationAuthorityAckClientEnv,
+} from "./application_ack_client";
+import {
+  beginControllerEnable,
+  parseBeginEnableCommand,
+} from "./begin_enable";
+import {
   EXECUTION_CLAIMS_PATH,
   parseExactExecutionClaimQuery,
   parseExecutionClaim,
@@ -45,7 +53,8 @@ import {
 export interface AuthorityEnv
   extends
     ShardPlacementAuthoritySecurityEnv,
-    ApplicationActivationClientEnv {
+    ApplicationActivationClientEnv,
+    ApplicationAuthorityAckClientEnv {
   DB: D1Database;
   CF_VERSION_METADATA: WorkerVersionMetadata;
   ENVIRONMENT: string;
@@ -58,6 +67,8 @@ export interface AuthorityEnv
   SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_ACTIVATION_READ_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_ACTIVATION_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_READ_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_ENABLE_INTENT_WRITE_ENABLED: string;
   SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: string;
@@ -79,6 +90,8 @@ const EXECUTION_SAFETY_DIVERT_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/safety-divert$/;
 const EXECUTION_ACTIVATE_TICKET_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/activate-ticket$/;
+const EXECUTION_BEGIN_ENABLE_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/begin-enable$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -228,12 +241,44 @@ export default {
         );
       }
 
+      if (route.kind === "execution_begin_enable") {
+        const command = parseBeginEnableCommand(body);
+        if (
+          command.authorizationIdSha256
+            !== route.authorizationIdSha256
+        ) {
+          throw new ProtocolError("operation_five_path_mismatch", 400);
+        }
+        const result = await beginControllerEnable(
+          env,
+          command,
+          authentication,
+        );
+        return jsonResponse(
+          result.result === "enable_intent_recorded" ? 201 : 200,
+          {
+            contract:
+              "cinatoken-shard-placement-authority-begin-enable-result-v1",
+            ...result,
+          },
+        );
+      }
+
       if (route.kind === "execution_receipt_append") {
         const receipt = await parseExecutionReceipt(
           body,
           authentication,
           new Set(["operation_started", "operation_terminal"]),
         );
+        if (
+          receipt.operationOrdinal === 4
+          || receipt.operationOrdinal === 5
+        ) {
+          throw new ProtocolError(
+            "dedicated_operation_route_required",
+            409,
+          );
+        }
         const result = await appendExecutionReceipt(
           env.DB,
           route.authorizationIdSha256,
@@ -383,6 +428,10 @@ type Route =
   | {
       kind: "execution_activate_ticket";
       authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_begin_enable";
+      authorizationIdSha256: string;
     };
 
 function matchRoute(request: Request): Route {
@@ -475,6 +524,20 @@ function matchRoute(request: Request): Route {
       authorizationIdSha256: executionActivateTicketMatch[1]!,
     };
   }
+  const executionBeginEnableMatch =
+    EXECUTION_BEGIN_ENABLE_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionBeginEnableMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_begin_enable",
+      authorizationIdSha256: executionBeginEnableMatch[1]!,
+    };
+  }
   const authorizationMatch = AUTHORIZATION_ID_PATH.exec(url.pathname);
   if (request.method === "GET" && authorizationMatch !== null) {
     return {
@@ -500,7 +563,8 @@ function routeRole(kind: Route["kind"]): HmacRole {
   if (kind === "issuance_create") return "issue";
   if (kind === "issuance_revoke") return "revoke";
   if (kind === "execution_claim_create") return "claim";
-  if (kind === "execution_activate_ticket") return "receipt";
+  if (kind === "execution_activate_ticket") return "activate";
+  if (kind === "execution_begin_enable") return "enable";
   if (kind === "execution_receipt_append") return "receipt";
   if (
     kind === "execution_lease_renew"
@@ -576,6 +640,22 @@ function requireRouteGate(
     throw new ProtocolError("authority_activation_write_disabled", 503);
   }
   if (
+    kind === "execution_begin_enable"
+    && env.SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_READ_ENABLED !== "true"
+  ) {
+    throw new ProtocolError("authority_pre_enable_reads_disabled", 503);
+  }
+  if (
+    kind === "execution_begin_enable"
+    && env.SHARD_PLACEMENT_AUTHORITY_ENABLE_INTENT_WRITE_ENABLED
+      !== "true"
+  ) {
+    throw new ProtocolError(
+      "authority_enable_intent_write_disabled",
+      503,
+    );
+  }
+  if (
     kind === "execution_receipt_append"
     && env.SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED !== "true"
   ) {
@@ -645,6 +725,11 @@ export function validateRuntimeTrustConfiguration(
   ) {
     validateApplicationActivationClientConfig(env);
   }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_READ_ENABLED === "true"
+  ) {
+    validateApplicationAuthorityAckClientConfig(env);
+  }
 }
 
 function POLICY_KEY_ID(value: string): boolean {
@@ -666,6 +751,8 @@ function requireHmacCredentialIsolation(
       "ISSUE",
       "REVOKE",
       "CLAIM",
+      "ACTIVATE",
+      "ENABLE",
       "RECEIPT",
       "RECOVERY",
     ] as const

@@ -11228,3 +11228,48 @@ The Authority Workerd runtime suite passed five consecutive runs after its
 renewal test was changed to wait for D1 `unixepoch()` rather than guessing that
 a fixed host-wall-clock delay crossed a database second. The final
 `bun run check` repository aggregate passed with exit code 0 in 935.6 seconds.
+
+## 2026-07-29 Operation-5 Admission Verification
+
+The default-off operation-5 checkpoint was verified locally without reading a
+credential or querying/mutating remote Cloudflare state:
+
+```powershell
+cargo test -p cinatoken-worker --lib container_shard_placement_activation_read
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run check:container-shard-placement-authorization
+bun run check:shard-placement-authority
+bun test tests/container-scheduler-config.test.mjs tests/container-shard-placement-ticket-activation-contract.test.mjs
+```
+
+Focused results:
+
+| Gate | Result |
+| --- | ---: |
+| Rust activation/ACK exact-read tests | 8 passed |
+| Rust shard-placement contract aggregate | 42 passed |
+| TypeScript Authority unit tests | 20 passed |
+| Authority SQLite config/migration tests | 11 passed |
+| Authority Workerd runtime | 3 passed |
+| Mutation authorization JavaScript contracts | 15 passed |
+| Authority generated types and dry-run build | passed |
+| Worker Wasm check | passed; existing `dead_code` warnings only |
+| Full repository `bun run check` | passed in 891.2 seconds |
+
+Adversarial SQLite coverage proves no operation-5 start without an immutable
+admission, atomic admission/start success, complete rollback when revocation
+wins, zero enable intent on that rollback, and admission immutability.
+Workerd proves the generic receipt route rejects both operation 4 and
+operation 5. The TypeScript/Rust ACK digest fixed vector is
+`afd96cd6232295c41963fb3c9f88916aa3a131ab7a66d027b3dfed85665be02c`.
+
+The ACK client rejects encoded, redirected, cacheable, malformed,
+oversize-declared, and stream-oversize responses. Application activation and
+ACK readers support current/previous overlap and reject cross-role key,
+credential, or secret reuse when both roles are configured.
+
+This verification records enable intent only. It does not prove Controller
+dispatch, Container health, operation 6-14, deployed Service Binding behavior,
+remote D1 atomicity/fault behavior, Access policy, credentials, traffic,
+billing, drain, DNS, or production authority. Go/VPS remains authoritative
+and production remains **NO-GO**.

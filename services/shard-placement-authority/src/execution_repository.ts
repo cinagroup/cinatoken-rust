@@ -100,6 +100,33 @@ const RECEIPT_COLUMNS = [
   "receipt_digest_sha256",
   "recorded_at",
 ] as const;
+const OPERATION_FIVE_ADMISSION_COLUMNS = [
+  "authorization_id_sha256",
+  "contract_version",
+  "confirmation_contract",
+  "claim_digest_sha256",
+  "application_ticket_id_sha256",
+  "application_ticket_digest_sha256",
+  "application_database_identity_sha256",
+  "application_activation_digest_sha256",
+  "authority_activation_terminal_receipt_sha256",
+  "authority_ledger_head_sha256",
+  "authority_database_identity_sha256",
+  "authority_version_id",
+  "application_acknowledgement_digest_sha256",
+  "application_version_id",
+  "application_read_credential_id_sha256",
+  "application_read_request_id_sha256",
+  "application_response_sha256",
+  "application_response_bytes",
+  "enable_credential_id_sha256",
+  "enable_request_id_sha256",
+  "command_enable_request_id_sha256",
+  "enable_operation_request_sha256",
+  "confirmation_digest_sha256",
+  "operation_start_receipt_digest_sha256",
+  "confirmed_at",
+] as const;
 
 const SCHEMA_PROBE_SQL = `
 SELECT
@@ -132,7 +159,17 @@ SELECT
       )
       ORDER BY cid
     )
-  ) AS receipt_columns
+  ) AS receipt_columns,
+  (
+    SELECT group_concat(name, ',')
+    FROM (
+      SELECT name
+      FROM pragma_table_info(
+        'shard_placement_authority_operation_five_admissions'
+      )
+      ORDER BY cid
+    )
+  ) AS operation_five_admission_columns
 `.trim();
 
 const INSERT_CLAIM_SQL = `
@@ -211,10 +248,35 @@ WHERE claim.authorization_id_sha256 = ?1
   AND claim.ledger_identity_sha256 = ?6
 `.trim();
 
+const INSERT_OPERATION_FIVE_ADMISSION_SQL = `
+INSERT INTO shard_placement_authority_operation_five_admissions (
+  authorization_id_sha256, contract_version,
+  confirmation_contract, claim_digest_sha256,
+  application_ticket_id_sha256, application_ticket_digest_sha256,
+  application_database_identity_sha256,
+  application_activation_digest_sha256,
+  authority_activation_terminal_receipt_sha256,
+  authority_ledger_head_sha256,
+  authority_database_identity_sha256, authority_version_id,
+  application_acknowledgement_digest_sha256,
+  application_version_id, application_read_credential_id_sha256,
+  application_read_request_id_sha256, application_response_sha256,
+  application_response_bytes, enable_credential_id_sha256,
+  enable_request_id_sha256,
+  command_enable_request_id_sha256, enable_operation_request_sha256,
+  confirmation_digest_sha256,
+  operation_start_receipt_digest_sha256
+) VALUES (
+  ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
+)
+`.trim();
+
 interface SchemaProbeRow {
   claim_columns: string;
   operation_columns: string;
   receipt_columns: string;
+  operation_five_admission_columns: string;
 }
 
 export interface ExecutionClaimRow {
@@ -315,6 +377,61 @@ export interface ExecutionClaimSnapshot {
   claim: ExecutionClaimRow;
   operations: readonly ExecutionOperationRow[];
   receipts: readonly ExecutionReceiptRow[];
+}
+
+export interface OperationFiveAdmission {
+  authorizationIdSha256: string;
+  confirmationContract:
+    "cinatoken-shard-placement-authority-operation-five-admission-v1";
+  claimDigestSha256: string;
+  applicationTicketIdSha256: string;
+  applicationTicketDigestSha256: string;
+  applicationDatabaseIdentitySha256: string;
+  applicationActivationDigestSha256: string;
+  authorityActivationTerminalReceiptSha256: string;
+  authorityLedgerHeadSha256: string;
+  authorityDatabaseIdentitySha256: string;
+  authorityVersionId: string;
+  applicationAcknowledgementDigestSha256: string;
+  applicationVersionId: string;
+  applicationReadCredentialIdSha256: string;
+  applicationReadRequestIdSha256: string;
+  applicationResponseSha256: string;
+  applicationResponseBytes: number;
+  enableCredentialIdSha256: string;
+  enableRequestIdSha256: string;
+  commandEnableRequestIdSha256: string;
+  enableOperationRequestSha256: string;
+  confirmationDigestSha256: string;
+  operationStartReceiptDigestSha256: string;
+}
+
+export interface OperationFiveAdmissionRow {
+  authorization_id_sha256: string;
+  contract_version: number;
+  confirmation_contract: string;
+  claim_digest_sha256: string;
+  application_ticket_id_sha256: string;
+  application_ticket_digest_sha256: string;
+  application_database_identity_sha256: string;
+  application_activation_digest_sha256: string;
+  authority_activation_terminal_receipt_sha256: string;
+  authority_ledger_head_sha256: string;
+  authority_database_identity_sha256: string;
+  authority_version_id: string;
+  application_acknowledgement_digest_sha256: string;
+  application_version_id: string;
+  application_read_credential_id_sha256: string;
+  application_read_request_id_sha256: string;
+  application_response_sha256: string;
+  application_response_bytes: number;
+  enable_credential_id_sha256: string;
+  enable_request_id_sha256: string;
+  command_enable_request_id_sha256: string;
+  enable_operation_request_sha256: string;
+  confirmation_digest_sha256: string;
+  operation_start_receipt_digest_sha256: string;
+  confirmed_at: number;
 }
 
 export async function createExecutionClaim(
@@ -426,6 +543,28 @@ export async function readExactExecutionClaim(
   );
 }
 
+export async function readExactOperationFiveAdmission(
+  database: D1Database,
+  authorizationIdSha256: string,
+  claimDigestSha256: string,
+): Promise<OperationFiveAdmissionRow | null> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  const admission = await readOperationFiveAdmission(
+    session,
+    authorizationIdSha256,
+  );
+  if (
+    admission !== null
+    && admission.claim_digest_sha256 !== claimDigestSha256
+  ) {
+    throw new RepositoryConflictError(
+      "operation_five_admission_conflict",
+    );
+  }
+  return admission;
+}
+
 export async function appendExecutionReceipt(
   database: D1Database,
   authorizationIdSha256: string,
@@ -518,6 +657,148 @@ export async function appendExecutionReceipt(
   };
 }
 
+export async function admitAndStartOperationFive(
+  database: D1Database,
+  admission: OperationFiveAdmission,
+  receipt: ExecutionReceipt,
+): Promise<{
+  classification: "admitted" | "exact_replay";
+  admission: OperationFiveAdmissionRow;
+  claim: ExecutionClaimRow;
+  receipt: ExecutionReceiptRow;
+}> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  if (
+    admission.authorizationIdSha256 !== receipt.authorizationIdSha256
+    || receipt.eventKind !== "operation_started"
+    || receipt.operationOrdinal !== 5
+    || receipt.actorCredentialIdSha256
+      !== admission.enableCredentialIdSha256
+    || receipt.requestIdSha256 !== admission.enableRequestIdSha256
+    || receipt.requestSha256 !== admission.enableOperationRequestSha256
+    || receipt.evidenceSha256 !== admission.confirmationDigestSha256
+    || receipt.receiptDigestSha256
+      !== admission.operationStartReceiptDigestSha256
+  ) {
+    throw new RepositoryConflictError(
+      "operation_five_admission_mismatch",
+    );
+  }
+
+  const statements = [
+    session
+      .prepare(INSERT_OPERATION_FIVE_ADMISSION_SQL)
+      .bind(
+        admission.authorizationIdSha256,
+        admission.confirmationContract,
+        admission.claimDigestSha256,
+        admission.applicationTicketIdSha256,
+        admission.applicationTicketDigestSha256,
+        admission.applicationDatabaseIdentitySha256,
+        admission.applicationActivationDigestSha256,
+        admission.authorityActivationTerminalReceiptSha256,
+        admission.authorityLedgerHeadSha256,
+        admission.authorityDatabaseIdentitySha256,
+        admission.authorityVersionId,
+        admission.applicationAcknowledgementDigestSha256,
+        admission.applicationVersionId,
+        admission.applicationReadCredentialIdSha256,
+        admission.applicationReadRequestIdSha256,
+        admission.applicationResponseSha256,
+        admission.applicationResponseBytes,
+        admission.enableCredentialIdSha256,
+        admission.enableRequestIdSha256,
+        admission.commandEnableRequestIdSha256,
+        admission.enableOperationRequestSha256,
+        admission.confirmationDigestSha256,
+        admission.operationStartReceiptDigestSha256,
+      ),
+    session
+      .prepare(INSERT_RECEIPT_SQL)
+      .bind(
+        receipt.authorizationIdSha256,
+        receipt.sequence,
+        receipt.eventKind,
+        receipt.claimDigestSha256,
+        receipt.executionPlanSha256,
+        receipt.ledgerIdentitySha256,
+        receipt.operationOrdinal,
+        receipt.operationIdSha256,
+        receipt.operationKind,
+        receipt.shardIndex,
+        receipt.predecessorReceiptSha256,
+        receipt.requestSha256,
+        receipt.responseSha256,
+        receipt.cloudflareRequestIdSha256,
+        receipt.evidenceSha256,
+        receipt.safetyReason,
+        receipt.outcome,
+        receipt.actorOwnerSha256,
+        receipt.leaseTokenSha256,
+        receipt.leaseGeneration,
+        admission.enableCredentialIdSha256,
+        receipt.requestIdSha256,
+        receipt.receiptDigestSha256,
+      ),
+  ];
+  let writeSucceeded = false;
+  try {
+    const results = await session.batch(statements);
+    writeSucceeded =
+      results.length === statements.length
+      && results.every((result) =>
+        result.success === true && (result.meta?.changes ?? 0) > 0
+      );
+  } catch {
+    writeSucceeded = false;
+  }
+
+  const persistedAdmission = await readOperationFiveAdmission(
+    session,
+    admission.authorizationIdSha256,
+  );
+  const persistedReceipt = await readReceipt(
+    session,
+    receipt.authorizationIdSha256,
+    receipt.sequence,
+  );
+  if (
+    persistedAdmission === null
+    || persistedReceipt === null
+    || !matchesOperationFiveAdmission(persistedAdmission, admission)
+    || !matchesReceipt(
+      persistedReceipt,
+      receipt,
+      admission.enableCredentialIdSha256,
+    )
+  ) {
+    if (writeSucceeded) throw new RepositoryUnavailableError(true);
+    throw new RepositoryConflictError(
+      "operation_five_admission_conflict",
+    );
+  }
+  const snapshot = await readSnapshotByDigest(
+    session,
+    admission.authorizationIdSha256,
+    admission.claimDigestSha256,
+  );
+  if (
+    snapshot.claim.enable_intent_seen !== 1
+    || snapshot.claim.ledger_version < receipt.sequence
+    || snapshot.receipts[receipt.sequence - 1]?.receipt_digest_sha256
+      !== receipt.receiptDigestSha256
+  ) {
+    throw new RepositoryUnavailableError(true);
+  }
+  return {
+    classification: writeSucceeded ? "admitted" : "exact_replay",
+    admission: persistedAdmission,
+    claim: snapshot.claim,
+    receipt: persistedReceipt,
+  };
+}
+
 async function requireExecutionSchema(
   session: D1DatabaseSession,
 ): Promise<void> {
@@ -534,8 +815,29 @@ async function requireExecutionSchema(
     || row.claim_columns !== CLAIM_COLUMNS.join(",")
     || row.operation_columns !== OPERATION_COLUMNS.join(",")
     || row.receipt_columns !== RECEIPT_COLUMNS.join(",")
+    || row.operation_five_admission_columns
+      !== OPERATION_FIVE_ADMISSION_COLUMNS.join(",")
   ) {
     throw new RepositoryUnavailableError(false);
+  }
+}
+
+async function readOperationFiveAdmission(
+  session: D1DatabaseSession,
+  authorizationIdSha256: string,
+): Promise<OperationFiveAdmissionRow | null> {
+  try {
+    return await session
+      .prepare(
+        `SELECT ${OPERATION_FIVE_ADMISSION_COLUMNS.join(", ")}
+         FROM shard_placement_authority_operation_five_admissions
+         WHERE authorization_id_sha256 = ?1
+         LIMIT 1`,
+      )
+      .bind(authorizationIdSha256)
+      .first<OperationFiveAdmissionRow>();
+  } catch {
+    throw new RepositoryUnavailableError(true);
   }
 }
 
@@ -787,8 +1089,61 @@ function matchesReceipt(
   );
 }
 
+function matchesOperationFiveAdmission(
+  row: OperationFiveAdmissionRow,
+  admission: OperationFiveAdmission,
+): boolean {
+  return (
+    row.authorization_id_sha256 === admission.authorizationIdSha256
+    && row.contract_version === 1
+    && row.confirmation_contract === admission.confirmationContract
+    && row.claim_digest_sha256 === admission.claimDigestSha256
+    && row.application_ticket_id_sha256
+      === admission.applicationTicketIdSha256
+    && row.application_ticket_digest_sha256
+      === admission.applicationTicketDigestSha256
+    && row.application_database_identity_sha256
+      === admission.applicationDatabaseIdentitySha256
+    && row.application_activation_digest_sha256
+      === admission.applicationActivationDigestSha256
+    && row.authority_activation_terminal_receipt_sha256
+      === admission.authorityActivationTerminalReceiptSha256
+    && row.authority_ledger_head_sha256
+      === admission.authorityLedgerHeadSha256
+    && row.authority_database_identity_sha256
+      === admission.authorityDatabaseIdentitySha256
+    && row.authority_version_id === admission.authorityVersionId
+    && row.application_acknowledgement_digest_sha256
+      === admission.applicationAcknowledgementDigestSha256
+    && row.application_version_id === admission.applicationVersionId
+    && row.application_read_credential_id_sha256
+      === admission.applicationReadCredentialIdSha256
+    && row.application_read_request_id_sha256
+      === admission.applicationReadRequestIdSha256
+    && row.application_response_sha256
+      === admission.applicationResponseSha256
+    && row.application_response_bytes
+      === admission.applicationResponseBytes
+    && row.enable_credential_id_sha256
+      === admission.enableCredentialIdSha256
+    && row.enable_request_id_sha256 === admission.enableRequestIdSha256
+    && row.command_enable_request_id_sha256
+      === admission.commandEnableRequestIdSha256
+    && row.enable_operation_request_sha256
+      === admission.enableOperationRequestSha256
+    && row.confirmation_digest_sha256
+      === admission.confirmationDigestSha256
+    && row.operation_start_receipt_digest_sha256
+      === admission.operationStartReceiptDigestSha256
+    && Number.isSafeInteger(row.confirmed_at)
+    && row.confirmed_at > 0
+  );
+}
+
 export const executionRepositorySqlForTest = {
   insertClaim: INSERT_CLAIM_SQL,
   insertOperation: INSERT_OPERATION_SQL,
   insertReceipt: INSERT_RECEIPT_SQL,
+  insertOperationFiveAdmission:
+    INSERT_OPERATION_FIVE_ADMISSION_SQL,
 } as const;

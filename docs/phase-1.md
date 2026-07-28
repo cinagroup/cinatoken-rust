@@ -4126,3 +4126,42 @@ scoped workload identities, the operation 5-14 resumable runner, adversarial
 cross-Worker fault campaigns, remote inventory/credential evidence, and the
 Go/VPS shadow, rollback, drain, and reverse-sync ceremony. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Pre-Enable Admission
+
+Phase 1 now includes a local, default-off operation-5 admission boundary. The
+Authority uses an independent `enable` HMAC identity, reads the immutable
+application ACK through its independently authenticated Service Binding,
+re-reads the current Authority claim, and writes one immutable admission plus
+the sequence-4 operation-start receipt in a single D1 batch. That start is the
+local enable-intent linearization point; this checkpoint performs no
+Controller or Container mutation.
+
+The admission binds the ACK digest and raw response hash, application and
+Authority versions, both database identities, the operation-4 terminal/head,
+ACK-reader and enable-writer credentials/requests, operation-5 request, and
+expected start receipt. D1 independently requires a live generation-1 lease,
+zero renewal/takeover, no revocation, exact operation-4 projection, and live
+normal/permit deadlines. Missing ACK admission, raced revocation, lease
+drift, or any receipt mismatch rejects the whole batch.
+
+Operation 4 and operation 5 are no longer accepted through the generic
+receipt route. They use independent `activate` and `enable` identities with
+current/previous overlap. Application activation-read and ACK-read verifiers
+also have current/previous overlap and reject cross-role key, credential, or
+secret reuse when both roles are configured. All tracked local/staging values
+remain blank or false and production remains absent.
+
+Source review confirms the 5-14 runner must use deterministic tenant/ring
+evidence and durable CAS ownership. cinaVibeSDK's DO-by-name ownership and
+bounded process states are useful, but `hash(session) % N`, process-local
+maps/timers/promises, unlimited retry, and container filesystem metadata are
+not control-plane truth. cinatoken-go's post-selection revalidation and
+affected-row CAS winner semantics are retained for exact shard/version
+readback and single-side-effect ownership.
+
+Next is the durable operation-5 dispatch/outbox and status-only ambiguity
+recovery, followed by ordered shard probes 6-13 and reserved operation-14
+disable. The application seal context must be re-read immediately before
+dispatch because the two D1 databases cannot share a transaction. Go/VPS
+remains authoritative and production remains **NO-GO**.

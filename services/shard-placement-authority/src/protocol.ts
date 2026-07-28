@@ -111,6 +111,8 @@ export type HmacRole =
   | "issue"
   | "revoke"
   | "claim"
+  | "activate"
+  | "enable"
   | "receipt"
   | "recovery";
 export type ApprovalRole = (typeof APPROVAL_ROLES)[number];
@@ -160,6 +162,18 @@ export interface ShardPlacementAuthoritySecurityEnv {
   SHARD_PLACEMENT_CLAIM_HMAC_PREVIOUS_KID: string;
   SHARD_PLACEMENT_CLAIM_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
   SHARD_PLACEMENT_CLAIM_HMAC_PREVIOUS_SECRET?: string;
+  SHARD_PLACEMENT_ACTIVATE_HMAC_CURRENT_KID: string;
+  SHARD_PLACEMENT_ACTIVATE_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_ACTIVATE_HMAC_CURRENT_SECRET?: string;
+  SHARD_PLACEMENT_ACTIVATE_HMAC_PREVIOUS_KID: string;
+  SHARD_PLACEMENT_ACTIVATE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_ACTIVATE_HMAC_PREVIOUS_SECRET?: string;
+  SHARD_PLACEMENT_ENABLE_HMAC_CURRENT_KID: string;
+  SHARD_PLACEMENT_ENABLE_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_ENABLE_HMAC_CURRENT_SECRET?: string;
+  SHARD_PLACEMENT_ENABLE_HMAC_PREVIOUS_KID: string;
+  SHARD_PLACEMENT_ENABLE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_ENABLE_HMAC_PREVIOUS_SECRET?: string;
   SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_KID: string;
   SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
   SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_SECRET?: string;
@@ -948,9 +962,13 @@ function selectHmacKey(
           ? "SHARD_PLACEMENT_REVOKE_HMAC"
           : role === "claim"
             ? "SHARD_PLACEMENT_CLAIM_HMAC"
-            : role === "receipt"
-              ? "SHARD_PLACEMENT_RECEIPT_HMAC"
-              : "SHARD_PLACEMENT_RECOVERY_HMAC";
+            : role === "activate"
+              ? "SHARD_PLACEMENT_ACTIVATE_HMAC"
+              : role === "enable"
+                ? "SHARD_PLACEMENT_ENABLE_HMAC"
+                : role === "receipt"
+                  ? "SHARD_PLACEMENT_RECEIPT_HMAC"
+                  : "SHARD_PLACEMENT_RECOVERY_HMAC";
   const values = env as unknown as Record<string, string | undefined>;
   let secret: string | undefined;
   let credentialIdSha256 = "";
@@ -1144,6 +1162,8 @@ function requireExactRole(value: unknown): HmacRole {
     || value === "issue"
     || value === "revoke"
     || value === "claim"
+    || value === "activate"
+    || value === "enable"
     || value === "receipt"
     || value === "recovery"
   ) {

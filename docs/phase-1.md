@@ -3739,19 +3739,21 @@ jurisdictions all fail. The latter is intentional: campaign v1 cannot bind a
 jurisdiction, so a versioned campaign v2 is mandatory before a restricted
 writer can exist.
 
-The global schema candidate is now 61 migrations and 70 tables. P5 binds the
-0061 head; the separate transition authority database remains 0059/0060.
-SQLite, placement fixture/guard, P5, foundation, and ring-transition focused
-gates pass locally.
+Migration 0061 remains the frozen attestation ABI. Security review adds the
+0062 placement-event sidecar, advancing the global schema candidate to head
+0062/count 62 and 71 tables. P5 binds the 0062 head while the separate
+transition authority database remains 0059/0060. `activation_id` remains the
+0054 association key and is not placement insertion order.
 
 The default-only runtime writer now exists but is inert in every tracked
 environment. The object RPC proves the same completed readiness journal and
 derives identity from its actual `ctx.id`; the Controller separately derives
 the expected identity from the selected stub ID, verifies the stub
 jurisdiction, and requires exact canonical attestation and digest equality.
-After 0055 completion, the D1 repository probes the exact 0061 schema and
-appends or exactly replays one row with authoritative readback. Missing,
-conflicting, or malformed readback fails closed.
+After 0055 completion, the D1 repository probes the exact 0061 attestation and
+0062 event schemas, appends or exactly replays one 0061 row, and requires its
+automatically appended 0062 event on authoritative readback. Missing,
+conflicting, or malformed event/attestation readback fails closed.
 
 Both placement-writer gates remain `false`, must change together, are visible
 on private status, and are pinned false by deploy preflight. No remote schema
@@ -3768,3 +3770,41 @@ approved contracts. Go/VPS remains authoritative and production remains
 Focused placement/campaign/config/preflight verification passes 86 tests with
 837 expectations. The complete repository gate passes with exit code 0 in 764
 seconds; 21 existing Rust `dead_code` findings remain warnings only.
+
+## 2026-07-28 Placement Readback And Shard Registry v3 Contract
+
+Phase 1 now freezes the production acceptance boundary for a bounded
+0062-event/0061-attestation reader at
+`GET /api/platform/container/shards/placements`. The route is required to be
+root-only, authenticate before storage access, read D1 only, and apply
+`Cache-Control: no-store` to success and failure. It must never enumerate or
+wake Durable Objects or Containers, call a Controller service binding, mutate
+D1, change a gate, or authorize a campaign or deployment.
+
+The query binds one Controller version, ring generation, and sealed campaign.
+The first page freezes the maximum database-assigned
+`placement_event_sequence` plus record count. Later pages repeat that watermark
+and use the last returned event sequence as an exclusive, strictly increasing
+keyset cursor. Page size is bounded to 64 with one lookahead row. The reader
+verifies the exact 0061 attestation ABI and 0062 event table/index/triggers,
+joins the event to the full attestation, validates every row, recomputes
+canonical-name and placement attestation hashes, and exposes no raw Durable
+Object ID. `activation_id` is retained only to prove the 0054 association.
+
+Shard registry evidence advances to capture v3 and collector version 3. The
+collector must retain sealed 0055 campaign, frozen 0054 activation, and frozen
+0062 event-backed 0061 placement snapshots both before and after one 300-7200
+second window. Before/after watermarks, counts, canonical-record digests, and
+rows must be identical. Every candidate shard must have exactly one event and
+attestation that strictly match its 0054 activation and 0055 receipt across
+activation ID, campaign, candidate/shard identity, claim, readiness,
+activation, and consumption digests. Missing, duplicate, unknown,
+cross-candidate, non-default, or drifting rows fail P5.
+
+This document contract is not deployment evidence. Placement writer gates
+remain false and deploy preflight must continue to reject enabling them. The
+separately signed, single-use isolated-staging mutation authorization is not
+implemented, and no remote 0061/0062 placement snapshot or v3 capture has been
+collected. Revoke and rotate the exposed Cloudflare token before any staging
+readback or mutation. Go/VPS remains authoritative and production remains
+**NO-GO**.

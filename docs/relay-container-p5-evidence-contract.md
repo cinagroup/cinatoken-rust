@@ -332,26 +332,33 @@ files, and every evidence and approval validity window must increase strictly.
    migration SQL, and rollback artifacts. Every tracked local, staging, and
    production action gate defaults to false.
 3. Back up staging D1, prove old-writer and operation drain, apply/read back
-   0054, 0055, then 0056 after the already ordered 0052/0053 reader chain, and verify the exact
-   0056/56 and 64/814/94 baseline with immutable negatives and unchanged
-   business fingerprints.
+   the ordered reader chain through 0062, including the exact 0054 activation,
+   0055 campaign, 0061 attestation, and 0062 placement-event tables, indexes,
+   triggers, foreign keys and initial row counts, with immutable negatives and
+   unchanged business fingerprints.
 4. Upload a disabled provider-egress version, then a Controller reader, then an
    edge reader with the private Service Binding. Activation recording remains
    false and the Controller accepts both legacy and build-bearing readiness.
 5. Roll the Container candidate at 10% and 100%. At each stage read back the
    exact image, compatible runtime protocol/build, zero customer traffic, and
    zero provider/financial delta.
-6. Create one root-authorized same-Controller-version activation campaign and
-   use its one-time nonce without changing any static gate. D1 must claim each
-   shard before DO lookup; completed claims use replay-only journal reads; only
-   a `sealed_complete` N/N campaign can continue.
-7. After that campaign is sealed and every effective action gate is false,
-   capture the root-only campaign receipts and activation ledger before and
-   after 300-7200 seconds using the first page's frozen high watermark and
-   complete keyset traversal. Receipts and 0054 rows must match one-to-one,
-   rows must be fresh for this campaign, activation generation must be one,
-   and sources-v3 action-gate, SBOM/provenance, R2, traffic-isolation, and
-   control-plane facts must overlap the same window.
+6. Only after the separate signed, single-use isolated-staging mutation
+   authorization exists, use it to bind one immutable writer-enabled
+   Controller version with both placement gates true while all frozen 22
+   campaign action gates remain false. Create one root-authorized activation
+   campaign for that exact version and use its one-time nonce. D1 must claim
+   each shard before DO lookup; completed claims use replay-only journal reads;
+   only a `sealed_complete` N/N campaign with one 0061 attestation and matching
+   0062 event per shard can continue.
+7. After that campaign is sealed, capture the root-only campaign receipts plus
+   the 0054 activation and 0062 event-backed 0061 placement ledgers before and
+   after 300-7200 seconds. The activation ledger retains its 0054
+   `activation_id` boundary; the placement ledger independently freezes
+   `placement_event_sequence`. Receipts, activations, events, and attestations
+   must match one-to-one per shard and remain byte-canonically stable. The
+   evidence must retain the exact mutation authorization and writer version
+   while sources-v3 22-field action-gate, SBOM/provenance, R2,
+   traffic-isolation, and control-plane facts overlap the same window.
 8. Run and archive collector-v4 direct API readback with explicit terminal
    pagination for every Cloudflare control-plane list. Until the authenticated
    before/after capture passes, foundation and P5 remain `not-proven`
@@ -530,6 +537,87 @@ No Authority Worker, control D1, Access policy, route, secret, key, migration,
 deployment, customer traffic, provider call, or financial state is claimed as
 remotely created or changed. The checked-in write gates remain required false,
 Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 0062 Placement Event Readback And Registry v3 Overlay
+
+Every new integrated P5 candidate must bind
+`0062_relay_container_shard_placement_events.sql`, migration count 62, and the
+71-table application schema. The underlying 0061 attestation ABI remains
+unchanged. Historical 0054/0055/0061 evidence remains historical unless it is
+joined to the same current candidate and exact 0062 schema readback.
+
+The sidecar exists because `activation_id` is only the immutable association
+to 0054. A later placement can legitimately reference an older activation, so
+neither P5 nor the API may infer placement insertion order from that value.
+Database-assigned `placement_event_sequence` is the sole placement watermark
+and cursor.
+
+### Read-only source boundary
+
+Placement evidence comes only from:
+
+```text
+GET /api/platform/container/shards/placements
+```
+
+The endpoint must authenticate root before D1 access and return
+`Cache-Control: no-store` for success and errors. It reads D1 only. Evidence is
+invalid if collection enumerates the Durable Object namespace, derives or
+fetches a stub, invokes an object RPC, calls a Controller service binding,
+wakes a Container, mutates storage, or changes a runtime/deployment gate.
+
+The request binds exact `controller_version_id`, `ring_generation`, and
+`campaign_id`. Page one freezes the maximum `placement_event_sequence` and
+scoped record count. Each continuation repeats that watermark and advances an
+exclusive event-sequence cursor; pages are ordered ascending, capped at 64
+records, and use one bounded lookahead row. The collector rejects count or
+watermark drift, cursor gaps/repeats, nonterminal short pages, over-limit
+traversal, or a final cursor inconsistent with the frozen snapshot.
+
+The Worker and collector independently validate the exact 0061 attestation
+shape and the 0062 six-column event table, candidate index, three event guards,
+and attestation-after-insert append trigger. The reader joins event to
+attestation on digest, Controller version, ring, campaign, and activation ID,
+then validates canonical shard identity, canonical-name SHA-256, and
+`ShardPlacementAttestationV1` digest. Retained records contain
+`placement_event_sequence` and only the object-ID hash, never the raw Durable
+Object ID.
+
+### Capture v3 acceptance
+
+The accepted source contract is:
+
+```text
+cinatoken-relay-container-shard-registry-capture-v3
+collectorVersion=3
+```
+
+One v3 artifact contains sealed 0055 campaign, frozen 0054 activation, and
+frozen 0062 event-backed 0061 placement snapshots before and after the same
+300-7200 second window. Each source must preserve its high watermark, record
+count, canonical record-set digest, and full canonical rows. Foundation and P5
+bind the complete v3 artifact and its SHA-256; an aggregate N/N assertion is
+insufficient.
+
+For every candidate index `0..N-1`, the verifier requires exactly one campaign
+receipt, one activation, one placement event, and one attestation. The
+event/attestation pair must equal the same-shard 0054/0055 evidence across
+campaign, Controller version, ring, shard count/index/name, activation ID,
+claim digest, readiness-result digest, activation digest, and consumption
+digest. Event sequences, placement-attestation, object-ID, and canonical-name
+hashes must each be unique across N/N. Any missing, duplicate, unknown,
+cross-campaign, cross-version, cross-ring, non-default-jurisdiction,
+digest-mismatched, or before/after-drifting row makes the source `not-proven`.
+
+The read-only source does not grant mutation authority. Both placement-writer
+gates remain false and ordinary deploy preflight must reject them when true.
+The separately signed, single-use isolated-staging mutation authorization for
+one writer-enabled candidate is not implemented. The exposed Cloudflare token
+must be revoked and rotated before authenticated staging work.
+
+No remote 0061/0062 schema, placement event/attestation pair, v3 capture,
+deployment, customer traffic, or production authority is claimed by this
+contract. Go/VPS remains authoritative and production remains **NO-GO**.
 
 ## Immutable Runner Release Evidence Overlay
 

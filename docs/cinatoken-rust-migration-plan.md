@@ -22233,9 +22233,10 @@ readiness, activation, consumption, environment, Controller version, ring,
 shard count/index/name, and activation ID before accepting the row. Unique
 constraints prevent a second placement for the same activation or conflicting
 object/shard identity; update and delete always abort. The global D1 candidate
-is now 61 migrations and 70 tables, and P5 candidate/schema-readback contracts
-bind the 0061 head. The separate ring-transition authority database correctly
-retains its own 0059/0060 identity.
+at this attestation-ABI checkpoint was 61 migrations and 70 tables. Migration
+0062 subsequently advances the current head without changing any of these
+0061 columns or constraints. The separate ring-transition authority database
+correctly retains its own 0059/0060 identity.
 
 This schema is deliberately not a restricted-placement authorization. The
 frozen campaign v1 has no jurisdiction field, so the 0061 insert guard accepts
@@ -22245,8 +22246,8 @@ placement collector, or live record was enabled in this increment.
 
 The reader-first implementation order is:
 
-1. apply 0061 to isolated staging and verify the exact table, indexes,
-   triggers, foreign keys, and empty readback;
+1. apply 0061 and its 0062 event sidecar to isolated staging and verify the
+   exact tables, indexes, triggers, foreign keys, and empty readback;
 2. add a versioned object RPC that hashes its actual `ctx.id`, while the
    Controller independently hashes the selected stub ID and requires equality;
 3. add separate placement writer gates, default false and excluded from the
@@ -22329,9 +22330,9 @@ The production-grade activation sequence is:
 
 1. rotate the exposed historical credential and use a reviewed
    least-privilege replacement;
-2. apply 0061 to isolated staging with both gates false;
-3. independently read back the exact migration, columns, indexes, triggers,
-   foreign keys, and zero placement rows;
+2. apply 0061 and 0062 to isolated staging with both gates false;
+3. independently read back both exact migrations, attestation/event columns,
+   indexes, triggers, foreign keys, and zero placement rows/events;
 4. deploy a reader-first Controller version with both gates false and retain
    its version ID, service name, build/provenance evidence, and private status
    receipt;
@@ -22341,8 +22342,9 @@ The production-grade activation sequence is:
 6. use that authorization to deploy one immutable writer-enabled staging
    version with both gates true, then bind one root-authorized
    default-jurisdiction N/N activation campaign to that exact version;
-7. read the bounded 0061 ledger without enumerating or waking Durable Objects,
-   requiring one stable exact attestation per candidate shard;
+7. read the bounded 0062 event ledger joined to the immutable 0061
+   attestations without enumerating or waking Durable Objects, requiring one
+   stable exact event/attestation pair per candidate shard;
 8. turn the evidence into a frozen P5 source, run lifecycle/fault/load/cost/SLO
    campaigns, and obtain the existing operations/security approvals;
 9. keep production gates false until the complete candidate is approved, then
@@ -22365,5 +22367,115 @@ Restricted jurisdictions remain structurally blocked: campaign v1 cannot bind
 jurisdiction and the 0061 trigger accepts only `default`. Campaign v2,
 destination-versioned relocation/drain, old/new namespace coexistence,
 rollback, and separate D1/KV/R2 residency evidence must land before that guard
-can change. P5 placement reader/collector and all remote receipts are still
-absent. Go/VPS remains authoritative and production remains **NO-GO**.
+can change. At this writer checkpoint, P5 placement reader/collector and all
+remote receipts remained absent; the next section freezes their production
+contract without treating documentation as implementation evidence. Go/VPS
+remains authoritative and production remains **NO-GO**.
+
+## 22.315 Bounded Placement Event Readback And Shard Registry v3 (2026-07-28)
+
+Security review found that `activation_id` is an association key, not a safe
+placement insertion-order watermark: a placement can be appended later for an
+older 0054 activation. Migration
+`0062_relay_container_shard_placement_events.sql` therefore advances the
+application head to 0062/count 62 and adds an immutable sidecar ledger while
+preserving the published 0061 attestation ABI. The production readback
+contract now freezes database-assigned `placement_event_sequence`; it never
+uses `activation_id` for placement ordering or pagination.
+
+This section defines the implementation and evidence boundary; the document
+update does not claim that a Worker was deployed, that a remote migration was
+applied, or that staging evidence was collected.
+
+### Root-only D1 projection
+
+The edge Worker must expose the placement ledger only at:
+
+```text
+GET /api/platform/container/shards/placements
+```
+
+The route must authenticate a root principal before opening D1 and must set
+`Cache-Control: no-store` on success and error responses. It is a D1-only
+projection: it must not enumerate a Durable Object namespace, derive or fetch
+a shard stub, invoke a Durable Object RPC, call the Controller service
+binding, or wake a Container. Its strict query binds one immutable candidate:
+
+```text
+controller_version_id=<required>
+ring_generation=<required>
+campaign_id=<required lowercase sha256>
+high_watermark=<omitted on page one; frozen placement_event_sequence thereafter>
+cursor=<omitted on page one; last placement_event_sequence thereafter>
+limit=<optional, default 16, maximum 64>
+```
+
+Before listing rows, the handler must prove both migration markers, the exact
+0061 attestation ABI, and the 0062 six-column event table, matching candidate
+reader index, append trigger, and immutable guards. Page one freezes the
+maximum database-assigned `placement_event_sequence` and record count for the
+exact Controller version/ring/campaign scope. Every page then joins the
+sidecar event to its complete 0061 attestation and uses:
+
+```sql
+event.placement_event_sequence <= high_watermark
+AND event.placement_event_sequence > cursor
+ORDER BY event.placement_event_sequence ASC
+```
+
+The query fetches at most `limit + 1` rows to derive a terminal null cursor.
+Continuation pages must repeat the original high watermark; a changed
+watermark, repeated/non-increasing cursor, count drift, short nonterminal page,
+or traversal beyond the bounded record/page limits fails closed. The response
+contains `placement_event_sequence`, the 0061 hashes and canonical shard
+identity, but never the raw Durable Object ID. `activation_id` remains only
+the immutable 0054 association checked by the 0062 foreign key and join. The
+Worker recomputes the canonical-name hash and `ShardPlacementAttestationV1`
+digest before returning each row. The route has no `INSERT`, `UPDATE`,
+`DELETE`, gate mutation, deployment, or campaign authority.
+
+The 0062 migration backfills existing 0061 rows in deterministic
+`recorded_at, activation_id, placement_attestation_digest_sha256` order. New
+0061 inserts append one event automatically. Event insertion must match the
+attestation digest, Controller version, ring, campaign, and activation ID;
+direct update/delete always abort. The candidate reader index is ordered by
+Controller version, ring, campaign, then `placement_event_sequence`.
+
+### Registry capture v3
+
+The shard registry source advances to:
+
+```text
+cinatoken-relay-container-shard-registry-capture-v3
+collectorVersion=3
+```
+
+One capture must read the sealed 0055 campaign, frozen 0054 activation ledger,
+and frozen 0062 event-backed 0061 placement ledger both before and after the
+same 300-7200 second observation window. Campaign, activation, and placement
+snapshots must each retain the same high watermark, record count,
+canonical-record digest, and complete canonical rows across the interval.
+
+Evidence is ready only when the collector derives exactly one activation and
+one placement for every candidate shard index. Each placement must bind the
+same campaign, Controller version, ring, shard tuple, instance name,
+activation ID, claim digest, readiness-result digest, activation digest, and
+consumption digest as that shard's 0054 row and 0055 receipt. Placement
+attestation digests, object-ID hashes, and canonical-name hashes must be unique
+across the N/N set. A missing, duplicate, unknown, cross-campaign,
+cross-version, cross-ring, digest-mismatched, non-default-jurisdiction, or
+before/after-drifting row makes the v3 source `not-proven`.
+
+Foundation and P5 must retain the complete canonical v3 capture and bind its
+artifact digest rather than accepting an aggregate N/N assertion. The reader
+does not make the writer safe to enable. Both placement-writer gates remain
+false in tracked environments and ordinary deploy preflight must continue to
+reject enabled gates. The separately signed, single-use isolated-staging
+mutation authorization required for one writer-enabled staging version is
+still not implemented.
+
+The exposed Cloudflare credential must be revoked and rotated before any
+authenticated readback or mutation. No replacement credential, remote
+0061/0062 schema, placement event/attestation pair, v3 capture, deployment,
+customer traffic, or production authority is claimed here. Go/VPS remains
+authoritative and production remains **NO-GO**.

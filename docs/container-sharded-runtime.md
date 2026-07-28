@@ -1366,6 +1366,13 @@ D1 migration 0061 stores that identity in a new immutable table linked to one
 frozen predecessor. The insert guard rechecks the complete activation chain,
 and unique/update/delete guards prevent replacement.
 
+Migration 0062 preserves that attestation ABI and adds the
+`relay_container_shard_placement_events` sidecar. Its database-assigned
+`placement_event_sequence` is the placement insertion order. `activation_id`
+remains only the unique foreign-key association to 0054 because an attestation
+can be appended later for an older activation. The current application head is
+0062/count 62.
+
 The current ledger is intentionally default-only. Campaign v1 cannot authorize
 jurisdiction, so 0061 rejects `eu`, `us`, `fedramp`, and `fedramp-high` until a
 campaign-v2 migration replaces that guard. The contract can represent those
@@ -1395,3 +1402,55 @@ readback, one isolated same-version staging campaign, stable N/N ledger
 readback, and a bounded P5 collector that never wakes objects. Restricted
 relocation/drain and D1/KV/R2 residency remain separate protocols. No remote
 placement record has been collected, so production remains **NO-GO**.
+
+### Bounded placement readback
+
+The required 0061-attestation/0062-event readback surface is
+`GET /api/platform/container/shards/placements`. It is root-only and
+authenticates before D1 access. Every response, including an error, is
+`Cache-Control: no-store`. The handler is D1-only: it cannot enumerate the
+`RELAY_SHARDS` namespace, derive or fetch a stub, invoke an object RPC, call a
+Controller service binding, or wake a Container.
+
+The request scopes one `controller_version_id`, `ring_generation`, and
+`campaign_id`. Page one omits the watermark and cursor so D1 can freeze the
+candidate maximum `placement_event_sequence` and total row count.
+Continuations must repeat that high watermark and advance the last returned
+event sequence as an exclusive keyset cursor. Rows are ordered by
+`placement_event_sequence`, limited to 64 per page, and fetched with one
+bounded lookahead row. Schema drift, a changed watermark/count, a repeated
+cursor, or an incomplete traversal fails closed.
+
+Before returning data, the reader probes the exact 0061 attestation table and
+the 0062 six-column event table, candidate index, match/update/delete guards,
+and attestation-after-insert append trigger. It joins on attestation digest,
+Controller version, ring, campaign, and activation ID; validates every
+canonical field; recomputes the shard-name hash and placement attestation
+digest; and returns only hashed object identity. There is no raw Durable
+Object ID and no write, gate-change, campaign, deployment, or traffic
+authority on this route.
+
+### Registry v3 evidence join
+
+The placement projection becomes evidence only inside
+`cinatoken-relay-container-shard-registry-capture-v3`. Collector version 3
+must capture the sealed 0055 campaign plus frozen 0054 activation and 0062
+event-backed 0061 placement snapshots before and after the same 300-7200
+second interval. All three sources must be stable as complete canonical
+records, not only as counts.
+
+For each candidate shard there must be exactly one 0054 row, one 0055 receipt,
+one 0061 attestation, and its one 0062 event. The collector cross-checks
+campaign, Controller version, ring, shard tuple, instance name, activation ID,
+claim, readiness, activation, and consumption digests. It also requires unique
+event sequences, placement-attestation, object-ID, and canonical-name hashes
+across N/N. Any missing, duplicate, unknown, mismatched, non-default, or
+drifting placement blocks the registry source and P5.
+
+This read-only contract does not enable the default-only writer. Both tracked
+placement-writer gates remain false, ordinary deploy preflight rejects them
+when true, and the separately signed, single-use staging mutation
+authorization is still absent. No remote 0061/0062 readback or v3 capture has
+been performed. The exposed Cloudflare token must be revoked and replaced with
+a reviewed least-privilege credential before staging work; production remains
+**NO-GO**.

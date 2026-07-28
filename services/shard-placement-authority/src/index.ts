@@ -1,4 +1,16 @@
 import {
+  EXECUTION_CLAIMS_PATH,
+  parseExactExecutionClaimQuery,
+  parseExecutionClaim,
+  parseExecutionReceipt,
+} from "./execution_protocol";
+import {
+  appendExecutionReceipt,
+  createExecutionClaim,
+  readExactExecutionClaim,
+  type ExecutionClaimSnapshot,
+} from "./execution_repository";
+import {
   AUTHORIZATIONS_PATH,
   PREFLIGHT_PATH,
   ProtocolError,
@@ -30,12 +42,25 @@ export interface AuthorityEnv extends ShardPlacementAuthoritySecurityEnv {
   SHARD_PLACEMENT_AUTHORITY_READ_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_ISSUE_WRITE_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_REVOKE_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: string;
 }
 
 const AUTHORIZATION_ID_PATH =
   /^\/internal\/v1\/shard-placement\/authorizations\/([0-9a-f]{64})$/;
 const REVOCATION_PATH =
   /^\/internal\/v1\/shard-placement\/authorizations\/([0-9a-f]{64})\/revoke$/;
+const EXECUTION_CLAIM_ID_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})$/;
+const EXECUTION_RECEIPT_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/receipts$/;
+const EXECUTION_RENEW_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/renew$/;
+const EXECUTION_TAKEOVER_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/takeover$/;
+const EXECUTION_SAFETY_DIVERT_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/safety-divert$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -111,6 +136,115 @@ export default {
         });
       }
 
+      if (route.kind === "execution_claim_create") {
+        const claim = await parseExecutionClaim(
+          body,
+          authentication,
+        );
+        const result = await createExecutionClaim(env.DB, claim);
+        return jsonResponse(
+          result.classification === "created" ? 201 : 200,
+          {
+            result: result.classification,
+            requestId: authentication.requestId,
+            snapshot: publicExecutionSnapshot(result.snapshot),
+            authorityVersionId: env.CF_VERSION_METADATA.id,
+          },
+        );
+      }
+
+      if (route.kind === "execution_claim_read") {
+        const snapshot = await readExactExecutionClaim(
+          env.DB,
+          route.authorizationIdSha256,
+          route.claimDigestSha256,
+          route.claimOwnerSha256,
+        );
+        return jsonResponse(200, {
+          result: "exact_execution_claim",
+          requestId: authentication.requestId,
+          snapshot: publicExecutionSnapshot(snapshot),
+          authorityVersionId: env.CF_VERSION_METADATA.id,
+        });
+      }
+
+      if (route.kind === "execution_receipt_append") {
+        const receipt = await parseExecutionReceipt(
+          body,
+          authentication,
+          new Set(["operation_started", "operation_terminal"]),
+        );
+        const result = await appendExecutionReceipt(
+          env.DB,
+          route.authorizationIdSha256,
+          receipt,
+          authentication.credentialIdSha256,
+        );
+        return jsonResponse(
+          result.classification === "receipt_appended" ? 201 : 200,
+          {
+            result: result.classification,
+            requestId: authentication.requestId,
+            authorizationIdSha256:
+              result.claim.authorization_id_sha256,
+            claimDigestSha256: result.claim.claim_digest_sha256,
+            status: result.claim.status,
+            nextOperationOrdinal:
+              nextExecutionOperation(result.claim),
+            receiptCount: result.claim.ledger_version,
+            receiptHeadSha256:
+              result.claim.ledger_head_sha256,
+            receiptDigestSha256:
+              result.receipt.receipt_digest_sha256,
+            authorityVersionId: env.CF_VERSION_METADATA.id,
+          },
+        );
+      }
+
+      if (
+        route.kind === "execution_lease_renew"
+        || route.kind === "execution_lease_takeover"
+        || route.kind === "execution_safety_divert"
+      ) {
+        const expectedKind =
+          route.kind === "execution_lease_renew"
+            ? "lease_renewed"
+            : route.kind === "execution_lease_takeover"
+            ? "lease_taken_over"
+            : "safety_diverted";
+        const receipt = await parseExecutionReceipt(
+          body,
+          authentication,
+          new Set([expectedKind]),
+        );
+        const result = await appendExecutionReceipt(
+          env.DB,
+          route.authorizationIdSha256,
+          receipt,
+          authentication.credentialIdSha256,
+        );
+        return jsonResponse(
+          result.classification === "receipt_appended" ? 201 : 200,
+          {
+            result: result.classification,
+            requestId: authentication.requestId,
+            eventKind: receipt.eventKind,
+            authorizationIdSha256:
+              result.claim.authorization_id_sha256,
+            claimDigestSha256: result.claim.claim_digest_sha256,
+            status: result.claim.status,
+            leaseGeneration: result.claim.lease_generation,
+            leaseExpiresAt: result.claim.lease_expires_at,
+            receiptCount: result.claim.ledger_version,
+            receiptHeadSha256:
+              result.claim.ledger_head_sha256,
+            receiptDigestSha256:
+              result.receipt.receipt_digest_sha256,
+            authorityVersionId: env.CF_VERSION_METADATA.id,
+          },
+        );
+      }
+
       const revocation = await parseRevocationRequest(body);
       if (
         revocation.authorizationIdSha256
@@ -158,6 +292,29 @@ type Route =
   | {
       kind: "issuance_revoke";
       authorizationIdSha256: string;
+    }
+  | { kind: "execution_claim_create" }
+  | {
+      kind: "execution_claim_read";
+      authorizationIdSha256: string;
+      claimDigestSha256: string;
+      claimOwnerSha256: string;
+    }
+  | {
+      kind: "execution_receipt_append";
+      authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_lease_renew";
+      authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_lease_takeover";
+      authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_safety_divert";
+      authorizationIdSha256: string;
     };
 
 function matchRoute(request: Request): Route {
@@ -173,6 +330,68 @@ function matchRoute(request: Request): Route {
       throw new ProtocolError("invalid_query", 400);
     }
     return { kind: "issuance_create" };
+  }
+  if (request.method === "POST" && url.pathname === EXECUTION_CLAIMS_PATH) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return { kind: "execution_claim_create" };
+  }
+  const executionClaimMatch =
+    EXECUTION_CLAIM_ID_PATH.exec(url.pathname);
+  if (request.method === "GET" && executionClaimMatch !== null) {
+    return {
+      kind: "execution_claim_read",
+      authorizationIdSha256: executionClaimMatch[1]!,
+      ...parseExactExecutionClaimQuery(url),
+    };
+  }
+  const executionReceiptMatch =
+    EXECUTION_RECEIPT_PATH.exec(url.pathname);
+  if (request.method === "POST" && executionReceiptMatch !== null) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_receipt_append",
+      authorizationIdSha256: executionReceiptMatch[1]!,
+    };
+  }
+  const executionRenewMatch =
+    EXECUTION_RENEW_PATH.exec(url.pathname);
+  if (request.method === "POST" && executionRenewMatch !== null) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_lease_renew",
+      authorizationIdSha256: executionRenewMatch[1]!,
+    };
+  }
+  const executionTakeoverMatch =
+    EXECUTION_TAKEOVER_PATH.exec(url.pathname);
+  if (request.method === "POST" && executionTakeoverMatch !== null) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_lease_takeover",
+      authorizationIdSha256: executionTakeoverMatch[1]!,
+    };
+  }
+  const executionSafetyDivertMatch =
+    EXECUTION_SAFETY_DIVERT_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionSafetyDivertMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_safety_divert",
+      authorizationIdSha256: executionSafetyDivertMatch[1]!,
+    };
   }
   const authorizationMatch = AUTHORIZATION_ID_PATH.exec(url.pathname);
   if (request.method === "GET" && authorizationMatch !== null) {
@@ -198,6 +417,15 @@ function matchRoute(request: Request): Route {
 function routeRole(kind: Route["kind"]): HmacRole {
   if (kind === "issuance_create") return "issue";
   if (kind === "issuance_revoke") return "revoke";
+  if (kind === "execution_claim_create") return "claim";
+  if (kind === "execution_receipt_append") return "receipt";
+  if (
+    kind === "execution_lease_renew"
+    || kind === "execution_lease_takeover"
+    || kind === "execution_safety_divert"
+  ) {
+    return "recovery";
+  }
   return "read";
 }
 
@@ -225,7 +453,11 @@ function requireRouteGate(
   env: AuthorityEnv,
 ): void {
   if (
-    (kind === "preflight" || kind === "issuance_read")
+    (
+      kind === "preflight"
+      || kind === "issuance_read"
+      || kind === "execution_claim_read"
+    )
     && env.SHARD_PLACEMENT_AUTHORITY_READ_ENABLED !== "true"
   ) {
     throw new ProtocolError("authority_reads_disabled", 503);
@@ -241,6 +473,28 @@ function requireRouteGate(
     && env.SHARD_PLACEMENT_AUTHORITY_REVOKE_WRITE_ENABLED !== "true"
   ) {
     throw new ProtocolError("authority_revocation_disabled", 503);
+  }
+  if (
+    kind === "execution_claim_create"
+    && env.SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED !== "true"
+  ) {
+    throw new ProtocolError("authority_claim_disabled", 503);
+  }
+  if (
+    kind === "execution_receipt_append"
+    && env.SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED !== "true"
+  ) {
+    throw new ProtocolError("authority_receipt_disabled", 503);
+  }
+  if (
+    (
+      kind === "execution_lease_renew"
+      || kind === "execution_lease_takeover"
+      || kind === "execution_safety_divert"
+    )
+    && env.SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED !== "true"
+  ) {
+    throw new ProtocolError("authority_recovery_disabled", 503);
   }
 }
 
@@ -295,7 +549,16 @@ function requireHmacCredentialIsolation(
     credentialIdSha256: string;
     secret: string;
   }> = [];
-  for (const role of ["READ", "ISSUE", "REVOKE"] as const) {
+  for (
+    const role of [
+      "READ",
+      "ISSUE",
+      "REVOKE",
+      "CLAIM",
+      "RECEIPT",
+      "RECOVERY",
+    ] as const
+  ) {
     const prefix = `SHARD_PLACEMENT_${role}_HMAC`;
     const current = {
       kid: values[`${prefix}_CURRENT_KID`] ?? "",
@@ -357,6 +620,124 @@ function validHmacCredential(value: {
     && value.secret.length >= 32
     && value.secret.length <= 256
   );
+}
+
+function publicExecutionSnapshot(
+  snapshot: ExecutionClaimSnapshot,
+): Record<string, unknown> {
+  const row = snapshot.claim;
+  return {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-relay-container-shard-placement-execution-snapshot-v1",
+    claim: {
+      authorizationIdSha256: row.authorization_id_sha256,
+      permitSubjectDigestSha256:
+        row.permit_subject_digest_sha256,
+      executionNonceSha256: row.execution_nonce_sha256,
+      campaignId: row.campaign_id,
+      campaignNonceSha256: row.campaign_nonce_sha256,
+      claimScope: row.claim_scope,
+      executionPlanSha256: row.execution_plan_sha256,
+      releaseSha256: row.release_sha256,
+      publicationSha256: row.publication_sha256,
+      executionActivationSha256:
+        row.execution_activation_sha256,
+      runnerBuildSha256: row.runner_build_sha256,
+      claimOwnerSha256: row.claim_owner_sha256,
+      leaseOwnerSha256: row.lease_owner_sha256,
+      ledgerIdentitySha256: row.ledger_identity_sha256,
+      baselineOperationIdSha256:
+        row.baseline_operation_id_sha256,
+      baselineTerminalReceiptSha256:
+        row.baseline_terminal_digest_sha256,
+      claimOperationIdSha256: row.claim_operation_id_sha256,
+      operationScheduleSha256:
+        row.operation_schedule_sha256,
+      claimCredentialIdSha256:
+        row.claim_credential_id_sha256,
+      claimRequestIdSha256: row.claim_request_id_sha256,
+      claimDigestSha256: row.claim_digest_sha256,
+      claimAcquiredReceiptSha256:
+        row.claim_acquired_receipt_digest_sha256,
+      generatedAt: row.generated_at,
+      permitExpiresAt: row.permit_expires_at,
+      normalDeadlineAt: row.normal_deadline_at,
+      recoveryDeadlineAt: row.recovery_deadline_at,
+      claimedAt: row.claimed_at,
+    },
+    state: {
+      status: row.status,
+      leaseGeneration: row.lease_generation,
+      leaseExpiresAt: row.lease_expires_at,
+      nextOperationOrdinal: nextExecutionOperation(row),
+      activeOperationOrdinal: row.inflight_operation_ordinal,
+      inflightReadbackOnly: row.inflight_readback_only === 1,
+      receiptCount: row.ledger_version,
+      receiptHeadSha256: row.ledger_head_sha256,
+      controllerEnableIntentRecorded:
+        row.enable_intent_seen === 1,
+      controllerDisabledVerified:
+        row.disable_confirmed === 1,
+      renewalCount: row.renewal_count,
+      takeoverCount: row.takeover_count,
+      updatedAt: row.updated_at,
+      terminalAt: row.terminal_at,
+    },
+    operations: snapshot.operations.map((operation) => ({
+      ordinal: operation.ordinal,
+      operationIdSha256: operation.operation_id_sha256,
+      kind: operation.kind,
+      shardIndex: operation.shard_index,
+    })),
+    receipts: snapshot.receipts.map((receipt) => ({
+      sequence: receipt.sequence,
+      eventKind: receipt.event_kind,
+      claimDigestSha256: receipt.claim_digest_sha256,
+      executionPlanSha256: receipt.execution_plan_sha256,
+      ledgerIdentitySha256: receipt.ledger_identity_sha256,
+      operationOrdinal: receipt.operation_ordinal,
+      operationIdSha256: receipt.operation_id_sha256,
+      operationKind: receipt.operation_kind,
+      shardIndex: receipt.shard_index,
+      predecessorReceiptSha256:
+        receipt.predecessor_receipt_sha256,
+      requestSha256: receipt.request_sha256,
+      responseSha256: receipt.response_sha256,
+      cloudflareRequestIdSha256:
+        receipt.cloudflare_request_id_sha256,
+      evidenceSha256: receipt.evidence_sha256,
+      safetyReason: receipt.safety_reason,
+      outcome: receipt.outcome,
+      leaseOwnerSha256: receipt.lease_owner_sha256,
+      leaseTokenSha256: receipt.lease_token_sha256,
+      leaseGeneration: receipt.lease_generation,
+      leaseExpiresAt: receipt.lease_expires_at,
+      receiptCredentialIdSha256:
+        receipt.receipt_credential_id_sha256,
+      requestIdSha256: receipt.request_id_sha256,
+      receiptDigestSha256: receipt.receipt_digest_sha256,
+      recordedAt: receipt.recorded_at,
+    })),
+  };
+}
+
+function nextExecutionOperation(
+  row: ExecutionClaimSnapshot["claim"],
+): number | null {
+  if (row.inflight_operation_ordinal !== null) {
+    return row.inflight_operation_ordinal;
+  }
+  if (
+    row.status === "completed"
+    || row.status === "aborted"
+    || row.status === "revoked"
+    || row.status === "recovery_required"
+  ) {
+    return null;
+  }
+  if (row.status === "disable_required") return 13;
+  return Math.min(row.last_completed_ordinal + 1, 13);
 }
 
 function publicIssuance(row: IssuanceRow): Record<string, unknown> {

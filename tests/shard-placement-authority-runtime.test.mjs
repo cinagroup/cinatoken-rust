@@ -14,6 +14,8 @@ import {
 
 import {
   placementAuthorityRevocation,
+  placementExecutionClaim,
+  placementExecutionReceipt,
   signedAuthorityRequest,
   signedPlacementAuthorityIssuance,
 } from "./fixtures/shard-placement-authority-fixture.mjs";
@@ -168,6 +170,173 @@ describe("shard placement Authority Workerd runtime", () => {
       error: "authorization_conflict",
     });
   });
+
+  it("linearizes execution claims and enforces disable-first recovery", async () => {
+    const issuance = await signedPlacementAuthorityIssuance();
+    expect((await issue(issuance.body, "execution-issue")).status).toBe(201);
+
+    const claim = await placementExecutionClaim({ issuance });
+    const claimResponses = await Promise.all([
+      createClaim(claim),
+      createClaim(claim),
+    ]);
+    expect(claimResponses.map((response) => response.status).sort()).toEqual([
+      200, 201,
+    ]);
+    const claimPayloads = await Promise.all(
+      claimResponses.map((response) => response.json()),
+    );
+    expect(claimPayloads.map((payload) => payload.result).sort()).toEqual([
+      "created",
+      "exact_replay",
+    ]);
+    expect(claimPayloads[0].snapshot).toMatchObject({
+      claim: {
+        authorizationIdSha256:
+          issuance.permit.authorization_id_sha256,
+        claimDigestSha256: claim.value.claimDigestSha256,
+      },
+      state: {
+        status: "claimed",
+        leaseGeneration: 1,
+        nextOperationOrdinal: 3,
+        receiptCount: 1,
+        receiptHeadSha256:
+          claim.value.claimAcquiredReceiptSha256,
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const renewal = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 2,
+      eventKind: "lease_renewed",
+    });
+    const renewed = await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "renew",
+      renewal,
+    );
+    expect(renewed.status).toBe(201);
+    const renewedPayload = await renewed.json();
+    expect(renewedPayload).toMatchObject({
+      result: "receipt_appended",
+      eventKind: "lease_renewed",
+      leaseGeneration: 1,
+      receiptCount: 2,
+      receiptDigestSha256: renewal.value.receiptDigestSha256,
+    });
+
+    const started = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 3,
+      eventKind: "operation_started",
+      operationOrdinal: 3,
+      predecessorReceiptSha256: renewal.value.receiptDigestSha256,
+    });
+    expect((await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "receipts",
+      started,
+    )).status).toBe(201);
+
+    const terminal = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 4,
+      eventKind: "operation_terminal",
+      operationOrdinal: 3,
+      predecessorReceiptSha256: started.value.receiptDigestSha256,
+      outcome: "exact_success",
+    });
+    expect((await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "receipts",
+      terminal,
+    )).status).toBe(201);
+
+    const revocation = await placementAuthorityRevocation({
+      authorizationIdSha256:
+        issuance.permit.authorization_id_sha256,
+      permitSubjectDigestSha256:
+        issuance.permitSubjectDigestSha256,
+    });
+    const revoke = await SELF.fetch(await signedAuthorityRequest({
+      method: "POST",
+      pathAndQuery:
+        `/internal/v1/shard-placement/authorizations/${issuance.permit.authorization_id_sha256}/revoke`,
+      role: "revoke",
+      body: revocation.body,
+      requestId: "execution-revoke",
+    }));
+    expect(revoke.status).toBe(201);
+
+    const forbiddenNext = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 5,
+      eventKind: "operation_started",
+      operationOrdinal: 4,
+      predecessorReceiptSha256: terminal.value.receiptDigestSha256,
+    });
+    const rejected = await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "receipts",
+      forbiddenNext,
+    );
+    expect(rejected.status).toBe(409);
+    expect(await rejected.json()).toEqual({
+      error: "execution_receipt_conflict",
+    });
+
+    const safety = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 5,
+      eventKind: "safety_diverted",
+      predecessorReceiptSha256: terminal.value.receiptDigestSha256,
+      safetyReason: "lease_revoked",
+    });
+    const diverted = await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "safety-divert",
+      safety,
+    );
+    expect(diverted.status).toBe(201);
+    expect(await diverted.json()).toMatchObject({
+      eventKind: "safety_diverted",
+      status: "disable_required",
+      receiptCount: 5,
+    });
+
+    const disableStart = await placementExecutionReceipt({
+      claim: claim.value,
+      sequence: 6,
+      eventKind: "operation_started",
+      operationOrdinal: 13,
+      predecessorReceiptSha256: safety.value.receiptDigestSha256,
+    });
+    const disable = await appendExecutionReceipt(
+      claim.value.authorizationIdSha256,
+      "receipts",
+      disableStart,
+    );
+    expect(disable.status).toBe(201);
+    expect(await disable.json()).toMatchObject({
+      status: "disable_required",
+      nextOperationOrdinal: 13,
+      receiptCount: 6,
+    });
+
+    const lateReplay = await createClaim(claim);
+    expect(lateReplay.status).toBe(200);
+    expect(await lateReplay.json()).toMatchObject({
+      result: "exact_replay",
+      snapshot: {
+        state: {
+          status: "disable_required",
+          receiptCount: 6,
+        },
+      },
+    });
+  });
 });
 
 async function issue(body, requestId) {
@@ -177,5 +346,31 @@ async function issue(body, requestId) {
     role: "issue",
     body,
     requestId,
+  }));
+}
+
+async function createClaim(fixture) {
+  return SELF.fetch(await signedAuthorityRequest({
+    method: "POST",
+    pathAndQuery:
+      "/internal/v1/shard-placement/execution-claims",
+    role: "claim",
+    body: fixture.body,
+    requestId: fixture.requestId,
+  }));
+}
+
+async function appendExecutionReceipt(
+  authorizationIdSha256,
+  action,
+  fixture,
+) {
+  return SELF.fetch(await signedAuthorityRequest({
+    method: "POST",
+    pathAndQuery:
+      `/internal/v1/shard-placement/execution-claims/${authorizationIdSha256}/${action}`,
+    role: fixture.role,
+    body: fixture.body,
+    requestId: fixture.requestId,
   }));
 }

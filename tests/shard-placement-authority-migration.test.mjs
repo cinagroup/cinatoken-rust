@@ -12,6 +12,14 @@ const migrationPath = join(
   "0001_shard_placement_authorizations.sql",
 );
 const migrationSql = readFileSync(migrationPath, "utf8");
+const executionMigrationSql = readFileSync(join(
+  import.meta.dir,
+  "..",
+  "services",
+  "shard-placement-authority",
+  "migrations",
+  "0002_shard_placement_execution_claims.sql",
+), "utf8");
 
 describe("shard placement Authority migration", () => {
   test("installs the exact isolated append-only catalog", () => {
@@ -135,6 +143,171 @@ describe("shard placement Authority migration", () => {
       )).toThrow();
     }
   });
+
+  test("installs and enforces the execution lease and receipt ledger", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+
+    const issuance = validIssuance();
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+
+    const claimed = readExecutionClaim(database);
+    expect(claimed).toMatchObject({
+      status: "claimed",
+      ledger_version: 1,
+      last_completed_ordinal: 2,
+      enable_intent_seen: 0,
+      disable_confirmed: 1,
+    });
+    expect(database.query(`
+      SELECT COUNT(*) AS count
+      FROM shard_placement_authority_execution_receipts
+    `).get().count).toBe(1);
+
+    insertExecutionReceipt(database, {
+      authorizationIdSha256: issuance.authorization_id_sha256,
+      sequence: 2,
+      eventKind: "operation_started",
+      operationOrdinal: 3,
+      operationIdSha256: "3".repeat(64),
+      operationKind: "enable_controller_deployment",
+      predecessorReceiptSha256: "b".repeat(64),
+      requestSha256: "c".repeat(64),
+      responseSha256: null,
+      evidenceSha256: "d".repeat(64),
+      outcome: "pending",
+      leaseOwnerSha256: claimed.lease_owner_sha256,
+      leaseTokenSha256: claimed.lease_token_sha256,
+      leaseGeneration: claimed.lease_generation,
+      leaseExpiresAt: claimed.lease_expires_at,
+      receiptDigestSha256: "e".repeat(64),
+    });
+    expect(readExecutionClaim(database)).toMatchObject({
+      status: "running",
+      ledger_version: 2,
+      inflight_operation_ordinal: 3,
+      enable_intent_seen: 1,
+      disable_confirmed: 0,
+    });
+
+    database.query(`
+      INSERT INTO shard_placement_authority_revocations (
+        authorization_id_sha256, permit_subject_digest_sha256,
+        reason_code, evidence_sha256, revocation_event_sha256,
+        revoke_credential_id_sha256
+      ) VALUES (?, ?, 'operator_abort', ?, ?, ?)
+    `).run(
+      issuance.authorization_id_sha256,
+      issuance.permit_subject_digest_sha256,
+      "f".repeat(64),
+      "0".repeat(64),
+      "2".repeat(64),
+    );
+    expect(readExecutionClaim(database)).toMatchObject({
+      status: "disable_required",
+      inflight_operation_ordinal: 3,
+      inflight_readback_only: 1,
+    });
+    expect(() => database.query(`
+      DELETE FROM shard_placement_authority_execution_receipts
+      WHERE authorization_id_sha256 = ?
+    `).run(issuance.authorization_id_sha256)).toThrow(
+      "placement execution receipts are append-preserved",
+    );
+  });
+
+  test("takes over only an expired lease and permanently fences the old owner", () => {
+    using database = new Database(":memory:");
+    const issuance = validIssuance();
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+
+    const original = readExecutionClaim(database);
+    const takeover = {
+      authorizationIdSha256: issuance.authorization_id_sha256,
+      sequence: 2,
+      eventKind: "lease_taken_over",
+      operationOrdinal: 2,
+      operationIdSha256: "2".repeat(64),
+      operationKind: "create_authority_claim",
+      predecessorReceiptSha256: "b".repeat(64),
+      requestSha256: "c".repeat(64),
+      responseSha256: null,
+      evidenceSha256: "d".repeat(64),
+      outcome: "exact_success",
+      leaseOwnerSha256: "e".repeat(64),
+      leaseTokenSha256: "f".repeat(64),
+      leaseGeneration: 2,
+      leaseExpiresAt: original.lease_expires_at + 60,
+      receiptDigestSha256: "0".repeat(64),
+    };
+    expect(() => insertExecutionReceipt(database, takeover)).toThrow(
+      "placement execution lease takeover is invalid",
+    );
+
+    const projectionGuard = database.query(`
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'trigger'
+        AND name =
+          'shard_placement_authority_execution_claim_projection_update_guard'
+    `).get().sql;
+    database.exec(`
+      DROP TRIGGER
+        shard_placement_authority_execution_claim_projection_update_guard
+    `);
+    database.query(`
+      UPDATE shard_placement_authority_execution_claims
+      SET lease_expires_at = unixepoch() - 1
+      WHERE authorization_id_sha256 = ?
+    `).run(issuance.authorization_id_sha256);
+    database.exec(projectionGuard);
+    const expired = readExecutionClaim(database);
+    const takeoverExpiresAt = database.query(`
+      SELECT unixepoch() + 60 AS expires_at
+    `).get().expires_at;
+    insertExecutionReceipt(database, {
+      ...takeover,
+      leaseExpiresAt: takeoverExpiresAt,
+    });
+    const takenOver = readExecutionClaim(database);
+    expect(takenOver).toMatchObject({
+      status: "claimed",
+      lease_owner_sha256: "e".repeat(64),
+      lease_token_sha256: "f".repeat(64),
+      lease_generation: 2,
+      takeover_count: 1,
+      ledger_version: 2,
+      ledger_head_sha256: "0".repeat(64),
+    });
+
+    expect(() => insertExecutionReceipt(database, {
+      authorizationIdSha256: issuance.authorization_id_sha256,
+      sequence: 3,
+      eventKind: "operation_started",
+      operationOrdinal: 3,
+      operationIdSha256: "3".repeat(64),
+      operationKind: "enable_controller_deployment",
+      predecessorReceiptSha256: "0".repeat(64),
+      requestSha256: "1".repeat(64),
+      responseSha256: null,
+      evidenceSha256: "2".repeat(64),
+      outcome: "pending",
+      leaseOwnerSha256: original.lease_owner_sha256,
+      leaseTokenSha256: original.lease_token_sha256,
+      leaseGeneration: 1,
+      leaseExpiresAt: expired.lease_expires_at,
+      receiptDigestSha256: "4".repeat(64),
+    })).toThrow("placement execution operation start is invalid");
+  });
 });
 
 function validIssuance() {
@@ -192,4 +365,128 @@ function insertIssuance(database, row) {
       ${columns.join(", ")}
     ) VALUES (${columns.map(() => "?").join(", ")})
   `).run(...columns.map((column) => row[column]));
+}
+
+function insertExecutionClaim(database, issuance) {
+  database.query(`
+    INSERT INTO shard_placement_authority_execution_claims (
+      authorization_id_sha256, permit_subject_digest_sha256,
+      execution_nonce_sha256, campaign_id, campaign_nonce_sha256,
+      claim_scope, execution_plan_sha256, release_sha256,
+      publication_sha256, execution_activation_sha256,
+      runner_build_sha256, claim_owner_sha256, lease_owner_sha256,
+      ledger_identity_sha256, lease_token_sha256, lease_generation,
+      lease_expires_at, baseline_operation_id_sha256,
+      baseline_terminal_digest_sha256, claim_operation_id_sha256,
+      operation_schedule_sha256, claim_credential_id_sha256,
+      claim_request_id_sha256, claim_digest_sha256,
+      claim_acquired_receipt_digest_sha256, permit_expires_at,
+      normal_deadline_at, recovery_deadline_at, ledger_head_sha256,
+      generated_at, claimed_at, updated_at
+    ) VALUES (
+      ?, ?, ?, ?, ?, 'staging-controller-placement-v1', ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, 1, unixepoch() + 60, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, unixepoch(), unixepoch(), unixepoch()
+    )
+  `).run(
+    issuance.authorization_id_sha256,
+    issuance.permit_subject_digest_sha256,
+    issuance.execution_nonce_sha256,
+    issuance.campaign_id,
+    issuance.campaign_nonce_sha256,
+    "6".repeat(64),
+    "7".repeat(64),
+    "8".repeat(64),
+    "9".repeat(64),
+    "a".repeat(64),
+    "1".repeat(64),
+    "1".repeat(64),
+    "2".repeat(64),
+    "3".repeat(64),
+    "1".repeat(64),
+    "a".repeat(64),
+    "2".repeat(64),
+    "4".repeat(64),
+    "5".repeat(64),
+    "6".repeat(64),
+    "8".repeat(64),
+    "b".repeat(64),
+    issuance.permit_expires_at,
+    issuance.permit_expires_at,
+    issuance.permit_expires_at + 600,
+    "a".repeat(64),
+  );
+}
+
+function insertExecutionOperations(database, authorizationIdSha256) {
+  for (let ordinal = 3; ordinal <= 13; ordinal += 1) {
+    database.query(`
+      INSERT INTO shard_placement_authority_execution_operations (
+        authorization_id_sha256, ordinal, operation_id_sha256,
+        kind, shard_index
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      authorizationIdSha256,
+      ordinal,
+      ordinal.toString(16).repeat(64),
+      ordinal === 3
+        ? "enable_controller_deployment"
+        : ordinal === 4
+          ? "create_activation_campaign"
+          : ordinal === 13
+            ? "disable_controller_deployment"
+            : "probe_shard_readiness",
+      ordinal >= 5 && ordinal <= 12 ? ordinal - 5 : null,
+    );
+  }
+}
+
+function insertExecutionReceipt(database, receipt) {
+  database.query(`
+    INSERT INTO shard_placement_authority_execution_receipts (
+      authorization_id_sha256, sequence, event_kind,
+      claim_digest_sha256, execution_plan_sha256,
+      ledger_identity_sha256, operation_ordinal,
+      operation_id_sha256, operation_kind, shard_index,
+      predecessor_receipt_sha256, request_sha256, response_sha256,
+      cloudflare_request_id_sha256, evidence_sha256, safety_reason,
+      outcome, lease_owner_sha256, lease_token_sha256,
+      lease_generation, lease_expires_at,
+      receipt_credential_id_sha256, request_id_sha256,
+      receipt_digest_sha256
+    ) VALUES (
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, ?, NULL, ?,
+      ?, ?, ?, ?, ?, ?, ?
+    )
+  `).run(
+    receipt.authorizationIdSha256,
+    receipt.sequence,
+    receipt.eventKind,
+    "8".repeat(64),
+    "6".repeat(64),
+    "2".repeat(64),
+    receipt.operationOrdinal,
+    receipt.operationIdSha256,
+    receipt.operationKind,
+    receipt.predecessorReceiptSha256,
+    receipt.requestSha256,
+    receipt.responseSha256,
+    receipt.evidenceSha256,
+    receipt.outcome,
+    receipt.leaseOwnerSha256,
+    receipt.leaseTokenSha256,
+    receipt.leaseGeneration,
+    receipt.leaseExpiresAt,
+    "9".repeat(64),
+    "0".repeat(64),
+    receipt.receiptDigestSha256,
+  );
+}
+
+function readExecutionClaim(database) {
+  return database.query(`
+    SELECT *
+    FROM shard_placement_authority_execution_claims
+    LIMIT 1
+  `).get();
 }

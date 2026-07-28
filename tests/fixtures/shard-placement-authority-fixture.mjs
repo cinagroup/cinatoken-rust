@@ -14,6 +14,13 @@ import {
   encodePermitMessage,
   sha256Hex,
 } from "../../services/shard-placement-authority/src/protocol.ts";
+import {
+  EXECUTION_CLAIM_CONTRACT,
+  EXECUTION_CLAIM_SCOPE,
+  EXECUTION_RECEIPT_CONTRACT,
+  claimAcquiredDigestInput,
+  requestIdSha256,
+} from "../../services/shard-placement-authority/src/execution_protocol.ts";
 import { SHARD_PLACEMENT_AUTHORITY_TEST_KEYS } from "./shard-placement-authority-test-keys.mjs";
 
 export const SHARD_PLACEMENT_AUTHORITY_ORIGIN =
@@ -37,6 +44,21 @@ export const SHARD_PLACEMENT_AUTHORITY_HMAC = Object.freeze({
     credentialIdSha256: "c".repeat(64),
     secret: "revoke-hmac-test-secret-000000000000000000000000000000",
   }),
+  claim: Object.freeze({
+    keyId: "claim-hmac-test-v1",
+    credentialIdSha256: "d".repeat(64),
+    secret: "claim-hmac-test-secret-0000000000000000000000000000000",
+  }),
+  receipt: Object.freeze({
+    keyId: "receipt-hmac-test-v1",
+    credentialIdSha256: "e".repeat(64),
+    secret: "receipt-hmac-test-secret-00000000000000000000000000000",
+  }),
+  recovery: Object.freeze({
+    keyId: "recovery-hmac-test-v1",
+    credentialIdSha256: "f".repeat(64),
+    secret: "recovery-hmac-test-secret-0000000000000000000000000000",
+  }),
 });
 
 const APPROVAL_ROLES = [
@@ -54,6 +76,9 @@ export function shardPlacementAuthorityEnv(overrides = {}) {
     SHARD_PLACEMENT_AUTHORITY_READ_ENABLED: "true",
     SHARD_PLACEMENT_AUTHORITY_ISSUE_WRITE_ENABLED: "true",
     SHARD_PLACEMENT_AUTHORITY_REVOKE_WRITE_ENABLED: "true",
+    SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED: "true",
+    SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED: "true",
+    SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: "true",
     SHARD_PLACEMENT_AUTHORITY_ISSUER:
       "cinatoken-shard-placement-operator-runtime-test",
     SHARD_PLACEMENT_AUTHORITY_AUDIENCE:
@@ -91,6 +116,15 @@ export function shardPlacementAuthorityEnv(overrides = {}) {
     ...hmacEnvironment("READ", SHARD_PLACEMENT_AUTHORITY_HMAC.read),
     ...hmacEnvironment("ISSUE", SHARD_PLACEMENT_AUTHORITY_HMAC.issue),
     ...hmacEnvironment("REVOKE", SHARD_PLACEMENT_AUTHORITY_HMAC.revoke),
+    ...hmacEnvironment("CLAIM", SHARD_PLACEMENT_AUTHORITY_HMAC.claim),
+    ...hmacEnvironment(
+      "RECEIPT",
+      SHARD_PLACEMENT_AUTHORITY_HMAC.receipt,
+    ),
+    ...hmacEnvironment(
+      "RECOVERY",
+      SHARD_PLACEMENT_AUTHORITY_HMAC.recovery,
+    ),
     ...overrides,
   };
 }
@@ -245,6 +279,204 @@ export async function placementAuthorityRevocation({
   };
 }
 
+export async function placementExecutionClaim({
+  issuance,
+  now = Math.floor(Date.now() / 1_000),
+  requestId = "placement-claim-fixture-1",
+  overrides = {},
+} = {}) {
+  const source = issuance ?? await signedPlacementAuthorityIssuance({ now });
+  const operations = await Promise.all(
+    Array.from({ length: 11 }, async (_, index) => {
+      const ordinal = index + 3;
+      return {
+        ordinal,
+        operationIdSha256:
+          await digestLabel(`placement-operation-${ordinal}`),
+        kind: ordinal === 3
+          ? "enable_controller_deployment"
+          : ordinal === 4
+            ? "create_activation_campaign"
+            : ordinal === 13
+              ? "disable_controller_deployment"
+              : "probe_shard_readiness",
+        shardIndex:
+          ordinal >= 5 && ordinal <= 12 ? ordinal - 5 : null,
+      };
+    }),
+  );
+  const unsigned = {
+    schemaVersion: 1,
+    contract: EXECUTION_CLAIM_CONTRACT,
+    claimScope: EXECUTION_CLAIM_SCOPE,
+    environment: "staging",
+    authorizationIdSha256:
+      source.permit.authorization_id_sha256,
+    executionNonceSha256: source.permit.execution_nonce_sha256,
+    permitSubjectDigestSha256: source.permitSubjectDigestSha256,
+    campaignId: source.permit.campaign_id,
+    campaignNonceSha256: source.permit.campaign_nonce_sha256,
+    executionPlanSha256:
+      await digestLabel("placement-execution-plan"),
+    releaseSha256: await digestLabel("placement-release"),
+    publicationSha256: await digestLabel("placement-publication"),
+    executionActivationSha256:
+      await digestLabel("placement-execution-activation"),
+    runnerBuildSha256: await digestLabel("placement-runner-build"),
+    claimOwnerSha256: await digestLabel("placement-claim-owner"),
+    ledgerIdentitySha256:
+      await digestLabel("placement-ledger-identity"),
+    baselineOperationIdSha256:
+      await digestLabel("placement-operation-1"),
+    baselineTerminalReceiptSha256:
+      await digestLabel("placement-operation-1-terminal-receipt"),
+    claimOperationIdSha256:
+      await digestLabel("placement-operation-2"),
+    leaseTokenSha256:
+      await digestLabel("placement-lease-token-generation-1"),
+    claimCredentialIdSha256:
+      SHARD_PLACEMENT_AUTHORITY_HMAC.claim.credentialIdSha256,
+    requestIdSha256: await requestIdSha256(requestId),
+    generatedAt: now,
+    normalDeadlineAt: source.permit.expires_at,
+    operationScheduleSha256: await sha256Hex(
+      new TextEncoder().encode(canonicalJson({
+        baselineOperationIdSha256:
+          await digestLabel("placement-operation-1"),
+        claimOperationIdSha256:
+          await digestLabel("placement-operation-2"),
+        operations,
+      })),
+    ),
+    operations,
+    ...overrides,
+  };
+  const digestInput = {
+    ...unsigned,
+  };
+  const claimDigestSha256 = await sha256Hex(
+    new TextEncoder().encode(canonicalJson(digestInput)),
+  );
+  const partial = {
+    ...unsigned,
+    claimDigestSha256,
+  };
+  const value = {
+    ...partial,
+    claimAcquiredReceiptSha256: await sha256Hex(
+      new TextEncoder().encode(
+        canonicalJson(claimAcquiredDigestInput(partial)),
+      ),
+    ),
+  };
+  return {
+    issuance: source,
+    requestId,
+    value,
+    body: canonicalJson(value),
+  };
+}
+
+export async function placementExecutionReceipt({
+  claim,
+  sequence,
+  eventKind,
+  operationOrdinal = null,
+  predecessorReceiptSha256,
+  outcome = eventKind === "operation_started" ? "pending" : null,
+  leaseGeneration = 1,
+  leaseTokenSha256 = claim.leaseTokenSha256,
+  actorOwnerSha256 = claim.claimOwnerSha256,
+  role = eventKind === "operation_started"
+      || eventKind === "operation_terminal"
+    ? "receipt"
+    : "recovery",
+  requestId = `placement-${eventKind}-${sequence}`,
+  requestSha256,
+  responseSha256,
+  cloudflareRequestIdSha256 = null,
+  evidenceSha256,
+  safetyReason = null,
+  overrides = {},
+}) {
+  const leaseEvent =
+    eventKind === "lease_renewed"
+    || eventKind === "lease_taken_over";
+  const safetyEvent = eventKind === "safety_diverted";
+  const effectiveOrdinal = operationOrdinal
+    ?? (leaseEvent ? 2 : safetyEvent ? 13 : null);
+  const operation = effectiveOrdinal === 2
+    ? {
+        ordinal: 2,
+        operationIdSha256: claim.claimOperationIdSha256,
+        kind: "create_authority_claim",
+        shardIndex: null,
+      }
+    : claim.operations.find(
+        (entry) => entry.ordinal === effectiveOrdinal,
+      );
+  if (effectiveOrdinal === null || operation === undefined) {
+    throw new Error("unknown test operation");
+  }
+  const isOperation =
+    eventKind === "operation_started"
+    || eventKind === "operation_terminal";
+  const unsigned = {
+    schemaVersion: 1,
+    contract: EXECUTION_RECEIPT_CONTRACT,
+    eventKind,
+    authorizationIdSha256: claim.authorizationIdSha256,
+    claimDigestSha256: claim.claimDigestSha256,
+    executionPlanSha256: claim.executionPlanSha256,
+    ledgerIdentitySha256: claim.ledgerIdentitySha256,
+    sequence,
+    predecessorReceiptSha256:
+      predecessorReceiptSha256
+      ?? claim.claimAcquiredReceiptSha256,
+    leaseGeneration,
+    leaseTokenSha256,
+    leaseDurationSeconds: leaseEvent ? 60 : null,
+    actorOwnerSha256,
+    actorCredentialIdSha256:
+      SHARD_PLACEMENT_AUTHORITY_HMAC[role].credentialIdSha256,
+    requestIdSha256: await requestIdSha256(requestId),
+    operationOrdinal: effectiveOrdinal,
+    operationIdSha256: operation.operationIdSha256,
+    operationKind: operation.kind,
+    shardIndex: operation.shardIndex,
+    outcome: outcome
+      ?? (leaseEvent
+        ? "exact_success"
+        : safetyEvent
+        ? "disable_required"
+        : "exact_success"),
+    requestSha256: requestSha256 ?? await digestLabel(
+      `placement-request-${effectiveOrdinal}`,
+    ),
+    responseSha256:
+      eventKind === "operation_terminal"
+        ? responseSha256
+          ?? await digestLabel(`placement-response-${operationOrdinal}`)
+        : null,
+    evidenceSha256:
+      evidenceSha256 ?? await digestLabel(
+        `placement-evidence-${sequence}`,
+      ),
+    cloudflareRequestIdSha256,
+    safetyReason: safetyEvent
+      ? safetyReason ?? "operation_failed"
+      : null,
+    ...overrides,
+  };
+  const value = {
+    ...unsigned,
+    receiptDigestSha256: await sha256Hex(
+      new TextEncoder().encode(canonicalJson(unsigned)),
+    ),
+  };
+  return { value, body: canonicalJson(value), requestId, role };
+}
+
 function hmacEnvironment(label, identity) {
   return {
     [`SHARD_PLACEMENT_${label}_HMAC_CURRENT_KID`]: identity.keyId,
@@ -267,4 +499,8 @@ function privateKey(role) {
     format: "der",
     type: "pkcs8",
   });
+}
+
+async function digestLabel(value) {
+  return sha256Hex(new TextEncoder().encode(value));
 }

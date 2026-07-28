@@ -212,8 +212,9 @@ Production readiness still requires the Authority boundary to:
 4. atomically join issuance, revocation, consumption, campaign, and placement
    enforcement in one dedicated control D1, or provide a formally proven
    cross-database protocol; the current two-D1 foundation does neither;
-5. add an exclusive execution claim and predecessor-bound append-only step
-   ledger so two hosts cannot run one authorization concurrently;
+5. connect the implemented exclusive execution claim and predecessor-bound
+   append-only step ledger to application-D1 activation through a reviewed
+   cross-database protocol;
 6. preserve replayable signed approval evidence in reviewed WORM storage while
    keeping private material out of Workers and D1;
 7. support current/next-or-previous approval keys with explicit validity,
@@ -316,3 +317,92 @@ authorization-reader tests, and the runner placement-plan/CLI tests. The full
 repository aggregate passes with exit code 0 in 1000.6 seconds. The remote
 staging ceremony must still be run for the final candidate. Existing Rust
 `dead_code` findings remain warnings only.
+
+## Execution Claim And Lease Ledger Checkpoint
+
+Migration `0002_shard_placement_execution_claims.sql` and the private
+Authority Worker now implement the local execution-ownership boundary. This
+supersedes the earlier statement that no cross-host claim or predecessor
+ledger exists. It does not supersede the separate statement that application
+D1 consumption and Authority D1 execution are not yet atomically activated.
+
+The implemented contract has these invariants:
+
+- one active `staging-controller-placement-v1` scope, enforced by a partial
+  unique index that is not released merely because a lease expires;
+- one immutable claim identity bound to permit subject, authorization,
+  execution and campaign nonces, candidate digests, initial owner, ledger,
+  operation-1 terminal receipt, operation-2 claim identity, caller credential
+  and request ID;
+- exactly 11 persisted operations for ordinals 3-13, with fixed kinds and
+  shard order, plus one D1-created sequence-1 acquisition receipt;
+- D1-owned `claimed_at`, `recorded_at`, and 60-second lease expiry;
+- a maximum 64-event append-only predecessor chain with unique start and
+  terminal receipts per operation;
+- renewal under the current owner/token/generation only, and takeover only
+  after D1 observes expiry, with a new owner, token, and generation;
+- an in-flight operation inherited by a takeover is readback-only and can
+  never regain send authority; and
+- operation 3 start records the enable intent. Revocation, failure, unresolved
+  work, safety diversion, or post-enable takeover forces
+  `disable_required`, where only operation 13 may start.
+
+Successful operation-13 terminal evidence is the only path to `completed`.
+An unproven disable ends in `recovery_required`. Separate claim,
+normal-receipt, and recovery HMAC roles are required in addition to read,
+issue, and revoke.
+
+The private routes are:
+
+```text
+POST /internal/v1/shard-placement/execution-claims
+GET  /internal/v1/shard-placement/execution-claims/{authorization}
+POST /internal/v1/shard-placement/execution-claims/{authorization}/receipts
+POST /internal/v1/shard-placement/execution-claims/{authorization}/renew
+POST /internal/v1/shard-placement/execution-claims/{authorization}/takeover
+POST /internal/v1/shard-placement/execution-claims/{authorization}/safety-divert
+```
+
+All write gates remain false in checked-in local and staging configuration.
+The service still has no public route, `workers.dev`, preview URL, production
+configuration, application D1, Durable Object, Container, Queue, KV, or R2
+binding.
+
+### Cross-database activation gate
+
+The execution claim alone cannot authorize operation 3. The next application
+migration must add a create-new activation ticket and a fail-closed
+two-ledger handshake:
+
+1. application D1 atomically creates the authorization/campaign intent and a
+   `prepared` ticket bound to authorization, campaign, candidate, operation
+   schedule, Authority database identity, and deadline;
+2. the runner creates the exact Authority claim bound to the ticket digest;
+3. application D1 CAS-activates the ticket only while 0063 remains active and
+   the returned claim digest matches;
+4. Authority appends an activation acknowledgement only after exact
+   application-D1 readback; and
+5. operation 3 remains forbidden until both immutable ledgers contain the
+   same activated tuple.
+
+Timeout, conflict, missing readback, or revocation before activation grants no
+mutation authority. Any uncertainty after operation 3 grants only
+operation-13 disable/readback authority. Consolidating these records into one
+D1 remains preferable; this handshake is the required fallback.
+
+### Remaining runner gate
+
+The Rust runner does not yet emit this Worker wire contract. An incompatible
+prototype was intentionally not admitted. Before a live client is compiled,
+Rust and TypeScript must share checked-in canonical claim, acquisition,
+renewal, takeover, operation-start, operation-terminal, and safety-diversion
+vectors. The transport must persist exact request bytes before its only POST,
+recover response loss by exact GET/readback, never regenerate a send permit,
+and prove stale generations cannot issue network requests.
+
+Focused local verification now passes 10 protocol tests, 3 Workerd lifecycle
+tests, and 8 migration/config tests, plus type generation and Wrangler
+dry-run. The complete repository gate also passes with exit code 0 in 929.3
+seconds; existing Rust `dead_code` findings remain warnings only. No remote
+migration, deployment, credential read, gate change, claim, campaign,
+Container wake, or traffic action occurred. Production remains **NO-GO**.

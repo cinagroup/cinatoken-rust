@@ -1951,3 +1951,49 @@ and `1ec31f...` binary. Its diagnostic ZIP is
 `sha256:36439496d6b6a1b61821a9ac0b3205b1a4dcc19bd13fcfdbef12f5b47cf14089`.
 This strengthens replaceable-compute evidence but still grants no registry,
 Cloudflare, P5 or production authority.
+
+## 2026-07-28 Routing, Allocation, And Lifecycle Re-Audit
+
+The clean cinaVibeSDK source at `918e97480ee44e357abe99bf33c27259d6ac7ebd`
+was reread at the executable configuration and call sites:
+
+- `wrangler.jsonc:73-160` binds the Dispatcher, Container class, D1, named
+  Durable Objects, R2 and KV as separate resources;
+- `worker/index.ts:81-180,209-286` establishes domain/path ownership before
+  execution and does not fall back to the main app after a selected user-app
+  dispatch fails;
+- `worker/agents/index.ts:21-38` and
+  `space/src/space/durable-object.ts:59-126` use stable logical names to address
+  isolated state owners;
+- `worker/services/sandbox/sandboxSdkClient.ts:81-145` contains both
+  `one_to_one` and optional `many_to_one` allocation, while
+  `:983-1072,1128-1227` performs health validation, creation, stop, port
+  removal and file cleanup; and
+- `worker/agents/core/codingAgent.ts:50-154,461-465` separates persisted entity
+  state from transient service handles.
+
+The target keeps deterministic ownership, durable supervisor checkpoints,
+health-before-reuse and replaceable execution. It deliberately does not copy
+the optional modulo Container pool, multi-tenant workspace sharing,
+process-local deployment Promise, `setInterval` recovery, public Runner HTTP,
+best-effort cleanup as terminal proof, or local Container metadata as durable
+authority.
+
+For the initial paid relay cohort, the resulting stronger mapping is:
+
+1. Jump Consistent Hash plus `ring_generation` selects one stable shard.
+2. The named shard Durable Object owns admission, operation generation,
+   lifecycle and alarms.
+3. One shard Container is disposable protocol/provider compute and cannot
+   authorize routing, retry, quota, task terminal state or settlement.
+4. D1 owns relational and financial truth, DO SQLite owns per-shard
+   coordination, KV is a versioned cache, and R2 owns immutable large bytes and
+   evidence.
+5. A selected Container path never silently falls back to Go/VPS or another
+   provider attempt. Ambiguity is reconciled under the same operation identity.
+
+The re-audit also confirms that cinaVibeSDK does not provide the target's
+private Edge-to-Controller Service Binding or signed deployment-claim ledger.
+Those are cinatoken-specific controls and must be proved independently. This
+source mapping grants no remote deployment, traffic, financial or production
+authority; Go/VPS remains authoritative and production remains **NO-GO**.

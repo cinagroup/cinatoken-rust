@@ -106,7 +106,13 @@ const APPROVAL_FIELDS = [
 ] as const;
 const UNSIGNED_APPROVAL_FIELDS = APPROVAL_FIELDS.slice(0, -1);
 
-export type HmacRole = "read" | "issue" | "revoke";
+export type HmacRole =
+  | "read"
+  | "issue"
+  | "revoke"
+  | "claim"
+  | "receipt"
+  | "recovery";
 export type ApprovalRole = (typeof APPROVAL_ROLES)[number];
 
 export interface ShardPlacementAuthoritySecurityEnv {
@@ -148,6 +154,24 @@ export interface ShardPlacementAuthoritySecurityEnv {
   SHARD_PLACEMENT_REVOKE_HMAC_PREVIOUS_KID: string;
   SHARD_PLACEMENT_REVOKE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
   SHARD_PLACEMENT_REVOKE_HMAC_PREVIOUS_SECRET?: string;
+  SHARD_PLACEMENT_CLAIM_HMAC_CURRENT_KID: string;
+  SHARD_PLACEMENT_CLAIM_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_CLAIM_HMAC_CURRENT_SECRET?: string;
+  SHARD_PLACEMENT_CLAIM_HMAC_PREVIOUS_KID: string;
+  SHARD_PLACEMENT_CLAIM_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_CLAIM_HMAC_PREVIOUS_SECRET?: string;
+  SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_KID: string;
+  SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_SECRET?: string;
+  SHARD_PLACEMENT_RECEIPT_HMAC_PREVIOUS_KID: string;
+  SHARD_PLACEMENT_RECEIPT_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_RECEIPT_HMAC_PREVIOUS_SECRET?: string;
+  SHARD_PLACEMENT_RECOVERY_HMAC_CURRENT_KID: string;
+  SHARD_PLACEMENT_RECOVERY_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_RECOVERY_HMAC_CURRENT_SECRET?: string;
+  SHARD_PLACEMENT_RECOVERY_HMAC_PREVIOUS_KID: string;
+  SHARD_PLACEMENT_RECOVERY_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_RECOVERY_HMAC_PREVIOUS_SECRET?: string;
 }
 
 export interface AuthorityTokenClaims {
@@ -920,7 +944,13 @@ function selectHmacKey(
       ? "SHARD_PLACEMENT_READ_HMAC"
       : role === "issue"
         ? "SHARD_PLACEMENT_ISSUE_HMAC"
-        : "SHARD_PLACEMENT_REVOKE_HMAC";
+        : role === "revoke"
+          ? "SHARD_PLACEMENT_REVOKE_HMAC"
+          : role === "claim"
+            ? "SHARD_PLACEMENT_CLAIM_HMAC"
+            : role === "receipt"
+              ? "SHARD_PLACEMENT_RECEIPT_HMAC"
+              : "SHARD_PLACEMENT_RECOVERY_HMAC";
   const values = env as unknown as Record<string, string | undefined>;
   let secret: string | undefined;
   let credentialIdSha256 = "";
@@ -1109,7 +1139,14 @@ function requireSetString(
 }
 
 function requireExactRole(value: unknown): HmacRole {
-  if (value === "read" || value === "issue" || value === "revoke") {
+  if (
+    value === "read"
+    || value === "issue"
+    || value === "revoke"
+    || value === "claim"
+    || value === "receipt"
+    || value === "recovery"
+  ) {
     return value;
   }
   throw new ProtocolError("invalid_authority", 403);

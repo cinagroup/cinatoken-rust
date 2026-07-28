@@ -2438,7 +2438,7 @@ Go/VPS stays authoritative and production remains **NO-GO**.
 | D1 authorization consumption | Implemented locally; atomic authorization-before-campaign batch and exact readback |
 | Authority foundation | Implemented locally; private service-binding-only Worker, isolated D1, four approval roots, permit verification, append-only issuance/revocation, default-off |
 | Deployment runner contract | Implemented locally and inert; staging / 8 shards / Controller-only / 13 deterministic mutations / one send / zero retry / disable-first |
-| Authority-to-campaign execution claim | **NOT IMPLEMENTED**; ordinary deploy preflight requires both gates false |
+| Authority-to-campaign execution claim | Exclusive claim/lease/receipt ledger implemented and locally exercised in dedicated Authority D1; application-D1 activation handshake still **NOT IMPLEMENTED** and ordinary deploy preflight requires both gates false |
 | Focused authorization gate | Authority aggregate, Worker reader, existing permit/runtime, and runner plan tests pass |
 | Controller/DO gates | 178 portable + 46 runtime + 53 DO tests |
 | Complete repository gate | PASS, exit 0 in 1000.6 seconds; existing Rust `dead_code` warnings only |
@@ -2482,7 +2482,7 @@ remains authoritative.
 | Writer gates | Both remain false; ordinary deploy preflight rejects true |
 | Runtime placement authorization | Implemented locally; signed permit verification, atomic D1 consume, Controller pre-wake and placement-trigger enforcement |
 | Authority/runner foundation | Implemented locally and inert; no public Authority route, credentials, network, claim, or mutation |
-| Exclusive claim/workload routes | **NOT IMPLEMENTED** |
+| Exclusive claim/workload routes | Private claim/read/receipt/renew/takeover routes implemented locally; Access gateway, application activation, and runner workload routes **NOT IMPLEMENTED** |
 | Remote placement evidence | **NOT COLLECTED** |
 | Exposed Cloudflare credential | Must be revoked and rotated before staging access |
 | Complete repository gate | PASS, exit 0 in 1000.6 seconds |
@@ -2524,7 +2524,7 @@ remains **NO-GO**.
 | Authority ingress | Service-binding-only; no public route, `workers.dev`, preview URL, or production config |
 | Deployment runner contract | Implemented locally and inert; staging, 8 shards, Controller-only, 13 operation slots, one send, zero retry, readback-only ambiguity, disable-first |
 | P5 authorization-row join | Implemented locally; capture v4 and Foundation source v4 bind stable exact 0063 safe projection |
-| Authority execution claim/atomic consumption | **NOT IMPLEMENTED** |
+| Authority execution claim/atomic consumption | Claim/lease/predecessor ledger implemented locally; atomic or fail-closed cross-D1 activation/consumption **NOT IMPLEMENTED** |
 | Remote permit/schema/evidence | **NOT COLLECTED** |
 | Complete repository gate | PASS, exit 0 in 1000.6 seconds |
 | Production eligibility | **NO-GO** |
@@ -2532,9 +2532,43 @@ remains **NO-GO**.
 The implementation closes the local verification, Authority record, bounded
 runner-plan, and P5 authorization-row substrate. It does not place signing
 private keys in the Authority, connect Authority revocation to application D1,
-create a cross-host exclusive claim, expose workload-authenticated campaign
-routes, or permit an operator to enable staging gates manually. The next
+join the cross-host claim to application D1, expose workload-authenticated
+campaign routes, or permit an operator to enable staging gates manually. The next
 critical path is one dedicated placement-control D1 or formally proven
-cross-database protocol, an exclusive claim/step ledger, Access-protected
+cross-database activation protocol, an exact runner client, Access-protected
 approval gateway plus private Service Binding, compiled runner trust and
 credential typestates, and live reader-first staging evidence.
+
+## 2026-07-28 Authority Execution Ledger Status
+
+| Status item | Current value |
+| --- | --- |
+| D1 migration | Authority migration 0002; claims, 11-operation schedules, receipts, indexes, and projection triggers |
+| Active ownership | One active staging scope; expiry alone never releases it |
+| Lease | D1-owned 60 seconds; owner/token/generation fence; renewal and expired takeover |
+| Receipt chain | Append-only, predecessor-bound, maximum 64 events; unique start/terminal per operation |
+| Ambiguous in-flight takeover | Readback-only; no resend authority |
+| Post-enable failure | `disable_required`; only operation 13 may start |
+| Terminal success | Exact successful operation-13 terminal receipt |
+| Local HTTP roles | Separate claim, receipt, and recovery HMAC roles, in addition to read/issue/revoke |
+| Local runtime evidence | Concurrent create/exact replay, renewal, op3 start/terminal, revocation, op4 rejection, op13 admission |
+| Migration evidence | Append preservation, projection enforcement, expiry-only takeover, generation fencing |
+| Checked-in gates | Claim, receipt, and recovery writes all false |
+| Public/production config | Absent |
+| Application-D1 activation | **NOT IMPLEMENTED** |
+| Rust Authority transport | **NOT IMPLEMENTED**; incompatible prototype rejected |
+| Remote deployment/evidence | **NOT COLLECTED** |
+| Production eligibility | **NO-GO** |
+
+The implementation closes local execution ownership only. It does not close
+the cross-database interval between application authorization/campaign state
+and Authority execution state. Migration 0064 must add a prepared/activated
+ticket and exact digest handshake, or the records must be consolidated into a
+single control D1. Operation 3 remains unauthorized until both ledgers prove
+the same active tuple.
+
+Focused Authority verification passes type generation, Wrangler dry-run, 10
+protocol tests, 3 Workerd lifecycle tests, and 8 migration/config tests. No
+Cloudflare credential was read and no remote state was queried or changed.
+The complete repository gate passes with exit code 0 in 929.3 seconds;
+existing Rust `dead_code` findings remain warnings only.

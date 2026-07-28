@@ -332,3 +332,55 @@ These are release-control improvements, not execution enablement. Streaming
 usage persistence, durable financial terminal ownership, task/channel parity,
 remote Cloudflare lifecycle evidence, and Go/VPS process-state drain remain
 open. Production remains **NO-GO**.
+
+## 2026-07-28 Source Architecture Re-Audit
+
+The source trees were reread at cinaVibeSDK
+`918e97480ee44e357abe99bf33c27259d6ac7ebd` and Go cinatoken
+`73652508`. This refresh separates source-proven design from target-only
+hardening.
+
+### cinaVibeSDK evidence retained
+
+| Source evidence | Proven source behavior | cinatoken-rust application |
+| --- | --- | --- |
+| `worker/index.ts:81-180,209-286` | Host and path ownership is decided before execution, and a failed user-app dispatch does not silently fall back to the main application. | Once the edge selects Container ownership, a Controller/Container miss cannot fall back to a second provider path. |
+| `worker/agents/index.ts:21-38` and `space/src/space/durable-object.ts:59-126` | Stable logical IDs address named Durable Objects that supervise one isolated state domain. | Tenant/hash routing uses stable shard names plus `ring_generation`; the owning shard DO is the only lifecycle coordinator. |
+| `worker/services/sandbox/sandboxSdkClient.ts:983-1072,1128-1227` | Reuse requires a health check; failed instances are stopped, unexposed and reconstructed. | Controller readiness, drain, restart and replacement evidence must be generation-fenced and persisted outside Container memory. |
+| `worker/agents/core/codingAgent.ts:50-154,461-465` | Durable entity state is separate from transient service handles and resident promises. | DO SQLite owns coordination; D1 owns global/financial truth; R2 owns immutable bytes; Container disk is disposable scratch. |
+| `worker/database/database.ts:33-64` | D1 reads explicitly distinguish latency-oriented access from first-primary freshness. | Control-plane claims, receipts and settlement CAS use first-primary sessions and exact readback. |
+
+The optional `many_to_one` fixed-pool modulo allocator is not inherited.
+Changing pool size remaps a broad key set and shares Container failure domains.
+The target retains Jump Consistent Hash, immutable ring generations, one
+logical shard owner, and per-operation generation fences. It also rejects the
+source's process-local deployment Promise, `setInterval` recovery, public
+Runner HTTP control plane, local SQLite logs as recovery authority, and
+fail-open rate limiting for quota-bearing traffic.
+
+### Go cinatoken semantics retained
+
+| Source evidence | Required semantic | Four-layer owner |
+| --- | --- | --- |
+| `router/relay-router.go:69`, `controller/relay.go:68`, `middleware/auth.go:286` | Protocol detection, authentication, IP/token/model limits and quota admission precede channel selection and provider effects. | Edge performs bounded protocol/auth prechecks; D1/DO completes authoritative admission before Container dispatch. |
+| `middleware/distributor.go:236`, `service/channel_select.go:48`, `model/channel_cache.go:97` | Exact model match precedes normalized match; priority and weight policy is preserved; fixed channels do not freely retry. | DO freezes one selection/attempt policy; KV is only a versioned cache; Container receives an already authorized attempt. |
+| `relay/helper/model_mapped.go:16` | Permissions, pricing and audit use the original model; only the provider request uses the mapped model. | The signed internal envelope carries both identities and forbids the Container from rewriting billing identity. |
+| `pkg/billingexpr/expr.md:127`, `relay/helper/price.go:241`, `service/tiered_settle.go:21` | Expression/version/hash, ratios, estimated usage and unit prices are frozen before reserve; actual usage later settles or refunds. | D1 stores the immutable pricing snapshot and financial ledger; DO coordinates ownership; Container reports structured usage only. |
+| `relay/relay_task.go:139`, `model/task.go:138`, `service/task_polling.go:344` | Public task IDs remain stable and one status-qualified CAS winner owns terminal billing/refund. | D1 owns task state and outbox; DO alarms recover work; Container cannot terminalize financial state. |
+
+The production target strengthens the source where process-local behavior is
+not portable: every provider operation uses a durable idempotency identity,
+`side_effect_committed` and response-start boundaries forbid channel
+switching, terminal task state and its financial outbox commit atomically, and
+all cross-host ownership uses generation/token fencing rather than Go locks or
+resident memory.
+
+This re-audit changes no remote gate. It confirms the intended topology:
+
+`edge Worker -> stable shard Durable Object/Controller -> one shard Container
+-> KV/D1/R2`
+
+The Container is replaceable execution, never routing, billing, task or audit
+authority. Live Cloudflare lifecycle, fault, load, cost, financial parity,
+Go/VPS drain, DNS and production evidence remain open, so production remains
+**NO-GO**.

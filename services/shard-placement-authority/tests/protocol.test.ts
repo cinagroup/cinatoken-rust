@@ -6,10 +6,18 @@ import {
   parseExactAuthorizationQuery,
   parseIssuanceRequest,
   parseRevocationRequest,
+  sha256Hex,
   verifyHmacRequest,
 } from "../src/protocol";
 import { validateRuntimeTrustConfiguration } from "../src/index";
 import {
+  parseExecutionClaim,
+  parseExecutionReceipt,
+  parseExactExecutionClaimQuery,
+} from "../src/execution_protocol";
+import {
+  placementExecutionClaim,
+  placementExecutionReceipt,
   placementAuthorityRevocation,
   shardPlacementAuthorityEnv,
   signedAuthorityRequest,
@@ -236,6 +244,209 @@ describe("shard placement Authority protocol", () => {
     )).rejects.toMatchObject({
       code: "revocation_digest_mismatch",
       status: 400,
+    });
+  });
+
+  it("freezes the exact 11-operation execution claim", async () => {
+    const now = Math.floor(Date.now() / 1_000);
+    const fixture = await placementExecutionClaim({ now });
+    const claim = await parseExecutionClaim(
+      new TextEncoder().encode(fixture.body),
+      {
+        role: "claim",
+        credentialIdSha256: "d".repeat(64),
+        keyId: "claim-hmac-test-v1",
+        bodySha256: await sha256Hex(
+          new TextEncoder().encode(fixture.body),
+        ),
+        requestId: fixture.requestId,
+      },
+      now,
+    );
+    expect(claim.operations).toHaveLength(11);
+    expect(claim.operations[0]).toMatchObject({
+      ordinal: 3,
+      kind: "enable_controller_deployment",
+      shardIndex: null,
+    });
+    expect(claim.operations.slice(2, 10).map(
+      (operation) => operation.shardIndex,
+    )).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+    expect(claim.operations[10]).toMatchObject({
+      ordinal: 13,
+      kind: "disable_controller_deployment",
+      shardIndex: null,
+    });
+
+    const drifted = structuredClone(fixture.value);
+    drifted.operations[2].shardIndex = 7;
+    await expect(parseExecutionClaim(
+      new TextEncoder().encode(canonicalJson(drifted)),
+      {
+        role: "claim",
+        credentialIdSha256: "d".repeat(64),
+        keyId: "claim-hmac-test-v1",
+        bodySha256: await sha256Hex(
+          new TextEncoder().encode(canonicalJson(drifted)),
+        ),
+        requestId: fixture.requestId,
+      },
+      now,
+    )).rejects.toMatchObject({
+      code: "operation_schedule_invalid",
+      status: 400,
+    });
+  });
+
+  it("binds every execution receipt to its predecessor and phase", async () => {
+    const claimFixture = await placementExecutionClaim();
+    const started = await placementExecutionReceipt({
+      claim: claimFixture.value,
+      sequence: 2,
+      operationOrdinal: 3,
+      eventKind: "operation_started",
+    });
+    expect(await parseExecutionReceipt(
+      new TextEncoder().encode(started.body),
+      {
+        role: "receipt",
+        credentialIdSha256: "e".repeat(64),
+        keyId: "receipt-hmac-test-v1",
+        bodySha256: await sha256Hex(
+          new TextEncoder().encode(started.body),
+        ),
+        requestId: started.requestId,
+      },
+      new Set(["operation_started", "operation_terminal"]),
+    )).toMatchObject({
+      sequence: 2,
+      eventKind: "operation_started",
+      outcome: "pending",
+    });
+
+    const invalid = structuredClone(started.value);
+    invalid.outcome = "exact_success";
+    invalid.receiptDigestSha256 = await sha256Hex(
+      new TextEncoder().encode(canonicalJson(
+        Object.fromEntries(
+          Object.entries(invalid).filter(
+            ([key]) => key !== "receiptDigestSha256",
+          ),
+        ),
+      )),
+    );
+    await expect(parseExecutionReceipt(
+      new TextEncoder().encode(canonicalJson(invalid)),
+      {
+        role: "receipt",
+        credentialIdSha256: "e".repeat(64),
+        keyId: "receipt-hmac-test-v1",
+        bodySha256: await sha256Hex(
+          new TextEncoder().encode(canonicalJson(invalid)),
+        ),
+        requestId: started.requestId,
+      },
+      new Set(["operation_started", "operation_terminal"]),
+    )).rejects.toMatchObject({
+      code: "operation_receipt_invalid",
+      status: 400,
+    });
+
+    const query = new URL(
+      `https://authority.test/path?claimDigestSha256=${claimFixture.value.claimDigestSha256}`
+      + `&claimOwnerSha256=${claimFixture.value.claimOwnerSha256}`,
+    );
+    expect(parseExactExecutionClaimQuery(query)).toEqual({
+      claimDigestSha256: claimFixture.value.claimDigestSha256,
+      claimOwnerSha256: claimFixture.value.claimOwnerSha256,
+    });
+  });
+
+  it("separates lease recovery from normal operation receipts", async () => {
+    const claimFixture = await placementExecutionClaim();
+    const takeoverToken = await sha256Hex(
+      new TextEncoder().encode("placement-lease-token-generation-2"),
+    );
+    const renewed = await placementExecutionReceipt({
+      claim: claimFixture.value,
+      sequence: 2,
+      eventKind: "lease_renewed",
+    });
+    const authentication = {
+      role: "recovery" as const,
+      credentialIdSha256: "f".repeat(64),
+      keyId: "recovery-hmac-test-v1",
+      bodySha256: await sha256Hex(
+        new TextEncoder().encode(renewed.body),
+      ),
+      requestId: renewed.requestId,
+    };
+    await expect(parseExecutionReceipt(
+      new TextEncoder().encode(renewed.body),
+      authentication,
+      new Set(["lease_renewed", "lease_taken_over"]),
+    )).resolves.toMatchObject({
+      eventKind: "lease_renewed",
+      leaseGeneration: 1,
+      leaseTokenSha256: claimFixture.value.leaseTokenSha256,
+      operationOrdinal: 2,
+      operationKind: "create_authority_claim",
+    });
+    await expect(parseExecutionReceipt(
+      new TextEncoder().encode(renewed.body),
+      authentication,
+      new Set(["operation_started", "operation_terminal"]),
+    )).rejects.toMatchObject({
+      code: "execution_event_role_mismatch",
+      status: 403,
+    });
+
+    const takeover = await placementExecutionReceipt({
+      claim: claimFixture.value,
+      sequence: 2,
+      eventKind: "lease_taken_over",
+      leaseGeneration: 2,
+      leaseTokenSha256: takeoverToken,
+      actorOwnerSha256: "0".repeat(64),
+    });
+    await expect(parseExecutionReceipt(
+      new TextEncoder().encode(takeover.body),
+      {
+        ...authentication,
+        bodySha256: await sha256Hex(
+          new TextEncoder().encode(takeover.body),
+        ),
+        requestId: takeover.requestId,
+      },
+      new Set(["lease_renewed", "lease_taken_over"]),
+    )).resolves.toMatchObject({
+      eventKind: "lease_taken_over",
+      leaseGeneration: 2,
+      actorOwnerSha256: "0".repeat(64),
+    });
+
+    const safety = await placementExecutionReceipt({
+      claim: claimFixture.value,
+      sequence: 2,
+      eventKind: "safety_diverted",
+      safetyReason: "lease_revoked",
+    });
+    await expect(parseExecutionReceipt(
+      new TextEncoder().encode(safety.body),
+      {
+        ...authentication,
+        bodySha256: await sha256Hex(
+          new TextEncoder().encode(safety.body),
+        ),
+        requestId: safety.requestId,
+      },
+      new Set(["safety_diverted"]),
+    )).resolves.toMatchObject({
+      eventKind: "safety_diverted",
+      operationOrdinal: 13,
+      operationKind: "disable_controller_deployment",
+      outcome: "disable_required",
+      safetyReason: "lease_revoked",
     });
   });
 });

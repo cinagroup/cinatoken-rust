@@ -3892,15 +3892,16 @@ deployment, campaign-create, or gate-change path.
 The Authority has no public staging route, `workers.dev`, preview URL, or
 production configuration. Its only intended ingress is a future exact Service
 Binding from a separately Access-protected approval/workload gateway. The
-checked-in trust placeholders and all four Authority gates remain false. The
+checked-in trust placeholders and all seven Authority gates remain false. The
 runner description also reports exclusive Authority claim and workload routes
 as uncompiled, reads no credential, performs no network request or mutation,
 and grants no remote or production authority.
 
 These foundations do not yet form a production transaction. Authority
 issuance/revocation and application-D1 consumption remain separate ledgers;
-revocation cannot yet block an already authorized 0063 campaign; no
-cross-host exclusive execution claim or predecessor-bound step ledger exists;
+revocation cannot yet block an already authorized 0063 campaign; the local
+exclusive claim/lease/step ledger is not yet joined to application D1 or the
+Rust runner;
 campaign/readiness still depend on root session; approval-key overlap rotation
 and WORM retention of replayable signed evidence are absent; and Cloudflare
 deployment inventory pagination is not yet independently complete.
@@ -3919,9 +3920,10 @@ The next production-critical implementation order is:
 4. add current/next-or-previous approval-key validity and revocation policy,
    external WORM retention of canonical signed evidence, and a two-owner
    security+rollback revocation ceremony;
-5. implement an exclusive Authority claim and predecessor-bound execution
-   steps, then compile the runner's read, enable, rollback, Authority, and
-   gateway credential typestates and trust pins;
+5. connect the implemented exclusive Authority claim, 60-second generation
+   lease, and predecessor-bound execution ledger to application-D1 activation,
+   then compile the runner's read, enable, rollback, Authority, and gateway
+   credential typestates and trust pins;
 6. replace root runner access with path/body/role-bound workload HMAC plus
    Access, and add read-only recovery plus zero-retry abort/disable routes;
 7. apply 0061-0063 reader-first to isolated staging with every writer gate
@@ -3942,3 +3944,43 @@ or migration was made, no gate changed, and no permit, campaign, placement,
 Container wake, customer traffic, financial authority, Go/VPS drain, DNS
 change, or production cutover occurred. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-28 Execution Ownership Checkpoint
+
+The private Authority now has a locally exercised execution ledger in
+`0002_shard_placement_execution_claims.sql`. One create-new batch persists the
+claim, D1-generated acquisition receipt, and exact 11-operation schedule.
+Concurrent identical requests classify as one `created` plus one
+`exact_replay`; conflicting identities fail closed.
+
+The projection is driven only by immutable receipts or revocation. It tracks
+the current lease owner/token/generation, D1 expiry, predecessor head,
+in-flight operation, readback-only recovery, enable intent, disable
+confirmation, renewal/takeover counts, and terminal status. Lease expiry never
+frees the active scope. A successor must append a generation-incrementing
+takeover; the old owner and token are permanently fenced.
+
+Operation 3 is the point of no return. Once its start receipt exists,
+revocation or takeover changes the claim to `disable_required`. A pending
+operation can only be closed by exact terminal readback, and no later normal
+operation can start; operation 13 is the only allowed mutation. This rule is
+enforced in D1, not delegated to runner memory.
+
+This checkpoint does not authorize a staging run. Phase 1 still lacks:
+
+1. an application-D1 activation ticket that joins 0063 consumption to the
+   Authority claim without a cross-database double-spend window;
+2. Rust/TypeScript fixed-vector parity and the zero-retry Authority HTTP
+   client;
+3. the Access-protected, D1-free gateway and workload routes;
+4. approval-key overlap rotation and replayable WORM evidence;
+5. remote reader-first migration/catalog proof and all P5 Authority-ledger
+   capture; and
+6. replacement credentials after independent revocation proof for the
+   historical exposed credential.
+
+The next code increment is therefore application migration 0064 plus the
+two-ledger activation acknowledgement. Runner transport begins only after
+that state machine and its revocation races are locally proven. The complete
+repository gate passes this checkpoint with exit code 0 in 929.3 seconds;
+existing Rust `dead_code` findings remain warnings only.

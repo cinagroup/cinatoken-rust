@@ -19,6 +19,7 @@ describe("shard placement Authority configuration", () => {
     expect(report.productionConfigPresent).toBe(false);
     expect(report.migrationFiles).toEqual([
       "0001_shard_placement_authorizations.sql",
+      "0002_shard_placement_execution_claims.sql",
     ]);
     for (const environment of ["local", "staging"]) {
       expect(report.environments[environment]).toMatchObject({
@@ -49,6 +50,9 @@ describe("shard placement Authority configuration", () => {
         SHARD_PLACEMENT_AUTHORITY_READ_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_ISSUE_WRITE_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_REVOKE_WRITE_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_POLICY_ID: "",
         SHARD_PLACEMENT_AUTHORITY_POLICY_SHA256: "",
         SHARD_PLACEMENT_PERMIT_KEY_ID: "",
@@ -73,6 +77,18 @@ describe("shard placement Authority configuration", () => {
         SHARD_PLACEMENT_REVOKE_HMAC_CURRENT_CREDENTIAL_ID_SHA256: "",
         SHARD_PLACEMENT_REVOKE_HMAC_PREVIOUS_KID: "",
         SHARD_PLACEMENT_REVOKE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: "",
+        SHARD_PLACEMENT_CLAIM_HMAC_CURRENT_KID: "",
+        SHARD_PLACEMENT_CLAIM_HMAC_CURRENT_CREDENTIAL_ID_SHA256: "",
+        SHARD_PLACEMENT_CLAIM_HMAC_PREVIOUS_KID: "",
+        SHARD_PLACEMENT_CLAIM_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: "",
+        SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_KID: "",
+        SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_CREDENTIAL_ID_SHA256: "",
+        SHARD_PLACEMENT_RECEIPT_HMAC_PREVIOUS_KID: "",
+        SHARD_PLACEMENT_RECEIPT_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: "",
+        SHARD_PLACEMENT_RECOVERY_HMAC_CURRENT_KID: "",
+        SHARD_PLACEMENT_RECOVERY_HMAC_CURRENT_CREDENTIAL_ID_SHA256: "",
+        SHARD_PLACEMENT_RECOVERY_HMAC_PREVIOUS_KID: "",
+        SHARD_PLACEMENT_RECOVERY_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: "",
         SHARD_PLACEMENT_AUTHORITY_ISSUER:
           "cinatoken-shard-placement-operator-local",
         SHARD_PLACEMENT_AUTHORITY_AUDIENCE:

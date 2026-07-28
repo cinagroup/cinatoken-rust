@@ -63,6 +63,7 @@ const EXPECTED_SCHEMA_OBJECTS = [
   "index:idx_shard_placement_authority_revocations_recorded",
   "table:shard_placement_authority_issuances",
   "table:shard_placement_authority_revocations",
+  "trigger:shard_placement_authority_execution_revocation_apply",
   "trigger:shard_placement_authority_issuance_delete_guard",
   "trigger:shard_placement_authority_issuance_insert_guard",
   "trigger:shard_placement_authority_issuance_update_guard",
@@ -320,7 +321,7 @@ export async function createIssuance(
       .run();
     writeSucceeded =
       result.success === true
-      && result.meta?.changes === 1;
+      && (result.meta?.changes ?? 0) > 0;
   } catch {
     writeSucceeded = false;
   }
@@ -400,7 +401,7 @@ export async function revokeIssuance(
       .run();
     writeSucceeded =
       result.success === true
-      && result.meta?.changes === 1;
+      && (result.meta?.changes ?? 0) > 0;
   } catch {
     writeSucceeded = false;
   }

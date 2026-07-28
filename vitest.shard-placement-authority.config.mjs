@@ -34,6 +34,9 @@ export default defineConfig({
           SHARD_PLACEMENT_AUTHORITY_READ_ENABLED: "true",
           SHARD_PLACEMENT_AUTHORITY_ISSUE_WRITE_ENABLED: "true",
           SHARD_PLACEMENT_AUTHORITY_REVOKE_WRITE_ENABLED: "true",
+          SHARD_PLACEMENT_AUTHORITY_CLAIM_WRITE_ENABLED: "true",
+          SHARD_PLACEMENT_AUTHORITY_RECEIPT_WRITE_ENABLED: "true",
+          SHARD_PLACEMENT_AUTHORITY_RECOVERY_WRITE_ENABLED: "true",
           SHARD_PLACEMENT_AUTHORITY_ISSUER:
             "cinatoken-shard-placement-operator-runtime-test",
           SHARD_PLACEMENT_AUTHORITY_AUDIENCE:
@@ -72,6 +75,15 @@ export default defineConfig({
           ...hmacBindings("READ", SHARD_PLACEMENT_AUTHORITY_HMAC.read),
           ...hmacBindings("ISSUE", SHARD_PLACEMENT_AUTHORITY_HMAC.issue),
           ...hmacBindings("REVOKE", SHARD_PLACEMENT_AUTHORITY_HMAC.revoke),
+          ...hmacBindings("CLAIM", SHARD_PLACEMENT_AUTHORITY_HMAC.claim),
+          ...hmacBindings(
+            "RECEIPT",
+            SHARD_PLACEMENT_AUTHORITY_HMAC.receipt,
+          ),
+          ...hmacBindings(
+            "RECOVERY",
+            SHARD_PLACEMENT_AUTHORITY_HMAC.recovery,
+          ),
         },
         d1Databases: {
           DB: "shard-placement-authority-runtime-test",

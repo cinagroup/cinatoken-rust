@@ -22790,3 +22790,152 @@ credential was read, no remote state was queried or mutated, no migration was
 applied, no gate changed, and no permit, campaign, placement, Container wake,
 customer traffic, financial authority, Go/VPS drain, DNS change, or production
 cutover occurred. Production remains **NO-GO**.
+
+## 22.318 Authority Execution Claim, Lease, And Receipt Ledger (2026-07-28)
+
+This checkpoint supersedes only the statements in 22.317 that the exclusive
+Authority claim and predecessor step ledger are absent. It does not supersede
+the application-D1 atomicity, Access gateway, runner transport, remote
+evidence, P5, credential rotation, Go/VPS authority, or production blockers.
+
+### Implemented ownership state machine
+
+The private `services/shard-placement-authority` service now has a second
+isolated D1 migration:
+
+```text
+0002_shard_placement_execution_claims.sql
+```
+
+It adds immutable claims, exact operation schedules, append-only receipts,
+partial uniqueness for the active scope, and receipt-driven projection
+triggers. The Worker exposes only private HMAC-authenticated claim, exact-read,
+normal-receipt, renewal, and takeover routes. Claim, receipt, and recovery use
+three distinct HMAC roles; read, issue, and revoke remain separate.
+
+The frozen execution sequence remains:
+
+| Ordinal | Meaning | Mutation authority |
+| --- | --- | --- |
+| 1 | prove disabled Controller baseline | external predecessor evidence |
+| 2 | acquire Authority execution claim | private Authority only |
+| 3 | enable exact Controller deployment | single send after durable start |
+| 4 | create exact activation campaign | single send |
+| 5-12 | readiness for shards 0-7 | one single-send operation per shard |
+| 13 | restore disabled Controller deployment | mandatory disable path |
+
+One D1 batch creates the claim, its D1-time acquisition receipt, and the 11
+operations for ordinals 3-13. The claim binds the authorization and permit
+subject, execution and campaign nonces, candidate digests, initial owner,
+ledger identity, operation-1 terminal receipt, operation-2 ID, exact schedule,
+caller credential, request ID, and bounded deadlines. An identical concurrent
+request is exact replay; any body or identity drift is conflict.
+
+The lease uses a 60-second D1-owned expiry. Renewal retains owner, token, and
+generation and must extend the expiry. Takeover is rejected until D1 time
+reaches expiry, then requires a distinct owner and token plus generation+1.
+Expiry does not release the unique active scope. If a predecessor died with an
+operation in flight, the successor receives readback authority only; it can
+append the exact terminal observation but can never repeat the mutation.
+
+The ledger has a maximum of 64 events. Every row binds claim, execution plan,
+ledger, predecessor, request, evidence, HMAC credential and request ID, lease
+fence, operation identity, outcome, and optional response/Cloudflare request
+digests. Rows and schedules are append preserved. D1 triggers, rather than
+runner memory, own the current projection.
+
+### Disable-first invariant
+
+Starting ordinal 3 durably records `enable_intent_seen=1` before the network
+mutation. From that point:
+
+- revocation moves the claim to `disable_required`;
+- takeover moves the claim to `disable_required`, even if no operation was
+  in flight;
+- a failed, rejected, unresolved, or safety-diverted operation moves to
+  `disable_required`;
+- no ordinal 4-12 start is accepted while disable is required; and
+- only ordinal 13 may start, with exact terminal readback deciding
+  `completed` or `recovery_required`.
+
+Before ordinal 3, a safety diversion may abort without sending enable or
+disable. After ordinal 3, inability to prove disabled state never becomes
+success and never releases ownership for a new campaign.
+
+### Cross-D1 activation design
+
+The Authority D1 and application D1 are intentionally still separate, so the
+claim is not sufficient mutation authority. The next migration, provisionally
+0064, must implement a two-ledger activation ticket unless review approves
+moving the control chain into one D1.
+
+The fallback protocol is:
+
+1. application D1 atomically writes the 0063 authorization/campaign intent and
+   a create-new `prepared` ticket;
+2. the ticket binds authorization, campaign, candidate, operation schedule,
+   Authority database identity, generation, and deadline;
+3. the runner creates the exact Authority claim bound to the ticket digest;
+4. application D1 CAS-activates the ticket only if 0063 is still active and
+   the claim digest exactly matches;
+5. Authority appends an activation acknowledgement only after exact
+   application-D1 readback; and
+6. ordinal 3 is rejected until both ledgers contain the same activated tuple.
+
+Prepared-ticket timeout, claim conflict, response loss, revocation, or
+readback failure grants zero mutation authority. After ordinal 3, every
+uncertain outcome grants only disable/readback authority. This is a safety
+protocol, not distributed atomicity; the proof obligation is that no partial
+state can enable a mutation.
+
+### Runner interoperability gate
+
+The Rust runner still reports exclusive Authority execution as uncompiled. A
+large internal prototype was not admitted because its serialized v1 claim and
+receipt shape differed from the Worker contract despite passing its own tests.
+The required implementation gate is checked-in Rust/TypeScript fixed-vector
+parity for:
+
+1. claim and acquisition;
+2. renewal under the same generation;
+3. expired generation+1 takeover;
+4. operation start and exact terminal readback;
+5. safety diversion and disable-only projection; and
+6. stale generation, wrong predecessor, response loss, and concurrent-owner
+   negatives.
+
+The client must persist canonical request bytes before its sole POST. Any
+timeout, 408/425/429/5xx, connection interruption, malformed 2xx, or response
+loss transitions to exact GET/readback only. Restart, takeover, or missing
+evidence never regenerates send authority.
+
+### Updated production sequence
+
+The next implementation and evidence order is now:
+
+1. add 0064 prepared/activated ticket and Authority acknowledgement with race,
+   timeout, revocation, rollback, and migration tests;
+2. add the exact Rust wire client and cross-runtime fixed vectors;
+3. add the Access-protected D1-free gateway and bounded workload routes;
+4. add approval-key overlap rotation, emergency revocation, and WORM replay;
+5. independently prove the historical exposed credential is revoked, then
+   provision separate least-privilege replacement identities;
+6. apply Authority 0001/0002 and application 0061-0064 reader-first in isolated
+   staging while every writer gate is false;
+7. prove exact remote catalogs, zero control rows, Service Binding graph,
+   Access policy, secret inventory, and stable deployment readback;
+8. execute one Controller-only eight-shard synthetic campaign with fault
+   injection at every persist/send/readback boundary;
+9. collect Authority receipt-chain evidence into P5 and independently replay
+   all canonical artifacts; and
+10. retain Go/VPS authority until separate traffic, financial, reverse-sync,
+    drain, rollback, and DNS gates pass.
+
+Focused local verification passes Authority type generation and Wrangler
+dry-run, 10 protocol tests, 3 Workerd lifecycle tests, and 8 migration/config
+tests. The complete repository gate passes with exit code 0 in 929.3 seconds;
+existing Rust `dead_code` findings remain warnings only. No remote state was
+queried or mutated, no credential was read, no gate was changed, and no live
+claim, campaign, Container wake, customer traffic, financial authority,
+Go/VPS drain, DNS change, or production cutover occurred. Production remains
+**NO-GO**.

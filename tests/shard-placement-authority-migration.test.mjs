@@ -609,6 +609,123 @@ describe("shard placement Authority migration", () => {
     `).get().count).toBe(0);
   });
 
+  test("records and append-preserves the exact application pre-enable grant", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    const issuance = validIssuance();
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+    const claim = completeOperationFour(database, issuance);
+    const admission = operationFiveAdmission(issuance);
+    const start = operationFiveStart(issuance, claim, admission);
+
+    database.transaction(() => {
+      insertOperationFiveAdmission(database, admission);
+      insertExecutionReceipt(database, start);
+    })();
+    const outbox = operationFiveDispatchOutbox(
+      database,
+      issuance,
+      admission,
+    );
+    insertOperationFiveDispatchOutbox(database, outbox);
+    const grant = operationFiveApplicationGrant(
+      database,
+      issuance,
+      outbox,
+    );
+    insertOperationFiveApplicationGrant(database, grant);
+
+    const stored = database.query(`
+      SELECT *
+      FROM shard_placement_authority_operation_five_application_grants
+      WHERE authorization_id_sha256 = ?
+    `).get(issuance.authorization_id_sha256);
+    const preparedAt = database.query(`
+      SELECT prepared_at
+      FROM shard_placement_authority_operation_five_dispatch_outbox
+      WHERE authorization_id_sha256 = ?
+    `).get(issuance.authorization_id_sha256).prepared_at;
+    expect(stored).toMatchObject({
+      ...grant,
+      contract_version: 1,
+    });
+    expect(stored.recorded_at).toBeGreaterThanOrEqual(preparedAt);
+    expect(() => database.query(`
+      UPDATE shard_placement_authority_operation_five_application_grants
+      SET application_version_id = 'replacement'
+      WHERE authorization_id_sha256 = ?
+    `).run(issuance.authorization_id_sha256)).toThrow(
+      "placement operation-five application grants are immutable",
+    );
+    expect(() => database.query(`
+      DELETE FROM shard_placement_authority_operation_five_application_grants
+      WHERE authorization_id_sha256 = ?
+    `).run(issuance.authorization_id_sha256)).toThrow(
+      "placement operation-five application grants are append-preserved",
+    );
+  });
+
+  test("rejects application grants before outbox and after revocation", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    database.exec(migrationSql);
+    database.exec(executionMigrationSql);
+    const issuance = validIssuance();
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+    const claim = completeOperationFour(database, issuance);
+    const admission = operationFiveAdmission(issuance);
+    const start = operationFiveStart(issuance, claim, admission);
+    database.transaction(() => {
+      insertOperationFiveAdmission(database, admission);
+      insertExecutionReceipt(database, start);
+    })();
+    const outbox = operationFiveDispatchOutbox(
+      database,
+      issuance,
+      admission,
+    );
+    const grant = operationFiveApplicationGrant(
+      database,
+      issuance,
+      outbox,
+    );
+
+    expect(() => insertOperationFiveApplicationGrant(
+      database,
+      grant,
+    )).toThrow();
+    insertOperationFiveDispatchOutbox(database, outbox);
+    database.query(`
+      INSERT INTO shard_placement_authority_revocations (
+        authorization_id_sha256, permit_subject_digest_sha256,
+        reason_code, evidence_sha256, revocation_event_sha256,
+        revoke_credential_id_sha256
+      ) VALUES (?, ?, 'operator_abort', ?, ?, ?)
+    `).run(
+      issuance.authorization_id_sha256,
+      issuance.permit_subject_digest_sha256,
+      "3".repeat(64),
+      "4".repeat(64),
+      "5".repeat(64),
+    );
+    expect(() => insertOperationFiveApplicationGrant(
+      database,
+      grant,
+    )).toThrow(
+      "placement operation-five application grant is not admissible",
+    );
+    expect(database.query(`
+      SELECT COUNT(*) AS count
+      FROM shard_placement_authority_operation_five_application_grants
+    `).get().count).toBe(0);
+  });
+
   test("rolls back operation-5 admission when revocation wins", () => {
     using database = new Database(":memory:");
     database.exec("PRAGMA foreign_keys = ON");
@@ -1025,6 +1142,97 @@ function insertOperationFiveDispatchOutbox(database, outbox) {
     outbox.controller_enabled_version_id,
     outbox.dispatch_request_sha256,
     outbox.outbox_digest_sha256,
+  );
+}
+
+function operationFiveApplicationGrant(database, issuance, outbox) {
+  const databaseNow = database.query(
+    "SELECT unixepoch() AS now",
+  ).get().now;
+  return {
+    authorization_id_sha256: issuance.authorization_id_sha256,
+    receipt_contract:
+      "cinatoken-shard-placement-authority-operation-five-application-grant-receipt-v1",
+    claim_digest_sha256: outbox.claim_digest_sha256,
+    application_ticket_id_sha256:
+      outbox.application_ticket_id_sha256,
+    application_ticket_digest_sha256:
+      outbox.application_ticket_digest_sha256,
+    application_database_identity_sha256:
+      outbox.application_database_identity_sha256,
+    application_activation_digest_sha256:
+      outbox.application_activation_digest_sha256,
+    application_acknowledgement_digest_sha256:
+      outbox.application_acknowledgement_digest_sha256,
+    operation_five_admission_digest_sha256:
+      outbox.operation_five_admission_digest_sha256,
+    operation_five_start_receipt_sha256:
+      outbox.operation_five_start_receipt_sha256,
+    authority_dispatch_outbox_digest_sha256:
+      outbox.outbox_digest_sha256,
+    application_grant_digest_sha256: "3".repeat(64),
+    application_grant_credential_id_sha256: "4".repeat(64),
+    application_grant_request_id_sha256: "5".repeat(64),
+    application_version_id: "application-grant-test-v1",
+    application_response_sha256: "6".repeat(64),
+    application_response_bytes: 3072,
+    application_database_now: databaseNow,
+    application_granted_at: databaseNow,
+    authority_database_identity_sha256:
+      outbox.authority_database_identity_sha256,
+    authority_ledger_identity_sha256: "2".repeat(64),
+    authority_ledger_head_sha256:
+      outbox.authority_ledger_head_sha256,
+    authority_version_id: outbox.authority_version_id,
+    grant_credential_id_sha256: "7".repeat(64),
+    grant_request_id_sha256: "8".repeat(64),
+    command_grant_request_id_sha256: "9".repeat(64),
+    controller_service_name: outbox.controller_service_name,
+    controller_enable_operation_id_sha256:
+      outbox.controller_enable_operation_id_sha256,
+    controller_baseline_version_id:
+      outbox.controller_baseline_version_id,
+    controller_enabled_version_id:
+      outbox.controller_enabled_version_id,
+    receipt_digest_sha256: "a".repeat(64),
+  };
+}
+
+function insertOperationFiveApplicationGrant(database, grant) {
+  database.query(
+    executionRepositorySqlForTest.insertOperationFiveApplicationGrant,
+  ).run(
+    grant.authorization_id_sha256,
+    grant.receipt_contract,
+    grant.claim_digest_sha256,
+    grant.application_ticket_id_sha256,
+    grant.application_ticket_digest_sha256,
+    grant.application_database_identity_sha256,
+    grant.application_activation_digest_sha256,
+    grant.application_acknowledgement_digest_sha256,
+    grant.operation_five_admission_digest_sha256,
+    grant.operation_five_start_receipt_sha256,
+    grant.authority_dispatch_outbox_digest_sha256,
+    grant.application_grant_digest_sha256,
+    grant.application_grant_credential_id_sha256,
+    grant.application_grant_request_id_sha256,
+    grant.application_version_id,
+    grant.application_response_sha256,
+    grant.application_response_bytes,
+    grant.application_database_now,
+    grant.application_granted_at,
+    grant.authority_database_identity_sha256,
+    grant.authority_ledger_identity_sha256,
+    grant.authority_ledger_head_sha256,
+    grant.authority_version_id,
+    grant.grant_credential_id_sha256,
+    grant.grant_request_id_sha256,
+    grant.command_grant_request_id_sha256,
+    grant.controller_service_name,
+    grant.controller_enable_operation_id_sha256,
+    grant.controller_baseline_version_id,
+    grant.controller_enabled_version_id,
+    grant.receipt_digest_sha256,
   );
 }
 

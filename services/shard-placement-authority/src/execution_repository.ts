@@ -160,6 +160,41 @@ const OPERATION_FIVE_DISPATCH_OUTBOX_COLUMNS = [
   "outbox_state",
   "prepared_at",
 ] as const;
+const OPERATION_FIVE_APPLICATION_GRANT_COLUMNS = [
+  "authorization_id_sha256",
+  "contract_version",
+  "receipt_contract",
+  "claim_digest_sha256",
+  "application_ticket_id_sha256",
+  "application_ticket_digest_sha256",
+  "application_database_identity_sha256",
+  "application_activation_digest_sha256",
+  "application_acknowledgement_digest_sha256",
+  "operation_five_admission_digest_sha256",
+  "operation_five_start_receipt_sha256",
+  "authority_dispatch_outbox_digest_sha256",
+  "application_grant_digest_sha256",
+  "application_grant_credential_id_sha256",
+  "application_grant_request_id_sha256",
+  "application_version_id",
+  "application_response_sha256",
+  "application_response_bytes",
+  "application_database_now",
+  "application_granted_at",
+  "authority_database_identity_sha256",
+  "authority_ledger_identity_sha256",
+  "authority_ledger_head_sha256",
+  "authority_version_id",
+  "grant_credential_id_sha256",
+  "grant_request_id_sha256",
+  "command_grant_request_id_sha256",
+  "controller_service_name",
+  "controller_enable_operation_id_sha256",
+  "controller_baseline_version_id",
+  "controller_enabled_version_id",
+  "receipt_digest_sha256",
+  "recorded_at",
+] as const;
 
 const SCHEMA_PROBE_SQL = `
 SELECT
@@ -212,7 +247,17 @@ SELECT
       )
       ORDER BY cid
     )
-  ) AS operation_five_dispatch_outbox_columns
+  ) AS operation_five_dispatch_outbox_columns,
+  (
+    SELECT group_concat(name, ',')
+    FROM (
+      SELECT name
+      FROM pragma_table_info(
+        'shard_placement_authority_operation_five_application_grants'
+      )
+      ORDER BY cid
+    )
+  ) AS operation_five_application_grant_columns
 `.trim();
 
 const INSERT_CLAIM_SQL = `
@@ -342,12 +387,43 @@ INSERT INTO shard_placement_authority_operation_five_dispatch_outbox (
 )
 `.trim();
 
+const INSERT_OPERATION_FIVE_APPLICATION_GRANT_SQL = `
+INSERT INTO shard_placement_authority_operation_five_application_grants (
+  authorization_id_sha256, contract_version, receipt_contract,
+  claim_digest_sha256, application_ticket_id_sha256,
+  application_ticket_digest_sha256,
+  application_database_identity_sha256,
+  application_activation_digest_sha256,
+  application_acknowledgement_digest_sha256,
+  operation_five_admission_digest_sha256,
+  operation_five_start_receipt_sha256,
+  authority_dispatch_outbox_digest_sha256,
+  application_grant_digest_sha256,
+  application_grant_credential_id_sha256,
+  application_grant_request_id_sha256, application_version_id,
+  application_response_sha256, application_response_bytes,
+  application_database_now, application_granted_at,
+  authority_database_identity_sha256,
+  authority_ledger_identity_sha256, authority_ledger_head_sha256,
+  authority_version_id, grant_credential_id_sha256,
+  grant_request_id_sha256, command_grant_request_id_sha256,
+  controller_service_name, controller_enable_operation_id_sha256,
+  controller_baseline_version_id, controller_enabled_version_id,
+  receipt_digest_sha256
+) VALUES (
+  ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+  ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+  ?26, ?27, ?28, ?29, ?30, ?31
+)
+`.trim();
+
 interface SchemaProbeRow {
   claim_columns: string;
   operation_columns: string;
   receipt_columns: string;
   operation_five_admission_columns: string;
   operation_five_dispatch_outbox_columns: string;
+  operation_five_application_grant_columns: string;
 }
 
 export interface ExecutionClaimRow {
@@ -569,6 +645,77 @@ export interface OperationFiveDispatchOutboxRow {
   outbox_digest_sha256: string;
   outbox_state: "prepared";
   prepared_at: number;
+}
+
+export interface OperationFiveApplicationGrantReceipt {
+  authorizationIdSha256: string;
+  receiptContract:
+    "cinatoken-shard-placement-authority-operation-five-application-grant-receipt-v1";
+  claimDigestSha256: string;
+  applicationTicketIdSha256: string;
+  applicationTicketDigestSha256: string;
+  applicationDatabaseIdentitySha256: string;
+  applicationActivationDigestSha256: string;
+  applicationAcknowledgementDigestSha256: string;
+  operationFiveAdmissionDigestSha256: string;
+  operationFiveStartReceiptSha256: string;
+  authorityDispatchOutboxDigestSha256: string;
+  applicationGrantDigestSha256: string;
+  applicationGrantCredentialIdSha256: string;
+  applicationGrantRequestIdSha256: string;
+  applicationVersionId: string;
+  applicationResponseSha256: string;
+  applicationResponseBytes: number;
+  applicationDatabaseNow: number;
+  applicationGrantedAt: number;
+  authorityDatabaseIdentitySha256: string;
+  authorityLedgerIdentitySha256: string;
+  authorityLedgerHeadSha256: string;
+  authorityVersionId: string;
+  grantCredentialIdSha256: string;
+  grantRequestIdSha256: string;
+  commandGrantRequestIdSha256: string;
+  controllerServiceName: string;
+  controllerEnableOperationIdSha256: string;
+  controllerBaselineVersionId: string;
+  controllerEnabledVersionId: string;
+  receiptDigestSha256: string;
+}
+
+export interface OperationFiveApplicationGrantReceiptRow {
+  authorization_id_sha256: string;
+  contract_version: number;
+  receipt_contract: string;
+  claim_digest_sha256: string;
+  application_ticket_id_sha256: string;
+  application_ticket_digest_sha256: string;
+  application_database_identity_sha256: string;
+  application_activation_digest_sha256: string;
+  application_acknowledgement_digest_sha256: string;
+  operation_five_admission_digest_sha256: string;
+  operation_five_start_receipt_sha256: string;
+  authority_dispatch_outbox_digest_sha256: string;
+  application_grant_digest_sha256: string;
+  application_grant_credential_id_sha256: string;
+  application_grant_request_id_sha256: string;
+  application_version_id: string;
+  application_response_sha256: string;
+  application_response_bytes: number;
+  application_database_now: number;
+  application_granted_at: number;
+  authority_database_identity_sha256: string;
+  authority_ledger_identity_sha256: string;
+  authority_ledger_head_sha256: string;
+  authority_version_id: string;
+  grant_credential_id_sha256: string;
+  grant_request_id_sha256: string;
+  command_grant_request_id_sha256: string;
+  controller_service_name: string;
+  controller_enable_operation_id_sha256: string;
+  controller_baseline_version_id: string;
+  controller_enabled_version_id: string;
+  receipt_digest_sha256: string;
+  recorded_at: number;
 }
 
 export async function createExecutionClaim(
@@ -1041,6 +1188,112 @@ export async function createOperationFiveDispatchOutbox(
   };
 }
 
+export async function readExactOperationFiveApplicationGrant(
+  database: D1Database,
+  authorizationIdSha256: string,
+  claimDigestSha256: string,
+): Promise<OperationFiveApplicationGrantReceiptRow | null> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  const row = await readOperationFiveApplicationGrant(
+    session,
+    authorizationIdSha256,
+  );
+  if (row !== null && row.claim_digest_sha256 !== claimDigestSha256) {
+    throw new RepositoryConflictError(
+      "operation_five_application_grant_conflict",
+    );
+  }
+  return row;
+}
+
+export async function createOperationFiveApplicationGrant(
+  database: D1Database,
+  receipt: OperationFiveApplicationGrantReceipt,
+): Promise<{
+  classification: "recorded" | "exact_replay";
+  receipt: OperationFiveApplicationGrantReceiptRow;
+  claim: ExecutionClaimRow;
+}> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  let writeSucceeded = false;
+  try {
+    const result = await session
+      .prepare(INSERT_OPERATION_FIVE_APPLICATION_GRANT_SQL)
+      .bind(
+        receipt.authorizationIdSha256,
+        receipt.receiptContract,
+        receipt.claimDigestSha256,
+        receipt.applicationTicketIdSha256,
+        receipt.applicationTicketDigestSha256,
+        receipt.applicationDatabaseIdentitySha256,
+        receipt.applicationActivationDigestSha256,
+        receipt.applicationAcknowledgementDigestSha256,
+        receipt.operationFiveAdmissionDigestSha256,
+        receipt.operationFiveStartReceiptSha256,
+        receipt.authorityDispatchOutboxDigestSha256,
+        receipt.applicationGrantDigestSha256,
+        receipt.applicationGrantCredentialIdSha256,
+        receipt.applicationGrantRequestIdSha256,
+        receipt.applicationVersionId,
+        receipt.applicationResponseSha256,
+        receipt.applicationResponseBytes,
+        receipt.applicationDatabaseNow,
+        receipt.applicationGrantedAt,
+        receipt.authorityDatabaseIdentitySha256,
+        receipt.authorityLedgerIdentitySha256,
+        receipt.authorityLedgerHeadSha256,
+        receipt.authorityVersionId,
+        receipt.grantCredentialIdSha256,
+        receipt.grantRequestIdSha256,
+        receipt.commandGrantRequestIdSha256,
+        receipt.controllerServiceName,
+        receipt.controllerEnableOperationIdSha256,
+        receipt.controllerBaselineVersionId,
+        receipt.controllerEnabledVersionId,
+        receipt.receiptDigestSha256,
+      )
+      .run();
+    writeSucceeded =
+      result.success === true
+      && (result.meta?.changes ?? 0) > 0;
+  } catch {
+    writeSucceeded = false;
+  }
+  const persisted = await readOperationFiveApplicationGrant(
+    session,
+    receipt.authorizationIdSha256,
+  );
+  if (
+    persisted === null
+    || !matchesOperationFiveApplicationGrant(persisted, receipt)
+  ) {
+    if (writeSucceeded) throw new RepositoryUnavailableError(true);
+    throw new RepositoryConflictError(
+      "operation_five_application_grant_conflict",
+    );
+  }
+  const snapshot = await readSnapshotByDigest(
+    session,
+    receipt.authorizationIdSha256,
+    receipt.claimDigestSha256,
+  );
+  if (
+    snapshot.claim.ledger_version !== 4
+    || snapshot.claim.ledger_head_sha256
+      !== receipt.operationFiveStartReceiptSha256
+    || snapshot.claim.inflight_operation_ordinal !== 5
+  ) {
+    throw new RepositoryUnavailableError(true);
+  }
+  return {
+    classification: writeSucceeded ? "recorded" : "exact_replay",
+    receipt: persisted,
+    claim: snapshot.claim,
+  };
+}
+
 async function requireExecutionSchema(
   session: D1DatabaseSession,
 ): Promise<void> {
@@ -1061,6 +1314,8 @@ async function requireExecutionSchema(
       !== OPERATION_FIVE_ADMISSION_COLUMNS.join(",")
     || row.operation_five_dispatch_outbox_columns
       !== OPERATION_FIVE_DISPATCH_OUTBOX_COLUMNS.join(",")
+    || row.operation_five_application_grant_columns
+      !== OPERATION_FIVE_APPLICATION_GRANT_COLUMNS.join(",")
   ) {
     throw new RepositoryUnavailableError(false);
   }
@@ -1099,6 +1354,25 @@ async function readOperationFiveDispatchOutbox(
       )
       .bind(authorizationIdSha256)
       .first<OperationFiveDispatchOutboxRow>();
+  } catch {
+    throw new RepositoryUnavailableError(true);
+  }
+}
+
+async function readOperationFiveApplicationGrant(
+  session: D1DatabaseSession,
+  authorizationIdSha256: string,
+): Promise<OperationFiveApplicationGrantReceiptRow | null> {
+  try {
+    return await session
+      .prepare(
+        `SELECT ${OPERATION_FIVE_APPLICATION_GRANT_COLUMNS.join(", ")}
+         FROM shard_placement_authority_operation_five_application_grants
+         WHERE authorization_id_sha256 = ?1
+         LIMIT 1`,
+      )
+      .bind(authorizationIdSha256)
+      .first<OperationFiveApplicationGrantReceiptRow>();
   } catch {
     throw new RepositoryUnavailableError(true);
   }
@@ -1462,6 +1736,69 @@ function matchesOperationFiveDispatchOutbox(
   );
 }
 
+function matchesOperationFiveApplicationGrant(
+  row: OperationFiveApplicationGrantReceiptRow,
+  receipt: OperationFiveApplicationGrantReceipt,
+): boolean {
+  return (
+    row.authorization_id_sha256 === receipt.authorizationIdSha256
+    && row.contract_version === 1
+    && row.receipt_contract === receipt.receiptContract
+    && row.claim_digest_sha256 === receipt.claimDigestSha256
+    && row.application_ticket_id_sha256
+      === receipt.applicationTicketIdSha256
+    && row.application_ticket_digest_sha256
+      === receipt.applicationTicketDigestSha256
+    && row.application_database_identity_sha256
+      === receipt.applicationDatabaseIdentitySha256
+    && row.application_activation_digest_sha256
+      === receipt.applicationActivationDigestSha256
+    && row.application_acknowledgement_digest_sha256
+      === receipt.applicationAcknowledgementDigestSha256
+    && row.operation_five_admission_digest_sha256
+      === receipt.operationFiveAdmissionDigestSha256
+    && row.operation_five_start_receipt_sha256
+      === receipt.operationFiveStartReceiptSha256
+    && row.authority_dispatch_outbox_digest_sha256
+      === receipt.authorityDispatchOutboxDigestSha256
+    && row.application_grant_digest_sha256
+      === receipt.applicationGrantDigestSha256
+    && row.application_grant_credential_id_sha256
+      === receipt.applicationGrantCredentialIdSha256
+    && row.application_grant_request_id_sha256
+      === receipt.applicationGrantRequestIdSha256
+    && row.application_version_id === receipt.applicationVersionId
+    && row.application_response_sha256
+      === receipt.applicationResponseSha256
+    && row.application_response_bytes
+      === receipt.applicationResponseBytes
+    && row.application_database_now === receipt.applicationDatabaseNow
+    && row.application_granted_at === receipt.applicationGrantedAt
+    && row.authority_database_identity_sha256
+      === receipt.authorityDatabaseIdentitySha256
+    && row.authority_ledger_identity_sha256
+      === receipt.authorityLedgerIdentitySha256
+    && row.authority_ledger_head_sha256
+      === receipt.authorityLedgerHeadSha256
+    && row.authority_version_id === receipt.authorityVersionId
+    && row.grant_credential_id_sha256
+      === receipt.grantCredentialIdSha256
+    && row.grant_request_id_sha256 === receipt.grantRequestIdSha256
+    && row.command_grant_request_id_sha256
+      === receipt.commandGrantRequestIdSha256
+    && row.controller_service_name === receipt.controllerServiceName
+    && row.controller_enable_operation_id_sha256
+      === receipt.controllerEnableOperationIdSha256
+    && row.controller_baseline_version_id
+      === receipt.controllerBaselineVersionId
+    && row.controller_enabled_version_id
+      === receipt.controllerEnabledVersionId
+    && row.receipt_digest_sha256 === receipt.receiptDigestSha256
+    && Number.isSafeInteger(row.recorded_at)
+    && row.recorded_at > 0
+  );
+}
+
 export const executionRepositorySqlForTest = {
   insertClaim: INSERT_CLAIM_SQL,
   insertOperation: INSERT_OPERATION_SQL,
@@ -1470,4 +1807,6 @@ export const executionRepositorySqlForTest = {
     INSERT_OPERATION_FIVE_ADMISSION_SQL,
   insertOperationFiveDispatchOutbox:
     INSERT_OPERATION_FIVE_DISPATCH_OUTBOX_SQL,
+  insertOperationFiveApplicationGrant:
+    INSERT_OPERATION_FIVE_APPLICATION_GRANT_SQL,
 } as const;

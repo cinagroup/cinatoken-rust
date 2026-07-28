@@ -23578,3 +23578,110 @@ traffic safety, rollback, reverse sync, drain, or DNS approval.
 
 Go/VPS remains authoritative. No Cloudflare production mutation or traffic
 cutover is admitted, and production remains **NO-GO**.
+
+## 22.324 Application Pre-Enable Grant And Authority Receipt (2026-07-29)
+
+This checkpoint implements the create-only Application D1 pre-enable grant
+specified by 22.323 and records its exact readback in Authority D1. It stops
+before a dispatch claim or Controller call. The new grant is the final
+Application-owned pre-enable linearization point, not a Controller send right.
+
+### Two immutable records
+
+Application migration
+`0065_relay_container_shard_placement_pre_enable_grants.sql` adds one
+append-only grant table. The private Application route is:
+
+`POST /internal/v1/shard-placement/pre-enable-grants/:ticket`
+
+The canonical request binds the exact authorization, 0064 ticket and
+activation/acknowledgement, Authority claim, operation-5 admission/start,
+prepared outbox, both control-database identities, Authority ledger identity
+and head, Authority Worker version, frozen Controller service and versions,
+enable-operation ID, and the independent Application grant credential and
+request identities. The grant digest uses the same length-prefixed domain
+encoding in Rust and TypeScript.
+
+Application D1 admits a new row only when:
+
+1. the ticket, activation, acknowledgement, authorization, and campaign still
+   form the exact immutable tuple;
+2. the Authority operation-5 head differs from the operation-4
+   acknowledgement head and equals the admitted operation-5 start;
+3. the campaign is unsealed;
+4. D1 `unixepoch()` is before execution, permit, and campaign expiry; and
+5. no conflicting grant already exists.
+
+An exact existing row is replayed without mutation. Divergent replay,
+pre-acknowledgement creation, a seal race, expiry, or any identity drift fails
+closed. The grant does not dispatch to the Controller.
+
+Authority migration 0002 now also contains the immutable
+`shard_placement_authority_operation_five_application_grants` receipt table.
+The route:
+
+`POST /internal/v1/shard-placement/execution-claims/:authorization/authorize-enable-dispatch`
+
+reads the exact claim and prepared outbox, returns only an exact stored replay
+when one exists, obtains the Application grant through the private Service
+Binding, re-reads the Authority fence, and then records the exact Application
+response. Authority D1 independently requires the operation-5 claim to remain
+generation-1, running, unrevoked, unexpired, owner-fenced, and at the exact
+sequence-4 head with the same prepared outbox and Controller identities.
+
+### Trust and response-loss rules
+
+The Authority route has an independent inbound `grant` HMAC role with
+current/previous overlap. Its outbound Application call uses the independent
+`pre_enable_grant` role, POST method, exact path, and canonical body SHA-256.
+Application activation-read, ACK-read, and grant credentials must not share
+key IDs, credential fingerprints, or secrets. Authority inbound roles apply
+the same isolation across read, issue, revoke, claim, activate, enable,
+dispatch, grant, receipt, and recovery.
+
+The Application client allows only 200 exact replay or 201 create, bounded
+strict JSON, no redirects, no content encoding, and `Cache-Control: no-store`.
+A timeout remains ambiguous and may retry only the exact grant request with
+the same deterministic request identity. The Authority receipt may classify
+an exact existing grant but may never synthesize a new identity.
+
+The following gates remain false in tracked local and staging configuration:
+
+- `RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED`;
+- `SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_WRITE_ENABLED`; and
+- `SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_RECEIPT_WRITE_ENABLED`.
+
+Production still has no placement Authority configuration or grant secrets.
+
+### Remaining send boundary
+
+Grant existence alone is insufficient to call the Controller. A later seal,
+revocation, expiry, Worker-version change, lease takeover, or claim-head
+change invalidates future send authority even when the immutable grant remains
+as evidence. The next P0 increment must add:
+
+1. a durable create-only Authority dispatch claim that grants one owner one
+   send attempt against the exact grant receipt;
+2. an independently scoped Controller Service Binding client with the exact
+   frozen operation ID and versions;
+3. persist-before-I/O attempt evidence and status-only recovery for timeout,
+   disconnect, lost response, isolate death, or Worker rollout;
+4. exact Controller status readback that never mutates and never retries
+   enable;
+5. operation-5 terminal projection only after exact enabled readback;
+6. automatic operation-14 disable diversion for revoked, sealed, expired,
+   divergent, or unknown state; and
+7. operations 6-13 ordered shard proofs plus reserved operation-14 ledger,
+   credential, deadline, and Cloudflare quota capacity.
+
+The cross-D1 interval is narrowed but not made atomic. Deployed campaigns must
+still force seal and revocation immediately before, during, and after grant,
+receipt, dispatch claim, send, response loss, and status readback.
+
+Application D1 now reports 65 migrations, 76 required tables, 1056 checked
+incremental columns, and 110 key indexes. Local schema, migration, HMAC,
+cross-runtime digest, exact replay, Authority unit/runtime, generated-type,
+dry-run, and P5/ring-transition contract tests pass. No credential was read,
+no remote request was made, and no D1 migration, gate, Controller, Container,
+traffic, billing, DNS, or Go/VPS state was changed. Go/VPS remains
+authoritative and production remains **NO-GO**.

@@ -173,7 +173,7 @@ describe("container scheduler Wrangler foundation", () => {
       "bun test tests/container-shard-routing-contract.test.mjs tests/container-shard-placement-attestation-contract.test.mjs && bun tools/verify_container_shard_routing_contract.mjs --self-test --json",
     );
     expect(packageJson.scripts["check:container-scheduler-config"]).toBe(
-      'bun test --path-ignore-patterns="target/**" tests/container-scheduler-config.test.mjs tests/container-shard-placement-ticket-activation-contract.test.mjs',
+      'bun test --path-ignore-patterns="target/**" tests/container-scheduler-config.test.mjs tests/container-shard-placement-ticket-activation-contract.test.mjs tests/container-shard-placement-execution-ticket-contract.test.mjs',
     );
     expect(packageJson.scripts.check).toContain(
       "bun run check:container-shard-routing-contract",

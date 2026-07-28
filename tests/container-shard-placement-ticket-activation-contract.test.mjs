@@ -336,6 +336,18 @@ describe("application placement execution ticket activation contract", () => {
         config.vars
           .SHARD_PLACEMENT_APPLICATION_ACTIVATION_READ_HMAC_CURRENT_SECRET,
       ).toBeUndefined();
+      expect(
+        config.vars
+          .SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_WRITE_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars
+          .SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_RECEIPT_WRITE_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars
+          .SHARD_PLACEMENT_APPLICATION_PRE_ENABLE_GRANT_HMAC_CURRENT_SECRET,
+      ).toBeUndefined();
     }
     for (const scope of [rootConfig, rootConfig.env.staging]) {
       expect(
@@ -349,9 +361,14 @@ describe("application placement execution ticket activation contract", () => {
         scope.vars
           .RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_AUTHORITY_ACK_WRITE_ENABLED,
       ).toBe("false");
+      expect(
+        scope.vars
+          .RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED,
+      ).toBe("false");
       for (const prefix of [
         "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC",
         "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC",
+        "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC",
       ]) {
         expect(scope.vars[`${prefix}_PREVIOUS_KID`]).toBe("");
         expect(
@@ -365,10 +382,13 @@ describe("application placement execution ticket activation contract", () => {
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_AUTHORITY_ACK_WRITE_ENABLED",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_CURRENT_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_PREVIOUS_SECRET",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC_CURRENT_SECRET",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC_PREVIOUS_SECRET",
     ]) {
       expect(rootConfig.env.production.vars[name]).toBeUndefined();
     }
@@ -376,7 +396,7 @@ describe("application placement execution ticket activation contract", () => {
 
   test("is included in the aggregate scheduler/config gate", () => {
     expect(packageJson.scripts["check:container-scheduler-config"]).toBe(
-      'bun test --path-ignore-patterns="target/**" tests/container-scheduler-config.test.mjs tests/container-shard-placement-ticket-activation-contract.test.mjs',
+      'bun test --path-ignore-patterns="target/**" tests/container-scheduler-config.test.mjs tests/container-shard-placement-ticket-activation-contract.test.mjs tests/container-shard-placement-execution-ticket-contract.test.mjs',
     );
     expect(packageJson.scripts.check).toContain(
       "bun run check:container-scheduler-config",

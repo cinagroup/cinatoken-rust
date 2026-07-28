@@ -114,6 +114,7 @@ export type HmacRole =
   | "activate"
   | "enable"
   | "dispatch"
+  | "grant"
   | "receipt"
   | "recovery";
 export type ApprovalRole = (typeof APPROVAL_ROLES)[number];
@@ -181,6 +182,12 @@ export interface ShardPlacementAuthoritySecurityEnv {
   SHARD_PLACEMENT_DISPATCH_HMAC_PREVIOUS_KID: string;
   SHARD_PLACEMENT_DISPATCH_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
   SHARD_PLACEMENT_DISPATCH_HMAC_PREVIOUS_SECRET?: string;
+  SHARD_PLACEMENT_GRANT_HMAC_CURRENT_KID: string;
+  SHARD_PLACEMENT_GRANT_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_GRANT_HMAC_CURRENT_SECRET?: string;
+  SHARD_PLACEMENT_GRANT_HMAC_PREVIOUS_KID: string;
+  SHARD_PLACEMENT_GRANT_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256: string;
+  SHARD_PLACEMENT_GRANT_HMAC_PREVIOUS_SECRET?: string;
   SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_KID: string;
   SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_CREDENTIAL_ID_SHA256: string;
   SHARD_PLACEMENT_RECEIPT_HMAC_CURRENT_SECRET?: string;
@@ -975,6 +982,8 @@ function selectHmacKey(
                 ? "SHARD_PLACEMENT_ENABLE_HMAC"
                 : role === "dispatch"
                   ? "SHARD_PLACEMENT_DISPATCH_HMAC"
+                  : role === "grant"
+                    ? "SHARD_PLACEMENT_GRANT_HMAC"
                   : role === "receipt"
                     ? "SHARD_PLACEMENT_RECEIPT_HMAC"
                     : "SHARD_PLACEMENT_RECOVERY_HMAC";

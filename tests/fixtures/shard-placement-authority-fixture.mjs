@@ -67,6 +67,12 @@ export const SHARD_PLACEMENT_AUTHORITY_HMAC = Object.freeze({
     secret:
       "dispatch-hmac-test-secret-0000000000000000000000000000",
   }),
+  grant: Object.freeze({
+    keyId: "grant-hmac-test-v1",
+    credentialIdSha256: "3".repeat(64),
+    secret:
+      "grant-hmac-test-secret-0000000000000000000000000000000",
+  }),
   receipt: Object.freeze({
     keyId: "receipt-hmac-test-v1",
     credentialIdSha256: "e".repeat(64),
@@ -103,6 +109,10 @@ export function shardPlacementAuthorityEnv(overrides = {}) {
     SHARD_PLACEMENT_AUTHORITY_ENABLE_INTENT_WRITE_ENABLED: "false",
     SHARD_PLACEMENT_AUTHORITY_PRE_DISPATCH_READ_ENABLED: "false",
     SHARD_PLACEMENT_AUTHORITY_DISPATCH_OUTBOX_WRITE_ENABLED: "false",
+    SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_WRITE_ENABLED:
+      "false",
+    SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_RECEIPT_WRITE_ENABLED:
+      "false",
     SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256:
       "6".repeat(64),
     SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256:
@@ -158,6 +168,10 @@ export function shardPlacementAuthorityEnv(overrides = {}) {
     ...hmacEnvironment(
       "DISPATCH",
       SHARD_PLACEMENT_AUTHORITY_HMAC.dispatch,
+    ),
+    ...hmacEnvironment(
+      "GRANT",
+      SHARD_PLACEMENT_AUTHORITY_HMAC.grant,
     ),
     ...hmacEnvironment(
       "RECEIPT",

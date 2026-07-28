@@ -275,6 +275,7 @@ REQUIRED_TABLES = [
     "relay_container_shard_placement_execution_tickets",
     "relay_container_shard_placement_execution_ticket_activations",
     "relay_container_shard_placement_execution_ticket_authority_acks",
+    "relay_container_shard_placement_pre_enable_grants",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1419,6 +1420,32 @@ REQUIRED_COLUMNS = {
         "acknowledged_by_admin_id",
         "acknowledged_at",
     },
+    "relay_container_shard_placement_pre_enable_grants": {
+        "ticket_id_sha256",
+        "contract_version",
+        "grant_contract",
+        "authorization_id_sha256",
+        "application_ticket_digest_sha256",
+        "application_database_identity_sha256",
+        "authority_claim_digest_sha256",
+        "application_activation_digest_sha256",
+        "application_acknowledgement_digest_sha256",
+        "operation_five_admission_digest_sha256",
+        "operation_five_start_receipt_sha256",
+        "authority_dispatch_outbox_digest_sha256",
+        "authority_database_identity_sha256",
+        "authority_ledger_identity_sha256",
+        "authority_ledger_head_sha256",
+        "authority_version_id",
+        "controller_service_name",
+        "controller_enable_operation_id_sha256",
+        "controller_baseline_version_id",
+        "controller_enabled_version_id",
+        "application_grant_credential_id_sha256",
+        "application_grant_request_id_sha256",
+        "grant_digest_sha256",
+        "granted_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -1612,6 +1639,9 @@ REQUIRED_INDEXES = {
     },
     "relay_container_shard_placement_execution_ticket_authority_acks": {
         "idx_relay_container_shard_placement_execution_ticket_authority_acks_claim": False,
+    },
+    "relay_container_shard_placement_pre_enable_grants": {
+        "idx_relay_container_shard_placement_pre_enable_grants_claim": False,
     },
 }
 
@@ -1951,6 +1981,8 @@ def main() -> int:
             " + 0061 immutable shard placement attestations"
             " + 0062 insertion-ordered placement events"
             " + 0063 one-time staging placement authorization"
+            " + 0064 execution-ticket activation/ACK handshake"
+            " + 0065 immutable pre-enable application grants"
         )
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
@@ -19212,6 +19244,15 @@ def verify_relay_container_ring_transition_claim_rollout(
         ),
         None,
     )
+    placement_pre_enable_grant_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0065_relay_container_shard_placement_pre_enable_grants.sql"
+        ),
+        None,
+    )
     if (
         claim_path is None
         or abort_path is None
@@ -19220,9 +19261,10 @@ def verify_relay_container_ring_transition_claim_rollout(
         or placement_event_path is None
         or placement_authorization_path is None
         or placement_execution_ticket_path is None
+        or placement_pre_enable_grant_path is None
     ):
         raise SystemExit(
-            "0058..0064 ring transition and placement migrations not found"
+            "0058..0065 ring transition and placement migrations not found"
         )
     claim_index = schema_paths.index(claim_path)
     if claim_index == 0 or schema_paths[claim_index - 1] != abort_path:
@@ -19234,7 +19276,7 @@ def verify_relay_container_ring_transition_claim_rollout(
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
     placement_event_index = schema_paths.index(placement_event_path)
-    if placement_event_index != len(schema_paths) - 3:
+    if placement_event_index != len(schema_paths) - 4:
         raise SystemExit("0062 shard placement events must immediately precede 0063")
     if (
         placement_event_index == 0
@@ -19242,20 +19284,32 @@ def verify_relay_container_ring_transition_claim_rollout(
     ):
         raise SystemExit("0062 shard placement events must follow 0061")
     placement_authorization_index = schema_paths.index(placement_authorization_path)
-    if placement_authorization_index != len(schema_paths) - 2:
+    if placement_authorization_index != len(schema_paths) - 3:
         raise SystemExit("0063 shard placement authorization must immediately precede 0064")
     if schema_paths[placement_authorization_index - 1] != placement_event_path:
         raise SystemExit("0063 shard placement authorization must follow 0062")
     placement_execution_ticket_index = schema_paths.index(
         placement_execution_ticket_path
     )
-    if placement_execution_ticket_index != len(schema_paths) - 1:
-        raise SystemExit("0064 shard placement execution ticket must be the D1 head")
+    if placement_execution_ticket_index != len(schema_paths) - 2:
+        raise SystemExit(
+            "0064 shard placement execution ticket must immediately precede 0065"
+        )
     if (
         schema_paths[placement_execution_ticket_index - 1]
         != placement_authorization_path
     ):
         raise SystemExit("0064 shard placement execution ticket must follow 0063")
+    placement_pre_enable_grant_index = schema_paths.index(
+        placement_pre_enable_grant_path
+    )
+    if placement_pre_enable_grant_index != len(schema_paths) - 1:
+        raise SystemExit("0065 shard placement pre-enable grant must be the D1 head")
+    if (
+        schema_paths[placement_pre_enable_grant_index - 1]
+        != placement_execution_ticket_path
+    ):
+        raise SystemExit("0065 shard placement pre-enable grant must follow 0064")
 
     claim_sql = claim_path.read_text(encoding="utf-8")
     if "if not exists" in claim_sql.lower():
@@ -19615,21 +19669,31 @@ def verify_relay_container_shard_placement_attestation_rollout(
         ),
         None,
     )
+    placement_pre_enable_grant_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0065_relay_container_shard_placement_pre_enable_grants.sql"
+        ),
+        None,
+    )
     if (
         placement_path is None
         or authority_path is None
         or placement_event_path is None
         or placement_authorization_path is None
         or placement_execution_ticket_path is None
+        or placement_pre_enable_grant_path is None
     ):
         raise SystemExit(
-            "0060/0061/0062/0063/0064 shard placement rollout migrations not found"
+            "0060/0061/0062/0063/0064/0065 shard placement rollout migrations not found"
         )
     placement_index = schema_paths.index(placement_path)
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
     placement_event_index = schema_paths.index(placement_event_path)
-    if placement_event_index != len(schema_paths) - 3:
+    if placement_event_index != len(schema_paths) - 4:
         raise SystemExit("0062 shard placement events must immediately precede 0063")
     if (
         placement_event_index == 0
@@ -19637,20 +19701,32 @@ def verify_relay_container_shard_placement_attestation_rollout(
     ):
         raise SystemExit("0062 shard placement events must follow 0061")
     placement_authorization_index = schema_paths.index(placement_authorization_path)
-    if placement_authorization_index != len(schema_paths) - 2:
+    if placement_authorization_index != len(schema_paths) - 3:
         raise SystemExit("0063 shard placement authorization must immediately precede 0064")
     if schema_paths[placement_authorization_index - 1] != placement_event_path:
         raise SystemExit("0063 shard placement authorization must follow 0062")
     placement_execution_ticket_index = schema_paths.index(
         placement_execution_ticket_path
     )
-    if placement_execution_ticket_index != len(schema_paths) - 1:
-        raise SystemExit("0064 shard placement execution ticket must be the D1 head")
+    if placement_execution_ticket_index != len(schema_paths) - 2:
+        raise SystemExit(
+            "0064 shard placement execution ticket must immediately precede 0065"
+        )
     if (
         schema_paths[placement_execution_ticket_index - 1]
         != placement_authorization_path
     ):
         raise SystemExit("0064 shard placement execution ticket must follow 0063")
+    placement_pre_enable_grant_index = schema_paths.index(
+        placement_pre_enable_grant_path
+    )
+    if placement_pre_enable_grant_index != len(schema_paths) - 1:
+        raise SystemExit("0065 shard placement pre-enable grant must be the D1 head")
+    if (
+        schema_paths[placement_pre_enable_grant_index - 1]
+        != placement_execution_ticket_path
+    ):
+        raise SystemExit("0065 shard placement pre-enable grant must follow 0064")
 
     placement_sql = placement_path.read_text(encoding="utf-8")
     if "if not exists" in placement_sql.lower():
@@ -19748,6 +19824,30 @@ def verify_relay_container_shard_placement_attestation_rollout(
         if fragment not in placement_execution_ticket_sql:
             raise SystemExit(
                 f"0064 shard placement execution ticket rollout missing: {fragment}"
+            )
+
+    placement_pre_enable_grant_sql = (
+        placement_pre_enable_grant_path.read_text(encoding="utf-8")
+    )
+    if "if not exists" in placement_pre_enable_grant_sql.lower():
+        raise SystemExit(
+            "0065 critical pre-enable grant objects must fail duplicate DDL"
+        )
+    for fragment in (
+        "CREATE TABLE relay_container_shard_placement_pre_enable_grants",
+        "grant_contract =",
+        "cinatoken-relay-container-shard-placement-pre-enable-grant-v1",
+        "authority_dispatch_outbox_digest_sha256 TEXT NOT NULL UNIQUE",
+        "application_grant_request_id_sha256 TEXT NOT NULL UNIQUE",
+        "idx_relay_container_shard_placement_pre_enable_grants_claim",
+        "relay_container_shard_placement_pre_enable_grant_insert_guard",
+        "shard placement pre-enable grant is not admissible",
+        "relay_container_shard_placement_pre_enable_grant_update_guard",
+        "relay_container_shard_placement_pre_enable_grant_delete_guard",
+    ):
+        if fragment not in placement_pre_enable_grant_sql:
+            raise SystemExit(
+                f"0065 shard placement pre-enable grant rollout missing: {fragment}"
             )
 
 

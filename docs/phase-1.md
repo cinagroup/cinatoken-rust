@@ -4214,3 +4214,31 @@ No production Authority configuration, grant, sender, Controller mutation,
 Container wake, remote evidence, traffic change, billing authority, reverse
 sync, drain, or DNS change is established by this increment. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Application Pre-Enable Grant
+
+Phase 1 now includes the next default-off operation-5 boundary. Application
+migration 0065 creates one immutable pre-enable grant only while the exact
+0064 ticket, activation, acknowledgement, authorization, unsealed campaign,
+deadlines, Authority operation-5 admission/start, prepared outbox, ledger
+head, Worker version, and frozen Controller identities remain admissible.
+Application D1 time and triggers are the final write authority.
+
+Authority uses a dedicated inbound `grant` identity and an independent
+outbound Application `pre_enable_grant` identity. It reads the exact prepared
+outbox, creates or exactly replays the Application grant over a private
+Service Binding, re-reads its claim fence, and stores the exact Application
+response in an immutable Authority D1 receipt. Activation-read, ACK-read, and
+grant credentials are pairwise isolated. All tracked grant gates are false
+and production configuration remains absent.
+
+This closes Application-side pre-enable linearization only. It does not claim
+a sender, call the Controller, prove enabled state, advance the operation-5
+terminal, wake a Container, or prove shards. The next P0 is a durable
+one-owner dispatch claim, persist-before-I/O Controller sender, status-only
+ambiguity recovery with zero resend, exact operation-5 terminal readback,
+ordered operations 6-13, and the reserved operation-14 disable path.
+
+Migration totals are now 65 migrations, 76 required tables, 1056 checked
+incremental columns, and 110 key indexes. Go/VPS remains authoritative and
+production remains **NO-GO**.

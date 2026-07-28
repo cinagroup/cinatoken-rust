@@ -284,6 +284,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             },
         )
         .post_async(
+            "/internal/v1/shard-placement/pre-enable-grants/:ticket_id",
+            |req, ctx| async move {
+                let ticket_id = ctx.param("ticket_id").cloned();
+                container_shard_placement_activation_read::create_pre_enable_grant(
+                    req,
+                    ctx.env,
+                    ticket_id,
+                )
+                .await
+            },
+        )
+        .post_async(
             "/api/platform/container/shards/readiness",
             |req, ctx| async move {
                 platform_gateway::container_shard_readiness(req, ctx.env).await
@@ -2548,6 +2560,7 @@ mod tests {
             "/internal/v1/operations",
             "/internal/v1/shard-placement/execution-ticket-activations/:ticket_id",
             "/internal/v1/shard-placement/execution-ticket-authority-acks/:ticket_id",
+            "/internal/v1/shard-placement/pre-enable-grants/:ticket_id",
             "/v1/models",
             "/v1/chat/completions",
             "/v1/completions",

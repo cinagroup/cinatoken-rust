@@ -11,6 +11,14 @@ import {
   type ApplicationAuthorityAckClientEnv,
 } from "./application_ack_client";
 import {
+  validateApplicationPreEnableGrantClientConfig,
+  type ApplicationPreEnableGrantClientEnv,
+} from "./application_pre_enable_grant_client";
+import {
+  authorizeControllerEnableDispatch,
+  parseAuthorizeEnableDispatchCommand,
+} from "./authorize_enable_dispatch";
+import {
   beginControllerEnable,
   parseBeginEnableCommand,
 } from "./begin_enable";
@@ -58,7 +66,8 @@ export interface AuthorityEnv
   extends
     ShardPlacementAuthoritySecurityEnv,
     ApplicationActivationClientEnv,
-    ApplicationAuthorityAckClientEnv {
+    ApplicationAuthorityAckClientEnv,
+    ApplicationPreEnableGrantClientEnv {
   DB: D1Database;
   CF_VERSION_METADATA: WorkerVersionMetadata;
   ENVIRONMENT: string;
@@ -75,6 +84,9 @@ export interface AuthorityEnv
   SHARD_PLACEMENT_AUTHORITY_ENABLE_INTENT_WRITE_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_PRE_DISPATCH_READ_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_DISPATCH_OUTBOX_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_RECEIPT_WRITE_ENABLED:
+    string;
   SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: string;
@@ -100,6 +112,8 @@ const EXECUTION_BEGIN_ENABLE_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/begin-enable$/;
 const EXECUTION_PREPARE_ENABLE_DISPATCH_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/prepare-enable-dispatch$/;
+const EXECUTION_AUTHORIZE_ENABLE_DISPATCH_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/authorize-enable-dispatch$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -298,6 +312,32 @@ export default {
         );
       }
 
+      if (route.kind === "execution_authorize_enable_dispatch") {
+        const command = parseAuthorizeEnableDispatchCommand(body);
+        if (
+          command.authorizationIdSha256
+            !== route.authorizationIdSha256
+        ) {
+          throw new ProtocolError(
+            "operation_five_application_grant_path_mismatch",
+            400,
+          );
+        }
+        const result = await authorizeControllerEnableDispatch(
+          env,
+          command,
+          authentication,
+        );
+        return jsonResponse(
+          result.result === "application_grant_recorded" ? 201 : 200,
+          {
+            contract:
+              "cinatoken-shard-placement-authority-authorize-enable-dispatch-result-v1",
+            ...result,
+          },
+        );
+      }
+
       if (route.kind === "execution_receipt_append") {
         const receipt = await parseExecutionReceipt(
           body,
@@ -470,6 +510,10 @@ type Route =
   | {
       kind: "execution_prepare_enable_dispatch";
       authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_authorize_enable_dispatch";
+      authorizationIdSha256: string;
     };
 
 function matchRoute(request: Request): Route {
@@ -591,6 +635,21 @@ function matchRoute(request: Request): Route {
         executionPrepareEnableDispatchMatch[1]!,
     };
   }
+  const executionAuthorizeEnableDispatchMatch =
+    EXECUTION_AUTHORIZE_ENABLE_DISPATCH_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionAuthorizeEnableDispatchMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_authorize_enable_dispatch",
+      authorizationIdSha256:
+        executionAuthorizeEnableDispatchMatch[1]!,
+    };
+  }
   const authorizationMatch = AUTHORIZATION_ID_PATH.exec(url.pathname);
   if (request.method === "GET" && authorizationMatch !== null) {
     return {
@@ -620,6 +679,9 @@ function routeRole(kind: Route["kind"]): HmacRole {
   if (kind === "execution_begin_enable") return "enable";
   if (kind === "execution_prepare_enable_dispatch") {
     return "dispatch";
+  }
+  if (kind === "execution_authorize_enable_dispatch") {
+    return "grant";
   }
   if (kind === "execution_receipt_append") return "receipt";
   if (
@@ -722,6 +784,27 @@ function requireRouteGate(
     );
   }
   if (
+    kind === "execution_authorize_enable_dispatch"
+    && env.SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_WRITE_ENABLED
+      !== "true"
+  ) {
+    throw new ProtocolError(
+      "authority_pre_enable_grant_write_disabled",
+      503,
+    );
+  }
+  if (
+    kind === "execution_authorize_enable_dispatch"
+    && env
+      .SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_RECEIPT_WRITE_ENABLED
+      !== "true"
+  ) {
+    throw new ProtocolError(
+      "authority_pre_enable_grant_receipt_write_disabled",
+      503,
+    );
+  }
+  if (
     kind === "execution_prepare_enable_dispatch"
     && env.SHARD_PLACEMENT_AUTHORITY_DISPATCH_OUTBOX_WRITE_ENABLED
       !== "true"
@@ -808,6 +891,13 @@ export function validateRuntimeTrustConfiguration(
   ) {
     validateApplicationAuthorityAckClientConfig(env);
   }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_WRITE_ENABLED
+      === "true"
+  ) {
+    validateApplicationPreEnableGrantClientConfig(env);
+  }
+  requireApplicationHmacCredentialIsolation(env);
 }
 
 function POLICY_KEY_ID(value: string): boolean {
@@ -832,6 +922,7 @@ function requireHmacCredentialIsolation(
       "ACTIVATE",
       "ENABLE",
       "DISPATCH",
+      "GRANT",
       "RECEIPT",
       "RECOVERY",
     ] as const
@@ -897,6 +988,57 @@ function validHmacCredential(value: {
     && value.secret.length >= 32
     && value.secret.length <= 256
   );
+}
+
+function requireApplicationHmacCredentialIsolation(
+  env: AuthorityEnv,
+): void {
+  const values = env as unknown as Record<string, string | undefined>;
+  const prefixes: string[] = [];
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_ACTIVATION_READ_ENABLED === "true"
+  ) {
+    prefixes.push(
+      "SHARD_PLACEMENT_APPLICATION_ACTIVATION_READ_HMAC",
+    );
+  }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_READ_ENABLED === "true"
+    || env.SHARD_PLACEMENT_AUTHORITY_PRE_DISPATCH_READ_ENABLED
+      === "true"
+  ) {
+    prefixes.push(
+      "SHARD_PLACEMENT_APPLICATION_ACK_READ_HMAC",
+    );
+  }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_WRITE_ENABLED
+      === "true"
+  ) {
+    prefixes.push(
+      "SHARD_PLACEMENT_APPLICATION_PRE_ENABLE_GRANT_HMAC",
+    );
+  }
+  const active = prefixes.map((prefix) => ({
+    kid: values[`${prefix}_CURRENT_KID`] ?? "",
+    credentialIdSha256:
+      values[`${prefix}_CURRENT_CREDENTIAL_ID_SHA256`] ?? "",
+    secret: values[`${prefix}_CURRENT_SECRET`] ?? "",
+  }));
+  if (
+    new Set(active.map((credential) => credential.kid)).size
+      !== active.length
+    || new Set(
+      active.map((credential) => credential.credentialIdSha256),
+    ).size !== active.length
+    || new Set(active.map((credential) => credential.secret)).size
+      !== active.length
+  ) {
+    throw new ProtocolError(
+      "application_credential_isolation_unavailable",
+      503,
+    );
+  }
 }
 
 function publicExecutionSnapshot(

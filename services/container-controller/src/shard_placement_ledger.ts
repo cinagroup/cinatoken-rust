@@ -190,7 +190,8 @@ SELECT
      '0061_relay_container_shard_placement_attestations.sql',
      '0062_relay_container_shard_placement_events.sql',
      '0063_relay_container_shard_placement_mutation_authorizations.sql',
-     '0064_relay_container_shard_placement_execution_tickets.sql'
+     '0064_relay_container_shard_placement_execution_tickets.sql',
+     '0065_relay_container_shard_placement_pre_enable_grants.sql'
    ))
     AS migration_count,
   (SELECT group_concat(name, ',') FROM (
@@ -605,7 +606,7 @@ async function placementSession(database: PlacementDatabase): Promise<PlacementS
     if (
       schema === null ||
       Object.keys(schema).length !== 8 ||
-      schema.migration_count !== 4 ||
+      schema.migration_count !== 5 ||
       schema.placement_columns !== EXPECTED_COLUMNS ||
       schema.event_columns !== EXPECTED_EVENT_COLUMNS ||
       schema.authorization_columns !== EXPECTED_AUTHORIZATION_COLUMNS ||

@@ -1762,9 +1762,9 @@ after migration 0064. It does not authorize Authority operation 4, operation
 
 1. Independently revoke the historical exposed credential and prove it absent.
 2. With every runtime gate false, apply Authority migrations `0001-0002` and
-   application migrations `0061-0064` using the dedicated migration identity.
+   application migrations `0061-0065` using the dedicated migration identity.
    Independently read back Authority head 0002 and application catalog
-   64 migrations / 75 tables / 1032 checked incremental columns / 109 key
+   65 migrations / 76 tables / 1056 checked incremental columns / 110 key
    indexes, including exact triggers, indexes, database identities, and
    zero-row control baselines.
 3. Deploy the exact Authority reader first with no public route, workers.dev,
@@ -1808,9 +1808,9 @@ after migration 0064. It does not authorize Authority operation 4, operation
 - Before operation 5, also stop new claims. After operation 5 intent, retain
   read, recovery, receipt, and operation-14 authority until the disabled
   Controller and terminal ledger state are independently proven.
-- Preserve migration 0064 and every ticket, claim, activation, receipt, audit,
-  and evidence row. Never delete or rewrite an activation to simulate
-  rollback.
+- Preserve migrations 0064-0065 and every ticket, claim, activation,
+  acknowledgement, grant, receipt, audit, and evidence row. Never delete or
+  rewrite an activation or grant to simulate rollback.
 - Route all customer traffic and mutation authority through Go/VPS. Do not
   enable operation 5 or wake a Container while the handshake is partial.
 - Revoke the staging activation/read credential after reconciliation unless a
@@ -1822,5 +1822,85 @@ after migration 0064. It does not authorize Authority operation 4, operation
   application acknowledgement mirror, immediate revocation closure before
   operation 5, reserved operation-14 capacity, fault campaigns, remote
   evidence, security/SRE/migration/rollback approvals, and Go/VPS drain.
+
+Production remains **NO-GO**.
+
+## Operation-5 Application Grant Checklist
+
+This checklist governs migration 0065 and the Authority Application-grant
+receipt. Completing it does not authorize a Controller call.
+
+### Configuration and identity
+
+- Keep
+  `RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED=false`,
+  `SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_WRITE_ENABLED=false`, and
+  `SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_RECEIPT_WRITE_ENABLED=false`
+  in tracked local and staging configuration.
+- Keep production placement Authority and grant configuration absent.
+- Provision the shared Authority-caller/Application-verifier grant credential
+  only through stdin-backed Worker secret operations. Never place the secret
+  in vars, CLI arguments, logs, evidence, or tracked files.
+- Provision a separate inbound Authority `grant` credential for the workload
+  invoking `authorize-enable-dispatch`.
+- Prove that activation-read, ACK-read, Application grant, and every Authority
+  role have distinct key IDs, credential fingerprints, and secret values,
+  including overlap credentials.
+- Independently read back the exact Application and Authority Service Binding
+  targets, Worker versions, D1 identities, D1 catalogs, and zero-row grant
+  baselines before opening any gate.
+
+### Reader-first isolated staging order
+
+1. Revoke and independently prove absence of historical exposed credentials.
+2. Apply Authority migrations 0001-0002 and Application migrations 0001-0065
+   with the migration-only identity while every runtime gate remains false.
+3. Prove Application head 0065 with 65 migrations, 76 required tables, 1056
+   checked incremental columns, and 110 key indexes. Prove the exact 0065
+   table, index, insert guard, update guard, and delete guard.
+4. Deploy Application and Authority readers/writers with all gates false.
+   Independently prove no public Authority ingress and the exact private
+   Service Binding.
+5. Provision the outbound Application grant credential and separate inbound
+   Authority grant credential; archive only non-secret identities and
+   provisioning receipts.
+6. Open the Application grant write gate first, then the Authority grant
+   receipt gate, and finally the Authority grant route gate for one bounded
+   synthetic authorization. This ordering prevents Authority from calling
+   Application when it cannot persist the returned receipt.
+7. Submit one canonical request with a frozen request ID. On timeout, retry
+   only the identical request. Never generate a new grant identity.
+8. Read back the exact Application grant, Authority receipt, D1 times,
+   credential/request identities, response hash/size, ledger head, prepared
+   outbox, seal absence, and unchanged Controller state.
+9. Disable the Authority grant route first, then the Application grant writer.
+   Retain exact readback and recovery until all ambiguity is reconciled.
+10. Do not open any Controller sender gate. A separate ceremony must approve
+    the dispatch claim, one-send client, status-only recovery, terminal
+    receipt, shard proofs, and disable path.
+
+### Required fault evidence
+
+- Force response loss before and after the Application D1 commit and prove
+  exact replay without a second logical grant.
+- Race campaign seal, Authority revocation, lease expiry, takeover, Worker
+  rollout, outbox drift, and deadline equality against grant and receipt.
+- Prove divergent replay is rejected and immutable rows survive rollback.
+- Prove a grant followed by seal or revocation grants zero future send
+  authority.
+- Prove no code path reaches a Controller binding, queue, or external sender
+  from either grant route.
+
+### Rollback
+
+- Disable Authority grant ingress first, then Application grant creation.
+- Preserve migration 0065 and every grant/receipt row; never delete or rewrite
+  evidence to simulate rollback.
+- Route mutation authority and customer traffic through Go/VPS.
+- Retain status/readback and operation-14 recovery authority until an
+  independently verified disabled state is terminal.
+- Promotion remains blocked on dispatch claim, one-send Controller client,
+  status-only ambiguity recovery, operations 6-14, deployed fault campaigns,
+  remote evidence, approvals, Go/VPS reverse sync/drain, and DNS review.
 
 Production remains **NO-GO**.

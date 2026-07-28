@@ -10,6 +10,7 @@ const migrationNames = [
   "0062_relay_container_shard_placement_events.sql",
   "0063_relay_container_shard_placement_mutation_authorizations.sql",
   "0064_relay_container_shard_placement_execution_tickets.sql",
+  "0065_relay_container_shard_placement_pre_enable_grants.sql",
 ];
 const migrations = new Map();
 
@@ -242,6 +243,155 @@ describe("Relay Container shard placement execution ticket", () => {
         .run(),
     ).toThrow("shard placement Authority acknowledgements are append-preserved");
     db.close();
+  });
+
+  test("installs one append-only application pre-enable grant table", () => {
+    const db = migratedDatabase();
+    expect(
+      columns(
+        db,
+        "relay_container_shard_placement_pre_enable_grants",
+      ),
+    ).toEqual([
+      "ticket_id_sha256",
+      "contract_version",
+      "grant_contract",
+      "authorization_id_sha256",
+      "application_ticket_digest_sha256",
+      "application_database_identity_sha256",
+      "authority_claim_digest_sha256",
+      "application_activation_digest_sha256",
+      "application_acknowledgement_digest_sha256",
+      "operation_five_admission_digest_sha256",
+      "operation_five_start_receipt_sha256",
+      "authority_dispatch_outbox_digest_sha256",
+      "authority_database_identity_sha256",
+      "authority_ledger_identity_sha256",
+      "authority_ledger_head_sha256",
+      "authority_version_id",
+      "controller_service_name",
+      "controller_enable_operation_id_sha256",
+      "controller_baseline_version_id",
+      "controller_enabled_version_id",
+      "application_grant_credential_id_sha256",
+      "application_grant_request_id_sha256",
+      "grant_digest_sha256",
+      "granted_at",
+    ]);
+    expect(
+      db
+        .query(
+          `SELECT type, name
+           FROM sqlite_master
+           WHERE tbl_name =
+             'relay_container_shard_placement_pre_enable_grants'
+             AND name NOT LIKE 'sqlite_autoindex_%'
+           ORDER BY type, name`,
+        )
+        .all(),
+    ).toEqual([
+      {
+        type: "index",
+        name: "idx_relay_container_shard_placement_pre_enable_grants_claim",
+      },
+      {
+        type: "table",
+        name: "relay_container_shard_placement_pre_enable_grants",
+      },
+      {
+        type: "trigger",
+        name: "relay_container_shard_placement_pre_enable_grant_delete_guard",
+      },
+      {
+        type: "trigger",
+        name: "relay_container_shard_placement_pre_enable_grant_insert_guard",
+      },
+      {
+        type: "trigger",
+        name: "relay_container_shard_placement_pre_enable_grant_update_guard",
+      },
+    ]);
+    db.close();
+  });
+
+  test("creates exactly one immutable grant from the acknowledged ticket", () => {
+    const db = migratedDatabase();
+    prepareCampaign(db);
+    insertActivation(db);
+    insertAuthorityAcknowledgement(db);
+    insertPreEnableGrant(db);
+    expect(
+      db
+        .query(
+          `SELECT ticket_id_sha256, authorization_id_sha256,
+                  operation_five_start_receipt_sha256,
+                  authority_ledger_head_sha256, controller_enabled_version_id
+           FROM relay_container_shard_placement_pre_enable_grants`,
+        )
+        .get(),
+    ).toEqual({
+      ticket_id_sha256: hex("1"),
+      authorization_id_sha256: hex("2"),
+      operation_five_start_receipt_sha256: hexPair("2d"),
+      authority_ledger_head_sha256: hexPair("2d"),
+      controller_enabled_version_id: "controller-enabled-v1",
+    });
+    const replay = insertPreEnableGrant(db, { orIgnore: true });
+    expect(replay.changes).toBe(0);
+    expect(() =>
+      db
+        .query(
+          `UPDATE relay_container_shard_placement_pre_enable_grants
+           SET authority_version_id = 'authority-version-v2'`,
+        )
+        .run(),
+    ).toThrow("shard placement pre-enable grants are immutable");
+    expect(() =>
+      db
+        .query(
+          "DELETE FROM relay_container_shard_placement_pre_enable_grants",
+        )
+        .run(),
+    ).toThrow("shard placement pre-enable grants are append-preserved");
+    db.close();
+  });
+
+  test("fails closed before acknowledgement, after seal, or on identity drift", () => {
+    const beforeAck = migratedDatabase();
+    prepareCampaign(beforeAck);
+    insertActivation(beforeAck);
+    expect(() => insertPreEnableGrant(beforeAck)).toThrow(
+      "shard placement pre-enable grant is not admissible",
+    );
+    beforeAck.close();
+
+    const sealed = migratedDatabase();
+    prepareCampaign(sealed);
+    insertActivation(sealed);
+    insertAuthorityAcknowledgement(sealed);
+    sealCampaign(sealed);
+    expect(() => insertPreEnableGrant(sealed)).toThrow(
+      "shard placement pre-enable grant is not admissible",
+    );
+    sealed.close();
+
+    const drift = migratedDatabase();
+    prepareCampaign(drift);
+    insertActivation(drift);
+    insertAuthorityAcknowledgement(drift);
+    expect(() =>
+      insertPreEnableGrant(drift, {
+        authorityDatabaseIdentitySha256: hex("e"),
+      }),
+    ).toThrow("shard placement pre-enable grant is not admissible");
+    expect(() =>
+      insertPreEnableGrant(drift, {
+        operationFiveStartReceiptSha256: hexPair("29"),
+      }),
+    ).toThrow(
+      /CHECK constraint failed|shard placement pre-enable grant is not admissible/,
+    );
+    drift.close();
   });
 });
 
@@ -476,6 +626,73 @@ function insertClaim(db) {
     hexPair("26"),
     hexPair("27"),
   );
+}
+
+function insertPreEnableGrant(
+  db,
+  {
+    authorityDatabaseIdentitySha256 = hex("d"),
+    operationFiveStartReceiptSha256 = hexPair("2d"),
+    orIgnore = false,
+  } = {},
+) {
+  return db
+    .query(
+      `INSERT ${orIgnore ? "OR IGNORE " : ""}
+       INTO relay_container_shard_placement_pre_enable_grants (
+         ticket_id_sha256, contract_version, grant_contract,
+         authorization_id_sha256, application_ticket_digest_sha256,
+         application_database_identity_sha256,
+         authority_claim_digest_sha256,
+         application_activation_digest_sha256,
+         application_acknowledgement_digest_sha256,
+         operation_five_admission_digest_sha256,
+         operation_five_start_receipt_sha256,
+         authority_dispatch_outbox_digest_sha256,
+         authority_database_identity_sha256,
+         authority_ledger_identity_sha256,
+         authority_ledger_head_sha256, authority_version_id,
+         controller_service_name, controller_enable_operation_id_sha256,
+         controller_baseline_version_id, controller_enabled_version_id,
+         application_grant_credential_id_sha256,
+         application_grant_request_id_sha256, grant_digest_sha256
+       ) VALUES (
+         ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+         'cinatoken-container-controller-staging', ?, ?, ?, ?, ?, ?
+       )`,
+    )
+    .run(
+      hex("1"),
+      "cinatoken-relay-container-shard-placement-pre-enable-grant-v1",
+      hex("2"),
+      hexPair("19"),
+      hex("c"),
+      hexPair("20"),
+      hexPair("25"),
+      hexPair("2c"),
+      hexPair("2e"),
+      operationFiveStartReceiptSha256,
+      hexPair("2f"),
+      authorityDatabaseIdentitySha256,
+      hexPair("22"),
+      operationFiveStartReceiptSha256,
+      "authority-version-v1",
+      hexPair("13"),
+      "controller-disabled-v1",
+      "controller-enabled-v1",
+      hexPair("30"),
+      hexPair("31"),
+      hexPair("32"),
+    );
+}
+
+function sealCampaign(db) {
+  db.query(
+    `INSERT INTO relay_container_shard_activation_campaign_seals (
+       campaign_id, campaign_digest_sha256, consumed_shard_count,
+       seal_reason, seal_detail_code, last_consumption_digest_sha256
+     ) VALUES (?, ?, 0, 'aborted', 'operator_aborted', NULL)`,
+  ).run(hex("3"), hex("b"));
 }
 
 function columns(db, table) {

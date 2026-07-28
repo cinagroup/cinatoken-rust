@@ -2656,3 +2656,41 @@ faults, and independent remote readback are still mandatory.
 
 No remote state or credential was accessed and no gate was enabled. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Application Pre-Enable Grant Status
+
+This table supersedes the current Application D1 and operation-5
+pre-dispatch fields above. Earlier tables remain checkpoint history.
+
+| Status item | Current value |
+| --- | --- |
+| Application D1 head | `0065_relay_container_shard_placement_pre_enable_grants.sql` |
+| Application D1 catalog | 65 migrations / 76 tables / 1056 checked incremental columns / 110 key indexes |
+| Application pre-enable grant | **IMPLEMENTED LOCALLY, DEFAULT-OFF**; create-only, immutable, exact replay |
+| Application final write authority | D1 `unixepoch()`, seal absence, ticket/activation/ACK tuple, all application deadlines |
+| Authority grant route | **IMPLEMENTED LOCALLY, DEFAULT-OFF**; exact prepared outbox, Application grant, second Authority fence |
+| Authority grant receipt | Immutable, append-preserved, claim/outbox/ledger/Controller bound |
+| Inbound Authority identity | Independent `grant` HMAC role with current/previous overlap |
+| Outbound Application identity | Independent `pre_enable_grant` HMAC role, POST/path/body bound |
+| Cross-role isolation | Activation read, ACK read, Application grant, and all Authority roles reject key/credential/secret reuse |
+| Exact response loss | Same deterministic Application request can return exact replay; divergent identities fail closed |
+| Controller dispatch claim | **NOT IMPLEMENTED** |
+| Controller Service Binding/send | **NOT IMPLEMENTED** |
+| Controller status-only ambiguity recovery | **NOT IMPLEMENTED** |
+| Operation-5 terminal and operations 6-14 | **NOT IMPLEMENTED** |
+| Checked-in local/staging gates | All grant and receipt gates `false` |
+| Production Authority/grant config | **ABSENT** |
+| Remote migration/deployment/fault evidence | **NOT COLLECTED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The grant is the final Application-owned pre-enable decision, but it is not a
+send token. A later seal, revocation, expiry, fence drift, or version drift
+must prevent future dispatch even though the immutable grant remains as audit
+evidence. The next production-critical boundary is a one-owner Authority
+dispatch claim followed by exactly one Controller call and status-only
+ambiguity recovery. No retry path may issue a second enable mutation.
+
+No credential or remote state was accessed and no migration, gate, deployment,
+Container, customer traffic, billing, Go/VPS, DNS, or production state was
+changed. Production remains **NO-GO**.

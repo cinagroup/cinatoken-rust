@@ -11274,6 +11274,61 @@ remote D1 atomicity/fault behavior, Access policy, credentials, traffic,
 billing, drain, DNS, or production authority. Go/VPS remains authoritative
 and production remains **NO-GO**.
 
+## 2026-07-29 Application Pre-Enable Grant Verification
+
+This local checkpoint verifies Application grant creation and Authority
+receipt persistence without contacting Cloudflare:
+
+```powershell
+cargo test -p cinatoken-worker --lib container_shard_placement_activation_read
+bun run --cwd services/shard-placement-authority check
+bun run check:shard-placement-authority
+bun run check:container-scheduler-config
+bun run check:d1:migration-config
+bun run verify:sqlite
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+bun run check
+```
+
+Focused evidence proves:
+
+- Rust and TypeScript produce the same pre-enable grant digest
+  `8ee874989d2ad6a1754062891241957beda37a82008d2ab62b6c81ba84092df7`;
+- the Application verifier binds `pre_enable_grant`, POST, exact ticket path,
+  canonical body hash, credential fingerprint, and deterministic request ID;
+- migration 0065 creates exactly one immutable grant only after the exact
+  ticket activation and Authority acknowledgement;
+- pre-acknowledgement, sealed, expired, and identity-drift attempts fail
+  closed;
+- Authority calls Application only after an exact prepared outbox, re-reads
+  its claim fence before receipt persistence, and rejects changed leases;
+- Authority exact replay performs no Application call and no D1 write;
+- Authority D1 rejects missing-outbox and revocation races and preserves grant
+  receipts against update/delete; and
+- all grant gates are default false, secrets are absent from tracked vars, and
+  production configuration remains absent.
+
+Current focused results are:
+
+| Gate | Result |
+| --- | ---: |
+| Rust activation/ACK/grant tests | 10 passed |
+| Authority TypeScript unit tests | 30 passed |
+| Authority config/migration tests | 15 passed |
+| Authority Workerd runtime | 4 passed |
+| Application grant SQLite contract | 8 passed |
+| P5/foundation/ring-transition focused contracts | 113 passed |
+| Application SQLite chain | 65 migrations / 76 tables / 1056 checked incremental columns / 110 key indexes |
+| Full repository aggregate gate | `bun run check` passed |
+
+This checkpoint has no dispatch claim, Controller client, enable send,
+Controller status readback, ambiguity resolver, operation-5 terminal, ordered
+shard probes, or operation-14 execution. It also lacks deployed Service
+Binding fault evidence, Access and workload identity evidence, remote D1
+catalog/readback, historical credential revocation proof, Go/VPS shadow and
+reverse-sync evidence, drain, and DNS approval. Production remains
+**NO-GO**.
+
 ## 2026-07-29 Operation-5 Prepared Dispatch Outbox Verification
 
 This section records the local acceptance evidence for the prepared-outbox

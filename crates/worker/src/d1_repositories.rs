@@ -80,6 +80,8 @@ pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_MIGRATION: &str =
     "0063_relay_container_shard_placement_mutation_authorizations.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_EXECUTION_TICKET_MIGRATION: &str =
     "0064_relay_container_shard_placement_execution_tickets.sql";
+pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_MIGRATION: &str =
+    "0065_relay_container_shard_placement_pre_enable_grants.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT: i64 = 64;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
@@ -964,6 +966,7 @@ struct RelayContainerShardPlacementSchemaProbe {
     ticket_columns: String,
     ticket_activation_columns: String,
     ticket_authority_ack_columns: String,
+    pre_enable_grant_columns: String,
     schema_objects: String,
 }
 
@@ -1220,6 +1223,66 @@ pub struct RelayContainerShardPlacementExecutionTicketAuthorityAckRow {
     pub acknowledgement_digest_sha256: String,
     pub acknowledged_by_admin_id: i64,
     pub acknowledged_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayContainerShardPlacementPreEnableGrant<'a> {
+    pub ticket_id_sha256: &'a str,
+    pub authorization_id_sha256: &'a str,
+    pub application_ticket_digest_sha256: &'a str,
+    pub application_database_identity_sha256: &'a str,
+    pub authority_claim_digest_sha256: &'a str,
+    pub application_activation_digest_sha256: &'a str,
+    pub application_acknowledgement_digest_sha256: &'a str,
+    pub operation_five_admission_digest_sha256: &'a str,
+    pub operation_five_start_receipt_sha256: &'a str,
+    pub authority_dispatch_outbox_digest_sha256: &'a str,
+    pub authority_database_identity_sha256: &'a str,
+    pub authority_ledger_identity_sha256: &'a str,
+    pub authority_ledger_head_sha256: &'a str,
+    pub authority_version_id: &'a str,
+    pub controller_service_name: &'a str,
+    pub controller_enable_operation_id_sha256: &'a str,
+    pub controller_baseline_version_id: &'a str,
+    pub controller_enabled_version_id: &'a str,
+    pub application_grant_credential_id_sha256: &'a str,
+    pub application_grant_request_id_sha256: &'a str,
+    pub grant_digest_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementPreEnableGrantRow {
+    pub ticket_id_sha256: String,
+    pub contract_version: i64,
+    pub grant_contract: String,
+    pub authorization_id_sha256: String,
+    pub application_ticket_digest_sha256: String,
+    pub application_database_identity_sha256: String,
+    pub authority_claim_digest_sha256: String,
+    pub application_activation_digest_sha256: String,
+    pub application_acknowledgement_digest_sha256: String,
+    pub operation_five_admission_digest_sha256: String,
+    pub operation_five_start_receipt_sha256: String,
+    pub authority_dispatch_outbox_digest_sha256: String,
+    pub authority_database_identity_sha256: String,
+    pub authority_ledger_identity_sha256: String,
+    pub authority_ledger_head_sha256: String,
+    pub authority_version_id: String,
+    pub controller_service_name: String,
+    pub controller_enable_operation_id_sha256: String,
+    pub controller_baseline_version_id: String,
+    pub controller_enabled_version_id: String,
+    pub application_grant_credential_id_sha256: String,
+    pub application_grant_request_id_sha256: String,
+    pub grant_digest_sha256: String,
+    pub granted_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayContainerShardPlacementPreEnableGrantCreateOutcome {
+    Created(RelayContainerShardPlacementPreEnableGrantRow),
+    ExactReplay(RelayContainerShardPlacementPreEnableGrantRow),
+    Conflict,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12880,6 +12943,293 @@ pub async fn acknowledge_relay_container_shard_placement_execution_ticket_author
         })
 }
 
+pub async fn relay_container_shard_placement_pre_enable_grant(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<Option<RelayContainerShardPlacementPreEnableGrantRow>> {
+    validate_relay_container_sha256(ticket_id_sha256, "shard placement execution ticket id")?;
+    relay_container_shard_placement_pre_enable_grant_statement(db, ticket_id_sha256)?
+        .first::<RelayContainerShardPlacementPreEnableGrantRow>(None)
+        .await
+}
+
+pub async fn create_relay_container_shard_placement_pre_enable_grant(
+    db: &D1Database,
+    grant: &RelayContainerShardPlacementPreEnableGrant<'_>,
+) -> worker::Result<RelayContainerShardPlacementPreEnableGrantCreateOutcome> {
+    for (value, field) in [
+        (
+            grant.ticket_id_sha256,
+            "shard placement execution ticket id",
+        ),
+        (
+            grant.authorization_id_sha256,
+            "shard placement authorization id",
+        ),
+        (
+            grant.application_ticket_digest_sha256,
+            "shard placement application ticket digest",
+        ),
+        (
+            grant.application_database_identity_sha256,
+            "shard placement application database identity",
+        ),
+        (
+            grant.authority_claim_digest_sha256,
+            "shard placement Authority claim digest",
+        ),
+        (
+            grant.application_activation_digest_sha256,
+            "shard placement application activation digest",
+        ),
+        (
+            grant.application_acknowledgement_digest_sha256,
+            "shard placement application acknowledgement digest",
+        ),
+        (
+            grant.operation_five_admission_digest_sha256,
+            "shard placement operation-five admission digest",
+        ),
+        (
+            grant.operation_five_start_receipt_sha256,
+            "shard placement operation-five start receipt",
+        ),
+        (
+            grant.authority_dispatch_outbox_digest_sha256,
+            "shard placement Authority dispatch outbox digest",
+        ),
+        (
+            grant.authority_database_identity_sha256,
+            "shard placement Authority database identity",
+        ),
+        (
+            grant.authority_ledger_identity_sha256,
+            "shard placement Authority ledger identity",
+        ),
+        (
+            grant.authority_ledger_head_sha256,
+            "shard placement Authority ledger head",
+        ),
+        (
+            grant.controller_enable_operation_id_sha256,
+            "shard placement Controller enable operation id",
+        ),
+        (
+            grant.application_grant_credential_id_sha256,
+            "shard placement application grant credential id",
+        ),
+        (
+            grant.application_grant_request_id_sha256,
+            "shard placement application grant request id",
+        ),
+        (
+            grant.grant_digest_sha256,
+            "shard placement pre-enable grant digest",
+        ),
+    ] {
+        validate_relay_container_sha256(value, field)?;
+    }
+    for (value, field) in [
+        (
+            grant.authority_version_id,
+            "shard placement Authority version id",
+        ),
+        (
+            grant.controller_service_name,
+            "shard placement Controller service name",
+        ),
+        (
+            grant.controller_baseline_version_id,
+            "shard placement Controller baseline version id",
+        ),
+        (
+            grant.controller_enabled_version_id,
+            "shard placement Controller enabled version id",
+        ),
+    ] {
+        validate_relay_container_token(value, field, 1, 128, |byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+        })?;
+    }
+    if grant.controller_service_name != "cinatoken-container-controller-staging"
+        || grant.controller_baseline_version_id == grant.controller_enabled_version_id
+        || grant.application_grant_credential_id_sha256 == grant.application_grant_request_id_sha256
+        || grant.authority_ledger_head_sha256 != grant.operation_five_start_receipt_sha256
+        || grant.grant_digest_sha256 == grant.authority_dispatch_outbox_digest_sha256
+    {
+        return Err(worker::Error::RustError(
+            "shard placement pre-enable grant is invalid".to_string(),
+        ));
+    }
+
+    if let Some(existing) =
+        relay_container_shard_placement_pre_enable_grant(db, grant.ticket_id_sha256).await?
+    {
+        return Ok(
+            if relay_container_shard_placement_pre_enable_grant_matches(&existing, grant) {
+                RelayContainerShardPlacementPreEnableGrantCreateOutcome::ExactReplay(existing)
+            } else {
+                RelayContainerShardPlacementPreEnableGrantCreateOutcome::Conflict
+            },
+        );
+    }
+
+    let args = [
+        D1Type::Text(grant.ticket_id_sha256),
+        D1Type::Text(grant.authorization_id_sha256),
+        D1Type::Text(grant.application_ticket_digest_sha256),
+        D1Type::Text(grant.application_database_identity_sha256),
+        D1Type::Text(grant.authority_claim_digest_sha256),
+        D1Type::Text(grant.application_activation_digest_sha256),
+        D1Type::Text(grant.application_acknowledgement_digest_sha256),
+        D1Type::Text(grant.operation_five_admission_digest_sha256),
+        D1Type::Text(grant.operation_five_start_receipt_sha256),
+        D1Type::Text(grant.authority_dispatch_outbox_digest_sha256),
+        D1Type::Text(grant.authority_database_identity_sha256),
+        D1Type::Text(grant.authority_ledger_identity_sha256),
+        D1Type::Text(grant.authority_ledger_head_sha256),
+        D1Type::Text(grant.authority_version_id),
+        D1Type::Text(grant.controller_service_name),
+        D1Type::Text(grant.controller_enable_operation_id_sha256),
+        D1Type::Text(grant.controller_baseline_version_id),
+        D1Type::Text(grant.controller_enabled_version_id),
+        D1Type::Text(grant.application_grant_credential_id_sha256),
+        D1Type::Text(grant.application_grant_request_id_sha256),
+        D1Type::Text(grant.grant_digest_sha256),
+    ];
+    let insert = db
+        .prepare(
+            r#"
+            INSERT OR IGNORE
+            INTO relay_container_shard_placement_pre_enable_grants (
+              ticket_id_sha256, contract_version, grant_contract,
+              authorization_id_sha256, application_ticket_digest_sha256,
+              application_database_identity_sha256,
+              authority_claim_digest_sha256,
+              application_activation_digest_sha256,
+              application_acknowledgement_digest_sha256,
+              operation_five_admission_digest_sha256,
+              operation_five_start_receipt_sha256,
+              authority_dispatch_outbox_digest_sha256,
+              authority_database_identity_sha256,
+              authority_ledger_identity_sha256,
+              authority_ledger_head_sha256, authority_version_id,
+              controller_service_name,
+              controller_enable_operation_id_sha256,
+              controller_baseline_version_id,
+              controller_enabled_version_id,
+              application_grant_credential_id_sha256,
+              application_grant_request_id_sha256,
+              grant_digest_sha256, granted_at
+            )
+            VALUES (
+              ?1, 1,
+              'cinatoken-relay-container-shard-placement-pre-enable-grant-v1',
+              ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+              ?15, ?16, ?17, ?18, ?19, ?20, ?21, unixepoch()
+            )
+            "#,
+        )
+        .bind_refs(&args)?;
+    let inserted = match insert.run().await {
+        Ok(result) => result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1,
+        Err(error) => {
+            if let Some(existing) =
+                relay_container_shard_placement_pre_enable_grant(db, grant.ticket_id_sha256).await?
+            {
+                if relay_container_shard_placement_pre_enable_grant_matches(&existing, grant) {
+                    return Ok(
+                        RelayContainerShardPlacementPreEnableGrantCreateOutcome::ExactReplay(
+                            existing,
+                        ),
+                    );
+                }
+            }
+            return Err(error);
+        }
+    };
+    let Some(persisted) =
+        relay_container_shard_placement_pre_enable_grant(db, grant.ticket_id_sha256).await?
+    else {
+        return Ok(RelayContainerShardPlacementPreEnableGrantCreateOutcome::Conflict);
+    };
+    if !relay_container_shard_placement_pre_enable_grant_matches(&persisted, grant) {
+        return Ok(RelayContainerShardPlacementPreEnableGrantCreateOutcome::Conflict);
+    }
+    Ok(if inserted {
+        RelayContainerShardPlacementPreEnableGrantCreateOutcome::Created(persisted)
+    } else {
+        RelayContainerShardPlacementPreEnableGrantCreateOutcome::ExactReplay(persisted)
+    })
+}
+
+fn relay_container_shard_placement_pre_enable_grant_statement(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    db.prepare(
+        r#"
+        SELECT ticket_id_sha256, contract_version, grant_contract,
+               authorization_id_sha256, application_ticket_digest_sha256,
+               application_database_identity_sha256,
+               authority_claim_digest_sha256,
+               application_activation_digest_sha256,
+               application_acknowledgement_digest_sha256,
+               operation_five_admission_digest_sha256,
+               operation_five_start_receipt_sha256,
+               authority_dispatch_outbox_digest_sha256,
+               authority_database_identity_sha256,
+               authority_ledger_identity_sha256,
+               authority_ledger_head_sha256, authority_version_id,
+               controller_service_name,
+               controller_enable_operation_id_sha256,
+               controller_baseline_version_id,
+               controller_enabled_version_id,
+               application_grant_credential_id_sha256,
+               application_grant_request_id_sha256,
+               grant_digest_sha256, granted_at
+        FROM relay_container_shard_placement_pre_enable_grants
+        WHERE ticket_id_sha256 = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&D1Type::Text(ticket_id_sha256))
+}
+
+fn relay_container_shard_placement_pre_enable_grant_matches(
+    row: &RelayContainerShardPlacementPreEnableGrantRow,
+    grant: &RelayContainerShardPlacementPreEnableGrant<'_>,
+) -> bool {
+    row.contract_version == 1
+        && row.grant_contract == "cinatoken-relay-container-shard-placement-pre-enable-grant-v1"
+        && row.ticket_id_sha256 == grant.ticket_id_sha256
+        && row.authorization_id_sha256 == grant.authorization_id_sha256
+        && row.application_ticket_digest_sha256 == grant.application_ticket_digest_sha256
+        && row.application_database_identity_sha256 == grant.application_database_identity_sha256
+        && row.authority_claim_digest_sha256 == grant.authority_claim_digest_sha256
+        && row.application_activation_digest_sha256 == grant.application_activation_digest_sha256
+        && row.application_acknowledgement_digest_sha256
+            == grant.application_acknowledgement_digest_sha256
+        && row.operation_five_admission_digest_sha256
+            == grant.operation_five_admission_digest_sha256
+        && row.operation_five_start_receipt_sha256 == grant.operation_five_start_receipt_sha256
+        && row.authority_dispatch_outbox_digest_sha256
+            == grant.authority_dispatch_outbox_digest_sha256
+        && row.authority_database_identity_sha256 == grant.authority_database_identity_sha256
+        && row.authority_ledger_identity_sha256 == grant.authority_ledger_identity_sha256
+        && row.authority_ledger_head_sha256 == grant.authority_ledger_head_sha256
+        && row.authority_version_id == grant.authority_version_id
+        && row.controller_service_name == grant.controller_service_name
+        && row.controller_enable_operation_id_sha256 == grant.controller_enable_operation_id_sha256
+        && row.controller_baseline_version_id == grant.controller_baseline_version_id
+        && row.controller_enabled_version_id == grant.controller_enabled_version_id
+        && row.application_grant_credential_id_sha256
+            == grant.application_grant_credential_id_sha256
+        && row.application_grant_request_id_sha256 == grant.application_grant_request_id_sha256
+        && row.grant_digest_sha256 == grant.grant_digest_sha256
+        && row.granted_at > 0
+}
+
 fn relay_container_shard_placement_execution_ticket_activation_statement(
     db: &D1Database,
     ticket_id_sha256: &str,
@@ -13113,12 +13463,14 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
     const TICKET_COLUMNS: &str = "ticket_id_sha256,contract_version,ticket_contract,authorization_id_sha256,campaign_id,campaign_digest_sha256,execution_nonce_sha256,permit_subject_digest_sha256,application_database_identity_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,execution_plan_sha256,operation_schedule_sha256,preparation_operation_id_sha256,claim_operation_id_sha256,activation_operation_id_sha256,controller_enable_operation_id_sha256,controller_disable_operation_id_sha256,release_sha256,publication_sha256,execution_activation_sha256,runner_build_sha256,controller_service_name,controller_baseline_version_id,controller_enabled_version_id,controller_disabled_version_id,edge_baseline_version_id,action_gate_inventory_sha256,action_gate_count,all_action_gates_false,foundation_manifest_sha256,runtime_build_id,ring_generation,shard_count,environment,prepared_by_admin_id,activation_deadline_at,execution_deadline_at,ticket_digest_sha256,prepared_at";
     const TICKET_ACTIVATION_COLUMNS: &str = "ticket_id_sha256,contract_version,activation_contract,authority_claim_digest_sha256,authority_claim_acquired_receipt_sha256,authority_claim_operation_id_sha256,authority_activation_operation_id_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,authority_version_id,activation_credential_id_sha256,activation_request_id_sha256,activation_digest_sha256,activated_by_admin_id,activated_at";
     const TICKET_AUTHORITY_ACK_COLUMNS: &str = "ticket_id_sha256,contract_version,acknowledgement_contract,application_ticket_digest_sha256,authority_claim_digest_sha256,application_activation_digest_sha256,authority_activation_terminal_receipt_sha256,authority_ledger_head_sha256,authority_database_identity_sha256,authority_version_id,authority_read_credential_id_sha256,authority_read_request_id_sha256,acknowledgement_digest_sha256,acknowledged_by_admin_id,acknowledged_at";
-    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_shard_placement_attestations_candidate|index:idx_relay_container_shard_placement_attestations_object|index:idx_relay_container_shard_placement_authorizations_candidate|index:idx_relay_container_shard_placement_events_candidate|index:idx_relay_container_shard_placement_execution_ticket_activations_claim|index:idx_relay_container_shard_placement_execution_ticket_authority_acks_claim|index:idx_relay_container_shard_placement_execution_tickets_candidate|index:idx_relay_container_shard_placement_execution_tickets_plan|table:relay_container_shard_placement_attestations|table:relay_container_shard_placement_events|table:relay_container_shard_placement_execution_ticket_activations|table:relay_container_shard_placement_execution_ticket_authority_acks|table:relay_container_shard_placement_execution_tickets|table:relay_container_shard_placement_mutation_authorizations|trigger:relay_container_shard_activation_campaign_authorization_guard|trigger:relay_container_shard_activation_campaign_claim_execution_ticket_guard|trigger:relay_container_shard_placement_attestation_delete_guard|trigger:relay_container_shard_placement_attestation_event_append|trigger:relay_container_shard_placement_attestation_insert_guard|trigger:relay_container_shard_placement_attestation_update_guard|trigger:relay_container_shard_placement_authorization_delete_guard|trigger:relay_container_shard_placement_authorization_insert_guard|trigger:relay_container_shard_placement_authorization_update_guard|trigger:relay_container_shard_placement_event_delete_guard|trigger:relay_container_shard_placement_event_insert_guard|trigger:relay_container_shard_placement_event_update_guard|trigger:relay_container_shard_placement_execution_ticket_activation_delete_guard|trigger:relay_container_shard_placement_execution_ticket_activation_insert_guard|trigger:relay_container_shard_placement_execution_ticket_activation_update_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_delete_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_insert_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_update_guard|trigger:relay_container_shard_placement_execution_ticket_delete_guard|trigger:relay_container_shard_placement_execution_ticket_insert_guard|trigger:relay_container_shard_placement_execution_ticket_update_guard";
+    const PRE_ENABLE_GRANT_COLUMNS: &str = "ticket_id_sha256,contract_version,grant_contract,authorization_id_sha256,application_ticket_digest_sha256,application_database_identity_sha256,authority_claim_digest_sha256,application_activation_digest_sha256,application_acknowledgement_digest_sha256,operation_five_admission_digest_sha256,operation_five_start_receipt_sha256,authority_dispatch_outbox_digest_sha256,authority_database_identity_sha256,authority_ledger_identity_sha256,authority_ledger_head_sha256,authority_version_id,controller_service_name,controller_enable_operation_id_sha256,controller_baseline_version_id,controller_enabled_version_id,application_grant_credential_id_sha256,application_grant_request_id_sha256,grant_digest_sha256,granted_at";
+    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_shard_placement_attestations_candidate|index:idx_relay_container_shard_placement_attestations_object|index:idx_relay_container_shard_placement_authorizations_candidate|index:idx_relay_container_shard_placement_events_candidate|index:idx_relay_container_shard_placement_execution_ticket_activations_claim|index:idx_relay_container_shard_placement_execution_ticket_authority_acks_claim|index:idx_relay_container_shard_placement_execution_tickets_candidate|index:idx_relay_container_shard_placement_execution_tickets_plan|index:idx_relay_container_shard_placement_pre_enable_grants_claim|table:relay_container_shard_placement_attestations|table:relay_container_shard_placement_events|table:relay_container_shard_placement_execution_ticket_activations|table:relay_container_shard_placement_execution_ticket_authority_acks|table:relay_container_shard_placement_execution_tickets|table:relay_container_shard_placement_mutation_authorizations|table:relay_container_shard_placement_pre_enable_grants|trigger:relay_container_shard_activation_campaign_authorization_guard|trigger:relay_container_shard_activation_campaign_claim_execution_ticket_guard|trigger:relay_container_shard_placement_attestation_delete_guard|trigger:relay_container_shard_placement_attestation_event_append|trigger:relay_container_shard_placement_attestation_insert_guard|trigger:relay_container_shard_placement_attestation_update_guard|trigger:relay_container_shard_placement_authorization_delete_guard|trigger:relay_container_shard_placement_authorization_insert_guard|trigger:relay_container_shard_placement_authorization_update_guard|trigger:relay_container_shard_placement_event_delete_guard|trigger:relay_container_shard_placement_event_insert_guard|trigger:relay_container_shard_placement_event_update_guard|trigger:relay_container_shard_placement_execution_ticket_activation_delete_guard|trigger:relay_container_shard_placement_execution_ticket_activation_insert_guard|trigger:relay_container_shard_placement_execution_ticket_activation_update_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_delete_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_insert_guard|trigger:relay_container_shard_placement_execution_ticket_authority_ack_update_guard|trigger:relay_container_shard_placement_execution_ticket_delete_guard|trigger:relay_container_shard_placement_execution_ticket_insert_guard|trigger:relay_container_shard_placement_execution_ticket_update_guard|trigger:relay_container_shard_placement_pre_enable_grant_delete_guard|trigger:relay_container_shard_placement_pre_enable_grant_insert_guard|trigger:relay_container_shard_placement_pre_enable_grant_update_guard";
     let migrations = [
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_ATTESTATION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_EVENT_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORIZATION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_EXECUTION_TICKET_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_MIGRATION),
     ];
     let row = db
         .prepare(
@@ -13126,7 +13478,7 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
             SELECT
               (SELECT COUNT(1)
                FROM d1_migrations
-               WHERE name IN (?1, ?2, ?3, ?4)) AS migration_count,
+               WHERE name IN (?1, ?2, ?3, ?4, ?5)) AS migration_count,
               (SELECT group_concat(name, ',') FROM (
                  SELECT name
                  FROM pragma_table_info(
@@ -13160,13 +13512,20 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
                  )
                  ORDER BY cid
                )) AS ticket_activation_columns,
-              (SELECT group_concat(name, ',') FROM (
-                 SELECT name
-                 FROM pragma_table_info(
-                   'relay_container_shard_placement_execution_ticket_authority_acks'
-                 )
-                 ORDER BY cid
-               )) AS ticket_authority_ack_columns,
+               (SELECT group_concat(name, ',') FROM (
+                  SELECT name
+                  FROM pragma_table_info(
+                    'relay_container_shard_placement_execution_ticket_authority_acks'
+                  )
+                  ORDER BY cid
+                )) AS ticket_authority_ack_columns,
+               (SELECT group_concat(name, ',') FROM (
+                  SELECT name
+                  FROM pragma_table_info(
+                    'relay_container_shard_placement_pre_enable_grants'
+                  )
+                  ORDER BY cid
+                )) AS pre_enable_grant_columns,
               (SELECT group_concat(type || ':' || name, '|') FROM (
                  SELECT type, name
                  FROM sqlite_master
@@ -13176,8 +13535,9 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
                      'relay_container_shard_placement_events',
                      'relay_container_shard_placement_mutation_authorizations',
                      'relay_container_shard_placement_execution_tickets',
-                     'relay_container_shard_placement_execution_ticket_activations',
-                     'relay_container_shard_placement_execution_ticket_authority_acks'
+                      'relay_container_shard_placement_execution_ticket_activations',
+                      'relay_container_shard_placement_execution_ticket_authority_acks',
+                      'relay_container_shard_placement_pre_enable_grants'
                    )
                    OR name IN (
                         'relay_container_shard_activation_campaign_authorization_guard',
@@ -13193,13 +13553,14 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
         .first::<RelayContainerShardPlacementSchemaProbe>(None)
         .await?;
     Ok(row.is_some_and(|row| {
-        row.migration_count == 4
+        row.migration_count == 5
             && row.placement_columns == PLACEMENT_COLUMNS
             && row.event_columns == EVENT_COLUMNS
             && row.authorization_columns == AUTHORIZATION_COLUMNS
             && row.ticket_columns == TICKET_COLUMNS
             && row.ticket_activation_columns == TICKET_ACTIVATION_COLUMNS
             && row.ticket_authority_ack_columns == TICKET_AUTHORITY_ACK_COLUMNS
+            && row.pre_enable_grant_columns == PRE_ENABLE_GRANT_COLUMNS
             && row.schema_objects == SCHEMA_OBJECTS
     }))
 }

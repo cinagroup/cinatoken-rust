@@ -2364,6 +2364,8 @@ mod tests {
             controller_version_id: Some("controller-version-test".to_string()),
             shard_activation_write_enabled: false,
             shard_activation_candidate_build_configured: false,
+            shard_placement_attestation_write_enabled: false,
+            shard_placement_attestation_staging_verified: false,
             all_action_gates_false: false,
             action_gate_inventory_sha256: Some("a".repeat(64)),
             state: "verified",

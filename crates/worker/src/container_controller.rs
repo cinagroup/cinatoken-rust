@@ -598,6 +598,8 @@ pub struct ContainerControllerProbe {
     pub controller_version_id: Option<String>,
     pub shard_activation_write_enabled: bool,
     pub shard_activation_candidate_build_configured: bool,
+    pub shard_placement_attestation_write_enabled: bool,
+    pub shard_placement_attestation_staging_verified: bool,
     pub all_action_gates_false: bool,
     pub action_gate_inventory_sha256: Option<String>,
     pub state: &'static str,
@@ -630,6 +632,8 @@ struct ControllerStatusPayload {
     controller_version_id: String,
     shard_activation_write_enabled: bool,
     shard_activation_candidate_build_configured: bool,
+    shard_placement_attestation_write_enabled: bool,
+    shard_placement_attestation_staging_verified: bool,
     all_action_gates_false: bool,
     action_gate_inventory_sha256: String,
     authority_current_secret_configured: bool,
@@ -711,6 +715,10 @@ pub async fn probe(
         shard_activation_write_enabled: payload.shard_activation_write_enabled,
         shard_activation_candidate_build_configured: payload
             .shard_activation_candidate_build_configured,
+        shard_placement_attestation_write_enabled: payload
+            .shard_placement_attestation_write_enabled,
+        shard_placement_attestation_staging_verified: payload
+            .shard_placement_attestation_staging_verified,
         all_action_gates_false: payload.all_action_gates_false,
         action_gate_inventory_sha256: Some(payload.action_gate_inventory_sha256),
         state: "verified",
@@ -2564,6 +2572,8 @@ fn status_matches(
         && valid_ring_transition_status(payload)
         && valid_controller_version_id(&payload.controller_version_id)
         && valid_sha256(&payload.action_gate_inventory_sha256)
+        && payload.shard_placement_attestation_write_enabled
+            == payload.shard_placement_attestation_staging_verified
         && payload.authority_current_secret_configured
 }
 
@@ -2629,6 +2639,8 @@ fn failed_probe(
         controller_version_id: None,
         shard_activation_write_enabled: false,
         shard_activation_candidate_build_configured: false,
+        shard_placement_attestation_write_enabled: false,
+        shard_placement_attestation_staging_verified: false,
         all_action_gates_false: false,
         action_gate_inventory_sha256: None,
         state,
@@ -2738,6 +2750,8 @@ mod tests {
             controller_version_id: "controller-version-test".to_string(),
             shard_activation_write_enabled: false,
             shard_activation_candidate_build_configured: false,
+            shard_placement_attestation_write_enabled: false,
+            shard_placement_attestation_staging_verified: false,
             all_action_gates_false: true,
             action_gate_inventory_sha256: "a".repeat(64),
             authority_current_secret_configured: true,

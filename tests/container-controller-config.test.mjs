@@ -10,6 +10,9 @@ const platformGatewaySource = await Bun.file(
 const controllerSource = await Bun.file(
   new URL("../services/container-controller/src/index.ts", import.meta.url),
 ).text();
+const edgeControllerSource = await Bun.file(
+  new URL("../crates/worker/src/container_controller.rs", import.meta.url),
+).text();
 const storageGatewaySource = await Bun.file(
   new URL("../services/container-controller/src/storage_gateway.ts", import.meta.url),
 ).text();
@@ -236,6 +239,15 @@ describe("isolated container controller configuration", () => {
     );
     expect(controllerSource).toContain(
       "shard_placement_attestation_write_enabled",
+    );
+    expect(edgeControllerSource).toContain(
+      "shard_placement_attestation_write_enabled",
+    );
+    expect(edgeControllerSource).toContain(
+      "shard_placement_attestation_staging_verified",
+    );
+    expect(edgeControllerSource).toContain(
+      "payload.shard_placement_attestation_write_enabled",
     );
     expect(placementAttestationSource).toContain(
       '"shard_placement_attestation_gate_mismatch"',

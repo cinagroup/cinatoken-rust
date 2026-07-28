@@ -36,6 +36,7 @@ mod container_shard_activation_admin;
 mod container_shard_activation_campaign_admin;
 mod container_shard_placement_admin;
 mod container_shard_placement_authorization_admin;
+mod container_shard_placement_execution_ticket_admin;
 #[allow(dead_code)]
 pub(crate) mod container_shard_placement_mutation_authorization;
 mod container_terminal_outbox;
@@ -76,6 +77,7 @@ mod rankings_api;
 mod ratio_sync;
 mod realtime_billing_reconcile;
 mod realtime_session;
+mod shard_placement_authority_client;
 mod turnstile;
 mod webauthn;
 mod wfp_authority_replay;
@@ -229,6 +231,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             "/api/platform/container/shards/activation-campaigns",
             |req, ctx| async move {
                 container_shard_activation_campaign_admin::create(req, ctx.env).await
+            },
+        )
+        .post_async(
+            "/api/platform/container/shards/placement-execution-tickets/:ticket_id/activate",
+            |req, ctx| async move {
+                let ticket_id = ctx.param("ticket_id").cloned();
+                container_shard_placement_execution_ticket_admin::activate(
+                    req,
+                    ctx.env,
+                    ticket_id,
+                )
+                .await
             },
         )
         .post_async(
@@ -2468,6 +2482,7 @@ mod tests {
             "/api/platform/container/shards/placements",
             "/api/platform/container/shards/placement-mutation-authorizations",
             "/api/platform/container/shards/activation-campaigns",
+            "/api/platform/container/shards/placement-execution-tickets/:ticket_id/activate",
             "/api/platform/container/shards/readiness",
             "/api/platform/container/reconciliation/status",
             "/api/platform/container/reconciliations",

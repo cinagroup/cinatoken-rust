@@ -486,3 +486,57 @@ writer gates remain false. The complete repository gate passes with exit code
 0 in 1043.0 seconds; the Worker library separately passes 875 tests, and
 existing Rust `dead_code` findings remain warnings only. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## Application Activation Writer Checkpoint
+
+The application half of operation 4 is now implemented locally. This section
+supersedes the statement above that no application activation write route
+exists, but not the requirement for the Authority receipt and application
+acknowledgement halves.
+
+The root-authenticated, secure-verification-gated route reads one exact
+Authority claim through the private `SHARD_PLACEMENT_AUTHORITY` Service
+Binding. The read uses the v1 canonical HMAC contract, a three-second timeout,
+a 128 KiB response bound, strict JSON, `Cache-Control: no-store`, and no
+redirects. A Rust token fixed vector is accepted by the TypeScript Authority
+verifier. Secret material is obtained only through `env.secret`.
+
+The route rejects a non-staging ticket, caller-supplied deployment facts,
+wrong database or ledger identities, a missing or additional receipt, any
+claim/ticket digest drift, a lease generation other than 1, an incomplete or
+reordered operation 4-14 schedule, an in-flight operation, any prior
+activation/enable/takeover/renewal projection, a Controller baseline that is
+not exactly disabled, or a deadline reached according to application D1
+`unixepoch()`.
+
+Application activation is create-only. One D1 batch inserts the canonical
+activation, appends the administrator audit record, and reads the inserted row
+back. Exact replay validates all stored evidence and never overwrites or
+regenerates it. Race recovery accepts only the same canonical row.
+
+This row records an observed Authority snapshot and grants zero enable
+authority. The Authority operation-4 writer must re-read and conditionally
+consume its current claim, version, ledger/receipt head, lease generation,
+deadline, and revocation state. A renewal, takeover, safety diversion, or
+revocation between the application GET and INSERT must make operation 4 fail
+closed rather than treating the application row as proof of freshness.
+
+Both the Authority read gate and activation write gate are false in local and
+staging configuration; production has no binding or gate. This route is a
+root-operator bootstrap path, not a production runner identity. The remaining
+pre-enable chain is:
+
+1. expose a private/scoped application activation read boundary;
+2. have Authority operation 4 read that exact row and append/read back its
+   terminal receipt;
+3. mirror the exact Authority acknowledgement into application D1;
+4. close the revocation race immediately before operation 5; and
+5. retain guaranteed operation-14 disable and recovery authority under every
+   timeout, lease, response-loss, and version-skew case.
+
+Until all five steps and their remote evidence are complete, operation 5 has
+zero mutation authority. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
+The complete local repository gate passed with exit code 0 in 935.6 seconds;
+the Worker library passed 886 tests.

@@ -11169,3 +11169,62 @@ The complete 11-suite container supply-chain aggregate passed 127 tests with
 in 587.1 seconds, covering all repository JavaScript/TypeScript, frontend,
 Worker, Cloudflare configuration, Rust workspace, and required Wasm gates.
 The 21 existing Rust `dead_code` findings remained warnings only.
+
+## 2026-07-28 Application Ticket Activation Writer Verification
+
+The default-off application activation checkpoint adds the following local,
+credential-free verification:
+
+```powershell
+cargo test -p cinatoken-worker --lib placement_execution_ticket
+cargo test -p cinatoken-worker --lib shard_placement_authority_client
+bun run check:container-scheduler-config
+bun run check:shard-placement-authority
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+```
+
+Focused Rust coverage proves strict activation parsing, canonical activation
+digest stability, pristine operation-4 admission, and fail-closed schedule
+drift. Authority-client coverage proves canonical path encoding, bounded
+strict snapshot parsing, response policy, and the Rust HMAC fixed vector. The
+TypeScript Authority verifier accepts that exact Rust token.
+
+Configuration tests prove root authentication and secure verification precede
+request parsing, callers cannot inject deployment facts, Authority exact
+readback precedes the write gate, HMAC material is read through `env.secret`,
+local/staging gates are false, the production binding and gates are absent,
+and the application D1 write batches create-only activation, audit, and
+readback using D1 `unixepoch()`.
+
+Focused results:
+
+| Gate | Result |
+| --- | ---: |
+| Application activation Rust tests | 6 passed |
+| Authority Service Binding Rust tests | 5 passed |
+| Scheduler and activation configuration tests | 11 passed |
+| Authority protocol tests | 11 passed |
+| Authority Workerd lifecycle tests | 3 passed |
+| Authority configuration/migration tests | 8 passed |
+| Worker library | 886 passed |
+| Worker Wasm check | passed; 21 existing `dead_code` warnings |
+| Application SQLite chain | 64 migrations / 75 tables / 1032 checked incremental columns / 109 key indexes |
+
+The D1 repository contract uses one `db.batch` for create-only activation,
+administrator audit, and readback and now rejects an incomplete batch result
+without panicking. Before the staging write gate can open, a real Workerd/D1
+fault campaign must still force the audit statement and readback to fail and
+prove transactional rollback, duplicate-write audit conservation, and exact
+response-loss recovery. Source inspection and static contract assertions are
+not substitutes for that evidence.
+
+These are local fixtures and dry runs. They do not read a Cloudflare
+credential or remote state and do not establish an Access-protected workload
+identity, Authority operation-4 receipt, application acknowledgement,
+pre-operation-5 revocation closure, remote fault evidence, or production
+authority. Go/VPS remains authoritative and production remains **NO-GO**.
+
+The Authority Workerd runtime suite passed five consecutive runs after its
+renewal test was changed to wait for D1 `unixepoch()` rather than guessing that
+a fixed host-wall-clock delay crossed a database second. The final
+`bun run check` repository aggregate passed with exit code 0 in 935.6 seconds.

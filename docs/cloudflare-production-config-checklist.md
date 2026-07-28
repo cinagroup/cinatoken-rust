@@ -1724,3 +1724,103 @@ or gate requirement.
 - Remote readback, P5, credential revocation, security/privacy, SLO/cost,
   billing/SRE/migration/rollback approvals and Go/VPS drain remain mandatory.
   Production remains **NO-GO**.
+
+## Placement Execution Ticket Activation Checklist
+
+This checklist covers the default-off application activation writer introduced
+after migration 0064. It does not authorize Authority operation 4, operation
+5 enable intent, customer traffic, or production.
+
+### Tracked configuration
+
+- Local and staging must bind `SHARD_PLACEMENT_AUTHORITY` to the exact
+  environment-matched Authority Worker.
+- Keep `RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_ENABLED=false` and
+  `RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_ACTIVATION_WRITE_ENABLED=false` in
+  every checked-in environment.
+- Keep the read HMAC key ID and credential identity blank in source. Do not
+  add the HMAC secret to `[vars]`, `.dev.vars`, logs, command arguments,
+  evidence bundles, or tracked files.
+- Treat the Authority verifier and application caller as two separately
+  provisioned secret endpoints. The Authority receives
+  `SHARD_PLACEMENT_READ_HMAC_CURRENT_SECRET`; the application receives
+  `RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_HMAC_CURRENT_SECRET`.
+  Independently prove that their non-secret issuer, audience, key ID, and
+  credential identity form the same approved credential tuple.
+- Provision `RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_HMAC_CURRENT_SECRET`
+  only from the approved secret source through stdin to `wrangler secret put`.
+  Provision the Authority-side secret by the same stdin-only rule. Archive
+  only non-secret credential identities and independent provisioning receipts.
+- Production must continue to omit the Authority Service Binding, read gate,
+  write gate, issuer, audience, key ID, credential identity, and secret until
+  the full operation-4/5 protocol receives a separate approval.
+- Assert that application D1 identity, Authority D1 identity, and Authority
+  ledger identity are deployment-owned, lowercase SHA-256 values, pairwise
+  distinct, and independently read back from the intended environment.
+
+### Reader-first staging order
+
+1. Independently revoke the historical exposed credential and prove it absent.
+2. With every runtime gate false, apply Authority migrations `0001-0002` and
+   application migrations `0061-0064` using the dedicated migration identity.
+   Independently read back Authority head 0002 and application catalog
+   64 migrations / 75 tables / 1032 checked incremental columns / 109 key
+   indexes, including exact triggers, indexes, database identities, and
+   zero-row control baselines.
+3. Deploy the exact Authority reader first with no public route, workers.dev,
+   or preview ingress and every Authority gate false. Only after independent
+   version and binding-target evidence may the application Worker containing
+   the private Service Binding be deployed, still with both application gates
+   false.
+4. Provision a new, read-only Authority HMAC credential through stdin. Prove
+   issuer, audience, key ID, credential identity, rotation window, and Access
+   policy without recording the secret.
+5. In isolated staging, open the read chain in order:
+   `SHARD_PLACEMENT_AUTHORITY_ENABLED`,
+   `SHARD_PLACEMENT_AUTHORITY_READ_ENABLED`, then
+   `RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_ENABLED`. Exercise exact
+   GET and negative cases while every claim, receipt, activation,
+   acknowledgement, campaign, Controller, and Container writer remains false.
+6. Prepare one approved synthetic ticket and exact Authority claim using their
+   separately approved ceremonies. Read back both ledgers and all deadlines
+   before granting activation authority.
+7. Enable the application activation writer only for the bounded change
+   window. Persist the canonical request before its single POST. On timeout or
+   response loss, replay the exact same POST with the same request ID,
+   authenticated root administrator, and Authority snapshot identity so the
+   route can enter its read-only exact-replay branch. Never generate a new
+   request or use another administrator to classify the ambiguous result.
+8. Read back the activation, administrator audit, Authority snapshot, D1 time,
+   and unchanged disabled Controller baseline. Return the activation writer to
+   false immediately and independently prove it false.
+9. Treat the activation as pending evidence with zero enable authority.
+   Authority operation 4 must revalidate current version, ledger/receipt head,
+   lease generation, deadlines, and revocation before a conditional terminal
+   receipt.
+10. Keep operation 5 and every customer-facing mutation false. The Authority
+   operation-4 receipt and application acknowledgement steps require their own
+   implementation, test, and approval checkpoints.
+
+### Rollback and promotion blockers
+
+- Disable the application activation writer first. Keep only bounded readback
+  available long enough to classify an ambiguous response.
+- Before operation 5, also stop new claims. After operation 5 intent, retain
+  read, recovery, receipt, and operation-14 authority until the disabled
+  Controller and terminal ledger state are independently proven.
+- Preserve migration 0064 and every ticket, claim, activation, receipt, audit,
+  and evidence row. Never delete or rewrite an activation to simulate
+  rollback.
+- Route all customer traffic and mutation authority through Go/VPS. Do not
+  enable operation 5 or wake a Container while the handshake is partial.
+- Revoke the staging activation/read credential after reconciliation unless a
+  reviewed overlap rotation requires it; independently prove the final
+  credential set. Revoke read credentials or remove the Service Binding only
+  after ambiguous activation and terminal-disable evidence is reconciled.
+- Promotion remains blocked on the private/scoped runner workload boundary,
+  Authority operation-4 application readback and terminal receipt,
+  application acknowledgement mirror, immediate revocation closure before
+  operation 5, reserved operation-14 capacity, fault campaigns, remote
+  evidence, security/SRE/migration/rollback approvals, and Go/VPS drain.
+
+Production remains **NO-GO**.

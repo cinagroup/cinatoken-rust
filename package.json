@@ -113,7 +113,7 @@
     "check:task-poll-lease-config": "bun test tests/task-poll-lease-config.test.mjs",
     "check:task-poll-scheduler-config": "bun test tests/task-poll-scheduler-config.test.mjs",
     "check:container-shard-routing-contract": "bun test tests/container-shard-routing-contract.test.mjs tests/container-shard-placement-attestation-contract.test.mjs && bun tools/verify_container_shard_routing_contract.mjs --self-test --json",
-    "check:container-scheduler-config": "bun test tests/container-scheduler-config.test.mjs",
+    "check:container-scheduler-config": "bun test --path-ignore-patterns=\"target/**\" tests/container-scheduler-config.test.mjs tests/container-shard-placement-ticket-activation-contract.test.mjs",
     "generate:container-controller:types": "wrangler types services/container-controller/worker-configuration.d.ts --config services/container-controller/wrangler.jsonc --env-interface ContainerControllerEnv",
     "check:container-controller:types": "wrangler types services/container-controller/worker-configuration.d.ts --config services/container-controller/wrangler.jsonc --env-interface ContainerControllerEnv --check",
     "build:container-controller": "tsc -p services/container-controller/tsconfig.json --noEmit && wrangler deploy --config services/container-controller/wrangler.jsonc --dry-run --containers-rollout none --outdir .wrangler/container-controller-build",

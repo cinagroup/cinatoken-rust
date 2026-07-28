@@ -4045,3 +4045,50 @@ The complete repository gate passes with exit code 0 in 1043.0 seconds; the
 Worker library separately passes 875 tests, and existing Rust `dead_code`
 findings remain warnings only. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-28 Application Ticket Activation Writer
+
+Phase 1 now includes the default-off application-D1 activation writer and a
+bounded, signed private-Service-Binding read client for the placement
+Authority. This section supersedes the first remaining-P0 item in the
+two-ledger checkpoint above. The operation-4 handshake is still incomplete.
+
+The root-only activation endpoint performs secure verification before parsing
+a strict 4 KiB request, loads the immutable 0064 ticket and current
+authorization from application D1, and reads the exact ticket-bound claim
+from the Authority. It accepts only the staging environment. Deployment-owned
+database and ledger identities, D1 `unixepoch()` time, Authority version,
+receipt chain, operation IDs, and credential identity cannot be supplied by
+the caller.
+
+Fresh activation is admitted only for the exact pristine generation-1 claim
+at operation 4 with one acquisition receipt, the complete operation 4-14
+schedule, no in-flight or projected mutation, and unexpired authorization,
+permit, campaign, and ticket. The D1 write is create-only and batches the
+activation, administrator audit, and exact readback. Exact existing evidence
+classifies response loss without another write, including after the write gate
+is returned to false.
+
+An activation row is pending cross-ledger evidence, not operation-4 success.
+Authority operation 4 must revalidate and conditionally consume the then
+current claim, ledger head, lease generation, deadlines, and revocation in
+Authority D1. Any Authority change racing the application write must deny the
+later transition.
+
+Local and staging declare `SHARD_PLACEMENT_AUTHORITY`, but the Authority read
+and application activation writer gates remain false. The HMAC secret is a
+Worker secret and is absent from tracked variables. Production declares no
+binding or gates. The Rust token has a TypeScript verifier fixed vector.
+
+This root bootstrap endpoint is not the final runner workload boundary.
+Remaining Phase 1 P0 work is the private/scoped workload gateway, Authority
+operation-4 application readback and receipt writer, exact application
+acknowledgement mirror, immediate pre-operation-5 revocation closure,
+reserved disable capacity, bounded recovery, independent credential rotation,
+adversarial fault campaigns, and independent remote evidence. No remote state
+or credential was accessed. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
+The complete local repository gate passed with exit code 0 in 935.6 seconds.
+The Worker library passed 886 tests and the Wasm build retained only the 21
+existing `dead_code` warnings.

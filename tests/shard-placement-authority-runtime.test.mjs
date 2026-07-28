@@ -222,7 +222,9 @@ describe("shard placement Authority Workerd runtime", () => {
       error: "execution_receipt_conflict",
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    await waitForDatabaseTimeAfter(
+      claimPayloads[0].snapshot.state.leaseExpiresAt - 60,
+    );
     const renewal = await placementExecutionReceipt({
       claim: claim.value,
       sequence: 2,
@@ -391,6 +393,18 @@ describe("shard placement Authority Workerd runtime", () => {
     });
   });
 });
+
+async function waitForDatabaseTimeAfter(previousSecond) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const row = await env.DB.prepare(
+      "SELECT unixepoch() AS database_now",
+    ).first();
+    if (row?.database_now > previousSecond) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("D1 database time did not advance");
+}
 
 async function issue(body, requestId) {
   return SELF.fetch(await signedAuthorityRequest({

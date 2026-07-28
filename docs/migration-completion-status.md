@@ -2617,3 +2617,42 @@ No remote state was queried or mutated, no credential was read, and no gate,
 ticket, claim, activation, campaign, Container wake, customer traffic,
 financial authority, Go/VPS drain, DNS, or production state changed. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-28 Application Activation Writer Status
+
+This table supersedes the application-writer and Rust-transport fields in the
+two-ledger status table above. Earlier tables remain checkpoint history.
+
+| Status item | Current value |
+| --- | --- |
+| Application activation writer | **IMPLEMENTED LOCALLY, DEFAULT-OFF**; root auth plus secure verification, staging-only, strict bounded request |
+| Authority application client | Exact signed GET through private `SHARD_PLACEMENT_AUTHORITY`; three-second timeout, bounded strict no-store response, redirects denied |
+| Cross-runtime authentication vector | Rust HMAC token accepted by the TypeScript Authority verifier |
+| Trusted input boundary | Database/ledger identities, Authority version, receipt, schedule, credential identity, administrator identity, and timestamps are not caller supplied |
+| Fresh activation fence | Exact pristine generation-1 claim at operation 4, one acquisition receipt, full operation 4-14 schedule, no in-flight or projected mutation, all deadlines live |
+| Application time authority | D1 `unixepoch()` for prechecks; 0064 D1 triggers remain the final write authority |
+| Write atomicity | Create-only activation, administrator audit, and exact readback in one D1 batch |
+| Response-loss behavior | Exact stored replay only; no overwrite, regenerated request, or second logical activation |
+| Enable authority of activation row | **ZERO**; Authority operation 4 must revalidate and conditionally consume its current claim |
+| Local/staging gates | Authority read and activation write both checked in as `false` |
+| Production binding and gates | **ABSENT** |
+| Secret handling | HMAC value is a Worker secret; absent from variables and tracked files |
+| Final runner workload identity | **NOT IMPLEMENTED**; current route is a root-operator bootstrap boundary |
+| Authority operation-4 application readback/receipt | **NOT IMPLEMENTED** |
+| Application acknowledgement writer | **NOT IMPLEMENTED** |
+| Immediate pre-operation-5 revocation closure | **NOT IMPLEMENTED** |
+| Reserved disable capacity and fault evidence | **NOT PROVEN** |
+| Remote migration/deployment/evidence | **NOT COLLECTED** |
+| Complete local repository gate | PASS, exit 0 in 935.6 seconds; Worker library 886/886; Worker Wasm check passed |
+| Production eligibility | **NO-GO** |
+
+The activation writer closes one local state transition, not the distributed
+transaction. Operation 5 remains unreachable until Authority operation 4
+reads the exact application row, appends and exposes its terminal receipt,
+application D1 mirrors the exact acknowledgement, and revocation is rechecked
+at the last pre-enable boundary. Least-privilege workload identities,
+credential rotation, Access policy, disable-capacity proof, adversarial
+faults, and independent remote readback are still mandatory.
+
+No remote state or credential was accessed and no gate was enabled. Go/VPS
+remains authoritative and production remains **NO-GO**.

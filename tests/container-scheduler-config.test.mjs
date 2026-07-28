@@ -112,9 +112,56 @@ describe("container scheduler Wrangler foundation", () => {
       expect(vars.CONTAINER_AUTHORITY_CURRENT_KID).toBe(
         `${authorityEnvironment}-v1`,
       );
-      expect(scope?.services).toEqual([
+      const expectedServices = [
         { binding: "CONTAINER_CONTROLLER", service: controllerService },
-      ]);
+      ];
+      if (authorityEnvironment !== "production") {
+        expectedServices.push({
+          binding: "SHARD_PLACEMENT_AUTHORITY",
+          service: `cinatoken-shard-placement-authority-${authorityEnvironment}`,
+        });
+        expect(
+          vars.RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_ENABLED,
+        ).toBe("false");
+        expect(
+          vars.RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_ACTIVATION_WRITE_ENABLED,
+        ).toBe("false");
+        expect(
+          vars.RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ISSUER,
+        ).toBe(
+          `cinatoken-shard-placement-operator-${authorityEnvironment}`,
+        );
+        expect(
+          vars.RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_AUDIENCE,
+        ).toBe(
+          `cinatoken-shard-placement-authority-${authorityEnvironment}`,
+        );
+        expect(
+          vars.RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_HMAC_CURRENT_KID,
+        ).toBe("");
+        expect(
+          vars
+            .RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256,
+        ).toBe("");
+      } else {
+        for (const name of [
+          "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_ENABLED",
+          "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ISSUER",
+          "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_AUDIENCE",
+          "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_HMAC_CURRENT_KID",
+          "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256",
+          "RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_ACTIVATION_WRITE_ENABLED",
+          "RELAY_CONTAINER_SHARD_APPLICATION_DATABASE_IDENTITY_SHA256",
+          "RELAY_CONTAINER_SHARD_AUTHORITY_DATABASE_IDENTITY_SHA256",
+          "RELAY_CONTAINER_SHARD_AUTHORITY_LEDGER_IDENTITY_SHA256",
+        ]) {
+          expect(vars[name]).toBeUndefined();
+        }
+      }
+      expect(
+        vars.RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_HMAC_CURRENT_SECRET,
+      ).toBeUndefined();
+      expect(scope?.services).toEqual(expectedServices);
 
       // Containers remain owned only by the isolated controller Worker.
       expect(scope?.containers).toBeUndefined();
@@ -126,7 +173,7 @@ describe("container scheduler Wrangler foundation", () => {
       "bun test tests/container-shard-routing-contract.test.mjs tests/container-shard-placement-attestation-contract.test.mjs && bun tools/verify_container_shard_routing_contract.mjs --self-test --json",
     );
     expect(packageJson.scripts["check:container-scheduler-config"]).toBe(
-      "bun test tests/container-scheduler-config.test.mjs",
+      'bun test --path-ignore-patterns="target/**" tests/container-scheduler-config.test.mjs tests/container-shard-placement-ticket-activation-contract.test.mjs',
     );
     expect(packageJson.scripts.check).toContain(
       "bun run check:container-shard-routing-contract",

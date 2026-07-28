@@ -23084,3 +23084,116 @@ no gate, claim, ticket, campaign, Container wake, customer traffic, financial
 authority, Go/VPS drain, DNS, or production state changed. The exposed
 historical Cloudflare credential still requires independent revocation and
 absence proof. Production remains **NO-GO**.
+
+## 22.320 Application Ticket Activation Writer And Exact Authority Readback (2026-07-28)
+
+This checkpoint implements the first live half of the two-ledger operation-4
+handshake. It supersedes the statement above that the application activation
+writer is absent. It does not make operation 4 complete and does not authorize
+operation 5, a staging campaign, or a production cutover.
+
+### Implemented local boundary
+
+The application Worker now exposes:
+
+`POST /api/platform/container/shards/placement-execution-tickets/:ticket_id/activate`
+
+The route requires root authentication and the existing secure-verification
+step before reading its bounded, strict JSON body. The caller supplies only
+the expected environment, ticket/claim digests, an activation request ID, and
+an explicit confirmation. Database identities, Authority ledger identity,
+Authority version, operation IDs, acquisition receipt, activation credential,
+administrator identity, and timestamps are resolved from deployment
+configuration, authenticated Authority readback, application D1, or D1 time.
+They cannot be injected by the request.
+
+Before writing, the Worker performs one signed GET through the private
+`SHARD_PLACEMENT_AUTHORITY` Service Binding:
+
+`/internal/v1/shard-placement/execution-claims/{authorization}?claimDigestSha256=...&claimOwnerSha256=...`
+
+The client rejects redirects, responses larger than 128 KiB, non-JSON or
+cacheable responses, unknown response fields, timeouts beyond three seconds,
+and every claim/ticket/receipt/schedule mismatch. Its HMAC token uses the
+Authority v1 canonical bytes and now has a Rust-to-TypeScript fixed vector.
+The HMAC secret is read only as a Worker secret. The public request cannot
+choose the Authority origin, issuer, audience, key ID, credential identity, or
+secret.
+
+Fresh activation requires the exact ticket-bound Authority claim to remain
+pristine at operation 4: claimed, lease generation 1, one exact acquisition
+receipt, no in-flight operation, no activation/enable/takeover/renewal
+projection, and the complete immutable operation 4-14 schedule. Application
+authorization, ticket, permit, campaign, and execution deadlines are checked
+against application D1 `unixepoch()` time. The final 0064 triggers remain the
+authoritative write fence.
+
+Application D1 uses a create-only activation insert, administrator audit row,
+and exact readback in one batch. The activation digest length-prefixes every
+ticket, claim, receipt, operation, database, ledger, Authority-version,
+credential, administrator, and request identity needed by later
+acknowledgement. A lost response is recovered only by an exact existing-row
+readback; the route does not regenerate evidence or overwrite activation.
+After a successful write, the write gate may be disabled while the Authority
+read gate remains available for exact replay classification.
+
+The immutable activation row is evidence that an operator observed one
+Authority snapshot; it grants zero enable authority by itself. Authority
+operation 4 must conditionally consume the current claim in Authority D1 and
+revalidate the current version, ledger/receipt head, lease generation,
+deadlines, and revocation after this cross-D1 read/write interval. A renewal,
+takeover, safety diversion, or revocation racing this application write must
+make the later Authority transition fail closed.
+
+### Deployment posture
+
+Local and staging configuration declare the private Service Binding, but both
+`RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_ENABLED` and
+`RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_ACTIVATION_WRITE_ENABLED` are
+checked in as `false`. Key ID and credential identity are blank and the HMAC
+secret is absent from variables. Production declares neither this binding nor
+these gates. No configuration in this checkpoint can activate the path by
+default.
+
+The route is an operator bootstrap path: root plus secure verification is
+stronger than an ordinary administrator mutation, but it is not the final
+least-privilege runner identity. Isolated staging remains blocked until this
+route is replaced or fronted by a dedicated private, scoped workload
+interface with independent rotation and Access evidence.
+
+### Remaining P0 closure
+
+1. Replace the root bootstrap route with a dedicated private/scoped workload
+   route or gateway that cannot exercise unrelated root authority.
+2. Add the application exact-read endpoint and the Authority operation-4
+   Service Binding client that reads one immutable activation, appends the
+   terminal operation-4 receipt, and exposes exact receipt-chain readback.
+3. Add the application acknowledgement writer only after an authenticated,
+   exact Authority snapshot proves the operation-4 terminal receipt, ledger
+   head, version, and activation digest.
+4. Recheck or synchronously mirror 0063 revocation immediately before
+   operation 5 so cross-D1 stale state cannot authorize enable.
+5. Reserve operation-14 disable capacity, bound renewal and takeover churn,
+   and prove in-flight response-loss safety diversion.
+6. Provision separately scoped read, activation, acknowledgement, receipt,
+   recovery, and deployment credentials with overlap rotation and Access
+   policy evidence.
+7. Complete cross-runtime digest vectors and concurrent-runner, response-loss,
+   expiry, revocation, stale-read, corrupt-projection, and
+   disable-ambiguity fault campaigns.
+8. Obtain independent remote evidence for bindings, D1 identities, catalogs,
+   zero-row baselines, gates, versions, credentials, and revocation of the
+   historical exposed credential.
+
+The safe deployment sequence remains reader first and writer last. Rollback
+disables the activation writer first, preserves every immutable row, keeps
+only bounded readback available for reconciliation, and routes all customer
+traffic through the authoritative Go/VPS service. No remote state or
+credential was accessed in this checkpoint. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
+The final local repository gate passed with exit code 0 in 935.6 seconds. The
+Worker library passed 886 tests, the Authority Workerd suite passed five
+additional consecutive runs after replacing a fixed wall-clock sleep with D1
+time polling, and the Worker Wasm check retained only the 21 existing
+`dead_code` warnings.

@@ -177,6 +177,81 @@ describe("shard placement Authority protocol", () => {
     )).rejects.toBeInstanceOf(ProtocolError);
   });
 
+  it("accepts the Rust application activation read token fixed vector", async () => {
+    const pathAndQuery =
+      `/internal/v1/shard-placement/execution-claims/${"b".repeat(64)}`
+      + `?claimDigestSha256=${"c".repeat(64)}`
+      + `&claimOwnerSha256=${"d".repeat(64)}`;
+    const token = [
+      "eyJ0eXAiOiJDSU5BVE9LRU4tU0hBUkQtUExBQ0VNRU5ULUFVVEhPUklUWSIsImFsZyI6IkhTMjU2Iiwia2lkIjoicmVhZC1jdXJyZW50LXYxIn0",
+      "eyJpc3N1ZXIiOiJjaW5hdG9rZW4tc2hhcmQtcGxhY2VtZW50LW9wZXJhdG9yLXJ1bnRpbWUtdGVzdCIsImF1ZGllbmNlIjoiY2luYXRva2VuLXNoYXJkLXBsYWNlbWVudC1hdXRob3JpdHktcnVudGltZS10ZXN0Iiwicm9sZSI6InJlYWQiLCJjcmVkZW50aWFsX2lkX3NoYTI1NiI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJyZXF1ZXN0X2lkIjoiYWN0aXZhdGlvbi1yZWFkLXJlcXVlc3QtMSIsIm1ldGhvZCI6IkdFVCIsInBhdGhfYW5kX3F1ZXJ5IjoiL2ludGVybmFsL3YxL3NoYXJkLXBsYWNlbWVudC9leGVjdXRpb24tY2xhaW1zL2JiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmI_Y2xhaW1EaWdlc3RTaGEyNTY9Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYyZjbGFpbU93bmVyU2hhMjU2PWRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGRkZGQiLCJib2R5X3NoYTI1NiI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJpc3N1ZWRfYXQiOjE3NDk5OTk5OTksImV4cGlyZXNfYXQiOjE3NTAwMDAwMzB9",
+      "DWt6oKEseW6FuY-goUHP988jDUegBE5Qguuv7Hz_sIg",
+    ].join(".");
+    const request = new Request(
+      `https://shard-placement-authority-runtime.test${pathAndQuery}`,
+      {
+        headers: {
+          "x-cinatoken-shard-placement-authority": token,
+        },
+      },
+    );
+    const verified = await verifyHmacRequest(
+      request,
+      new Uint8Array(),
+      "read",
+      shardPlacementAuthorityEnv({
+        SHARD_PLACEMENT_READ_HMAC_CURRENT_KID: "read-current-v1",
+        SHARD_PLACEMENT_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "a".repeat(64),
+        SHARD_PLACEMENT_READ_HMAC_CURRENT_SECRET:
+          "0123456789abcdef0123456789abcdef",
+      }),
+      1_750_000_000,
+    );
+    expect(verified).toMatchObject({
+      role: "read",
+      requestId: "activation-read-request-1",
+      credentialIdSha256: "a".repeat(64),
+    });
+
+    for (const tamperedUrl of [
+      `https://shard-placement-authority-runtime.test${pathAndQuery}&unexpected=1`,
+      `https://shard-placement-authority-runtime.test${pathAndQuery.replace("d".repeat(64), "e".repeat(64))}`,
+    ]) {
+      await expect(verifyHmacRequest(
+        new Request(tamperedUrl, {
+          headers: {
+            "x-cinatoken-shard-placement-authority": token,
+          },
+        }),
+        new Uint8Array(),
+        "read",
+        shardPlacementAuthorityEnv({
+          SHARD_PLACEMENT_READ_HMAC_CURRENT_KID: "read-current-v1",
+          SHARD_PLACEMENT_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+            "a".repeat(64),
+          SHARD_PLACEMENT_READ_HMAC_CURRENT_SECRET:
+            "0123456789abcdef0123456789abcdef",
+        }),
+        1_750_000_000,
+      )).rejects.toBeInstanceOf(ProtocolError);
+    }
+
+    await expect(verifyHmacRequest(
+      request,
+      new Uint8Array(),
+      "read",
+      shardPlacementAuthorityEnv({
+        SHARD_PLACEMENT_READ_HMAC_CURRENT_KID: "read-current-v1",
+        SHARD_PLACEMENT_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "a".repeat(64),
+        SHARD_PLACEMENT_READ_HMAC_CURRENT_SECRET:
+          "fedcba9876543210fedcba9876543210",
+      }),
+      1_750_000_000,
+    )).rejects.toBeInstanceOf(ProtocolError);
+  });
+
   it("requires complete and globally isolated HMAC rotation slots", () => {
     expect(() => validateRuntimeTrustConfiguration(
       shardPlacementAuthorityEnv(),

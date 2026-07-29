@@ -630,10 +630,15 @@ struct ControllerStatusPayload {
     previous_ring_admission_until: Option<u64>,
     previous_ring_admission_open: bool,
     controller_version_id: String,
+    durable_object_jurisdiction: String,
+    durable_object_jurisdiction_restricted: bool,
+    durable_object_jurisdiction_enabled: bool,
+    durable_object_jurisdiction_staging_verified: bool,
     shard_activation_write_enabled: bool,
     shard_activation_candidate_build_configured: bool,
     shard_placement_attestation_write_enabled: bool,
     shard_placement_attestation_staging_verified: bool,
+    controller_service_name: String,
     all_action_gates_false: bool,
     action_gate_inventory_sha256: String,
     authority_current_secret_configured: bool,
@@ -2571,10 +2576,24 @@ fn status_matches(
         && payload.shard_count == runtime.shard_count
         && valid_ring_transition_status(payload)
         && valid_controller_version_id(&payload.controller_version_id)
+        && valid_durable_object_jurisdiction_status(payload)
+        && valid_controller_service_name(&payload.controller_service_name)
+        && payload.controller_service_name == authority.audience
         && valid_sha256(&payload.action_gate_inventory_sha256)
         && payload.shard_placement_attestation_write_enabled
             == payload.shard_placement_attestation_staging_verified
         && payload.authority_current_secret_configured
+}
+
+fn valid_durable_object_jurisdiction_status(payload: &ControllerStatusPayload) -> bool {
+    let restricted = match payload.durable_object_jurisdiction.as_str() {
+        "default" => false,
+        "eu" | "us" | "fedramp" | "fedramp-high" => true,
+        _ => return false,
+    };
+    payload.durable_object_jurisdiction_restricted == restricted
+        && payload.durable_object_jurisdiction_enabled == restricted
+        && payload.durable_object_jurisdiction_staging_verified == restricted
 }
 
 fn valid_ring_transition_status(payload: &ControllerStatusPayload) -> bool {
@@ -2612,6 +2631,15 @@ fn valid_controller_version_id(value: &str) -> bool {
     (1..=128).contains(&value.len())
         && value.bytes().enumerate().all(|(index, byte)| {
             byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'.' | b'_' | b':' | b'-'))
+        })
+}
+
+fn valid_controller_service_name(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || (matches!(byte, b'-') && index > 0 && index + 1 < value.len())
         })
 }
 
@@ -2748,10 +2776,15 @@ mod tests {
             previous_ring_admission_until: None,
             previous_ring_admission_open: false,
             controller_version_id: "controller-version-test".to_string(),
+            durable_object_jurisdiction: "default".to_string(),
+            durable_object_jurisdiction_restricted: false,
+            durable_object_jurisdiction_enabled: false,
+            durable_object_jurisdiction_staging_verified: false,
             shard_activation_write_enabled: false,
             shard_activation_candidate_build_configured: false,
             shard_placement_attestation_write_enabled: false,
             shard_placement_attestation_staging_verified: false,
+            controller_service_name: "cinatoken-container-controller-test".to_string(),
             all_action_gates_false: true,
             action_gate_inventory_sha256: "a".repeat(64),
             authority_current_secret_configured: true,
@@ -2764,6 +2797,17 @@ mod tests {
         payload.authority_current_secret_configured = false;
         assert!(!status_matches(&payload, &authority, runtime));
         payload.authority_current_secret_configured = true;
+        payload.durable_object_jurisdiction = "eu".to_string();
+        assert!(!status_matches(&payload, &authority, runtime));
+        payload.durable_object_jurisdiction_restricted = true;
+        payload.durable_object_jurisdiction_enabled = true;
+        payload.durable_object_jurisdiction_staging_verified = true;
+        assert!(status_matches(&payload, &authority, runtime));
+        payload.controller_service_name = "Invalid Controller".to_string();
+        assert!(!status_matches(&payload, &authority, runtime));
+        payload.controller_service_name = "cinatoken-container-controller-other".to_string();
+        assert!(!status_matches(&payload, &authority, runtime));
+        payload.controller_service_name = "cinatoken-container-controller-test".to_string();
         payload.ring_transition_configured = true;
         payload.previous_ring_generation = Some(6);
         payload.previous_shard_count = Some(8);
@@ -2773,6 +2817,36 @@ mod tests {
         assert!(status_matches(&payload, &authority, runtime));
         payload.previous_ring_generation = Some(5);
         assert!(!status_matches(&payload, &authority, runtime));
+    }
+
+    #[test]
+    fn controller_status_v1_fixture_is_strictly_cross_contract_compatible() {
+        let fixture = include_str!(
+            "../../../services/container-controller/tests/fixtures/controller-status-v1.json"
+        );
+        let payload: ControllerStatusPayload = serde_json::from_str(fixture).unwrap();
+        assert_eq!(payload.durable_object_jurisdiction, "default");
+        assert_eq!(
+            payload.controller_service_name,
+            "cinatoken-container-controller-test"
+        );
+
+        let mut unknown_field: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        unknown_field["unexpected_status_field"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<ControllerStatusPayload>(unknown_field).is_err(),
+            "deny_unknown_fields must reject additive response drift"
+        );
+
+        let mut missing_field: serde_json::Value = serde_json::from_str(fixture).unwrap();
+        missing_field
+            .as_object_mut()
+            .unwrap()
+            .remove("durable_object_jurisdiction");
+        assert!(
+            serde_json::from_value::<ControllerStatusPayload>(missing_field).is_err(),
+            "required v1 fields must reject subtractive response drift"
+        );
     }
 
     #[test]

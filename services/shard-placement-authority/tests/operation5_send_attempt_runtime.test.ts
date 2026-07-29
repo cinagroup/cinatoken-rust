@@ -102,6 +102,45 @@ afterEach(async () => {
 });
 
 describe("operation-5 send attempt Workerd runtime", () => {
+  it("commits send authority and Gateway dispatch evidence atomically", async () => {
+    const source = attempt();
+    const started = event(source);
+    const session = env.DB.withSession("first-primary");
+    const results = await session.batch([
+      attemptStatement(session, source),
+      eventStatement(session, started),
+      gatewayDispatchedStatement(session, source, started),
+    ]);
+    expect(results).toHaveLength(3);
+    expect(results.every((result) => result.success)).toBe(true);
+    expect(
+      await env.DB.prepare(
+        `SELECT event_sequence, event_kind, gateway_request_sent
+         FROM shard_placement_authority_operation_five_send_attempt_events
+         ORDER BY event_sequence`,
+      ).all(),
+    ).toMatchObject({
+      results: [
+        {
+          event_sequence: 1,
+          event_kind: "send_started",
+          gateway_request_sent: 0,
+        },
+        {
+          event_sequence: 2,
+          event_kind: "gateway_create_dispatched",
+          gateway_request_sent: 0,
+        },
+      ],
+    });
+    expect(
+      await env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM shard_placement_authority_operation_five_gateway_events`,
+      ).first(),
+    ).toEqual({ count: 1 });
+  });
+
   it("applies 0005 and preserves both ledgers as immutable", async () => {
     const source = attempt();
     const started = event(source);
@@ -338,6 +377,52 @@ function eventStatement(
       value.controllerCommandDigestSha256,
       value.gatewayIdempotencyKeySha256,
       value.eventDigestSha256,
+    );
+}
+
+function gatewayDispatchedStatement(
+  session: D1DatabaseSession,
+  source: OperationFiveSendAttempt,
+  started: OperationFiveSendStartedEvent,
+): D1PreparedStatement {
+  return session
+    .prepare(executionRepositorySqlForTest.insertOperationFiveGatewayEvent)
+    .bind(
+      source.authorizationIdSha256,
+      source.attemptDigestSha256,
+      started.eventDigestSha256,
+      2,
+      "cinatoken-shard-placement-authority-operation-five-gateway-event-v1",
+      "gateway_create_dispatched",
+      started.eventDigestSha256,
+      source.gatewayIdempotencyKeySha256,
+      source.controllerCommandDigestSha256,
+      "create",
+      digest("6"),
+      digest("7"),
+      null,
+      null,
+      null,
+      digest("8"),
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      digest("9"),
     );
 }
 

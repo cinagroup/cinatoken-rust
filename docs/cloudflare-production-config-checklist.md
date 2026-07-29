@@ -2125,25 +2125,25 @@ Go/VPS remains authoritative and production remains **NO-GO**.
 - [x] Treat exact replay as no new send authority.
 - [x] Fail closed on missing, partial, mismatched, revoked, expired, recovered,
   or identity-drifted source state.
-- [x] Perform no Controller, gateway, Cloudflare API, or other external
-  mutation.
+- [x] Require the later migration-0006 dispatch event in the same batch before
+  any Gateway create call.
 
-### Next P0 deployment gateway
+### Deployment gateway
 
-- [ ] Create an independent private `controller-deployment-gateway`.
+- [x] Create an independent private `controller-deployment-gateway`.
 - [ ] Give only the gateway the minimum Cloudflare deployment credential.
-- [ ] Accept one frozen create-once command only from a newly created attempt.
-- [ ] Persist gateway idempotency and operation state before Cloudflare I/O.
-- [ ] Expose status-only readback for timeout, disconnect, response loss,
+- [x] Accept one frozen create-once command only from a newly created attempt.
+- [x] Persist gateway idempotency and operation state before Cloudflare I/O.
+- [x] Expose status-only readback for timeout, disconnect, response loss,
   restart, and rollout recovery.
-- [ ] Prove every ambiguous outcome performs zero mutation resend.
-- [ ] Append gateway outcomes to the Authority event stream without rewriting
+- [x] Prove locally every ambiguous outcome performs zero mutation resend.
+- [x] Append gateway outcomes to the Authority event stream without rewriting
   the initial attempt.
 - [ ] Keep all local/staging mutation gates false until the complete staging
   evidence bundle is approved.
 
 Application inventory remains 66 migrations / 77 tables / 1096 checked
-incremental columns / 111 key indexes. Authority inventory is `0001-0005`.
+incremental columns / 111 key indexes. Authority inventory is `0001-0006`.
 Production placement configuration remains absent, no secret or remote state
 was accessed, Go/VPS remains authoritative, and production remains
 **NO-GO**.
@@ -2174,19 +2174,19 @@ was accessed, Go/VPS remains authoritative, and production remains
 
 ### Authority integration
 
-- [ ] Add migration 0006 append-only gateway dispatch, outcome, and status
+- [x] Add migration 0006 append-only gateway dispatch, outcome, and status
   evidence without updating migration 0005 rows.
-- [ ] Add a private Service Binding from Authority to the gateway.
+- [x] Add a private Service Binding from Authority to the gateway.
 - [ ] Provision create/status HMAC identities that are pairwise isolated from
   every existing Authority/Application/Controller role.
-- [ ] Call create only from the definite `sendAttemptCreated=true` branch.
-- [ ] Prove every Authority exact replay performs zero gateway create call.
-- [ ] Bind the Gateway request to the persisted attempt and
+- [x] Call create only from the definite `sendAttemptCreated=true` branch.
+- [x] Prove every Authority exact replay performs zero gateway create call.
+- [x] Bind the Gateway request to the persisted attempt and
   `send_started` event digests.
-- [ ] Append accepted/rejected/ambiguous outcome and consecutive stable status
+- [x] Append accepted/rejected/ambiguous outcome and consecutive stable status
   evidence to Authority.
 - [ ] Close operation 5 only from exact stable status evidence.
-- [ ] Fix the Controller status response/Rust strict-parser contract before
+- [x] Fix the Controller status response/Rust strict-parser contract before
   adding optional Controller runtime attestation.
 
 ### Remote staging promotion

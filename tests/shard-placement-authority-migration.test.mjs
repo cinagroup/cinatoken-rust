@@ -67,6 +67,7 @@ describe("shard placement Authority migration", () => {
       "0003_shard_placement_dispatch_consumptions.sql",
       "0004_shard_placement_dispatch_consumption_recoveries.sql",
       "0005_operation_five_send_attempts.sql",
+      "0006_operation_five_gateway_events.sql",
     ]);
   });
 

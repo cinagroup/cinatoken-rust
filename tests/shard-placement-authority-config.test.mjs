@@ -23,6 +23,7 @@ describe("shard placement Authority configuration", () => {
       "0003_shard_placement_dispatch_consumptions.sql",
       "0004_shard_placement_dispatch_consumption_recoveries.sql",
       "0005_operation_five_send_attempts.sql",
+      "0006_operation_five_gateway_events.sql",
     ]);
     for (const environment of ["local", "staging"]) {
       expect(report.environments[environment]).toMatchObject({
@@ -30,6 +31,7 @@ describe("shard placement Authority configuration", () => {
           "d1_databases.DB",
           "version_metadata.CF_VERSION_METADATA",
           "services.SHARD_PLACEMENT_APPLICATION",
+          "services.CONTROLLER_DEPLOYMENT_GATEWAY",
         ],
         gatesDefaultOff: true,
         ingress: "service_binding_only",
@@ -48,10 +50,16 @@ describe("shard placement Authority configuration", () => {
       preview_urls: false,
       observability: { enabled: true, head_sampling_rate: 1 },
       version_metadata: { binding: "CF_VERSION_METADATA" },
-      services: [{
-        binding: "SHARD_PLACEMENT_APPLICATION",
-        service: "cinatoken-rust-api-local",
-      }],
+      services: [
+        {
+          binding: "SHARD_PLACEMENT_APPLICATION",
+          service: "cinatoken-rust-api-local",
+        },
+        {
+          binding: "CONTROLLER_DEPLOYMENT_GATEWAY",
+          service: "cinatoken-controller-deployment-gateway-local",
+        },
+      ],
       vars: {
         ENVIRONMENT: "local",
         SHARD_PLACEMENT_AUTHORITY_ENABLED: "false",
@@ -77,6 +85,30 @@ describe("shard placement Authority configuration", () => {
           "false",
         SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECEIPT_WRITE_ENABLED:
           "false",
+        SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED:
+          "false",
+        SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_RECEIPT_WRITE_ENABLED:
+          "false",
+        SHARD_PLACEMENT_AUTHORITY_SEND_ATTEMPT_WRITE_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED: "false",
+        CONTROLLER_DEPLOYMENT_GATEWAY_ISSUER:
+          "cinatoken-shard-placement-authority-local",
+        CONTROLLER_DEPLOYMENT_GATEWAY_AUDIENCE:
+          "cinatoken-controller-deployment-gateway-local",
+        CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_CURRENT_KID: "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_PREVIOUS_KID: "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_CURRENT_KID: "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_KID: "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
+          "",
         SHARD_PLACEMENT_APPLICATION_ISSUER:
           "cinatoken-shard-placement-authority-local",
         SHARD_PLACEMENT_APPLICATION_AUDIENCE:

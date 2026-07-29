@@ -24174,3 +24174,125 @@ secret, query or mutate Cloudflare remote state, deploy a Worker, apply a
 remote migration, or change Controller, Container, traffic, billing, DNS, or
 Go/VPS state. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.329 Authority To Deployment Gateway Integration (2026-07-29)
+
+This checkpoint implements the local operation-5 Authority-to-Gateway
+boundary. It supersedes the remaining local integration items in 22.328. It
+does not deploy, enable a gate, read Cloudflare remote state, or close
+operation 5 terminally.
+
+The detailed trust boundary, failure matrix, gate order, rollback procedure,
+and remaining terminal contract are maintained in
+[`controller-deployment-gateway-authority-integration.md`](controller-deployment-gateway-authority-integration.md).
+
+### Atomic create authority
+
+Authority migration 0006 creates an immutable Gateway event side table and
+projects every insert into the migration-0005 send-attempt event stream. It
+does not update or rebuild migration-0005 rows.
+
+The Authority send route now commits these rows in one first-primary D1 batch:
+
+1. the unique operation-5 send attempt;
+2. sequence 1 `send_started`; and
+3. sequence 2 `gateway_create_dispatched`.
+
+Only a definite new three-row result authorizes the current invocation to call
+the private Gateway Service Binding. Exact replay, unknown D1 result,
+concurrent loss, partial readback, divergent readback, and a prior result-event
+write failure perform zero create calls.
+
+Authority independently reconstructs the canonical Cloudflare deployment body
+and persists its mutation digest before the call. The Gateway response must
+repeat that exact digest together with the attempt, command, idempotency, and
+request identities.
+
+### Create result and crash recovery
+
+Gateway create remains one-shot, no-retry, 3-second bounded, 4 KiB request,
+and 64 KiB response. Authority appends sequence 3 as accepted, rejected, or
+ambiguous. Timeout, transport failure, malformed response, response loss, and
+unknown outcome become ambiguous plus `status_only`.
+
+If Gateway may have completed but Authority cannot persist sequence 3, the
+request fails. The already committed three-row authority prevents start-route
+replay from calling create again.
+
+Authority adds a distinct recovery-role route:
+
+```text
+POST /internal/v1/shard-placement/execution-claims/{authorization_id_sha256}/read-enable-dispatch-status
+```
+
+It reconstructs and hashes the frozen command from the immutable attempt,
+validates the contiguous Gateway event chain, and calls only Gateway status.
+A dispatch-only crash is first normalized to
+`gateway_create_ambiguous`; recovery never calls create.
+
+Status results append target, baseline, drift, ambiguous, or stable events.
+Stable requires the immediately previous Authority event to contain the same
+target observation digest and satisfy the Gateway stability interval. Repeated
+matching observation digests are therefore valid and are not globally unique.
+
+### Trust and configuration
+
+Authority local and staging configs now contain:
+
+- the private `CONTROLLER_DEPLOYMENT_GATEWAY` Service Binding;
+- separate create/status current/previous public HMAC identities;
+- no HMAC secret and no Cloudflare API token;
+- `SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED=false`;
+- `SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED=false`; and
+- `SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED=false`.
+
+Runtime trust validation requires complete Gateway client configuration and
+cross-role credential isolation before any active create/status path. The
+configuration audit requires exactly two private Authority Service Bindings,
+six Authority migrations, all new gates false, all Gateway secrets absent,
+and no production configuration.
+
+### Controller status compatibility
+
+Controller `/internal/v1/status` now uses one exact v1 serializer. A shared
+golden fixture is emitted by TypeScript and parsed by Rust with
+`deny_unknown_fields`. The former five-field mismatch is removed. Rust also
+validates jurisdiction state and Controller service identity, and continues
+to reject missing and unknown fields.
+
+### Local evidence
+
+The focused local gates pass:
+
+- Authority type generation, TypeScript, Wrangler dry-run, 77 unit tests,
+  seven Workerd send/Gateway transaction tests, six Authority runtime tests,
+  and migration/config audit;
+- Gateway type generation, TypeScript, Wrangler dry-run, nine unit tests,
+  three Workerd tests, and migration/config audit;
+- Controller type generation, TypeScript, Wrangler dry-run, protocol,
+  portable cross-runtime, and Workerd suites; and
+- Rust Controller client: 20 tests passed.
+
+Workerd proves that the send attempt, initial event, and Gateway dispatch
+evidence commit atomically and project into the shared event stream. Unit fault
+tests prove fresh create count one, exact replay count zero, response-loss
+ambiguity, result-write failure followed by create-free replay, status-only
+recovery, and stable repeated target evidence.
+
+All outbound Cloudflare behavior remains synthetic. No credential value,
+remote D1 state, Worker deployment, remote migration, DNS, traffic, billing,
+Container, or Go/VPS state was accessed or changed.
+
+### Remaining P0
+
+`gateway_status_stable` is evidence, not operation-5 terminal authority. The
+next local P0 is a dedicated exact-replay-safe operation-5 terminal receipt
+that atomically binds the stable Gateway event digest to the execution claim,
+ledger head, Controller enabled version, Worker versions, and next operation
+ordinal.
+
+Remote D1 schema/trigger readback, least-privilege deploy/read token proof,
+HMAC rotation, at-most-one mutation fault campaigns, status drift/outage
+campaigns, operations 6-14, reverse sync, drain, traffic and DNS cutover, and
+security/SRE approvals remain open. Go/VPS remains authoritative and
+production remains **NO-GO**.

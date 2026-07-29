@@ -12,8 +12,15 @@ const sendAttemptMigration = authorityMigrations.find(
   (migration) =>
     migration.name === "0005_operation_five_send_attempts.sql",
 );
-if (sendAttemptMigration === undefined) {
-  throw new Error("operation-5 send attempt migration is missing");
+const gatewayEventMigration = authorityMigrations.find(
+  (migration) =>
+    migration.name === "0006_operation_five_gateway_events.sql",
+);
+if (
+  sendAttemptMigration === undefined
+  || gatewayEventMigration === undefined
+) {
+  throw new Error("operation-5 send/gateway migrations are missing");
 }
 
 export default defineConfig({
@@ -26,6 +33,7 @@ export default defineConfig({
           TEST_D1_MIGRATIONS: [
             ...baseline,
             sendAttemptMigration,
+            gatewayEventMigration,
           ],
         },
         d1Databases: {

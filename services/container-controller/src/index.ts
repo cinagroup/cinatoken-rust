@@ -58,6 +58,7 @@ import {
   parseContainerOperationResponse,
   terminalAckV3Response,
 } from "./operation_outcome";
+import { controllerStatusV1Response } from "./controller_status";
 import {
   handleOperationStatusRequest,
   handleOperationStatusV2Request,
@@ -1796,52 +1797,44 @@ const handler: ExportedHandler<ControllerEnv> = {
           env,
           Math.floor(Date.now() / 1000),
         );
-        return new Response(
-          JSON.stringify({
-            controller_enabled: env.CONTAINER_CONTROLLER_ENABLED === "true",
-            execution_enabled: env.CONTAINER_EXECUTION_ENABLED === "true",
-            protocol_version: Number(env.CONTAINER_PROTOCOL_VERSION),
-            ring_generation: Number(env.CONTAINER_RING_GENERATION),
-            shard_count: Number(env.CONTAINER_SHARD_COUNT),
-            ring_transition_configured: ringTransition.configured,
-            ring_transition_valid: ringTransition.valid,
-            previous_ring_generation: ringTransition.previous_ring_generation,
-            previous_shard_count: ringTransition.previous_shard_count,
-            previous_ring_admission_started_at: ringTransition.admission_started_at,
-            previous_ring_admission_until: ringTransition.admission_until,
-            previous_ring_admission_open: ringTransition.admission_open,
-            controller_version_id: env.CF_VERSION_METADATA.id,
-            durable_object_jurisdiction: jurisdictionPolicy.jurisdiction,
-            durable_object_jurisdiction_restricted:
-              jurisdictionPolicy.restricted,
-            durable_object_jurisdiction_enabled:
-              env.CONTAINER_DURABLE_OBJECT_JURISDICTION_ENABLED === "true",
-            durable_object_jurisdiction_staging_verified:
-              env.CONTAINER_DURABLE_OBJECT_JURISDICTION_STAGING_VERIFIED ===
-              "true",
-            shard_activation_write_enabled:
-              env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] === "true",
-            shard_activation_candidate_build_configured:
-              /^[0-9a-f]{64}$/.test(
-                env.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID,
-              ),
-            shard_placement_attestation_write_enabled:
-              placementPolicy.enabled,
-            shard_placement_attestation_staging_verified:
-              placementPolicy.staging_verified,
-            controller_service_name:
-              env.CONTAINER_CONTROLLER_SERVICE_NAME,
-            all_action_gates_false: actionGates.allActionGatesFalse,
-            action_gate_inventory_sha256: actionGates.digestSha256,
-            authority_current_secret_configured: authoritySecretConfigured(
-              env.CONTAINER_AUTHORITY_CURRENT_SECRET,
-            ),
-            authority_previous_secret_configured:
-              env.CONTAINER_AUTHORITY_PREVIOUS_SECRET !== undefined &&
-              authoritySecretConfigured(env.CONTAINER_AUTHORITY_PREVIOUS_SECRET),
-          }),
-          { status: 200, headers: jsonHeaders },
-        );
+        return controllerStatusV1Response({
+          controller_enabled: env.CONTAINER_CONTROLLER_ENABLED === "true",
+          execution_enabled: env.CONTAINER_EXECUTION_ENABLED === "true",
+          protocol_version: Number(env.CONTAINER_PROTOCOL_VERSION),
+          ring_generation: Number(env.CONTAINER_RING_GENERATION),
+          shard_count: Number(env.CONTAINER_SHARD_COUNT),
+          ring_transition_configured: ringTransition.configured,
+          ring_transition_valid: ringTransition.valid,
+          previous_ring_generation: ringTransition.previous_ring_generation,
+          previous_shard_count: ringTransition.previous_shard_count,
+          previous_ring_admission_started_at: ringTransition.admission_started_at,
+          previous_ring_admission_until: ringTransition.admission_until,
+          previous_ring_admission_open: ringTransition.admission_open,
+          controller_version_id: env.CF_VERSION_METADATA.id,
+          durable_object_jurisdiction: jurisdictionPolicy.jurisdiction,
+          durable_object_jurisdiction_restricted: jurisdictionPolicy.restricted,
+          durable_object_jurisdiction_enabled:
+            env.CONTAINER_DURABLE_OBJECT_JURISDICTION_ENABLED === "true",
+          durable_object_jurisdiction_staging_verified:
+            env.CONTAINER_DURABLE_OBJECT_JURISDICTION_STAGING_VERIFIED === "true",
+          shard_activation_write_enabled:
+            env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] === "true",
+          shard_activation_candidate_build_configured: /^[0-9a-f]{64}$/.test(
+            env.CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID,
+          ),
+          shard_placement_attestation_write_enabled: placementPolicy.enabled,
+          shard_placement_attestation_staging_verified:
+            placementPolicy.staging_verified,
+          controller_service_name: env.CONTAINER_CONTROLLER_SERVICE_NAME,
+          all_action_gates_false: actionGates.allActionGatesFalse,
+          action_gate_inventory_sha256: actionGates.digestSha256,
+          authority_current_secret_configured: authoritySecretConfigured(
+            env.CONTAINER_AUTHORITY_CURRENT_SECRET,
+          ),
+          authority_previous_secret_configured:
+            env.CONTAINER_AUTHORITY_PREVIOUS_SECRET !== undefined &&
+            authoritySecretConfigured(env.CONTAINER_AUTHORITY_PREVIOUS_SECRET),
+        });
       }
       if (path === INTERNAL_READINESS_PATH) {
         const verified = await verifyReadinessRequest(request, env);

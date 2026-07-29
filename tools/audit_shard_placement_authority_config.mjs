@@ -47,6 +47,12 @@ export const REQUIRED_DISABLED_GATES = Object.freeze([
   "SHARD_PLACEMENT_AUTHORITY_DISPATCH_CLAIM_WRITE_ENABLED",
   "SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_WRITE_ENABLED",
   "SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECEIPT_WRITE_ENABLED",
+  "SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED",
+  "SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_RECEIPT_WRITE_ENABLED",
+  "SHARD_PLACEMENT_AUTHORITY_SEND_ATTEMPT_WRITE_ENABLED",
+  "SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED",
+  "SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED",
+  "SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED",
 ]);
 export const REQUIRED_REMOTE_BINDINGS = Object.freeze([
   "SHARD_PLACEMENT_PERMIT_SPKI_BASE64URL",
@@ -81,6 +87,12 @@ export const REQUIRED_REMOTE_BINDINGS = Object.freeze([
   "SHARD_PLACEMENT_APPLICATION_PRE_ENABLE_GRANT_HMAC_CURRENT_SECRET",
   "SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_CURRENT_SECRET",
   "SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_SECRET",
+  "SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_SECRET",
+  "SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_SECRET",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_CURRENT_SECRET",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_PREVIOUS_SECRET",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_CURRENT_SECRET",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_SECRET",
 ]);
 
 const WORKER_NAMES = Object.freeze({
@@ -130,6 +142,8 @@ const EMPTY_TRUST_PATTERNS = Object.freeze([
   /^SHARD_PLACEMENT_APPLICATION_(?:ACTIVATION|ACK)_READ_HMAC_CURRENT_(?:KID|CREDENTIAL_ID_SHA256)$/,
   /^SHARD_PLACEMENT_APPLICATION_PRE_ENABLE_GRANT_HMAC_CURRENT_(?:KID|CREDENTIAL_ID_SHA256)$/,
   /^SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_(?:CURRENT|PREVIOUS)_(?:KID|CREDENTIAL_ID_SHA256)$/,
+  /^SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_(?:CURRENT|PREVIOUS)_(?:KID|CREDENTIAL_ID_SHA256)$/,
+  /^CONTROLLER_DEPLOYMENT_GATEWAY_(?:CREATE|STATUS)_HMAC_(?:CURRENT|PREVIOUS)_(?:KID|CREDENTIAL_ID_SHA256)$/,
 ]);
 const DATABASE_ID =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|REPLACE_WITH_[A-Z0-9_]+)$/i;
@@ -201,9 +215,9 @@ export function auditConfig(config, environment) {
     { binding: "CF_VERSION_METADATA" },
     "version_metadata",
   );
-  if (!Array.isArray(config.services) || config.services.length !== 1) {
+  if (!Array.isArray(config.services) || config.services.length !== 2) {
     throw new ShardPlacementAuthorityConfigAuditError(
-      "exactly one application Service Binding is required",
+      "exactly two private Service Bindings are required",
     );
   }
   requireExactObject(
@@ -213,6 +227,15 @@ export function auditConfig(config, environment) {
       service: `cinatoken-rust-api-${environment}`,
     },
     "application Service Binding",
+  );
+  requireExactObject(
+    config.services[1],
+    {
+      binding: "CONTROLLER_DEPLOYMENT_GATEWAY",
+      service:
+        `cinatoken-controller-deployment-gateway-${environment}`,
+    },
+    "controller deployment Gateway Service Binding",
   );
   if (
     !isRecord(config.observability)
@@ -229,6 +252,16 @@ export function auditConfig(config, environment) {
     );
   }
   requireEqual(config.vars.ENVIRONMENT, environment, "ENVIRONMENT");
+  requireEqual(
+    config.vars.CONTROLLER_DEPLOYMENT_GATEWAY_ISSUER,
+    `cinatoken-shard-placement-authority-${environment}`,
+    "CONTROLLER_DEPLOYMENT_GATEWAY_ISSUER",
+  );
+  requireEqual(
+    config.vars.CONTROLLER_DEPLOYMENT_GATEWAY_AUDIENCE,
+    `cinatoken-controller-deployment-gateway-${environment}`,
+    "CONTROLLER_DEPLOYMENT_GATEWAY_AUDIENCE",
+  );
   for (const gate of REQUIRED_DISABLED_GATES) {
     requireEqual(config.vars[gate], "false", gate);
   }
@@ -307,6 +340,7 @@ export function auditConfig(config, environment) {
       "d1_databases.DB",
       "version_metadata.CF_VERSION_METADATA",
       "services.SHARD_PLACEMENT_APPLICATION",
+      "services.CONTROLLER_DEPLOYMENT_GATEWAY",
     ]),
     databaseName: DATABASES[environment],
     ingress: "service_binding_only",
@@ -358,7 +392,7 @@ export async function auditTrackedConfigs({
     .map((entry) => entry.name)
     .sort();
   if (
-    migrationFiles.length !== 5
+    migrationFiles.length !== 6
     || migrationFiles[0]
       !== "0001_shard_placement_authorizations.sql"
     || migrationFiles[1]
@@ -369,6 +403,8 @@ export async function auditTrackedConfigs({
       !== "0004_shard_placement_dispatch_consumption_recoveries.sql"
     || migrationFiles[4]
       !== "0005_operation_five_send_attempts.sql"
+    || migrationFiles[5]
+      !== "0006_operation_five_gateway_events.sql"
   ) {
     throw new ShardPlacementAuthorityConfigAuditError(
       "Authority migration inventory is invalid",

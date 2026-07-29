@@ -40,8 +40,16 @@ import {
 } from "./recover_enable_dispatch_consumption";
 import {
   parseStartEnableDispatchSendCommand,
-  startControllerEnableDispatchSend,
 } from "./start_enable_dispatch_send";
+import {
+  parseReadEnableDispatchStatusCommand,
+  readControllerEnableDispatchGatewayStatus,
+  startControllerEnableDispatchThroughGateway,
+} from "./operation_five_gateway_dispatch";
+import {
+  validateControllerDeploymentGatewayClientConfig,
+  type ControllerDeploymentGatewayClientEnv,
+} from "./controller_deployment_gateway_client";
 import {
   beginControllerEnable,
   parseBeginEnableCommand,
@@ -93,7 +101,8 @@ export interface AuthorityEnv
     ApplicationAuthorityAckClientEnv,
     ApplicationPreEnableGrantClientEnv,
     ApplicationDispatchConsumptionClientEnv,
-    ApplicationDispatchConsumptionHistoryClientEnv {
+    ApplicationDispatchConsumptionHistoryClientEnv,
+    ControllerDeploymentGatewayClientEnv {
   DB: D1Database;
   CF_VERSION_METADATA: WorkerVersionMetadata;
   ENVIRONMENT: string;
@@ -123,6 +132,9 @@ export interface AuthorityEnv
   SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_RECEIPT_WRITE_ENABLED:
     string;
   SHARD_PLACEMENT_AUTHORITY_SEND_ATTEMPT_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED: string;
   SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: string;
@@ -158,6 +170,8 @@ const EXECUTION_RECOVER_ENABLE_DISPATCH_CONSUMPTION_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/recover-enable-dispatch-consumption$/;
 const EXECUTION_START_ENABLE_DISPATCH_SEND_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/start-enable-dispatch-send$/;
+const EXECUTION_READ_ENABLE_DISPATCH_STATUS_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/read-enable-dispatch-status$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -479,16 +493,47 @@ export default {
             400,
           );
         }
-        const result = await startControllerEnableDispatchSend(
-          env,
-          command,
-          authentication,
-        );
+        const result =
+          await startControllerEnableDispatchThroughGateway(
+            env,
+            command,
+            authentication,
+          );
         return jsonResponse(
           result.result === "send_attempt_created" ? 201 : 200,
           {
             contract:
               "cinatoken-shard-placement-authority-start-enable-dispatch-send-result-v1",
+            ...result,
+          },
+        );
+      }
+
+      if (route.kind === "execution_read_enable_dispatch_status") {
+        const command =
+          parseReadEnableDispatchStatusCommand(body);
+        if (
+          command.authorizationIdSha256
+            !== route.authorizationIdSha256
+        ) {
+          throw new ProtocolError(
+            "operation_five_gateway_status_path_mismatch",
+            400,
+          );
+        }
+        const result =
+          await readControllerEnableDispatchGatewayStatus(
+          env,
+          command,
+          authentication,
+        );
+        return jsonResponse(
+          result.result === "status_observation_recorded"
+            ? 201
+            : 200,
+          {
+            contract:
+              "cinatoken-shard-placement-authority-read-enable-dispatch-status-result-v1",
             ...result,
           },
         );
@@ -685,6 +730,10 @@ type Route =
     }
   | {
       kind: "execution_start_enable_dispatch_send";
+      authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_read_enable_dispatch_status";
       authorizationIdSha256: string;
     };
 
@@ -884,6 +933,21 @@ function matchRoute(request: Request): Route {
         executionStartEnableDispatchSendMatch[1]!,
     };
   }
+  const executionReadEnableDispatchStatusMatch =
+    EXECUTION_READ_ENABLE_DISPATCH_STATUS_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionReadEnableDispatchStatusMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_read_enable_dispatch_status",
+      authorizationIdSha256:
+        executionReadEnableDispatchStatusMatch[1]!,
+    };
+  }
   const authorizationMatch = AUTHORIZATION_ID_PATH.exec(url.pathname);
   if (request.method === "GET" && authorizationMatch !== null) {
     return {
@@ -920,6 +984,9 @@ function routeRole(kind: Route["kind"]): HmacRole {
   if (kind === "execution_claim_enable_dispatch") return "send";
   if (kind === "execution_consume_enable_dispatch") return "send";
   if (kind === "execution_start_enable_dispatch_send") return "send";
+  if (kind === "execution_read_enable_dispatch_status") {
+    return "recovery";
+  }
   if (kind === "execution_recover_enable_dispatch_consumption") {
     return "recovery";
   }
@@ -1075,6 +1142,34 @@ function requireRouteGate(
     );
   }
   if (
+    kind === "execution_start_enable_dispatch_send"
+    && (
+      env.SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED
+        !== "true"
+      || env.SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED
+        !== "true"
+    )
+  ) {
+    throw new ProtocolError(
+      "authority_gateway_create_disabled",
+      503,
+    );
+  }
+  if (
+    kind === "execution_read_enable_dispatch_status"
+    && (
+      env.SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED
+        !== "true"
+      || env.SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED
+        !== "true"
+    )
+  ) {
+    throw new ProtocolError(
+      "authority_gateway_status_disabled",
+      503,
+    );
+  }
+  if (
     kind === "execution_recover_enable_dispatch_consumption"
     && env
       .SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_RECEIPT_WRITE_ENABLED
@@ -1212,6 +1307,13 @@ export function validateRuntimeTrustConfiguration(
       === "true"
   ) {
     validateApplicationDispatchConsumptionHistoryClientConfig(env);
+  }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED === "true"
+    || env.SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED
+      === "true"
+  ) {
+    validateControllerDeploymentGatewayClientConfig(env);
   }
   requireApplicationHmacCredentialIsolation(env);
 }
@@ -1351,6 +1453,21 @@ function requireApplicationHmacCredentialIsolation(
   ) {
     prefixes.push(
       "SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC",
+    );
+  }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED === "true"
+  ) {
+    prefixes.push(
+      "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC",
+    );
+  }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED
+      === "true"
+  ) {
+    prefixes.push(
+      "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC",
     );
   }
   const active = prefixes.map((prefix) => ({

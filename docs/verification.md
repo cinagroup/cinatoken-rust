@@ -11678,3 +11678,58 @@ commit-response loss, pre-fetch death, in-fetch timeout, post-response death,
 outcome-commit loss, Worker rollout, target-drift sequences, and status
 outages while asserting Cloudflare mutation POST count never exceeds one.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Authority To Gateway Integration Verification
+
+Focused local acceptance passes:
+
+```text
+bun run check:shard-placement-authority
+  typegen current
+  TypeScript + Wrangler dry-run passed
+  unit tests: 77 passed
+  Workerd send/Gateway transaction tests: 7 passed
+  Authority runtime tests: 6 passed
+  migration/config audit passed
+
+bun run check:controller-deployment-gateway
+  typegen, dry-run, unit, Workerd, migration, and config gates passed
+
+bun run check:container-controller
+  typegen, dry-run, TypeScript, portable protocol, and Workerd gates passed
+
+cargo test -p cinatoken-worker --lib container_controller
+  20 passed
+```
+
+The new Authority unit fault matrix proves:
+
+- a fresh attempt creates one atomic Authority triple and makes one Gateway
+  create call;
+- an exact Authority replay makes zero Gateway create calls;
+- Gateway response loss appends `gateway_create_ambiguous`;
+- failure to append the create result does not allow create on replay;
+- recovery calls only Gateway status; and
+- a second matching target observation can append
+  `gateway_status_stable`.
+
+The Workerd suite applies migrations 0005 and 0006 and proves the send attempt,
+`send_started`, and Gateway dispatch commit atomically. The migration suite
+proves append-only projection, predecessor order, create/status role isolation,
+event-specific evidence constraints, stable-window enforcement, repeated
+matching observation digests, and update/delete denial.
+
+The Authority client independently recomputes the canonical Cloudflare
+deployment mutation digest and rejects a mismatched Gateway response. It
+strictly bounds and signs create/status Service Binding requests with separate
+credentials and performs no transport retry.
+
+The shared Controller status fixture proves TypeScript emits exactly the v1
+shape consumed by Rust. Rust rejects unknown and missing fields and validates
+jurisdiction and Controller service identity.
+
+This remains local evidence. It does not prove remote Service Binding
+resolution, remote D1 schema, Cloudflare token scope, HMAC rotation, real
+deployment mutation count, Worker rollout behavior, or operation-5 terminal
+closure. All tracked gates remain false, production configuration remains
+absent, Go/VPS remains authoritative, and production remains **NO-GO**.

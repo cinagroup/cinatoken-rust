@@ -1799,6 +1799,54 @@ also remain open. Exact-response and divergence compiled-readiness claims stay
 false, all eight Container gates remain false, no remote action occurred,
 Go/VPS remains authoritative, and production remains **NO-GO**.
 
+## 2026-07-29 Authority To Deployment Gateway Integration
+
+Authority migration 0006 now extends operation 5 without rewriting migration
+0005. A Gateway-specific immutable side table projects every dispatch,
+create-result, and status event into the existing send-attempt event stream.
+The event chain is contiguous, predecessor-bound, role-isolated, and protected
+against update and delete.
+
+The send route now commits the send attempt, `send_started`, and
+`gateway_create_dispatched` in one first-primary D1 batch. Only a definite new
+three-row result may call the private Gateway Service Binding. Exact replay,
+unknown D1 result, concurrent loss, and result-event write failure can never
+authorize another create.
+
+Gateway create uses a separate create HMAC, one request, no retry, a 3-second
+budget, 4 KiB canonical request, and 64 KiB response bound. Authority
+independently reconstructs the Cloudflare deployment mutation digest before
+persisting dispatch authority and rejects a mismatched Gateway response.
+Accepted, rejected, and ambiguous outcomes are appended at sequence 3.
+
+The new recovery-role route
+`read-enable-dispatch-status` reconstructs the frozen command from the
+immutable attempt and calls only Gateway status. A crash after dispatch but
+before create-result persistence is first normalized to
+`gateway_create_ambiguous`; recovery never calls create. Target, baseline,
+drift, ambiguous, and stable observations are append-preserved. Stable
+requires the same target observation in two consecutive Authority events and
+the Gateway stability interval.
+
+Authority and Gateway create/status credentials are independently validated.
+Tracked local and staging configs add only the private Service Binding, empty
+public credential identities, and three false gates. Secrets remain absent
+and production config remains absent.
+
+Controller `/internal/v1/status` now emits an exact v1 serializer shared by a
+golden fixture with the Rust strict parser. Jurisdiction and Controller
+service fields are semantically checked, while unknown and missing fields
+remain rejected.
+
+Focused Authority, Gateway, Controller, Workerd, migration, config, and Rust
+checks pass. The implementation and fault evidence remain local and synthetic.
+Operation 5 is not terminally closed: a dedicated receipt must still bind the
+stable Gateway event into the execution claim and advance the operation
+ordinal. Remote D1 readback, token scope, credential rotation, at-most-one
+mutation fault campaigns, operations 6-14, reverse sync, drain, traffic, DNS,
+and approvals remain open. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
 ## 2026-07-29 Controller Deployment Gateway Foundation
 
 Phase 1 now contains a separate local
@@ -1826,12 +1874,13 @@ checks pass. The Workerd outbound API is synthetic; all tracked gates remain
 false, production config is absent, and no real credential or remote state
 was used.
 
-The next Phase 1 P0 is Authority integration: migration 0006 append-only
-gateway events, private Service Binding, isolated create/status signers, a
-call only from the newly-created attempt branch, stable status receipt, and
-operation-5 terminal closure. The Controller status response/Rust strict
-parser incompatibility must also be fixed before Controller runtime
-attestation. Go/VPS remains authoritative and production remains **NO-GO**.
+Authority integration, migration 0006, fresh-only create, status-only
+recovery, stable Authority evidence, and the Controller status/Rust strict
+parser contract are now implemented locally in the
+Authority-to-Gateway checkpoint above. The remaining Phase 1 P0 is operation-5
+terminal closure from the stable event, followed by remote fault and
+least-privilege evidence. Go/VPS remains authoritative and production
+remains **NO-GO**.
 
 ## 2026-07-16 Phase 1 Bounded Container Reconciliation Observer Gate
 

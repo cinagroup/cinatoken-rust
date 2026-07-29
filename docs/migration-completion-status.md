@@ -2865,3 +2865,44 @@ events. Only the definite first attempt creation may submit; Authority replay
 must never call the create endpoint. Remote fault evidence, Controller status
 schema compatibility, operations 6-14, reverse sync, drain, traffic, DNS, and
 approvals remain blockers. Production remains **NO-GO**.
+
+## 2026-07-29 Authority To Gateway Integration Status
+
+| Item | Current status |
+|---|---|
+| Authority migration inventory | **0001-0006** |
+| Authority-to-Gateway Service Binding | **LOCALLY IMPLEMENTED, PRIVATE** |
+| Create/status HMAC clients | **IMPLEMENTED, ROLE-ISOLATED, NO RETRY** |
+| Send attempt + `send_started` + create dispatch | **ONE ATOMIC D1 BATCH** |
+| Authority exact replay create call | **ZERO** |
+| Gateway result evidence | **ACCEPTED / REJECTED / AMBIGUOUS APPEND-ONLY** |
+| Authority status recovery route | **IMPLEMENTED, STATUS-ONLY** |
+| Stable target evidence | **TWO CONSECUTIVE MATCHING AUTHORITY OBSERVATIONS** |
+| Controller status/Rust strict parser | **EXACT GOLDEN CONTRACT PASSED** |
+| Checked-in local/staging gates | **ALL FALSE** |
+| Gateway or Cloudflare secret in Authority | **ABSENT** |
+| Production placement config | **ABSENT** |
+| Remote Cloudflare/D1 evidence | **NOT COLLECTED** |
+| Operation-5 terminal closure | **NOT IMPLEMENTED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+Authority now persists the unique create authority before private Service
+Binding I/O. A definite fresh triple may make one Gateway create call. Every
+replay and every post-call persistence failure remains create-free.
+
+The recovery-role route reconstructs the command from immutable D1 state and
+uses only Gateway status. Dispatch-only crash state is normalized to an
+ambiguous create result before readback. Status observations are predecessor
+bound, and the same target digest may be recorded twice to prove stability.
+
+Focused Authority, Gateway, Controller, Workerd, migration/config, and Rust
+checks pass. All outbound provider behavior was synthetic. No gate, remote
+migration, secret, deployment, DNS, traffic, billing, Container, or Go/VPS
+state changed.
+
+The next local P0 is an operation-5 terminal receipt that atomically binds the
+stable Gateway event to the execution claim and advances the operation
+ordinal. Remote schema readback, token scope, credential rotation, fault
+campaigns, operations 6-14, reverse sync, drain, cutover, and approvals remain
+blockers. Production remains **NO-GO**.

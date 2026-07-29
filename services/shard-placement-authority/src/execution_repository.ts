@@ -396,6 +396,51 @@ const OPERATION_FIVE_SEND_ATTEMPT_EVENT_TRIGGERS = [
   "shard_placement_authority_operation_five_send_attempt_event_insert_guard",
   "shard_placement_authority_operation_five_send_attempt_event_update_guard",
 ] as const;
+const OPERATION_FIVE_GATEWAY_EVENT_COLUMNS = [
+  "authorization_id_sha256",
+  "attempt_digest_sha256",
+  "send_started_event_digest_sha256",
+  "event_sequence",
+  "contract_version",
+  "event_contract",
+  "event_kind",
+  "predecessor_event_digest_sha256",
+  "gateway_idempotency_key_sha256",
+  "controller_command_digest_sha256",
+  "gateway_credential_role",
+  "gateway_credential_id_sha256",
+  "gateway_request_id_sha256",
+  "gateway_response_sha256",
+  "gateway_response_bytes",
+  "gateway_version_id",
+  "mutation_request_sha256",
+  "result_classification",
+  "result_http_status",
+  "result_response_body_sha256",
+  "result_response_request_id_sha256",
+  "result_response_bytes",
+  "status_classification",
+  "deployments_http_status",
+  "version_http_status",
+  "deployment_set_sha256",
+  "target_version_sha256",
+  "status_response_request_id_sha256",
+  "observation_digest_sha256",
+  "gateway_recorded_at",
+  "target_stable",
+  "required_matching_observations",
+  "stability_minimum_seconds",
+  "stability_predecessor_observation_digest_sha256",
+  "stability_predecessor_recorded_at",
+  "event_digest_sha256",
+  "recorded_at",
+] as const;
+const OPERATION_FIVE_GATEWAY_EVENT_TRIGGERS = [
+  "shard_placement_authority_operation_five_gateway_event_append",
+  "shard_placement_authority_operation_five_gateway_event_delete_guard",
+  "shard_placement_authority_operation_five_gateway_event_insert_guard",
+  "shard_placement_authority_operation_five_gateway_event_update_guard",
+] as const;
 
 const SCHEMA_PROBE_SQL = `
 SELECT
@@ -566,6 +611,28 @@ SELECT
       ORDER BY name
     )
   ) AS operation_five_send_attempt_event_triggers
+  ,
+  (
+    SELECT group_concat(name, ',')
+    FROM (
+      SELECT name
+      FROM pragma_table_info(
+        'shard_placement_authority_operation_five_gateway_events'
+      )
+      ORDER BY cid
+    )
+  ) AS operation_five_gateway_event_columns,
+  (
+    SELECT group_concat(name, ',')
+    FROM (
+      SELECT name
+      FROM sqlite_schema
+      WHERE type = 'trigger'
+        AND tbl_name =
+          'shard_placement_authority_operation_five_gateway_events'
+      ORDER BY name
+    )
+  ) AS operation_five_gateway_event_triggers
 `.trim();
 
 const INSERT_CLAIM_SQL = `
@@ -894,6 +961,51 @@ WHERE authorization_id_sha256 = ?1
 LIMIT 1
 `.trim();
 
+const INSERT_OPERATION_FIVE_GATEWAY_EVENT_SQL = `
+INSERT INTO shard_placement_authority_operation_five_gateway_events (
+  authorization_id_sha256, attempt_digest_sha256,
+  send_started_event_digest_sha256, event_sequence,
+  contract_version, event_contract, event_kind,
+  predecessor_event_digest_sha256, gateway_idempotency_key_sha256,
+  controller_command_digest_sha256, gateway_credential_role,
+  gateway_credential_id_sha256, gateway_request_id_sha256,
+  gateway_response_sha256, gateway_response_bytes,
+  gateway_version_id, mutation_request_sha256,
+  result_classification, result_http_status,
+  result_response_body_sha256, result_response_request_id_sha256,
+  result_response_bytes, status_classification,
+  deployments_http_status, version_http_status,
+  deployment_set_sha256, target_version_sha256,
+  status_response_request_id_sha256, observation_digest_sha256,
+  gateway_recorded_at, target_stable,
+  required_matching_observations, stability_minimum_seconds,
+  stability_predecessor_observation_digest_sha256,
+  stability_predecessor_recorded_at, event_digest_sha256
+) VALUES (
+  ?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+  ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23,
+  ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34,
+  ?35
+)
+`.trim();
+
+const SELECT_OPERATION_FIVE_GATEWAY_EVENT_SQL = `
+SELECT ${OPERATION_FIVE_GATEWAY_EVENT_COLUMNS.join(", ")}
+FROM shard_placement_authority_operation_five_gateway_events
+WHERE authorization_id_sha256 = ?1
+  AND attempt_digest_sha256 = ?2
+  AND event_sequence = ?3
+LIMIT 1
+`.trim();
+
+const SELECT_OPERATION_FIVE_GATEWAY_EVENTS_SQL = `
+SELECT ${OPERATION_FIVE_GATEWAY_EVENT_COLUMNS.join(", ")}
+FROM shard_placement_authority_operation_five_gateway_events
+WHERE authorization_id_sha256 = ?1
+  AND attempt_digest_sha256 = ?2
+ORDER BY event_sequence
+`.trim();
+
 interface SchemaProbeRow {
   claim_columns: string;
   operation_columns: string;
@@ -911,6 +1023,8 @@ interface SchemaProbeRow {
   operation_five_send_attempt_triggers: string;
   operation_five_send_attempt_event_columns: string;
   operation_five_send_attempt_event_triggers: string;
+  operation_five_gateway_event_columns: string;
+  operation_five_gateway_event_triggers: string;
 }
 
 export interface ExecutionClaimRow {
@@ -1562,6 +1676,119 @@ export interface OperationFiveSendStartedEventRow {
 export interface OperationFiveSendAttemptPair {
   attempt: OperationFiveSendAttemptRow;
   event: OperationFiveSendStartedEventRow;
+}
+
+export type OperationFiveGatewayEventKind =
+  | "gateway_create_dispatched"
+  | "gateway_create_accepted"
+  | "gateway_create_rejected"
+  | "gateway_create_ambiguous"
+  | "gateway_status_target"
+  | "gateway_status_baseline"
+  | "gateway_status_drift"
+  | "gateway_status_ambiguous"
+  | "gateway_status_stable";
+
+export interface OperationFiveGatewayEvent {
+  authorizationIdSha256: string;
+  attemptDigestSha256: string;
+  sendStartedEventDigestSha256: string;
+  eventSequence: number;
+  eventContract:
+    "cinatoken-shard-placement-authority-operation-five-gateway-event-v1";
+  eventKind: OperationFiveGatewayEventKind;
+  predecessorEventDigestSha256: string;
+  gatewayIdempotencyKeySha256: string;
+  controllerCommandDigestSha256: string;
+  gatewayCredentialRole: "create" | "status";
+  gatewayCredentialIdSha256: string;
+  gatewayRequestIdSha256: string;
+  gatewayResponseSha256: string | null;
+  gatewayResponseBytes: number | null;
+  gatewayVersionId: string | null;
+  mutationRequestSha256: string | null;
+  resultClassification:
+    | "accepted"
+    | "rejected"
+    | "ambiguous"
+    | null;
+  resultHttpStatus: number | null;
+  resultResponseBodySha256: string | null;
+  resultResponseRequestIdSha256: string | null;
+  resultResponseBytes: number | null;
+  statusClassification:
+    | "target_observed"
+    | "baseline_observed"
+    | "deployment_drift"
+    | "ambiguous"
+    | null;
+  deploymentsHttpStatus: number | null;
+  versionHttpStatus: number | null;
+  deploymentSetSha256: string | null;
+  targetVersionSha256: string | null;
+  statusResponseRequestIdSha256: string | null;
+  observationDigestSha256: string | null;
+  gatewayRecordedAt: number | null;
+  targetStable: 0 | 1 | null;
+  requiredMatchingObservations: 2 | null;
+  stabilityMinimumSeconds: number | null;
+  stabilityPredecessorObservationDigestSha256: string | null;
+  stabilityPredecessorRecordedAt: number | null;
+  eventDigestSha256: string;
+}
+
+export interface OperationFiveGatewayEventRow {
+  authorization_id_sha256: string;
+  attempt_digest_sha256: string;
+  send_started_event_digest_sha256: string;
+  event_sequence: number;
+  contract_version: number;
+  event_contract: string;
+  event_kind: OperationFiveGatewayEventKind;
+  predecessor_event_digest_sha256: string;
+  gateway_idempotency_key_sha256: string;
+  controller_command_digest_sha256: string;
+  gateway_credential_role: "create" | "status";
+  gateway_credential_id_sha256: string;
+  gateway_request_id_sha256: string;
+  gateway_response_sha256: string | null;
+  gateway_response_bytes: number | null;
+  gateway_version_id: string | null;
+  mutation_request_sha256: string | null;
+  result_classification:
+    | "accepted"
+    | "rejected"
+    | "ambiguous"
+    | null;
+  result_http_status: number | null;
+  result_response_body_sha256: string | null;
+  result_response_request_id_sha256: string | null;
+  result_response_bytes: number | null;
+  status_classification:
+    | "target_observed"
+    | "baseline_observed"
+    | "deployment_drift"
+    | "ambiguous"
+    | null;
+  deployments_http_status: number | null;
+  version_http_status: number | null;
+  deployment_set_sha256: string | null;
+  target_version_sha256: string | null;
+  status_response_request_id_sha256: string | null;
+  observation_digest_sha256: string | null;
+  gateway_recorded_at: number | null;
+  target_stable: 0 | 1 | null;
+  required_matching_observations: 2 | null;
+  stability_minimum_seconds: number | null;
+  stability_predecessor_observation_digest_sha256: string | null;
+  stability_predecessor_recorded_at: number | null;
+  event_digest_sha256: string;
+  recorded_at: number;
+}
+
+export interface OperationFiveGatewayDispatchTriple {
+  pair: OperationFiveSendAttemptPair;
+  dispatch: OperationFiveGatewayEventRow;
 }
 
 export async function createExecutionClaim(
@@ -2511,6 +2738,145 @@ export async function createOperationFiveSendAttemptPair(
   );
 }
 
+export async function createOperationFiveGatewayDispatchTriple(
+  database: D1Database,
+  attempt: OperationFiveSendAttempt,
+  event: OperationFiveSendStartedEvent,
+  dispatch: OperationFiveGatewayEvent,
+): Promise<{
+  classification: "created" | "exact_replay";
+  triple: OperationFiveGatewayDispatchTriple;
+}> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  let writeOutcome: "created" | "failed" | "unknown";
+  try {
+    const results = await session.batch([
+      operationFiveSendAttemptInsertStatement(session, attempt),
+      operationFiveSendAttemptEventInsertStatement(session, event),
+      operationFiveGatewayEventInsertStatement(session, dispatch),
+    ]);
+    writeOutcome =
+      results.length === 3
+        && results.every((result) => result.success === true)
+        && results[0]?.meta?.changes === 1
+        && results[1]?.meta?.changes === 1
+        && (results[2]?.meta?.changes ?? 0) >= 1
+        ? "created"
+        : "unknown";
+  } catch {
+    writeOutcome = "failed";
+  }
+
+  const pair = await readOperationFiveSendAttemptPair(
+    session,
+    attempt.authorizationIdSha256,
+  );
+  const persistedDispatch = await readOperationFiveGatewayEvent(
+    session,
+    attempt.authorizationIdSha256,
+    attempt.attemptDigestSha256,
+    dispatch.eventSequence,
+  );
+  if (pair === null || persistedDispatch === null) {
+    if (writeOutcome === "failed") {
+      throw new RepositoryConflictError(
+        "operation_five_gateway_dispatch_not_created",
+      );
+    }
+    throw new RepositoryUnavailableError(true);
+  }
+  if (
+    !matchesOperationFiveSendAttempt(pair.attempt, attempt)
+    || !matchesOperationFiveSendStartedEvent(pair.event, event)
+    || !matchesOperationFiveGatewayEvent(persistedDispatch, dispatch)
+  ) {
+    if (writeOutcome === "failed") {
+      throw new RepositoryConflictError(
+        "operation_five_gateway_dispatch_conflict",
+      );
+    }
+    throw new RepositoryUnavailableError(true);
+  }
+  return {
+    classification: writeOutcome === "created"
+      ? "created"
+      : "exact_replay",
+    triple: { pair, dispatch: persistedDispatch },
+  };
+}
+
+export async function appendOperationFiveGatewayEvent(
+  database: D1Database,
+  event: OperationFiveGatewayEvent,
+): Promise<{
+  classification: "created" | "exact_replay";
+  event: OperationFiveGatewayEventRow;
+}> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  let writeOutcome: "created" | "failed" | "unknown";
+  try {
+    const results = await session.batch([
+      operationFiveGatewayEventInsertStatement(session, event),
+    ]);
+    writeOutcome =
+      results.length === 1
+        && results[0]?.success === true
+        && (results[0].meta?.changes ?? 0) >= 1
+        ? "created"
+        : "unknown";
+  } catch {
+    writeOutcome = "failed";
+  }
+  const persisted = await readOperationFiveGatewayEvent(
+    session,
+    event.authorizationIdSha256,
+    event.attemptDigestSha256,
+    event.eventSequence,
+  );
+  if (persisted === null) {
+    if (writeOutcome === "failed") {
+      throw new RepositoryConflictError(
+        "operation_five_gateway_event_not_created",
+      );
+    }
+    throw new RepositoryUnavailableError(true);
+  }
+  if (!matchesOperationFiveGatewayEvent(persisted, event)) {
+    if (writeOutcome === "failed") {
+      throw new RepositoryConflictError(
+        "operation_five_gateway_event_conflict",
+      );
+    }
+    throw new RepositoryUnavailableError(true);
+  }
+  return {
+    classification: writeOutcome === "created"
+      ? "created"
+      : "exact_replay",
+    event: persisted,
+  };
+}
+
+export async function readOperationFiveGatewayEventChain(
+  database: D1Database,
+  authorizationIdSha256: string,
+  attemptDigestSha256: string,
+): Promise<OperationFiveGatewayEventRow[]> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  try {
+    const rows = await session
+      .prepare(SELECT_OPERATION_FIVE_GATEWAY_EVENTS_SQL)
+      .bind(authorizationIdSha256, attemptDigestSha256)
+      .all<OperationFiveGatewayEventRow>();
+    return rows.results;
+  } catch {
+    throw new RepositoryUnavailableError(true);
+  }
+}
+
 function classifyOperationFiveSendAttemptPairReadback(
   writeOutcome: "created" | "failed" | "unknown",
   persisted: OperationFiveSendAttemptPair | null,
@@ -2692,6 +3058,51 @@ function operationFiveSendAttemptEventInsertStatement(
     );
 }
 
+function operationFiveGatewayEventInsertStatement(
+  session: D1DatabaseSession,
+  event: OperationFiveGatewayEvent,
+): D1PreparedStatement {
+  return session
+    .prepare(INSERT_OPERATION_FIVE_GATEWAY_EVENT_SQL)
+    .bind(
+      event.authorizationIdSha256,
+      event.attemptDigestSha256,
+      event.sendStartedEventDigestSha256,
+      event.eventSequence,
+      event.eventContract,
+      event.eventKind,
+      event.predecessorEventDigestSha256,
+      event.gatewayIdempotencyKeySha256,
+      event.controllerCommandDigestSha256,
+      event.gatewayCredentialRole,
+      event.gatewayCredentialIdSha256,
+      event.gatewayRequestIdSha256,
+      event.gatewayResponseSha256,
+      event.gatewayResponseBytes,
+      event.gatewayVersionId,
+      event.mutationRequestSha256,
+      event.resultClassification,
+      event.resultHttpStatus,
+      event.resultResponseBodySha256,
+      event.resultResponseRequestIdSha256,
+      event.resultResponseBytes,
+      event.statusClassification,
+      event.deploymentsHttpStatus,
+      event.versionHttpStatus,
+      event.deploymentSetSha256,
+      event.targetVersionSha256,
+      event.statusResponseRequestIdSha256,
+      event.observationDigestSha256,
+      event.gatewayRecordedAt,
+      event.targetStable,
+      event.requiredMatchingObservations,
+      event.stabilityMinimumSeconds,
+      event.stabilityPredecessorObservationDigestSha256,
+      event.stabilityPredecessorRecordedAt,
+      event.eventDigestSha256,
+    );
+}
+
 async function requireExecutionSchema(
   session: D1DatabaseSession,
 ): Promise<void> {
@@ -2734,6 +3145,10 @@ async function requireExecutionSchema(
       !== OPERATION_FIVE_SEND_ATTEMPT_EVENT_COLUMNS.join(",")
     || row.operation_five_send_attempt_event_triggers
       !== OPERATION_FIVE_SEND_ATTEMPT_EVENT_TRIGGERS.join(",")
+    || row.operation_five_gateway_event_columns
+      !== OPERATION_FIVE_GATEWAY_EVENT_COLUMNS.join(",")
+    || row.operation_five_gateway_event_triggers
+      !== OPERATION_FIVE_GATEWAY_EVENT_TRIGGERS.join(",")
   ) {
     throw new RepositoryUnavailableError(false);
   }
@@ -2859,6 +3274,26 @@ async function readOperationFiveSendAttemptPair(
     throw new RepositoryUnavailableError(true);
   }
   return assembleOperationFiveSendAttemptPair(attempt, event);
+}
+
+async function readOperationFiveGatewayEvent(
+  session: D1DatabaseSession,
+  authorizationIdSha256: string,
+  attemptDigestSha256: string,
+  eventSequence: number,
+): Promise<OperationFiveGatewayEventRow | null> {
+  try {
+    return await session
+      .prepare(SELECT_OPERATION_FIVE_GATEWAY_EVENT_SQL)
+      .bind(
+        authorizationIdSha256,
+        attemptDigestSha256,
+        eventSequence,
+      )
+      .first<OperationFiveGatewayEventRow>();
+  } catch {
+    throw new RepositoryUnavailableError(true);
+  }
 }
 
 function assembleOperationFiveSendAttemptPair(
@@ -3657,6 +4092,66 @@ function matchesOperationFiveSendStartedEvent(
   );
 }
 
+function matchesOperationFiveGatewayEvent(
+  row: OperationFiveGatewayEventRow,
+  event: OperationFiveGatewayEvent,
+): boolean {
+  return (
+    row.authorization_id_sha256 === event.authorizationIdSha256
+    && row.attempt_digest_sha256 === event.attemptDigestSha256
+    && row.send_started_event_digest_sha256
+      === event.sendStartedEventDigestSha256
+    && row.event_sequence === event.eventSequence
+    && row.contract_version === 1
+    && row.event_contract === event.eventContract
+    && row.event_kind === event.eventKind
+    && row.predecessor_event_digest_sha256
+      === event.predecessorEventDigestSha256
+    && row.gateway_idempotency_key_sha256
+      === event.gatewayIdempotencyKeySha256
+    && row.controller_command_digest_sha256
+      === event.controllerCommandDigestSha256
+    && row.gateway_credential_role === event.gatewayCredentialRole
+    && row.gateway_credential_id_sha256
+      === event.gatewayCredentialIdSha256
+    && row.gateway_request_id_sha256
+      === event.gatewayRequestIdSha256
+    && row.gateway_response_sha256 === event.gatewayResponseSha256
+    && row.gateway_response_bytes === event.gatewayResponseBytes
+    && row.gateway_version_id === event.gatewayVersionId
+    && row.mutation_request_sha256 === event.mutationRequestSha256
+    && row.result_classification === event.resultClassification
+    && row.result_http_status === event.resultHttpStatus
+    && row.result_response_body_sha256
+      === event.resultResponseBodySha256
+    && row.result_response_request_id_sha256
+      === event.resultResponseRequestIdSha256
+    && row.result_response_bytes === event.resultResponseBytes
+    && row.status_classification === event.statusClassification
+    && row.deployments_http_status === event.deploymentsHttpStatus
+    && row.version_http_status === event.versionHttpStatus
+    && row.deployment_set_sha256 === event.deploymentSetSha256
+    && row.target_version_sha256 === event.targetVersionSha256
+    && row.status_response_request_id_sha256
+      === event.statusResponseRequestIdSha256
+    && row.observation_digest_sha256
+      === event.observationDigestSha256
+    && row.gateway_recorded_at === event.gatewayRecordedAt
+    && row.target_stable === event.targetStable
+    && row.required_matching_observations
+      === event.requiredMatchingObservations
+    && row.stability_minimum_seconds
+      === event.stabilityMinimumSeconds
+    && row.stability_predecessor_observation_digest_sha256
+      === event.stabilityPredecessorObservationDigestSha256
+    && row.stability_predecessor_recorded_at
+      === event.stabilityPredecessorRecordedAt
+    && row.event_digest_sha256 === event.eventDigestSha256
+    && Number.isSafeInteger(row.recorded_at)
+    && row.recorded_at > 0
+  );
+}
+
 export const executionRepositorySqlForTest = {
   insertClaim: INSERT_CLAIM_SQL,
   insertOperation: INSERT_OPERATION_SQL,
@@ -3687,6 +4182,10 @@ export const executionRepositorySqlForTest = {
     INSERT_OPERATION_FIVE_SEND_ATTEMPT_EVENT_SQL,
   selectOperationFiveSendAttemptEvent:
     SELECT_OPERATION_FIVE_SEND_ATTEMPT_EVENT_SQL,
+  insertOperationFiveGatewayEvent:
+    INSERT_OPERATION_FIVE_GATEWAY_EVENT_SQL,
+  selectOperationFiveGatewayEvent:
+    SELECT_OPERATION_FIVE_GATEWAY_EVENT_SQL,
 } as const;
 
 export const operationFiveSendAttemptRepositoryForTest = {

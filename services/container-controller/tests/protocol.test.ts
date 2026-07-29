@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import goldenVector from "../../../tests/fixtures/container-authority-v1.json";
+import controllerStatusV1Fixture from "./fixtures/controller-status-v1.json";
+import {
+  controllerStatusV1Response,
+  type ControllerStatusV1Payload,
+} from "../src/controller_status";
 import {
   AUTHORITY_HEADER,
   INTERNAL_OPERATION_PATH,
@@ -416,6 +421,45 @@ async function signedRequest(value = envelope(), overrides: Partial<AuthorityCla
 }
 
 describe("container controller private protocol", () => {
+  test("emits the Rust strict-parser Controller status v1 fixture exactly", async () => {
+    const payload = {
+      controller_enabled: false,
+      execution_enabled: false,
+      protocol_version: 1,
+      ring_generation: 7,
+      shard_count: 16,
+      ring_transition_configured: true,
+      ring_transition_valid: true,
+      previous_ring_generation: 6,
+      previous_shard_count: 8,
+      previous_ring_admission_started_at: 1_800_000_000,
+      previous_ring_admission_until: 1_800_000_300,
+      previous_ring_admission_open: true,
+      controller_version_id: "controller-version-test",
+      durable_object_jurisdiction: "default",
+      durable_object_jurisdiction_restricted: false,
+      durable_object_jurisdiction_enabled: false,
+      durable_object_jurisdiction_staging_verified: false,
+      shard_activation_write_enabled: false,
+      shard_activation_candidate_build_configured: true,
+      shard_placement_attestation_write_enabled: false,
+      shard_placement_attestation_staging_verified: false,
+      controller_service_name: "cinatoken-container-controller-test",
+      all_action_gates_false: true,
+      action_gate_inventory_sha256: "a".repeat(64),
+      authority_current_secret_configured: true,
+      authority_previous_secret_configured: false,
+    } satisfies ControllerStatusV1Payload;
+
+    const response = controllerStatusV1Response(payload);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toBe(
+      "application/json; charset=utf-8",
+    );
+    expect(await response.json()).toEqual(controllerStatusV1Fixture);
+  });
+
   test("verifies the Rust authority golden vector", async () => {
     const vector = goldenVector;
     const goldenEnv: AuthorityEnvironment = {

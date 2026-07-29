@@ -404,10 +404,10 @@ describe("application placement execution ticket activation contract", () => {
 
   test("keeps private placement directions default-off and production-absent", () => {
     for (const config of [authorityLocalConfig, authorityStagingConfig]) {
-      expect(config.services).toHaveLength(1);
-      expect(config.services[0].binding).toBe(
+      expect(config.services.map(({ binding }) => binding)).toEqual([
         "SHARD_PLACEMENT_APPLICATION",
-      );
+        "CONTROLLER_DEPLOYMENT_GATEWAY",
+      ]);
       expect(
         config.vars.SHARD_PLACEMENT_AUTHORITY_ACTIVATION_READ_ENABLED,
       ).toBe("false");
@@ -425,6 +425,15 @@ describe("application placement execution ticket activation contract", () => {
       expect(
         config.vars
           .SHARD_PLACEMENT_AUTHORITY_PRE_ENABLE_GRANT_RECEIPT_WRITE_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars.SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars.SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars.SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED,
       ).toBe("false");
       expect(
         config.vars

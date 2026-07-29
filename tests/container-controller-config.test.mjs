@@ -49,6 +49,12 @@ const placementLedgerSource = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const placementReadinessSource = await Bun.file(
+  new URL(
+    "../services/container-controller/src/shard_placement_readiness.ts",
+    import.meta.url,
+  ),
+).text();
 const providerAttemptGatewaySource = await Bun.file(
   new URL("../services/container-controller/src/provider_attempt_gateway.ts", import.meta.url),
 ).text();
@@ -143,6 +149,31 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_PREVIOUS_RING_ADMISSION_UNTIL).toBe("0");
       expect(config.vars.CONTAINER_AUTHORITY_CURRENT_SECRET).toBeUndefined();
       expect(config.vars.CONTAINER_AUTHORITY_PREVIOUS_SECRET).toBeUndefined();
+      expect(
+        config.vars.SHARD_PLACEMENT_READINESS_AUTHORITY_ISSUER,
+      ).toBe(
+        `cinatoken-shard-placement-authority-${controllerEnvironments[file]}`,
+      );
+      expect(
+        config.vars.SHARD_PLACEMENT_READINESS_AUTHORITY_AUDIENCE,
+      ).toBe(config.name);
+      expect(
+        config.vars.SHARD_PLACEMENT_READINESS_PROBE_CURRENT_KID,
+      ).not.toBe(
+        config.vars.SHARD_PLACEMENT_READINESS_READBACK_CURRENT_KID,
+      );
+      expect(
+        config.vars.SHARD_PLACEMENT_READINESS_PROBE_PREVIOUS_KID,
+      ).toBe("");
+      expect(
+        config.vars.SHARD_PLACEMENT_READINESS_READBACK_PREVIOUS_KID,
+      ).toBe("");
+      expect(
+        config.vars.SHARD_PLACEMENT_READINESS_PROBE_CURRENT_SECRET,
+      ).toBeUndefined();
+      expect(
+        config.vars.SHARD_PLACEMENT_READINESS_READBACK_CURRENT_SECRET,
+      ).toBeUndefined();
       expect(config.d1_databases).toHaveLength(1);
       expect(config.d1_databases[0].binding).toBe("DB");
       expect(config.kv_namespaces).toHaveLength(1);
@@ -197,6 +228,29 @@ describe("isolated container controller configuration", () => {
     expect(rootConfig.containers).toBeUndefined();
     expect(packageJson.scripts["check:container-controller"]).toContain("container-controller");
     expect(packageJson.scripts.check).toContain("bun run check:container-controller");
+    expect(packageJson.scripts["test:container-controller"]).toContain(
+      "shard_placement_readiness.test.ts",
+    );
+  });
+
+  test("shard placement readiness has isolated probe and existing-only readback authority", () => {
+    expect(placementReadinessSource).toContain(
+      '"/internal/v1/shard-placement/readiness/probe"',
+    );
+    expect(placementReadinessSource).toContain(
+      '"/internal/v1/shard-placement/readiness/readback"',
+    );
+    expect(placementReadinessSource).toContain('"readiness_probe"');
+    expect(placementReadinessSource).toContain('"readiness_readback"');
+    expect(controllerSource).toContain(
+      "readExistingShardActivationCampaignClaim(",
+    );
+    expect(controllerSource).toContain(
+      'role === "readiness_readback" ||',
+    );
+    expect(placementReadinessSource).not.toMatch(
+      /console\.(?:log|error)|fetch\("https?:\/\//,
+    );
   });
 
   test("Durable Object jurisdiction routing is explicit, double-gated, and fail-closed", () => {

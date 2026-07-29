@@ -625,6 +625,78 @@ export async function claimShardActivationCampaign(
   return { kind: "claimed", claim: claimResult(stored, recovered) };
 }
 
+export async function readExistingShardActivationCampaignClaim(
+  database: CampaignDatabase,
+  input: ShardActivationCampaignClaimInput,
+): Promise<ShardActivationCampaignAcquire> {
+  validateClaimInput(input);
+  const expectedProbeId = await activationCampaignProbeId(
+    input.credential.campaign_id,
+    input.shard.shard_index,
+  );
+  if (input.probeId !== expectedProbeId) {
+    throw new ProtocolError("shard_activation_campaign_probe_identity_mismatch", 409);
+  }
+  const session = await campaignSession(database);
+  const campaign = await readCampaign(session, input.credential.campaign_id);
+  if (!isCampaignStoredRow(campaign)) {
+    throw new ProtocolError("shard_activation_campaign_not_found", 409);
+  }
+  await validateCampaignDigest(campaign);
+  const presentedNonceSha256 = await sha256Hex(input.credential.nonce);
+  if (campaign.campaign_nonce_sha256 !== presentedNonceSha256) {
+    throw new ProtocolError("shard_activation_campaign_nonce_invalid", 403);
+  }
+  if (!campaignMatchesClaimInput(campaign, input)) {
+    throw new ProtocolError("shard_activation_campaign_candidate_mismatch", 409);
+  }
+  const expectedClaimDigestSha256 = await claimDigest(
+    campaign,
+    input.shard,
+    input.probeId,
+    presentedNonceSha256,
+  );
+  const bindings = claimBindings(
+    campaign,
+    input.shard,
+    input.probeId,
+    presentedNonceSha256,
+    expectedClaimDigestSha256,
+  );
+  const stored = await readClaim(
+    session,
+    input.credential.campaign_id,
+    input.shard.shard_index,
+  );
+  if (stored === null) {
+    throw new ProtocolError("shard_activation_campaign_claim_missing", 409);
+  }
+  if (!isClaimStoredRow(stored) || !claimMatches(stored, bindings)) {
+    throw new ProtocolError("shard_activation_campaign_replayed", 409);
+  }
+  const claim = claimResult(stored, true);
+  if (stored.consumed === 1) {
+    const consumption = await readConsumption(
+      session,
+      input.credential.campaign_id,
+      input.shard.shard_index,
+    );
+    if (
+      !isConsumptionReadbackRow(consumption) ||
+      !consumptionMatchesClaim(consumption, stored)
+    ) {
+      throw new ProtocolError("shard_activation_campaign_readback_invalid", 502);
+    }
+    return {
+      kind: "completed",
+      claim,
+      readinessResultSha256: consumption.readiness_result_sha256,
+    };
+  }
+  classifyCampaignTerminal(campaign);
+  return { kind: "claimed", claim };
+}
+
 export async function finalizeShardActivationCampaign(
   database: CampaignDatabase,
   claim: ShardActivationCampaignClaim,

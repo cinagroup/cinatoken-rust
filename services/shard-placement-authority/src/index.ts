@@ -55,6 +55,14 @@ import {
   type ControllerDeploymentGatewayClientEnv,
 } from "./controller_deployment_gateway_client";
 import {
+  validateContainerControllerReadinessClientConfig,
+  type ContainerControllerReadinessClientEnv,
+} from "./container_controller_readiness_client";
+import {
+  executeOperationReadiness,
+  parseOperationReadinessCommand,
+} from "./operation_readiness";
+import {
   beginControllerEnable,
   parseBeginEnableCommand,
 } from "./begin_enable";
@@ -106,7 +114,8 @@ export interface AuthorityEnv
     ApplicationPreEnableGrantClientEnv,
     ApplicationDispatchConsumptionClientEnv,
     ApplicationDispatchConsumptionHistoryClientEnv,
-    ControllerDeploymentGatewayClientEnv {
+    ControllerDeploymentGatewayClientEnv,
+    ContainerControllerReadinessClientEnv {
   DB: D1Database;
   CF_VERSION_METADATA: WorkerVersionMetadata;
   ENVIRONMENT: string;
@@ -141,6 +150,10 @@ export interface AuthorityEnv
   SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED:
     string;
+  SHARD_PLACEMENT_AUTHORITY_READINESS_PROBE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_READINESS_READBACK_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_READINESS_ATTEMPT_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_READINESS_TERMINAL_WRITE_ENABLED: string;
   SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: string;
@@ -180,6 +193,10 @@ const EXECUTION_READ_ENABLE_DISPATCH_STATUS_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/read-enable-dispatch-status$/;
 const EXECUTION_COMPLETE_ENABLE_DISPATCH_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/complete-enable-dispatch$/;
+const EXECUTION_PROBE_SHARD_READINESS_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/probe-shard-readiness$/;
+const EXECUTION_RECOVER_SHARD_READINESS_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/recover-shard-readiness$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -574,6 +591,37 @@ export default {
         );
       }
 
+      if (
+        route.kind === "execution_probe_shard_readiness"
+        || route.kind === "execution_recover_shard_readiness"
+      ) {
+        const command = parseOperationReadinessCommand(body);
+        if (
+          command.authorizationIdSha256
+            !== route.authorizationIdSha256
+        ) {
+          throw new ProtocolError(
+            "operation_readiness_path_mismatch",
+            400,
+          );
+        }
+        const result = await executeOperationReadiness(
+          env,
+          command,
+          authentication,
+          route.kind === "execution_probe_shard_readiness"
+            ? "probe"
+            : "readback",
+        );
+        return jsonResponse(
+          result.result === "readiness_recorded"
+          || result.result === "ambiguous_recovered"
+            ? 201
+            : 200,
+          result,
+        );
+      }
+
       if (route.kind === "execution_receipt_append") {
         const receipt = await parseExecutionReceipt(
           body,
@@ -583,6 +631,10 @@ export default {
         if (
           receipt.operationOrdinal === 4
           || receipt.operationOrdinal === 5
+          || (
+            receipt.operationOrdinal >= 6
+            && receipt.operationOrdinal <= 13
+          )
         ) {
           throw new ProtocolError(
             "dedicated_operation_route_required",
@@ -773,6 +825,12 @@ type Route =
     }
   | {
       kind: "execution_complete_enable_dispatch";
+      authorizationIdSha256: string;
+    }
+  | {
+      kind:
+        | "execution_probe_shard_readiness"
+        | "execution_recover_shard_readiness";
       authorizationIdSha256: string;
     };
 
@@ -1002,6 +1060,36 @@ function matchRoute(request: Request): Route {
         executionCompleteEnableDispatchMatch[1]!,
     };
   }
+  const executionProbeShardReadinessMatch =
+    EXECUTION_PROBE_SHARD_READINESS_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionProbeShardReadinessMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_probe_shard_readiness",
+      authorizationIdSha256:
+        executionProbeShardReadinessMatch[1]!,
+    };
+  }
+  const executionRecoverShardReadinessMatch =
+    EXECUTION_RECOVER_SHARD_READINESS_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionRecoverShardReadinessMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_recover_shard_readiness",
+      authorizationIdSha256:
+        executionRecoverShardReadinessMatch[1]!,
+    };
+  }
   const authorizationMatch = AUTHORIZATION_ID_PATH.exec(url.pathname);
   if (request.method === "GET" && authorizationMatch !== null) {
     return {
@@ -1043,6 +1131,10 @@ function routeRole(kind: Route["kind"]): HmacRole {
   }
   if (kind === "execution_complete_enable_dispatch") {
     return "receipt";
+  }
+  if (kind === "execution_probe_shard_readiness") return "send";
+  if (kind === "execution_recover_shard_readiness") {
+    return "recovery";
   }
   if (kind === "execution_recover_enable_dispatch_consumption") {
     return "recovery";
@@ -1238,6 +1330,39 @@ function requireRouteGate(
     );
   }
   if (
+    kind === "execution_probe_shard_readiness"
+    && (
+      env.SHARD_PLACEMENT_AUTHORITY_READINESS_PROBE_ENABLED
+        !== "true"
+      || env
+        .SHARD_PLACEMENT_AUTHORITY_READINESS_ATTEMPT_WRITE_ENABLED
+        !== "true"
+      || env
+        .SHARD_PLACEMENT_AUTHORITY_READINESS_TERMINAL_WRITE_ENABLED
+        !== "true"
+    )
+  ) {
+    throw new ProtocolError(
+      "authority_operation_readiness_probe_disabled",
+      503,
+    );
+  }
+  if (
+    kind === "execution_recover_shard_readiness"
+    && (
+      env.SHARD_PLACEMENT_AUTHORITY_READINESS_READBACK_ENABLED
+        !== "true"
+      || env
+        .SHARD_PLACEMENT_AUTHORITY_READINESS_TERMINAL_WRITE_ENABLED
+        !== "true"
+    )
+  ) {
+    throw new ProtocolError(
+      "authority_operation_readiness_readback_disabled",
+      503,
+    );
+  }
+  if (
     kind === "execution_recover_enable_dispatch_consumption"
     && env
       .SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_RECEIPT_WRITE_ENABLED
@@ -1382,6 +1507,13 @@ export function validateRuntimeTrustConfiguration(
       === "true"
   ) {
     validateControllerDeploymentGatewayClientConfig(env);
+  }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_READINESS_PROBE_ENABLED === "true"
+    || env.SHARD_PLACEMENT_AUTHORITY_READINESS_READBACK_ENABLED
+      === "true"
+  ) {
+    validateContainerControllerReadinessClientConfig(env);
   }
   requireApplicationHmacCredentialIsolation(env);
 }
@@ -1536,6 +1668,21 @@ function requireApplicationHmacCredentialIsolation(
   ) {
     prefixes.push(
       "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC",
+    );
+  }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_READINESS_PROBE_ENABLED === "true"
+  ) {
+    prefixes.push(
+      "CONTAINER_CONTROLLER_READINESS_PROBE_HMAC",
+    );
+  }
+  if (
+    env.SHARD_PLACEMENT_AUTHORITY_READINESS_READBACK_ENABLED
+      === "true"
+  ) {
+    prefixes.push(
+      "CONTAINER_CONTROLLER_READINESS_READBACK_HMAC",
     );
   }
   const active = prefixes.map((prefix) => ({

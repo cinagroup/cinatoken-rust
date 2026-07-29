@@ -69,7 +69,75 @@ describe("shard placement Authority migration", () => {
       "0005_operation_five_send_attempts.sql",
       "0006_operation_five_gateway_events.sql",
       "0007_operation_five_terminal_receipts.sql",
+      "0008_operation_readiness_receipts.sql",
     ]);
+  });
+
+  test("installs the complete operation-readiness catalog with valid foreign keys", () => {
+    using database = new Database(":memory:");
+    database.exec("PRAGMA foreign_keys = ON");
+    const migrationsDirectory = join(
+      import.meta.dir,
+      "..",
+      "services",
+      "shard-placement-authority",
+      "migrations",
+    );
+    for (const name of readdirSync(migrationsDirectory)
+      .filter((candidate) => candidate.endsWith(".sql"))
+      .sort()) {
+      database.exec(readFileSync(join(
+        migrationsDirectory,
+        name,
+      ), "utf8"));
+    }
+
+    expect(database.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(database.query(`
+      SELECT type || ':' || name AS identity
+      FROM sqlite_master
+      WHERE name LIKE
+        'shard_placement_authority_operation_readiness_%'
+      ORDER BY identity
+    `).all().map((row) => row.identity)).toEqual([
+      "table:shard_placement_authority_operation_readiness_attempts",
+      "table:shard_placement_authority_operation_readiness_terminals",
+      "trigger:shard_placement_authority_operation_readiness_attempt_delete_guard",
+      "trigger:shard_placement_authority_operation_readiness_attempt_insert_guard",
+      "trigger:shard_placement_authority_operation_readiness_attempt_update_guard",
+      "trigger:shard_placement_authority_operation_readiness_terminal_delete_guard",
+      "trigger:shard_placement_authority_operation_readiness_terminal_insert_guard",
+      "trigger:shard_placement_authority_operation_readiness_terminal_update_guard",
+    ]);
+    expect(database.query(`
+      SELECT name
+      FROM pragma_table_info(
+        'shard_placement_authority_operation_readiness_attempts'
+      )
+      ORDER BY cid
+    `).all().map((row) => row.name)).toEqual(expect.arrayContaining([
+      "dispatch_mode",
+      "wake_attempt_limit",
+      "wake_retry_limit",
+      "missing_readback_allows_resend",
+      "probe_deadline_at_ms",
+      "operation_start_receipt_digest_sha256",
+    ]));
+    expect(database.query(`
+      SELECT name
+      FROM pragma_table_info(
+        'shard_placement_authority_operation_readiness_terminals'
+      )
+      ORDER BY cid
+    `).all().map((row) => row.name)).toEqual(expect.arrayContaining([
+      "result_outcome",
+      "recovery_mode",
+      "process_ready",
+      "execution_ready",
+      "runtime_execution_enabled",
+      "controller_execution_enabled",
+      "generic_terminal_receipt_digest_sha256",
+    ]));
   });
 
   test("installs the exact isolated append-only catalog", () => {

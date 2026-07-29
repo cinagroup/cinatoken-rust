@@ -9,6 +9,7 @@ import {
   campaignDigest,
   claimShardActivationCampaign,
   finalizeShardActivationCampaign,
+  readExistingShardActivationCampaignClaim,
   sealShardActivationCampaignFailure,
   type ShardActivationCampaignAcquire,
   type ShardActivationCampaignClaim,
@@ -276,6 +277,68 @@ describe("relay Container shard activation campaign", () => {
     }
   });
 
+  test("existing-only readback never creates a missing claim and preserves exact completed evidence", async () => {
+    const fixture = await campaignDatabase();
+    try {
+      const input = await claimInput(0);
+      await expect(
+        readExistingShardActivationCampaignClaim(
+          fixture.database as never,
+          input,
+        ),
+      ).rejects.toMatchObject({
+        code: "shard_activation_campaign_claim_missing",
+        status: 409,
+      });
+      expect(
+        count(
+          fixture.sqlite,
+          "relay_container_shard_activation_campaign_claims",
+        ),
+      ).toBe(0);
+      expect(
+        count(fixture.sqlite, "relay_container_shard_activations"),
+      ).toBe(0);
+
+      const claimed = expectClaimed(
+        await claimShardActivationCampaign(
+          fixture.database as never,
+          input,
+        ),
+      );
+      expect(
+        await readExistingShardActivationCampaignClaim(
+          fixture.database as never,
+          input,
+        ),
+      ).toMatchObject({
+        kind: "claimed",
+        claim: {
+          claimDigestSha256: claimed.claimDigestSha256,
+          recovered: true,
+        },
+      });
+      await finalizeShardActivationCampaign(
+        fixture.database as never,
+        claimed,
+        activation(claimed, 1),
+        READINESS_RESULT_SHA256,
+      );
+      expect(
+        await readExistingShardActivationCampaignClaim(
+          fixture.database as never,
+          input,
+        ),
+      ).toMatchObject({
+        kind: "completed",
+        readinessResultSha256: READINESS_RESULT_SHA256,
+        claim: { claimDigestSha256: claimed.claimDigestSha256 },
+      });
+    } finally {
+      fixture.sqlite.close();
+    }
+  });
+
   test("action-gate digest covers the exact 22-name inventory", async () => {
     const environment = disabledActionGates();
     const first = await campaignActionGateInventory(environment);
@@ -328,6 +391,37 @@ describe("relay Container shard activation campaign", () => {
     expect(placementCall).toContain("stub");
     expect(placementCall).toContain("claim");
     expect(placementCall).toContain("outcome.result_sha256");
+  });
+
+  test("shard-placement readback checks existing D1 state before DO lookup and can only replay", async () => {
+    const source = await readFile(
+      new URL("../src/index.ts", import.meta.url),
+      "utf8",
+    );
+    const routeStart = source.indexOf(
+      "async function handleShardPlacementReadinessRequest(",
+    );
+    const routeEnd = source.indexOf(
+      "const handler: ExportedHandler<ControllerEnv>",
+      routeStart,
+    );
+    expect(routeStart).toBeGreaterThan(-1);
+    expect(routeEnd).toBeGreaterThan(routeStart);
+    const route = source.slice(routeStart, routeEnd);
+    const existingRead = route.indexOf(
+      "readExistingShardActivationCampaignClaim(",
+    );
+    const doLookup = route.indexOf(
+      "selectRelayShardNamespace(env).getByName(",
+    );
+    const rpc = route.indexOf("stub.readinessProbeV2(");
+    expect(existingRead).toBeGreaterThan(-1);
+    expect(doLookup).toBeGreaterThan(existingRead);
+    expect(rpc).toBeGreaterThan(doLookup);
+    const rpcCall = route.slice(rpc, route.indexOf(");", rpc) + 2);
+    expect(rpcCall).toContain('role === "readiness_readback"');
+    expect(rpcCall).toContain('campaignAcquire.kind === "completed"');
+    expect(route).not.toContain("stub.readinessProbe(");
   });
 });
 

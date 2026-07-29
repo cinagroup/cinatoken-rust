@@ -162,8 +162,10 @@ Local tests cover:
 
 ## Remaining Production Blockers
 
-The next local execution-ledger step is operation 6 readiness probing, followed
-by operations 7-13 and the independent operation-14 disable/recovery path.
+The local operation 6-13 readiness boundary is now implemented in
+[`operation-readiness-receipts.md`](operation-readiness-receipts.md). It
+remains default-off and requires the independent operation-14
+disable/recovery path.
 Remote D1 schema and normalized-trigger readback, private Service Binding
 proof, least-privilege token evidence, HMAC rotation, rollout and
 commit-response-loss fault campaigns, real mutation-count evidence, reverse

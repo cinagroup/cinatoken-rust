@@ -11777,3 +11777,54 @@ trigger SQL, Service Binding resolution, credential scope or rotation, real
 Cloudflare mutation count, rollout/commit-response-loss recovery, operations
 6-14, reverse sync, drain, DNS, traffic, or approvals. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Operation 6-13 Readiness Receipt Verification
+
+The local operation 6-13 boundary now passes:
+
+```text
+bun run check:shard-placement-authority
+  generated types current
+  TypeScript and Wrangler dry-run passed
+  unit tests: 102 passed
+  service runtime tests: 7 passed
+  full Workerd tests: 6 passed
+  root configuration/migration tests: 29 passed
+
+bun run check:container-controller
+  generated types current
+  TypeScript and Wrangler dry-run passed
+  Controller unit/config, portable protocol, and Workerd runtime gates passed
+
+bun test --path-ignore-patterns="target/**" \
+  services/container-controller/tests/shard_placement_readiness.test.ts \
+  tests/container-controller-config.test.mjs
+  22 passed, 344 expectations
+```
+
+Authority orchestration tests prove attempt persistence before the only wake,
+fresh healthy terminalization, probe-outcome-unknown without a terminal,
+subsequent readback without another probe, ambiguous healthy recovery,
+explicit-unhealthy transition to `disable_required`, operation-14 selection,
+terminal exact replay with zero mutable-source or Controller calls, and
+recovery rejection when no attempt exists.
+
+Migration 0008 installs with the complete 0001-0008 history and passes
+`PRAGMA foreign_key_check`. Catalog tests require both append-only sidecars
+and their wake-once, zero-retry, no-resend, disabled-execution, recovery, and
+generic receipt columns. The repository uses D1 batches for each
+sidecar/receipt pair and D1 `unixepoch()` for terminal deadline authority.
+
+Controller tests prove path-bound probe/readback HMAC roles, strict bounded
+canonical bodies, version and service fencing, existing-only readback,
+process-ready plus execution-disabled eligibility, and exact journal replay
+without another campaign claim or wake. Configuration tests require distinct
+probe/readback KIDs, remote-only secrets, and inclusion of the readiness suite
+in the aggregate Controller gate.
+
+These are local activation-readiness results only. No credential, remote D1,
+Service Binding, deployment, Container, route, DNS, traffic, billing, or
+Go/VPS state was accessed or changed. Operation 14, remote fault campaigns,
+ordered staging shard 0-7 evidence, reverse sync, rollback, drain, SLO/cost,
+financial conservation, and approvals remain open. All gates remain false,
+Go/VPS remains authoritative, and production remains **NO-GO**.

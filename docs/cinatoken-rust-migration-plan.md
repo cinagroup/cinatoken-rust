@@ -24371,3 +24371,79 @@ schema and normalized-trigger evidence, private binding proof, least-privilege
 token and HMAC rotation, rollout/commit-loss fault campaigns, mutation-count
 evidence, reverse sync, drain, traffic/DNS cutover, and approvals remain open.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.331 Operation 6-13 Readiness Receipts (2026-07-29)
+
+This checkpoint implements the shared local execution path for operation 6
+through operation 13. It supersedes the statement in 22.330 that operation 6
+readiness probing is the next unimplemented local P0. It does not deploy,
+enable a gate, apply a remote migration, wake a remote Container, or change
+Go/VPS authority.
+
+### Canonical shard readiness meaning
+
+Operation ordinal maps directly to shard:
+
+```text
+6..13 -> shard 0..7 -> cinatoken-relay-shard-v1-0000..0007
+```
+
+Success means candidate activation-ready while execution remains disabled. It
+requires a healthy Container, `process_ready=true`,
+`execution_ready=false`, runtime execution false, Controller execution false,
+and the exact `process_ready_execution_disabled` result code. This does not
+mean customer-serving, provider, billing, routing, or production readiness.
+
+### Private authority split
+
+Authority exposes separate probe and recovery routes. It calls the Controller
+only through the private `CONTAINER_CONTROLLER` Service Binding. Controller
+probe and readback use different HMAC roles, domains, KIDs, and remote-only
+secrets. Probe may claim the exact activation campaign and wake once.
+Readback loads only an existing campaign claim and replays only an existing
+Durable Object journal.
+
+Authority has four independent probe, readback, attempt-write, and
+terminal-write gates. They are false in tracked local/staging configuration,
+and production Authority configuration remains absent.
+
+### D1 ledger and recovery
+
+Authority migration 0008 adds immutable attempt and terminal sidecars. For
+operation `n`, the pre-operation ledger is `2*n-7`, start receipt sequence is
+`2*n-6`, and terminal sequence is `2*n-5`. Each sidecar and generic receipt
+pair is committed in one D1 batch and must exactly read back before a result
+is returned.
+
+The attempt records `wake_attempt_limit=1`, `wake_retry_limit=0`, and
+`missing_readback_allows_resend=0`. A probe transport-unknown result leaves
+the operation in flight and grants only readback. Every later call uses
+readback-only Controller authority; it cannot create a campaign claim or wake
+again. Healthy readback records `ambiguous_recovered`. Explicit unhealthy,
+unresolved readback, or invalid evidence moves the claim to
+`disable_required` and next operation 14.
+
+D1 `unixepoch()` is authoritative for source, lease, recovery, permit, and
+terminal checks. Readback receives a new bounded per-call deadline while the
+original wake deadline remains immutable evidence.
+
+### Local acceptance and remaining P0
+
+Detailed protocol, failure, and rollout evidence is in
+[`operation-readiness-receipts.md`](operation-readiness-receipts.md).
+
+Local aggregate verification passes Authority type generation, TypeScript,
+Wrangler dry-run, 102 unit tests, 7 service runtime tests, 6 full Workerd
+tests, and 29 root configuration/migration tests. Controller type generation,
+TypeScript, Wrangler dry-run, focused readiness/config tests, portable
+protocol tests, and Workerd runtime tests also pass.
+
+The next implementation P0 is independent operation-14 disable/recovery.
+Production promotion additionally requires remote migration/trigger readback,
+private binding identity proof, least-privilege credential rotation and
+retirement, real response-loss/rollout/commit-loss fault campaigns, ordered
+staging shard 0-7 evidence, reverse sync, Go/VPS shadow/rollback/drain,
+traffic and billing conservation, SLO/cost evidence, and signed approvals.
+
+No Cloudflare remote read or mutation was performed. All gates remain false,
+Go/VPS remains authoritative, and production remains **NO-GO**.

@@ -121,10 +121,24 @@ import {
   campaignActionGateInventory,
   claimShardActivationCampaign,
   finalizeShardActivationCampaign,
+  readExistingShardActivationCampaignClaim,
   sealShardActivationCampaignFailure,
   type ShardActivationCampaignAcquire,
   type ShardActivationCampaignClaim,
+  type ShardActivationCampaignClaimInput,
 } from "./shard_activation_campaign";
+import {
+  SHARD_PLACEMENT_READINESS_PROBE_PATH,
+  SHARD_PLACEMENT_READINESS_READBACK_PATH,
+  assertShardPlacementReadinessContext,
+  assertShardPlacementReadinessControllerIdentity,
+  shardPlacementReadinessResponse,
+  verifyShardPlacementReadinessRequest,
+  type ShardPlacementReadinessJournalEvidence,
+  type ShardPlacementReadinessEnvironment,
+  type ShardPlacementReadinessRequest,
+  type ShardPlacementReadinessRole,
+} from "./shard_placement_readiness";
 import {
   createShardPlacementAttestationV1,
   shardPlacementAttestationDigest,
@@ -144,7 +158,8 @@ interface ControllerRuntimeEnvironment
   extends
     AuthorityEnvironment,
     RelayShardJurisdictionEnvironment,
-    ShardPlacementAttestationWriterEnvironment {
+    ShardPlacementAttestationWriterEnvironment,
+    ShardPlacementReadinessEnvironment {
   ENVIRONMENT: string;
   CONTAINER_CONTROLLER_SERVICE_NAME: string;
   CONTAINER_CONTROLLER_ENABLED: string;
@@ -241,7 +256,12 @@ type ShardReadinessRpcResult =
   | { ok: false; error: { code: string; status: number } };
 
 type ShardReadinessRpcResultV2 =
-  | { ok: true; result: ShardReadinessResult; result_sha256: string }
+  | {
+      ok: true;
+      result: ShardReadinessResult;
+      result_sha256: string;
+      journal: ShardPlacementReadinessJournalEvidence;
+    }
   | { ok: false; error: { code: string; status: number } };
 
 interface ReadinessObservation {
@@ -916,7 +936,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
             true,
           );
       if (journal.kind === "completed") {
-        return readinessJournalRpcSuccess(probe, journal);
+        return readinessJournalRpcSuccess(probe, journal, "exact_replay");
       }
 
       const observation = await this.observeContainerReadiness(probe, startedAtMs);
@@ -932,7 +952,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
         observation.completedAtMs,
         completion,
       );
-      return readinessJournalRpcSuccess(probe, replay);
+      return readinessJournalRpcSuccess(probe, replay, "fresh");
     } catch (error) {
       if (error instanceof ProtocolError) {
         return { ok: false, error: { code: error.code, status: error.status } };
@@ -1352,6 +1372,7 @@ async function readinessJournalCompletion(
 function readinessJournalRpcSuccess(
   probe: ShardReadinessProbe,
   replay: ReadinessProbeCompletedReplay,
+  replayKind: "fresh" | "exact_replay",
 ): ShardReadinessRpcResultV2 {
   const parsed: unknown = JSON.parse(replay.resultJson);
   if (
@@ -1360,7 +1381,19 @@ function readinessJournalRpcSuccess(
   ) {
     throw new ProtocolError("readiness_probe_result_corrupt", 500);
   }
-  return { ok: true, result: parsed, result_sha256: replay.resultSha256 };
+  return {
+    ok: true,
+    result: parsed,
+    result_sha256: replay.resultSha256,
+    journal: {
+      replay: replayKind,
+      generation: replay.generation,
+      started_at_ms: replay.startedAtMs,
+      deadline_at_ms: replay.deadlineAtMs,
+      retention_until_ms: replay.retentionUntilMs,
+      completed_at_ms: replay.completedAtMs,
+    },
+  };
 }
 
 function isJournalReadinessResult(
@@ -1511,17 +1544,17 @@ async function handleTerminalAckV3Request(
   }
 }
 
-async function claimShardActivationCampaignBeforeWake(
+async function prepareShardActivationCampaignClaimInput(
   env: ControllerEnv,
   probe: ShardReadinessProbe,
   probeId: string,
-): Promise<ShardActivationCampaignAcquire | null> {
+): Promise<{
+  input: ShardActivationCampaignClaimInput;
+  actionGates: Awaited<ReturnType<typeof campaignActionGateInventory>>;
+}> {
   const campaign = probe.activation_campaign;
   if (campaign === undefined) {
-    if (env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] === "true") {
-      throw new ProtocolError("shard_activation_legacy_writer_retired", 503);
-    }
-    return null;
+    throw new ProtocolError("shard_activation_campaign_required", 400);
   }
   const placementPolicy = shardPlacementAttestationWriterPolicy(env);
   if (relayShardJurisdictionPolicy(env).restricted) {
@@ -1558,15 +1591,38 @@ async function claimShardActivationCampaignBeforeWake(
       environment: env.ENVIRONMENT,
     });
   }
-  return claimShardActivationCampaign(env.DB, {
-    credential: campaign,
-    controllerVersionId: env.CF_VERSION_METADATA.id,
-    actionGateInventory,
-    shard: probe.shard,
-    runtimeProtocolVersion: probe.protocol_version,
-    environment: env.ENVIRONMENT,
+  return {
+    input: {
+      credential: campaign,
+      controllerVersionId: env.CF_VERSION_METADATA.id,
+      actionGateInventory,
+      shard: probe.shard,
+      runtimeProtocolVersion: probe.protocol_version,
+      environment: env.ENVIRONMENT,
+      probeId,
+    },
+    actionGates: actionGateInventory,
+  };
+}
+
+async function claimShardActivationCampaignBeforeWake(
+  env: ControllerEnv,
+  probe: ShardReadinessProbe,
+  probeId: string,
+): Promise<ShardActivationCampaignAcquire | null> {
+  const campaign = probe.activation_campaign;
+  if (campaign === undefined) {
+    if (env[SHARD_ACTIVATION_WRITE_ENABLED_ENV] === "true") {
+      throw new ProtocolError("shard_activation_legacy_writer_retired", 503);
+    }
+    return null;
+  }
+  const prepared = await prepareShardActivationCampaignClaimInput(
+    env,
+    probe,
     probeId,
-  });
+  );
+  return claimShardActivationCampaign(env.DB, prepared.input);
 }
 
 async function recordClaimedShardPlacementAttestation(
@@ -1762,10 +1818,149 @@ function readinessResponse(
   );
 }
 
+async function handleShardPlacementReadinessRequest(
+  request: Request,
+  env: ControllerEnv,
+  role: ShardPlacementReadinessRole,
+): Promise<Response> {
+  const verified = await verifyShardPlacementReadinessRequest(
+    request,
+    env,
+    role,
+  );
+  assertShardPlacementReadinessControllerIdentity(verified.request, env);
+  const shardProbe: ShardReadinessProbe = {
+    protocol_version: Number(env.CONTAINER_PROTOCOL_VERSION),
+    shard: verified.request.shard,
+    wake_container: true,
+    activation_campaign: verified.request.activation_campaign,
+  };
+  const prepared = await prepareShardActivationCampaignClaimInput(
+    env,
+    shardProbe,
+    verified.request.probe_id_sha256,
+  );
+  const campaignAcquire =
+    role === "readiness_probe"
+      ? await claimShardActivationCampaign(env.DB, prepared.input)
+      : await readExistingShardActivationCampaignClaim(
+          env.DB,
+          prepared.input,
+        );
+  const claim = campaignAcquire.claim;
+  assertShardPlacementReadinessContext(
+    verified.request,
+    claim,
+    prepared.actionGates,
+    env,
+  );
+
+  const journalProbe: ShardReadinessProbe = {
+    protocol_version: shardProbe.protocol_version,
+    shard: shardProbe.shard,
+    wake_container: true,
+  };
+  const stub = selectRelayShardNamespace(env).getByName(
+    verified.request.shard.instance_name,
+  );
+  let outcome: ShardReadinessRpcResultV2;
+  try {
+    outcome = await stub.readinessProbeV2(
+      journalProbe,
+      verified.request.probe_id_sha256,
+      claim.claimDigestSha256,
+      role === "readiness_readback" ||
+        campaignAcquire.kind === "completed",
+    );
+  } catch {
+    return jsonError("readiness_probe_journal_unavailable", 503);
+  }
+  if (!outcome.ok) {
+    if (
+      campaignAcquire.kind === "claimed" &&
+      [
+        "readiness_probe_ambiguous",
+        "readiness_probe_superseded",
+        "readiness_probe_claim_mismatch",
+        "readiness_probe_result_corrupt",
+        "invalid_readiness_probe_result",
+        "readiness_probe_completion_conflict",
+      ].includes(outcome.error.code)
+    ) {
+      await sealCampaignFailureBestEffort(
+        env,
+        claim.campaignId,
+        "claim_execution_failed",
+      );
+    }
+    return jsonError(outcome.error.code, outcome.error.status);
+  }
+  if (
+    campaignAcquire.kind === "completed" &&
+    campaignAcquire.readinessResultSha256 !== outcome.result_sha256
+  ) {
+    return jsonError("readiness_probe_result_mismatch", 502);
+  }
+  if (campaignAcquire.kind === "completed") {
+    campaignReadinessProbeGeneration(outcome.result, claim);
+  } else {
+    try {
+      await finalizeClaimedShardActivationCampaign(
+        env,
+        outcome.result,
+        claim,
+        outcome.result_sha256,
+      );
+    } catch (error) {
+      if (
+        error instanceof ProtocolError &&
+        [
+          "shard_activation_campaign_readiness_ineligible",
+          "shard_activation_probe_invalid",
+        ].includes(error.code)
+      ) {
+        await sealCampaignFailureBestEffort(
+          env,
+          claim.campaignId,
+          "readiness_rejected",
+        );
+      }
+      throw error;
+    }
+  }
+  await recordClaimedShardPlacementAttestation(
+    env,
+    stub,
+    claim,
+    outcome.result_sha256,
+  );
+  return shardPlacementReadinessResponse(
+    verified,
+    claim,
+    prepared.actionGates,
+    outcome,
+    env,
+  );
+}
+
 const handler: ExportedHandler<ControllerEnv> = {
   async fetch(request, env): Promise<Response> {
     try {
       const path = new URL(request.url).pathname;
+      if (path === SHARD_PLACEMENT_READINESS_PROBE_PATH) {
+        return handleShardPlacementReadinessRequest(
+          request,
+          env,
+          "readiness_probe",
+        );
+      }
+      if (path === SHARD_PLACEMENT_READINESS_READBACK_PATH) {
+        return handleShardPlacementReadinessRequest(
+          request,
+          env,
+          "readiness_readback",
+        );
+      }
       if (path === INTERNAL_OPERATION_STATUS_PATH) {
         return handleOperationStatusRequest(request, env);
       }

@@ -57,7 +57,13 @@
     "CONTAINER_AUTHORITY_ISSUER": "cinatoken-edge-staging",
     "CONTAINER_AUTHORITY_AUDIENCE": "cinatoken-container-controller-staging",
     "CONTAINER_AUTHORITY_CURRENT_KID": "staging-v1",
-    "CONTAINER_AUTHORITY_PREVIOUS_KID": ""
+    "CONTAINER_AUTHORITY_PREVIOUS_KID": "",
+    "SHARD_PLACEMENT_READINESS_AUTHORITY_ISSUER": "cinatoken-shard-placement-authority-staging",
+    "SHARD_PLACEMENT_READINESS_AUTHORITY_AUDIENCE": "cinatoken-container-controller-staging",
+    "SHARD_PLACEMENT_READINESS_PROBE_CURRENT_KID": "staging-probe-v1",
+    "SHARD_PLACEMENT_READINESS_PROBE_PREVIOUS_KID": "",
+    "SHARD_PLACEMENT_READINESS_READBACK_CURRENT_KID": "staging-readback-v1",
+    "SHARD_PLACEMENT_READINESS_READBACK_PREVIOUS_KID": ""
   },
   "d1_databases": [
     {

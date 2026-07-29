@@ -25,6 +25,7 @@ describe("shard placement Authority configuration", () => {
       "0005_operation_five_send_attempts.sql",
       "0006_operation_five_gateway_events.sql",
       "0007_operation_five_terminal_receipts.sql",
+      "0008_operation_readiness_receipts.sql",
     ]);
     for (const environment of ["local", "staging"]) {
       expect(report.environments[environment]).toMatchObject({
@@ -33,6 +34,7 @@ describe("shard placement Authority configuration", () => {
           "version_metadata.CF_VERSION_METADATA",
           "services.SHARD_PLACEMENT_APPLICATION",
           "services.CONTROLLER_DEPLOYMENT_GATEWAY",
+          "services.CONTAINER_CONTROLLER",
         ],
         gatesDefaultOff: true,
         ingress: "service_binding_only",
@@ -59,6 +61,10 @@ describe("shard placement Authority configuration", () => {
         {
           binding: "CONTROLLER_DEPLOYMENT_GATEWAY",
           service: "cinatoken-controller-deployment-gateway-local",
+        },
+        {
+          binding: "CONTAINER_CONTROLLER",
+          service: "cinatoken-container-controller-local",
         },
       ],
       vars: {
@@ -94,6 +100,12 @@ describe("shard placement Authority configuration", () => {
         SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED:
           "false",
+        SHARD_PLACEMENT_AUTHORITY_READINESS_PROBE_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_READINESS_READBACK_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_READINESS_ATTEMPT_WRITE_ENABLED:
+          "false",
+        SHARD_PLACEMENT_AUTHORITY_READINESS_TERMINAL_WRITE_ENABLED:
+          "false",
         SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED: "false",
         CONTROLLER_DEPLOYMENT_GATEWAY_ISSUER:
@@ -111,6 +123,22 @@ describe("shard placement Authority configuration", () => {
           "",
         CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_KID: "",
         CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
+          "",
+        CONTAINER_CONTROLLER_READINESS_ISSUER:
+          "cinatoken-shard-placement-authority-local",
+        CONTAINER_CONTROLLER_READINESS_AUDIENCE:
+          "cinatoken-container-controller-local",
+        CONTAINER_CONTROLLER_READINESS_PROBE_HMAC_CURRENT_KID: "",
+        CONTAINER_CONTROLLER_READINESS_PROBE_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "",
+        CONTAINER_CONTROLLER_READINESS_PROBE_HMAC_PREVIOUS_KID: "",
+        CONTAINER_CONTROLLER_READINESS_PROBE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
+          "",
+        CONTAINER_CONTROLLER_READINESS_READBACK_HMAC_CURRENT_KID: "",
+        CONTAINER_CONTROLLER_READINESS_READBACK_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "",
+        CONTAINER_CONTROLLER_READINESS_READBACK_HMAC_PREVIOUS_KID: "",
+        CONTAINER_CONTROLLER_READINESS_READBACK_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
           "",
         SHARD_PLACEMENT_APPLICATION_ISSUER:
           "cinatoken-shard-placement-authority-local",

@@ -3059,3 +3059,34 @@ Current P5 schema identity advances to 0069, but immutable admission-fence
 evidence remains pinned to 0068 and its reviewed SQL digest. The next code
 boundary is the one-step close/campaign command plus authenticated, audited
 writers and independent signature/policy verification, not gate activation.
+
+## 2026-07-30 0070 Status Update
+
+This table supersedes only the preceding 0069 current-head and missing-close
+rows; the 0069 evidence checkpoint remains historical evidence.
+
+| Item | Current status |
+|---|---|
+| Application D1 head | **0070_relay_container_drain_close_command.sql** |
+| Application D1 inventory | **70 MIGRATIONS / 92 TABLES / 1463 CHECKED INCREMENTAL COLUMNS / 137 KEY INDEXES** |
+| Close primitive | **ONE APPEND-PRESERVED COMMAND INSERT** |
+| Fence close + campaign creation | **ONE D1 TRIGGERED SQLITE STATEMENT, SAME D1 TIME** |
+| Stale head/accepted boundary | **DATABASE-REJECTED** |
+| Standalone fence/campaign write | **DATABASE-REJECTED AFTER 0070** |
+| Downstream campaign failure | **COMMAND AND FENCE ROLLED BACK, SQLITE-VERIFIED** |
+| Nonempty accepted set | **REAL WORKERD D1 VERIFIED; LATE ADMISSION LEAVES NO PARTIAL STATE** |
+| Rust repository mutation | **DEFAULT-INERT; ADMIN AUDIT PREPARED STATEMENT + BATCHED EXACT READBACK REQUIRED** |
+| Route / credential / runtime write gate | **ABSENT** |
+| 0068 admission provenance | **UNCHANGED; SHA-256 fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50** |
+| Accepted source proof | **BOOKMARK/MANIFEST/SCHEMA/READBACK CALLER-ATTESTED; INDEPENDENT RECOMPUTATION OPEN** |
+| Billing-expression semantics | **UNCHANGED** |
+| Remote D1/Cloudflare operation | **NOT PERFORMED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+0070 closes the local SQLite atomicity gap identified by 0068 and 0069. It
+does not close the authorization or source-completeness gaps. An independently
+authenticated control-plane caller, exact admin audit construction, remote
+schema/trigger readback, response-loss and N/N-1 campaigns, source
+recomputation, full drain evidence, and independent traffic-return review
+remain required before production consideration.

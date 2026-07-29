@@ -1462,3 +1462,25 @@ required tables, 1424 checked incremental columns, and 133 key indexes. All
 five drain write gates remain false, the fence/evidence lifecycle control
 plane is absent, no remote 0068/0069 apply is claimed, and traffic-return
 authorization is not compiled.
+
+## 2026-07-30 Atomic Drain Close Command Overlay
+
+This overlay supersedes the current-head and missing one-step-close cells
+immediately above while retaining the historical 0069 evidence matrix.
+Application schema head is now 0070 with 70 migrations, 92 required tables,
+1463 checked incremental columns, and 137 key indexes.
+
+| Control | Current local evidence | Production implementation/evidence still required | Decision |
+|---|---|---|---|
+| Schema identity | Exact 0070 marker, ordered 39-column command table, four indexes and six trigger guards; Application inventory is `70/92/1463/137` | Authenticated backup/apply plus normalized remote catalog, trigger SQL, row-count and business-fingerprint readback | Local pass; remote open |
+| Atomic close | One command `INSERT` triggers current-head/fence CAS, accepted-boundary checks, fence close and matching 0067 campaign creation at one D1 statement time | Authenticated control-plane writer, least authority, retained audit and response-loss/restart campaign | Local database pass |
+| Failure atomicity | SQLite fault injection proves downstream campaign failure retains no command and leaves the fence open | Remote D1 fault campaign with exact mutation count and pre/post readback | Local pass; remote open |
+| Nonempty accepted set | Real Workerd D1 closes one accepted operation, reads back equal command/fence/campaign time and rejects late admission without partial state | Frozen remote candidate, N/N-1 old-writer drain and independently retained accepted-set evidence | Local runtime pass |
+| Rust repository | Default-inert method requires an admin-audit prepared statement and batches command insert, audit and exact joined readback | Authenticated caller, reviewed audit schema/identity, route policy and separately approved default-false gate | No route, credential or gate |
+| Admission provenance | P5 current schema advances to 0070 while the admission item remains pinned to 0068 SHA-256 `fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50` | Authenticated remote 0068 capture and independent provenance review | Immutable local contract |
+| Accepted-source proof | Bookmark, set manifest, source schema and source readback are still caller-attested | Independent authoritative-source keyset pagination and member/page/set/schema/readback recomputation | **Blocked** |
+| Billing | 0070 carries existing campaign identities and changes no expression, normalization, tier, quota or settlement semantics | Canonical frozen-snapshot/vector replay and finance conservation evidence | **Blocked** |
+| Promotion | No remote D1/Cloudflare operation, credential, route, deployment, DNS, gate or traffic change occurred | Full drain, reverse sync, operation 14, typed evidence/WORM, rollback, Go/VPS rehearsal and independent approvals | **NO-GO** |
+
+Go/VPS remains authoritative. The local atomic command is necessary database
+infrastructure, not permission to close a production fence or return traffic.

@@ -12088,3 +12088,80 @@ ring-transition contract 132/132, Worker library 920/920, and complete Workerd
 lifecycle 54/54. The aggregate `bun run check` also passed with exit code zero,
 including formatting, remaining Rust workspace tests, Wrangler dry-runs,
 Web/Bun checks, and all three configured wasm32 targets.
+
+## 2026-07-30 Atomic Drain Close Verification Overlay
+
+The canonical local schema baseline advances to:
+
+```text
+0070_relay_container_drain_close_command.sql
+70 migrations
+92 required tables
+1463 checked incremental columns
+137 key indexes
+```
+
+Focused verification for this overlay passed:
+
+```text
+python tools/verify_sqlite.py
+  70 migrations / 92 tables / 1463 incremental columns / 137 key indexes
+  0070 one-statement drain close command passed
+
+bun run test:relay-container-atomic-admission:runtime
+  1 Workerd test file passed
+  20 tests passed
+
+cargo test -p cinatoken-worker --lib relay_container_drain_close
+  7 tests passed
+
+cargo test -p cinatoken-worker --lib
+  928 tests passed
+
+bun run check:do-lifecycle-runtime
+  1 Workerd test file passed
+  54 tests passed
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+  passed
+```
+
+The SQLite verifier proves the complete 0067-0070 marker chain, rejects
+standalone fence and campaign writes, stale scope-head CAS, stale accepted-set
+boundaries, duplicate replay, command mutation/deletion, and duplicate DDL.
+It injects a downstream campaign insertion failure and verifies both the
+command insert and fence close are rolled back.
+
+The real-Workerd D1 suite admits one operation, runs one 0070 command
+`INSERT`, and reads back a one-member campaign whose accepted sequence and
+first/last operation identities match the immutable commit. It verifies that
+command creation, fence closure, campaign cutoff, and campaign creation share
+the same D1 time. Duplicate command execution is rejected, and a later
+admission leaves zero commit, admission, and operation rows.
+
+The Rust repository tests verify exact schema shape and trigger contracts,
+stable bind order, strict row decoding, accepted-set and runtime bounds, and
+the default-inert source boundary. A fresh apply requires an admin-audit
+prepared statement and uses one D1 batch for command insert, audit, and exact
+joined readback. No route, credential, or runtime write gate invokes it.
+The complete Workerd capability readback also verifies that the strict
+0067/0068 schema probes include the two 0070 guards added to the existing
+campaign and admission-fence tables; all four drain schema-readiness
+capabilities remain true on the exact 0070 head.
+
+Current schema evidence advances to 0070, but immutable admission provenance
+remains `0068_relay_container_drain_admission_enforce.sql` with SHA-256
+`fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50`.
+The accepted bookmark, set manifest, source schema, and source readback remain
+caller-attested pending independent authoritative-source recomputation.
+0070 changes no billing-expression semantics.
+
+The aggregate `bun run check` subsequently passed with exit code zero,
+including release builds, the complete Workerd suites, Web/Bun checks,
+SQLite verification, Rust workspace tests, formatting, Wrangler dry-runs,
+and all three configured wasm32 targets.
+
+These are local results only. No remote D1/Cloudflare migration, readback,
+credential, route, deployment, DNS, write gate, traffic, or Go/VPS state was
+accessed or changed. Go/VPS remains authoritative and production remains
+**NO-GO**.

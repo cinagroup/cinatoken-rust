@@ -365,16 +365,16 @@ describe("Relay Container P5 evidence contract", () => {
     await expect(verify(bundle)).rejects.toThrow(/migration head/);
   });
 
-  test("rejects a schema readback whose head remains at 0068", async () => {
+  test("rejects a schema readback whose head remains at 0069", async () => {
     const bundle = await createBundle({
       mutateEvidence: (kind, evidence) => {
         if (kind === "schema-readback") {
           evidence.facts.migrationHead =
-            "0068_relay_container_drain_admission_enforce.sql";
-          evidence.facts.migrationCount = 68;
-          evidence.facts.tableCount = 88;
-          evidence.facts.incrementalColumnCount = 1365;
-          evidence.facts.keyIndexCount = 129;
+            "0069_relay_container_traffic_return_evidence_enforce.sql";
+          evidence.facts.migrationCount = 69;
+          evidence.facts.tableCount = 91;
+          evidence.facts.incrementalColumnCount = 1424;
+          evidence.facts.keyIndexCount = 133;
         }
       },
     });
@@ -383,12 +383,12 @@ describe("Relay Container P5 evidence contract", () => {
     );
   });
 
-  test("rejects replacing the immutable admission migration with 0069", async () => {
+  test("rejects replacing the immutable admission migration with 0070", async () => {
     const bundle = await createBundle({
       mutateEvidence: (kind, evidence) => {
         if (kind === "admission-fence") {
           evidence.facts.migration.name =
-            "0069_relay_container_traffic_return_evidence_enforce.sql";
+            "0070_relay_container_drain_close_command.sql";
           evidence.facts.migration.sqlSha256 =
             "93860247d254d6b04c3901c3845534593a3fe63c8071cc274de0d8fbd4e1e5aa";
         }
@@ -1225,8 +1225,8 @@ function candidateFixture() {
     ringGeneration: 1,
     shardCount: 8,
     migrationHead:
-      "0069_relay_container_traffic_return_evidence_enforce.sql",
-    migrationCount: 69,
+      "0070_relay_container_drain_close_command.sql",
+    migrationCount: 70,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -1561,10 +1561,10 @@ function factsFixture(
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 69,
-        tableCount: 91,
-        incrementalColumnCount: 1424,
-        keyIndexCount: 133,
+        migrationCount: 70,
+        tableCount: 92,
+        incrementalColumnCount: 1463,
+        keyIndexCount: 137,
         schemaFingerprintSha256: "a".repeat(64),
         businessFingerprintBeforeSha256: "b".repeat(64),
         businessFingerprintAfterSha256: "b".repeat(64),

@@ -2265,7 +2265,7 @@ authoritative and production remains **NO-GO**.
 - [x] Advance the Application migration head to 0067 while preserving 0063 as
   immutable shard-placement authorization storage provenance.
 
-### Remote 0067, 0068, and 0069 promotion
+### Remote 0067 through 0070 promotion
 
 - [ ] Inventory every admission writer, version, queue consumer, cron,
   workflow, replay path, and direct D1 client.
@@ -2280,9 +2280,10 @@ authoritative and production remains **NO-GO**.
   readback after it, so the compatible Worker can deploy before migration.
 - [x] Make 0068 one-way: close requires the exact current head, the head is
   immutable, and recovery/aborted state cannot reopen admission.
-- [ ] Add a one-SQL-step close command in the next migration; 0067 and 0068
-  intentionally reject a two-statement close+campaign sequence that crosses
-  a D1 clock second.
+- [x] Add the 0070 one-SQL-step close command; after 0070, the standalone
+  0068 fence update and standalone 0067 campaign insert both fail closed.
+- [ ] Add authenticated authorization and the mandatory admin audit statement
+  around the otherwise unreachable 0070 repository command.
 - [ ] Inventory historical 0050 cardinality and first/last keys, then rehearse
   the one-shot window backfill against isolated D1 within current statement
   limits; replace it with a staged protocol if the bound is not proven.
@@ -2306,7 +2307,7 @@ authoritative and production remains **NO-GO**.
   linearizable outcome.
 - [ ] Prove old writers and in-flight transactions are drained before 0068.
 - [ ] Apply 0068 only through a reviewed isolated-staging ceremony.
-- [ ] Before each 0068/0069 candidate, advance the Worker expected migration
+- [ ] Before each 0068/0069/0070 candidate, advance the Worker expected migration
   set, D1 audit, SQLite inventory, P5 head/counts, and frozen foundation
   candidate together; prove the previous reader fails closed.
 - [x] Add manifest-v3 independent P5 admission-fence evidence, an offline
@@ -2326,10 +2327,11 @@ authoritative and production remains **NO-GO**.
 - [ ] Do not run operation 14 or issue a traffic-return eligibility receipt
   during schema promotion.
 
-Current Application inventory is 69 migrations / 91 required tables / 1424
-checked columns / 133 key indexes. 0068 admission enforcement and 0069 typed
-evidence enforcement exist and are locally verified, but no fence/evidence
-lifecycle mutation route exists and no remote 0068/0069 application is
+Current Application inventory is 70 migrations / 92 required tables / 1463
+checked columns / 137 key indexes. 0068 admission enforcement, 0069 typed
+evidence enforcement, and the default-unreachable 0070 close command exist
+and are locally verified, but no authenticated fence/evidence lifecycle
+route exists and no remote 0068/0069/0070 application is
 claimed. This checklist records no remote
 application, secret operation, route change, traffic change, or authority
 transfer. Go/VPS remains authoritative and production remains **NO-GO**.

@@ -25212,3 +25212,66 @@ and the final independent go/no-go decision.
 No credential, Cloudflare API, remote database, deployment, route, DNS,
 customer traffic, or Go/VPS authority was accessed or changed. Production
 remains **NO-GO**.
+
+## 22.336 Atomic Drain Close Command (2026-07-30)
+
+This overlay supersedes only the 0069 statement that the one-SQL-step close
+command is absent. Application migration
+`0070_relay_container_drain_close_command.sql` is now the local schema head.
+The canonical Application inventory advances together:
+
+```text
+70 migrations
+92 required tables
+1463 checked incremental columns
+137 key indexes
+```
+
+0070 adds one append-preserved
+`relay_container_drain_close_commands` authority. The only supported close
+primitive is one command `INSERT`. Its D1 `AFTER INSERT` trigger compares the
+expected current scope head and open-fence state, derives and checks the
+accepted high watermark, member count, and first/last accepted keys, closes
+that fence, and creates the matching 0067 campaign in the same SQLite
+statement. Command, fence close, campaign cutoff, and campaign creation
+therefore share one D1 `unixepoch()` value. The migration also rejects a
+standalone fence close, a standalone campaign insert, stale head or accepted
+boundary, command replay, and command update/delete.
+
+The Rust repository is deliberately default-inert. It exposes exact 0070
+schema readiness, strict command/fence/campaign readback, and a mutation
+method whose signature requires an admin-audit prepared statement. A fresh
+application uses one D1 batch containing the command insert, that audit
+statement, and an exact joined readback. The returned row must match the full
+requested command. There is no route, credential, runtime write gate, or
+production call site, so the repository cannot currently exercise this
+authority.
+
+Local real-Workerd evidence closes a nonempty one-member accepted set through
+the command, reads back the matching fence and campaign at the same timestamp,
+and proves a later admission leaves no commit, receipt, or operation. The
+SQLite verifier injects a downstream campaign failure and proves the command
+row and fence close roll back together; it also covers stale CAS, stale
+accepted-set boundaries, standalone writes, exact success readback,
+immutability, replay rejection, and duplicate DDL.
+
+The immutable admission-fence evidence remains pinned to
+`0068_relay_container_drain_admission_enforce.sql` with SHA-256
+`fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50`.
+Advancing the schema head to 0070 does not relabel or replace that provenance.
+The command still receives caller-attested
+`accepted_bookmark_sha256`, `accepted_set_manifest_sha256`,
+`accepted_source_schema_sha256`, and
+`accepted_source_readback_sha256`. Independent authoritative-source
+pagination and recomputation of bookmark, member/page/set manifests, source
+schema, and retained readback remain production blockers.
+
+0070 does not evaluate, copy, normalize, tier, convert, reserve, settle, or
+otherwise change billing-expression semantics. The existing frozen billing
+snapshot and one-expression truth remain authoritative.
+
+No remote D1 migration/readback, Cloudflare API, credential, deployment,
+route, DNS, gate, traffic, or Go/VPS state was accessed or changed. An
+authenticated close control plane, independently recomputed source evidence,
+remote fault campaigns, and the rest of the drain/traffic-return protocol
+remain open. Go/VPS remains authoritative and production remains **NO-GO**.

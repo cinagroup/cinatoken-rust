@@ -15,11 +15,11 @@ are ready for independent evidence assembly and owner review. The other nine
 P5 evidence kinds, the signed manifest, and all five independent approvals are
 still mandatory.
 
-Current local candidate baseline: D1 head 0069/count 69, 91 required tables,
-1424 checked incremental columns, and 133 key indexes. Migration 0055 remains
+Current local candidate baseline: D1 head 0070/count 70, 92 required tables,
+1463 checked incremental columns, and 137 key indexes. Migration 0055 remains
 the historical shard-activation campaign baseline, 0063 remains placement
 authorization storage provenance, and 0068 remains admission-fence evidence
-provenance; a new candidate must bind 0069. No live
+provenance; a new candidate must bind 0070. No live
 Cloudflare readback, migration application,
 deployment, Durable Object/Container wake, or traffic change is claimed.
 
@@ -396,15 +396,15 @@ or expiry row, provider call, financial delta, partial pagination, or candidate
 drift fails closed. No authenticated remote capture occurred; foundation and
 P5 remain **NO-GO**.
 
-## 0069 Foundation Candidate Overlay
+## 0070 Foundation Candidate Overlay
 
 The current offline foundation candidate now reports
-`0069_relay_container_traffic_return_evidence_enforce.sql`, count 69, and the
-exact `91/1424/133` schema vector. This supersedes the 0060 current-candidate
+`0070_relay_container_drain_close_command.sql`, count 70, and the exact
+`92/1463/137` schema vector. This supersedes the 0069 current-candidate
 paragraph above without rewriting its historical ring-transition evidence.
 
 The collector remains read-only and always returns `decision=not-proven`.
-Advancing the candidate does not claim remote 0067/0068/0069 application,
+Advancing the candidate does not claim remote 0067/0068/0069/0070 application,
 traffic-return evidence rows, a signed P5 packet, or customer eligibility.
 The separate P5 `admission-fence` record remains pinned to 0068; the current
 schema head and the admission authority are intentionally different

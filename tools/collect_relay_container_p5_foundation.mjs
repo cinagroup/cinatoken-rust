@@ -1104,8 +1104,8 @@ function selfTestRequest() {
       ringGeneration: 1,
       shardCount: 8,
       migrationHead:
-        "0069_relay_container_traffic_return_evidence_enforce.sql",
-      migrationCount: 69,
+        "0070_relay_container_drain_close_command.sql",
+      migrationCount: 70,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,

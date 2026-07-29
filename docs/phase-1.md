@@ -4694,3 +4694,37 @@ route, all five drain write gates remain false, and the separate
 one-SQL-step fence-close/campaign command is still absent. No remote
 migration, credential, route, DNS, traffic, or Go/VPS authority changed.
 Production remains **NO-GO**.
+
+## 2026-07-30 Atomic Drain Close Command
+
+Application D1 head is now
+`0070_relay_container_drain_close_command.sql`, with 70 migrations, 92
+required tables, 1463 checked incremental columns, and 137 key indexes. This
+overlay retains the 0069 typed-evidence boundary and closes only its stated
+local one-step command gap.
+
+One append-preserved command `INSERT` now drives a D1 trigger that compares
+the exact 0068 head and open fence, verifies the D1-derived accepted-set
+boundary, closes the fence, and creates the 0067 campaign in one SQLite
+statement. A standalone close or campaign insert is no longer valid. Real
+Workerd coverage proves the path with a nonempty accepted set and rejects a
+late admission without partial writes. SQLite fault injection proves a failed
+campaign insert rolls back both the command and fence mutation.
+
+The Rust repository exposes exact schema readiness, strict joined readback,
+and a default-inert apply method. The method requires an admin-audit prepared
+statement and batches a fresh command insert, audit, and exact readback. It
+has no route, credential, runtime write gate, or production call site.
+
+Current P5 schema identity advances to 0070. Immutable admission provenance
+does not: it remains pinned to
+`0068_relay_container_drain_admission_enforce.sql` with SHA-256
+`fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50`.
+The accepted bookmark, manifest, source schema, and source readback remain
+caller-attested pending independent recomputation from the authoritative
+admission source.
+
+0070 does not change billing-expression or settlement semantics. No remote
+D1/Cloudflare migration, readback, credential, route, gate, deployment, DNS,
+traffic, or Go/VPS authority was accessed or changed. Go/VPS remains
+authoritative and production remains **NO-GO**.

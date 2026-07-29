@@ -888,3 +888,43 @@ manifest recomputation, billing-vector replay, full drain/reverse-sync/
 operation-14 execution, and one immutable remote P5 packet. No Cloudflare
 credential, remote database, route, DNS, traffic, or authority changed.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 17. 0070 Local Atomic Close-Command Checkpoint
+
+Application migration
+`0070_relay_container_drain_close_command.sql` is now the local schema head.
+The exact local inventory is 70 migrations, 92 required tables, 1463 checked
+incremental columns, and 137 key indexes.
+
+0070 replaces the previously missing two-object close operation with one
+append-preserved command `INSERT`. Its D1 trigger atomically:
+
+- verifies the exact current 0068 scope head and still-open fence;
+- derives and compares the accepted high watermark, count, and first/last
+  accepted identities;
+- closes that fence; and
+- creates the matching 0067 campaign at the same D1 statement time.
+
+Standalone fence closure and standalone campaign creation are rejected after
+0070. Local Workerd coverage closes a real nonempty accepted set, proves the
+command/fence/campaign timestamps and accepted boundaries agree, and proves
+late admission cannot leave partial state. The SQLite verifier injects
+campaign creation failure and proves both the command insert and fence close
+roll back.
+
+The Rust repository boundary remains default-inert. Its mutation method
+requires an admin-audit prepared statement and, for a fresh command, batches
+the command insert, audit, and exact command/fence/campaign readback. It has no
+HTTP route, credential, runtime write gate, or production call site.
+
+The 0068 admission evidence migration and SHA-256 provenance remain unchanged:
+`0068_relay_container_drain_admission_enforce.sql` and
+`fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50`.
+The accepted bookmark, set manifest, source schema, and source readback in
+0070 are still caller-attested. They require independent source pagination
+and recomputation before they can support a production close.
+
+0070 does not change billing-expression evaluation or settlement semantics.
+No remote D1/Cloudflare operation, credential, route, gate, DNS, traffic, or
+authority change occurred. Go/VPS remains authoritative and production
+remains **NO-GO**.

@@ -291,6 +291,7 @@ REQUIRED_TABLES = [
     "relay_container_traffic_return_evidence_subjects",
     "relay_container_traffic_return_evidence_items",
     "relay_container_traffic_return_evidence_seals",
+    "relay_container_drain_close_commands",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1603,6 +1604,47 @@ REQUIRED_COLUMNS = {
         "admission_commit_sha256",
         "committed_at",
     },
+    "relay_container_drain_close_commands": {
+        "close_command_id_sha256",
+        "contract_version",
+        "command_contract",
+        "command_migration",
+        "environment",
+        "scope_kind",
+        "scope_id_sha256",
+        "admission_fence_id_sha256",
+        "fence_generation",
+        "expected_fence_state_digest_sha256",
+        "expected_head_version",
+        "expected_head_digest_sha256",
+        "campaign_id",
+        "accepted_high_watermark",
+        "accepted_bookmark_sha256",
+        "accepted_member_count",
+        "accepted_set_manifest_sha256",
+        "accepted_first_sequence",
+        "accepted_first_operation_id",
+        "accepted_last_sequence",
+        "accepted_last_operation_id",
+        "accepted_source_schema_sha256",
+        "accepted_source_readback_sha256",
+        "closed_fence_state_digest_sha256",
+        "ring_generation",
+        "controller_service_name",
+        "controller_version_id",
+        "shard_count",
+        "shard_inventory_sha256",
+        "edge_version_set_sha256",
+        "configuration_sha256",
+        "reverse_sync_snapshot_id_sha256",
+        "reverse_sync_source_schema_sha256",
+        "reverse_sync_target_schema_sha256",
+        "stability_window_seconds",
+        "campaign_digest_sha256",
+        "requested_by_admin_id",
+        "command_digest_sha256",
+        "created_at",
+    },
     "relay_container_traffic_return_evidence_subjects": {
         "evidence_subject_id_sha256",
         "campaign_id",
@@ -2107,6 +2149,12 @@ REQUIRED_INDEXES = {
     "relay_container_traffic_return_evidence_seals": {
         "idx_relay_container_traffic_return_evidence_seal_review": False,
     },
+    "relay_container_drain_close_commands": {
+        "idx_relay_container_drain_close_command_campaign": True,
+        "idx_relay_container_drain_close_command_fence": True,
+        "idx_relay_container_drain_close_command_digest": True,
+        "idx_relay_container_drain_close_command_audit": False,
+    },
 }
 
 
@@ -2174,6 +2222,7 @@ def main() -> int:
     relay_container_drain_expand_rollout_verified = False
     relay_container_drain_admission_enforce_rollout_verified = False
     relay_container_traffic_return_evidence_enforce_rollout_verified = False
+    relay_container_drain_close_command_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -2244,6 +2293,8 @@ def main() -> int:
             traffic_return_evidence_fixture,
         )
         relay_container_traffic_return_evidence_enforce_rollout_verified = True
+        verify_relay_container_drain_close_command_rollout(schema_paths)
+        relay_container_drain_close_command_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -2499,6 +2550,8 @@ def main() -> int:
         message += " + 0068 D1-linearized admission fence"
     if relay_container_traffic_return_evidence_enforce_rollout_verified:
         message += " + 0069 immutable typed traffic-return evidence"
+    if relay_container_drain_close_command_rollout_verified:
+        message += " + 0070 one-statement drain close command"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -21874,10 +21927,12 @@ def verify_relay_container_traffic_return_evidence_enforce_rollout(
     if (
         evidence_index == 0
         or schema_paths[evidence_index - 1] != admission_path
-        or evidence_index != len(schema_paths) - 1
+        or evidence_index + 1 >= len(schema_paths)
+        or schema_paths[evidence_index + 1].name
+        != "0070_relay_container_drain_close_command.sql"
     ):
         raise SystemExit(
-            "0069 traffic-return evidence enforcement migration must be the current head"
+            "0069 traffic-return evidence enforcement migration must precede 0070"
         )
 
     evidence_sql = evidence_path.read_text(encoding="utf-8")
@@ -23189,6 +23244,517 @@ def verify_relay_container_drain_admission_enforce_rollout(
     ).fetchall()
     if schema_after_duplicate != schema_before_duplicate:
         raise SystemExit("0068 duplicate DDL attempt changed persistent schema")
+    conn.close()
+
+
+def verify_relay_container_drain_close_command_rollout(
+    schema_paths: list[Path],
+) -> None:
+    close_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0070_relay_container_drain_close_command.sql"
+        ),
+        None,
+    )
+    evidence_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0069_relay_container_traffic_return_evidence_enforce.sql"
+        ),
+        None,
+    )
+    if close_path is None or evidence_path is None:
+        raise SystemExit("0069/0070 drain close command chain not found")
+    close_index = schema_paths.index(close_path)
+    if (
+        close_index == 0
+        or schema_paths[close_index - 1] != evidence_path
+        or close_index != len(schema_paths) - 1
+    ):
+        raise SystemExit(
+            "0070 drain close command must follow 0069 and be the current head"
+        )
+
+    close_sql = close_path.read_text(encoding="utf-8")
+    if "if not exists" in close_sql.lower():
+        raise SystemExit("0070 critical close command objects must fail duplicate DDL")
+    required_fragments = (
+        "CREATE TABLE relay_container_drain_close_commands",
+        "'relay-container-drain-close-command-v1'",
+        "'0070_relay_container_drain_close_command.sql'",
+        "idx_relay_container_drain_close_command_campaign",
+        "idx_relay_container_drain_close_command_fence",
+        "idx_relay_container_drain_close_command_digest",
+        "idx_relay_container_drain_close_command_audit",
+        "relay_container_drain_close_command_insert_guard",
+        "relay_container_admission_fence_close_command_guard",
+        "relay_container_drain_campaign_close_command_guard",
+        "relay_container_drain_close_command_update_guard",
+        "relay_container_drain_close_command_delete_guard",
+        "relay_container_drain_close_command_apply",
+        "AFTER INSERT ON relay_container_drain_close_commands",
+        "UPDATE relay_container_admission_fences",
+        "INSERT INTO relay_container_drain_campaigns",
+        "SELECT CASE WHEN changes() <> 1",
+        "admission fence close requires a 0070 command",
+        "drain campaign requires a 0070 close command",
+        "drain close command lost its fence CAS",
+        "drain close command campaign insert failed",
+        "drain close commands are append-preserved",
+        "DEFERRABLE INITIALLY DEFERRED",
+    )
+    for fragment in required_fragments:
+        if fragment not in close_sql:
+            raise SystemExit(f"0070 drain close command rollout missing: {fragment}")
+    for forbidden_fragment in (
+        "SET admission_open = 1",
+        "fence_kind = 'recovery'",
+        "INSERT INTO relay_container_admission_fences",
+        "UPDATE relay_container_admission_scope_heads",
+    ):
+        if forbidden_fragment in close_sql:
+            raise SystemExit(
+                "0070 drain close command retains an unauthorized reopen path: "
+                f"{forbidden_fragment}"
+            )
+
+    clock = [2_000_000_000]
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.create_function("unixepoch", 0, lambda: clock[0])
+    conn.execute("CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)")
+    for schema_path in schema_paths:
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
+        conn.execute(
+            "INSERT INTO d1_migrations(name) VALUES (?)",
+            (schema_path.name,),
+        )
+
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    scope_id = (
+        "53481a32b6f9f49915477efcfca093d0f"
+        "504943bf27e1a870dbcc1a0a2d69251"
+    )
+    fence_id = digest("0070-admission-fence")
+    open_fence_state = digest("0070-open-fence-state")
+    head_digest = digest("0070-head")
+    conn.execute(
+        """
+        INSERT INTO relay_container_admission_fences (
+          admission_fence_id_sha256, contract_version, fence_contract,
+          fence_kind, environment, scope_kind, scope_id_sha256,
+          fence_generation, admission_open, state_digest_sha256,
+          created_by_admin_id, created_at
+        ) VALUES (
+          ?, 1, 'relay-container-admission-fence-v1', 'admission',
+          'staging', 'global', ?, 1, 1, ?, 42, unixepoch()
+        )
+        """,
+        (fence_id, scope_id, open_fence_state),
+    )
+    conn.execute(
+        """
+        INSERT INTO relay_container_admission_scope_heads (
+          environment, scope_kind, scope_id_sha256,
+          current_fence_id_sha256, current_fence_generation,
+          head_version, head_digest_sha256,
+          updated_by_admin_id, updated_at
+        ) VALUES (
+          'staging', 'global', ?, ?, 1, 1, ?, 42, unixepoch()
+        )
+        """,
+        (scope_id, fence_id, head_digest),
+    )
+    conn.commit()
+
+    command_insert_sql = """
+        INSERT INTO relay_container_drain_close_commands (
+          close_command_id_sha256, contract_version, command_contract,
+          command_migration, environment, scope_kind, scope_id_sha256,
+          admission_fence_id_sha256, fence_generation,
+          expected_fence_state_digest_sha256, expected_head_version,
+          expected_head_digest_sha256, campaign_id,
+          accepted_high_watermark, accepted_bookmark_sha256,
+          accepted_member_count, accepted_set_manifest_sha256,
+          accepted_first_sequence, accepted_first_operation_id,
+          accepted_last_sequence, accepted_last_operation_id,
+          accepted_source_schema_sha256,
+          accepted_source_readback_sha256,
+          closed_fence_state_digest_sha256, ring_generation,
+          controller_service_name, controller_version_id, shard_count,
+          shard_inventory_sha256, edge_version_set_sha256,
+          configuration_sha256, reverse_sync_snapshot_id_sha256,
+          reverse_sync_source_schema_sha256,
+          reverse_sync_target_schema_sha256, stability_window_seconds,
+          campaign_digest_sha256, requested_by_admin_id,
+          command_digest_sha256, created_at
+        ) VALUES (
+          :close_command_id_sha256, 1,
+          'relay-container-drain-close-command-v1',
+          '0070_relay_container_drain_close_command.sql',
+          :environment, 'global', :scope_id_sha256,
+          :admission_fence_id_sha256, 1,
+          :expected_fence_state_digest_sha256, 1,
+          :expected_head_digest_sha256, :campaign_id,
+          :accepted_high_watermark, :accepted_bookmark_sha256,
+          :accepted_member_count, :accepted_set_manifest_sha256,
+          :accepted_first_sequence, :accepted_first_operation_id,
+          :accepted_last_sequence, :accepted_last_operation_id,
+          :accepted_source_schema_sha256,
+          :accepted_source_readback_sha256,
+          :closed_fence_state_digest_sha256, 1,
+          'relay-controller', 'controller-v1', 8,
+          :shard_inventory_sha256, :edge_version_set_sha256,
+          :configuration_sha256, :reverse_sync_snapshot_id_sha256,
+          :reverse_sync_source_schema_sha256,
+          :reverse_sync_target_schema_sha256, 60,
+          :campaign_digest_sha256, 42,
+          :command_digest_sha256, unixepoch()
+        )
+    """
+
+    def command_values(label: str) -> dict[str, object]:
+        return {
+            "close_command_id_sha256": digest(f"0070-command-id:{label}"),
+            "environment": "staging",
+            "scope_id_sha256": scope_id,
+            "admission_fence_id_sha256": fence_id,
+            "expected_fence_state_digest_sha256": open_fence_state,
+            "expected_head_digest_sha256": head_digest,
+            "campaign_id": digest(f"0070-campaign:{label}"),
+            "accepted_high_watermark": 0,
+            "accepted_bookmark_sha256": digest(f"0070-bookmark:{label}"),
+            "accepted_member_count": 0,
+            "accepted_set_manifest_sha256": digest(f"0070-manifest:{label}"),
+            "accepted_first_sequence": 0,
+            "accepted_first_operation_id": None,
+            "accepted_last_sequence": 0,
+            "accepted_last_operation_id": None,
+            "accepted_source_schema_sha256": digest(
+                f"0070-source-schema:{label}"
+            ),
+            "accepted_source_readback_sha256": digest(
+                f"0070-source-readback:{label}"
+            ),
+            "closed_fence_state_digest_sha256": digest(
+                f"0070-closed-fence:{label}"
+            ),
+            "shard_inventory_sha256": digest(f"0070-shards:{label}"),
+            "edge_version_set_sha256": digest(f"0070-edges:{label}"),
+            "configuration_sha256": digest(f"0070-config:{label}"),
+            "reverse_sync_snapshot_id_sha256": digest(
+                f"0070-reverse-snapshot:{label}"
+            ),
+            "reverse_sync_source_schema_sha256": digest(
+                f"0070-reverse-source:{label}"
+            ),
+            "reverse_sync_target_schema_sha256": digest(
+                f"0070-reverse-target:{label}"
+            ),
+            "campaign_digest_sha256": digest(f"0070-campaign-digest:{label}"),
+            "command_digest_sha256": digest(f"0070-command-digest:{label}"),
+        }
+
+    for missing_migration in (
+        "0067_relay_container_drain_expand.sql",
+        "0068_relay_container_drain_admission_enforce.sql",
+        "0069_relay_container_traffic_return_evidence_enforce.sql",
+        "0070_relay_container_drain_close_command.sql",
+    ):
+        conn.execute(
+            "DELETE FROM d1_migrations WHERE name = ?",
+            (missing_migration,),
+        )
+        conn.commit()
+        missing_marker = command_values(f"missing-marker:{missing_migration}")
+        expect_integrity_error(
+            lambda values=missing_marker: conn.execute(
+                command_insert_sql, values
+            ),
+            f"0070 accepted a close command without {missing_migration}",
+            "requires the complete 0067 through 0070 chain",
+        )
+        conn.rollback()
+        conn.execute(
+            "INSERT INTO d1_migrations(name) VALUES (?)",
+            (missing_migration,),
+        )
+        conn.commit()
+
+    direct_campaign = command_values("direct-campaign")
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            INSERT INTO relay_container_drain_campaigns (
+              campaign_id, contract_version, campaign_contract,
+              environment, scope_kind, scope_id_sha256,
+              fence_generation, admission_fence_id_sha256,
+              admission_open, fence_enforcement_migration,
+              cutoff_at, accepted_high_watermark,
+              accepted_bookmark_sha256, accepted_member_count,
+              accepted_set_manifest_sha256, accepted_first_sequence,
+              accepted_first_operation_id, accepted_last_sequence,
+              accepted_last_operation_id, accepted_source_schema_sha256,
+              accepted_source_readback_sha256,
+              drain_ledger_schema_migration, ring_generation,
+              controller_service_name, controller_version_id,
+              shard_count, shard_inventory_sha256,
+              edge_version_set_sha256, configuration_sha256,
+              reverse_sync_snapshot_id_sha256,
+              reverse_sync_source_schema_sha256,
+              reverse_sync_target_schema_sha256,
+              stability_window_seconds, campaign_digest_sha256,
+              state, state_version, last_event_digest_sha256,
+              created_by_admin_id, created_at
+            ) VALUES (
+              :campaign_id, 1, 'accepted-work-drain-v1',
+              :environment, 'global', :scope_id_sha256,
+              1, :admission_fence_id_sha256,
+              0, '0068_relay_container_drain_admission_enforce.sql',
+              unixepoch(), :accepted_high_watermark,
+              :accepted_bookmark_sha256, :accepted_member_count,
+              :accepted_set_manifest_sha256, :accepted_first_sequence,
+              :accepted_first_operation_id, :accepted_last_sequence,
+              :accepted_last_operation_id,
+              :accepted_source_schema_sha256,
+              :accepted_source_readback_sha256,
+              '0067_relay_container_drain_expand.sql', 1,
+              'relay-controller', 'controller-v1',
+              8, :shard_inventory_sha256,
+              :edge_version_set_sha256, :configuration_sha256,
+              :reverse_sync_snapshot_id_sha256,
+              :reverse_sync_source_schema_sha256,
+              :reverse_sync_target_schema_sha256,
+              60, :campaign_digest_sha256,
+              'fenced', 0, NULL, 42, unixepoch()
+            )
+            """,
+            direct_campaign,
+        ),
+        "0070 allowed standalone drain campaign creation",
+        "drain campaign requires a 0070 close command",
+    )
+    conn.rollback()
+
+    direct_campaign_id = digest("0070-direct-campaign")
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_admission_fences
+            SET admission_open = 0,
+                cutoff_at = unixepoch(),
+                accepted_high_watermark = 0,
+                accepted_bookmark_sha256 = ?,
+                accepted_member_count = 0,
+                accepted_set_manifest_sha256 = ?,
+                accepted_first_sequence = 0,
+                accepted_first_operation_id = NULL,
+                accepted_last_sequence = 0,
+                accepted_last_operation_id = NULL,
+                accepted_source_schema_sha256 = ?,
+                accepted_source_readback_sha256 = ?,
+                closed_campaign_id = ?,
+                state_digest_sha256 = ?,
+                closed_by_admin_id = 42,
+                closed_at = unixepoch()
+            WHERE admission_fence_id_sha256 = ?
+            """,
+            (
+                digest("0070-direct-bookmark"),
+                digest("0070-direct-manifest"),
+                digest("0070-direct-source-schema"),
+                digest("0070-direct-source-readback"),
+                direct_campaign_id,
+                digest("0070-direct-closed-state"),
+                fence_id,
+            ),
+        ),
+        "0070 allowed a standalone admission fence close",
+        "admission fence close requires a 0070 command",
+    )
+    conn.rollback()
+
+    stale_head = command_values("stale-head")
+    stale_head["expected_head_digest_sha256"] = digest("0070-stale-head")
+    expect_integrity_error(
+        lambda: conn.execute(command_insert_sql, stale_head),
+        "0070 accepted a stale scope-head CAS",
+        "lost the current admission fence",
+    )
+    conn.rollback()
+
+    stale_boundary = command_values("stale-boundary")
+    stale_boundary.update(
+        {
+            "accepted_high_watermark": 1,
+            "accepted_member_count": 1,
+            "accepted_first_sequence": 1,
+            "accepted_first_operation_id": "operation-stale",
+            "accepted_last_sequence": 1,
+            "accepted_last_operation_id": "operation-stale",
+        }
+    )
+    expect_integrity_error(
+        lambda: conn.execute(command_insert_sql, stale_boundary),
+        "0070 accepted a stale accepted-set boundary",
+        "accepted boundary is stale",
+    )
+    conn.rollback()
+
+    conn.executescript(
+        """
+        CREATE TRIGGER test_relay_container_drain_campaign_failure
+        BEFORE INSERT ON relay_container_drain_campaigns
+        FOR EACH ROW
+        BEGIN
+          SELECT RAISE(ABORT, 'test campaign write failure');
+        END;
+        """
+    )
+    conn.commit()
+    failed_campaign = command_values("campaign-failure")
+    expect_integrity_error(
+        lambda: conn.execute(command_insert_sql, failed_campaign),
+        "0070 did not surface a downstream campaign write failure",
+        "test campaign write failure",
+    )
+    conn.rollback()
+    if conn.execute(
+        "SELECT admission_open, closed_campaign_id "
+        "FROM relay_container_admission_fences "
+        "WHERE admission_fence_id_sha256 = ?",
+        (fence_id,),
+    ).fetchone() != (1, None):
+        raise SystemExit("0070 campaign failure left the fence partially closed")
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_drain_close_commands"
+    ).fetchone() != (0,):
+        raise SystemExit("0070 campaign failure retained a partial command")
+    conn.execute("DROP TRIGGER test_relay_container_drain_campaign_failure")
+    conn.commit()
+
+    success = command_values("success")
+    conn.execute(command_insert_sql, success)
+    conn.commit()
+    command_row = conn.execute(
+        """
+        SELECT close_command_id_sha256, campaign_id,
+               admission_fence_id_sha256, created_at
+        FROM relay_container_drain_close_commands
+        """
+    ).fetchone()
+    if command_row != (
+        success["close_command_id_sha256"],
+        success["campaign_id"],
+        fence_id,
+        clock[0],
+    ):
+        raise SystemExit(f"0070 close command readback mismatch: {command_row}")
+    fence_row = conn.execute(
+        """
+        SELECT admission_open, cutoff_at, accepted_high_watermark,
+               accepted_member_count, closed_campaign_id,
+               state_digest_sha256, closed_by_admin_id, closed_at
+        FROM relay_container_admission_fences
+        WHERE admission_fence_id_sha256 = ?
+        """,
+        (fence_id,),
+    ).fetchone()
+    if fence_row != (
+        0,
+        clock[0],
+        0,
+        0,
+        success["campaign_id"],
+        success["closed_fence_state_digest_sha256"],
+        42,
+        clock[0],
+    ):
+        raise SystemExit(f"0070 closed fence readback mismatch: {fence_row}")
+    campaign_row = conn.execute(
+        """
+        SELECT campaign_id, admission_fence_id_sha256, cutoff_at,
+               accepted_high_watermark, accepted_member_count,
+               accepted_set_manifest_sha256, state, state_version,
+               created_by_admin_id, created_at
+        FROM relay_container_drain_campaigns
+        """
+    ).fetchone()
+    if campaign_row != (
+        success["campaign_id"],
+        fence_id,
+        clock[0],
+        0,
+        0,
+        success["accepted_set_manifest_sha256"],
+        "fenced",
+        0,
+        42,
+        clock[0],
+    ):
+        raise SystemExit(f"0070 drain campaign readback mismatch: {campaign_row}")
+
+    clock[0] += 1
+    expect_integrity_error(
+        lambda: conn.execute(command_insert_sql, success),
+        "0070 accepted a duplicate close command replay",
+    )
+    conn.rollback()
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_drain_close_commands"
+    ).fetchone() != (1,):
+        raise SystemExit("0070 duplicate replay changed command cardinality")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_drain_close_commands
+            SET command_digest_sha256 = ?
+            WHERE close_command_id_sha256 = ?
+            """,
+            (
+                digest("0070-mutated-command"),
+                success["close_command_id_sha256"],
+            ),
+        ),
+        "0070 allowed mutation of close command evidence",
+        "drain close commands are immutable",
+    )
+    conn.rollback()
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            DELETE FROM relay_container_drain_close_commands
+            WHERE close_command_id_sha256 = ?
+            """,
+            (success["close_command_id_sha256"],),
+        ),
+        "0070 allowed deletion of close command evidence",
+        "drain close commands are append-preserved",
+    )
+    conn.rollback()
+
+    schema_before_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        conn.executescript(close_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(f"0070 duplicate DDL failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0070 critical close command objects accepted duplicate DDL")
+    schema_after_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0070 duplicate DDL attempt changed persistent schema")
     conn.close()
 
 

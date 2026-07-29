@@ -86,6 +86,105 @@ describe("migration 0050 atomic relay Container admission", () => {
     expect(await classifyAtomicAdmission(intent)).toBe("matching_resumable");
   });
 
+  it("closes one nonempty accepted set and creates its campaign in one D1 command", async () => {
+    await seedAuthorityState();
+    const intent = await atomicAdmissionIntent("drain-close");
+    await runAtomicAdmissionBatch(intent);
+    const commit = await env.DB.prepare(
+      `SELECT accepted_sequence
+       FROM relay_container_admission_commits
+       WHERE operation_id = ?1`,
+    )
+      .bind(intent.operationId)
+      .first();
+    expect(commit).toEqual({ accepted_sequence: 1 });
+
+    const command = await drainCloseCommand(intent, commit.accepted_sequence);
+    await drainCloseCommandStatement(command).run();
+
+    const readback = await env.DB.prepare(
+      `SELECT command.close_command_id_sha256,
+              command.command_digest_sha256,
+              command.created_at AS command_created_at,
+              fence.admission_open,
+              fence.closed_campaign_id,
+              fence.closed_at,
+              campaign.cutoff_at,
+              campaign.created_at AS campaign_created_at,
+              campaign.accepted_high_watermark,
+              campaign.accepted_member_count,
+              campaign.accepted_first_sequence,
+              campaign.accepted_first_operation_id,
+              campaign.accepted_last_sequence,
+              campaign.accepted_last_operation_id,
+              campaign.state,
+              campaign.state_version
+       FROM relay_container_drain_close_commands AS command
+       JOIN relay_container_admission_fences AS fence
+         ON fence.admission_fence_id_sha256 =
+              command.admission_fence_id_sha256
+       JOIN relay_container_drain_campaigns AS campaign
+         ON campaign.campaign_id = command.campaign_id
+       WHERE command.close_command_id_sha256 = ?1`,
+    )
+      .bind(command.closeCommandIdSha256)
+      .first();
+    expect(readback).toMatchObject({
+      close_command_id_sha256: command.closeCommandIdSha256,
+      command_digest_sha256: command.commandDigestSha256,
+      admission_open: 0,
+      closed_campaign_id: command.campaignId,
+      accepted_high_watermark: 1,
+      accepted_member_count: 1,
+      accepted_first_sequence: 1,
+      accepted_first_operation_id: intent.operationId,
+      accepted_last_sequence: 1,
+      accepted_last_operation_id: intent.operationId,
+      state: "fenced",
+      state_version: 0,
+    });
+    expect(readback.command_created_at).toBe(readback.closed_at);
+    expect(readback.command_created_at).toBe(readback.cutoff_at);
+    expect(readback.command_created_at).toBe(readback.campaign_created_at);
+
+    await expect(drainCloseCommandStatement(command).run()).rejects.toThrow();
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM relay_container_drain_close_commands
+         WHERE close_command_id_sha256 = ?1`,
+      )
+        .bind(command.closeCommandIdSha256)
+        .first(),
+    ).resolves.toEqual({ count: 1 });
+
+    const late = await atomicAdmissionIntent("drain-close-late", {
+      atomicAdmissionSha256: hex("4"),
+      operationAdmissionSha256: hex("5"),
+      clientIdempotencyHmacSha256: hex("2"),
+      clientIdempotencyHmacAliases: [hex("2")],
+      clientRequestSha256: hex("3"),
+      reconciliationId: hex("1"),
+      inputSha256: hex("0"),
+    });
+    await expect(runAtomicAdmissionBatch(late)).rejects.toThrow(
+      /relay container admission fence is closed or stale/,
+    );
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM relay_container_admission_commits
+            WHERE operation_id = ?1) AS commits,
+           (SELECT COUNT(*) FROM relay_container_atomic_admissions
+            WHERE operation_id = ?1) AS admissions,
+           (SELECT COUNT(*) FROM relay_container_operations
+            WHERE operation_id = ?1) AS operations`,
+      )
+        .bind(late.operationId)
+        .first(),
+    ).resolves.toEqual({ commits: 0, admissions: 0, operations: 0 });
+  });
+
   it("classifies concurrent equivalents and exact replay through either alias without another debit", async () => {
     await seedAuthorityState();
     const intent = await atomicAdmissionIntent("concurrent", {
@@ -1061,6 +1160,92 @@ async function runAtomicAdmissionBatch(
     preparedOperationStatement(intent, { includeResponseArtifactContract }),
     previousChangeAssertion(intent),
   ]);
+}
+
+async function drainCloseCommand(intent, acceptedSequence) {
+  const digest = (field) =>
+    sha256Text(`relay-container-drain-close:${intent.operationId}:${field}`);
+  return {
+    closeCommandIdSha256: await digest("command-id"),
+    campaignId: await digest("campaign-id"),
+    acceptedHighWatermark: acceptedSequence,
+    acceptedBookmarkSha256: await digest("bookmark"),
+    acceptedMemberCount: 1,
+    acceptedSetManifestSha256: await digest("accepted-set"),
+    acceptedFirstSequence: acceptedSequence,
+    acceptedFirstOperationId: intent.operationId,
+    acceptedLastSequence: acceptedSequence,
+    acceptedLastOperationId: intent.operationId,
+    acceptedSourceSchemaSha256: await digest("source-schema"),
+    acceptedSourceReadbackSha256: await digest("source-readback"),
+    closedFenceStateDigestSha256: await digest("closed-fence-state"),
+    shardInventorySha256: await digest("shard-inventory"),
+    edgeVersionSetSha256: await digest("edge-version-set"),
+    configurationSha256: await digest("configuration"),
+    reverseSyncSnapshotIdSha256: await digest("reverse-sync-snapshot"),
+    reverseSyncSourceSchemaSha256: await digest("reverse-source-schema"),
+    reverseSyncTargetSchemaSha256: await digest("reverse-target-schema"),
+    campaignDigestSha256: await digest("campaign-digest"),
+    commandDigestSha256: await digest("command-digest"),
+  };
+}
+
+function drainCloseCommandStatement(command) {
+  return env.DB.prepare(
+    `INSERT INTO relay_container_drain_close_commands (
+       close_command_id_sha256, contract_version, command_contract,
+       command_migration, environment, scope_kind, scope_id_sha256,
+       admission_fence_id_sha256, fence_generation,
+       expected_fence_state_digest_sha256, expected_head_version,
+       expected_head_digest_sha256, campaign_id,
+       accepted_high_watermark, accepted_bookmark_sha256,
+       accepted_member_count, accepted_set_manifest_sha256,
+       accepted_first_sequence, accepted_first_operation_id,
+       accepted_last_sequence, accepted_last_operation_id,
+       accepted_source_schema_sha256, accepted_source_readback_sha256,
+       closed_fence_state_digest_sha256, ring_generation,
+       controller_service_name, controller_version_id, shard_count,
+       shard_inventory_sha256, edge_version_set_sha256,
+       configuration_sha256, reverse_sync_snapshot_id_sha256,
+       reverse_sync_source_schema_sha256,
+       reverse_sync_target_schema_sha256, stability_window_seconds,
+       campaign_digest_sha256, requested_by_admin_id,
+       command_digest_sha256, created_at
+     ) VALUES (
+       ?1, 1, 'relay-container-drain-close-command-v1',
+       '0070_relay_container_drain_close_command.sql',
+       'staging', 'global', ?2, ?3, 1, ?4, 1, ?5, ?6,
+       ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+       1, 'relay-controller', 'controller-v1', 8, ?18, ?19, ?20,
+       ?21, ?22, ?23, 60, ?24, 42, ?25, unixepoch()
+     )`,
+  ).bind(
+    command.closeCommandIdSha256,
+    admissionScopeId,
+    admissionFenceId,
+    hex("7"),
+    hex("8"),
+    command.campaignId,
+    command.acceptedHighWatermark,
+    command.acceptedBookmarkSha256,
+    command.acceptedMemberCount,
+    command.acceptedSetManifestSha256,
+    command.acceptedFirstSequence,
+    command.acceptedFirstOperationId,
+    command.acceptedLastSequence,
+    command.acceptedLastOperationId,
+    command.acceptedSourceSchemaSha256,
+    command.acceptedSourceReadbackSha256,
+    command.closedFenceStateDigestSha256,
+    command.shardInventorySha256,
+    command.edgeVersionSetSha256,
+    command.configurationSha256,
+    command.reverseSyncSnapshotIdSha256,
+    command.reverseSyncSourceSchemaSha256,
+    command.reverseSyncTargetSchemaSha256,
+    command.campaignDigestSha256,
+    command.commandDigestSha256,
+  );
 }
 
 function admissionCommitStatement(intent) {

@@ -246,3 +246,49 @@ authority remain a future boundary. Applying 0069 therefore makes an
 incompatible or incomplete schema fail closed without enabling traffic or
 creating evidence. All five drain write gates remain false, Go/VPS remains
 authoritative, and production remains **NO-GO**.
+
+## Migration 0070 Atomic Drain Close Command Boundary
+
+Migration `0070_relay_container_drain_close_command.sql` advances the local
+Application head to 70 migrations, 92 required tables, 1463 checked
+incremental columns, and 137 key indexes. The repository's
+`relay_container_drain_close_command_schema_ready()` probe requires the exact
+0070 marker, ordered 39-column command table, four indexes, six trigger names,
+and critical trigger-body guards for the complete 0067-0070 chain,
+command-only fence closure, command-only campaign creation, and one-statement
+application.
+
+`relay_container_drain_close_command()` is strict readback. It validates the
+full command row and its joined closed fence and created campaign rather than
+treating insertion success as completion.
+`apply_relay_container_drain_close_command()` is present only as a
+default-inert repository boundary. Its signature requires the caller to
+supply an admin-audit `D1PreparedStatement`; a fresh apply executes:
+
+```text
+db.batch([command INSERT, admin audit, exact joined readback])
+```
+
+The 0070 `AFTER INSERT` trigger performs the actual fence close and campaign
+creation within the command statement. The repository then strongly checks
+the joined readback against every requested command field. Conflicting
+identity reuse fails closed; exact prior state is classified without
+reapplying the close.
+
+No HTTP route, Cloudflare credential, runtime write gate, or production call
+site invokes this method. The platform capability is schema readiness only.
+Consequently, adding the repository mutation does not grant operator or
+traffic authority.
+
+The 0068 migration identity and SHA-256 provenance remain unchanged, including
+the pinned digest
+`fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50`.
+The accepted bookmark, manifest, source schema, and source readback supplied
+to 0070 remain caller-attested pending independent authoritative-source
+recomputation. The boundary does not evaluate or modify billing expressions,
+quota conversion, or settlement.
+
+Local Workerd verifies a nonempty accepted set and late-admission rejection;
+the SQLite verifier proves downstream campaign failure rolls back the command
+and fence together. No remote D1/Cloudflare state was accessed or changed.
+Go/VPS remains authoritative and production remains **NO-GO**.

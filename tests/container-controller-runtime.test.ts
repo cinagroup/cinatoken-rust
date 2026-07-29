@@ -452,6 +452,415 @@ function readinessCompletion(resultCode: string, processReady = false) {
 }
 
 describe("RelayShardLedger in Workerd", () => {
+  it("distinguishes an empty initialized shard from an uninitialized drain snapshot", async () => {
+    const stub = ledgerStub("drain-empty");
+    const shard = operationEnvelope("drain-empty").shard;
+
+    await expect(stub.drainSnapshot(shard, BASE_NOW)).resolves.toEqual({
+      initialized: false,
+      lifecycle_state: null,
+      lifecycle_detail: null,
+      lifecycle_updated_at: null,
+      unclassified_operations: 0,
+      claimed_operations: 0,
+      active_claimed_operations: 0,
+      expired_claimed_operations: 0,
+      running_operations: 0,
+      active_running_operations: 0,
+      expired_running_operations: 0,
+      prepared_provider_attempts: 0,
+      dispatched_provider_attempts: 0,
+      ambiguous_provider_attempts: 0,
+      active_provider_retries: 0,
+      waiting_provider_retries: 0,
+      pending_alarm_intents: 0,
+      recovery_required_operations: 0,
+      completed_operations_missing_final_ack: 0,
+      failed_operations_missing_final_ack: 0,
+      execution_stop_eligible: true,
+      accepted_work_drained: false,
+    });
+
+    await stub.initializeReadiness(shard, BASE_NOW + 1);
+    await stub.lifecycle("draining", "accepted_work_drain", BASE_NOW + 2);
+    await expect(stub.drainSnapshot(shard, BASE_NOW + 3)).resolves.toMatchObject({
+      initialized: true,
+      lifecycle_state: "draining",
+      lifecycle_detail: "accepted_work_drain",
+      lifecycle_updated_at: BASE_NOW + 2,
+      execution_stop_eligible: true,
+      accepted_work_drained: true,
+    });
+  });
+
+  it("reads the persisted current shard drain snapshot across eviction without caller identity", async () => {
+    const stub = ledgerStub("drain-current-shard");
+    const operation = operationEnvelope("drain-current-shard");
+    await stub.claimWithRecoveryIntent(
+      operation,
+      sha256("1"),
+      "dispatch-drain-current-shard",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+
+    const authenticated = await stub.drainSnapshot(operation.shard, BASE_NOW + 1);
+    const identityMismatch = await runInDurableObject(
+      stub,
+      (_instance, state) => {
+        try {
+          new RelayShardLedger(state.storage).readShardDrainSnapshot(
+            {
+              ...operation.shard,
+              ring_generation: operation.shard.ring_generation + 1,
+            },
+            BASE_NOW + 1,
+          );
+          return null;
+        } catch (error) {
+          if (error instanceof ProtocolError) {
+            return { code: error.code, status: error.status };
+          }
+          throw error;
+        }
+      },
+    );
+    expect(identityMismatch).toEqual({
+      code: "stale_shard_fence",
+      status: 409,
+    });
+    const currentBeforeEviction = await runInDurableObject(
+      stub,
+      (_instance, state) =>
+        new RelayShardLedger(state.storage).readCurrentShardDrainSnapshot(
+          BASE_NOW + 1,
+        ),
+    );
+    expect(currentBeforeEviction).toEqual(authenticated);
+
+    await evictDurableObject(stub);
+    const currentAfterEviction = await runInDurableObject(
+      stub,
+      (_instance, state) =>
+        new RelayShardLedger(state.storage).readCurrentShardDrainSnapshot(
+          BASE_NOW + 1,
+        ),
+    );
+    expect(currentAfterEviction).toEqual(authenticated);
+  });
+
+  it("fails stop and drain closed for an unclassified persisted operation", async () => {
+    const stub = ledgerStub("drain-unclassified-operation");
+    const operation = operationEnvelope("drain-unclassified-operation");
+    await stub.claim(
+      operation,
+      sha256("1"),
+      "dispatch-drain-unclassified-operation",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE cinatoken_shard_operations
+            SET status = 'unknown_legacy_state'
+          WHERE operation_id = ?1`,
+        operation.operation_id,
+      );
+    });
+    await evictDurableObject(stub);
+
+    await expect(
+      stub.drainSnapshot(operation.shard, BASE_NOW + 1),
+    ).resolves.toMatchObject({
+      unclassified_operations: 1,
+      claimed_operations: 0,
+      running_operations: 0,
+      execution_stop_eligible: false,
+      accepted_work_drained: false,
+    });
+  });
+
+  it("separates active and expired claimed and running work and counts pending alarms", async () => {
+    const stub = ledgerStub("drain-in-flight");
+    const activeClaimed = operationEnvelope("drain-claimed-active");
+    const expiredClaimed = operationEnvelope("drain-claimed-expired", {
+      execution_deadline_at: BASE_NOW + 10,
+    });
+    const activeRunning = operationEnvelope("drain-running-active");
+    const expiredRunning = operationEnvelope("drain-running-expired", {
+      execution_deadline_at: BASE_NOW + 10,
+    });
+
+    await stub.claimWithRecoveryIntent(
+      activeClaimed,
+      sha256("1"),
+      "dispatch-drain-claimed-active",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await stub.claim(
+      expiredClaimed,
+      sha256("2"),
+      "dispatch-drain-claimed-expired",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await stub.claim(
+      activeRunning,
+      sha256("3"),
+      "dispatch-drain-running-active",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await stub.claim(
+      expiredRunning,
+      sha256("4"),
+      "dispatch-drain-running-expired",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await stub.transition(
+      activeRunning.operation_id,
+      activeRunning.owner_generation,
+      "claimed",
+      "running",
+      null,
+      BASE_NOW + 1,
+      true,
+    );
+    await stub.transition(
+      expiredRunning.operation_id,
+      expiredRunning.owner_generation,
+      "claimed",
+      "running",
+      null,
+      BASE_NOW + 1,
+      true,
+    );
+
+    await expect(
+      stub.drainSnapshot(activeClaimed.shard, BASE_NOW + 20),
+    ).resolves.toMatchObject({
+      initialized: true,
+      claimed_operations: 2,
+      active_claimed_operations: 1,
+      expired_claimed_operations: 1,
+      running_operations: 2,
+      active_running_operations: 1,
+      expired_running_operations: 1,
+      pending_alarm_intents: 1,
+      execution_stop_eligible: false,
+      accepted_work_drained: false,
+    });
+  });
+
+  it("counts prepared, dispatched, active, and waiting provider retry work", async () => {
+    const stub = ledgerStub("drain-provider-work");
+    const prepared = operationEnvelope("drain-provider-prepared");
+    const dispatched = operationEnvelope("drain-provider-dispatched");
+    const waiting = operationEnvelope("drain-provider-waiting");
+
+    for (const [index, operation] of [prepared, dispatched, waiting].entries()) {
+      await stub.claim(
+        operation,
+        sha256((index + 1).toString()),
+        `dispatch-${operation.operation_id}`,
+        ledgerPolicy(),
+        BASE_NOW,
+      );
+      await stub.startOperationWithProviderAttemptOutcome(
+        operation.operation_id,
+        operation.owner_generation,
+        operation === waiting
+          ? { maxAttempts: 2, retryEnabled: true }
+          : { maxAttempts: 1, retryEnabled: false },
+        BASE_NOW + 1,
+      );
+    }
+    await stub.dispatchProviderAttemptOutcome(
+      dispatched.operation_id,
+      dispatched.owner_generation,
+      1,
+      BASE_NOW + 2,
+    );
+    await stub.dispatchProviderAttemptOutcome(
+      waiting.operation_id,
+      waiting.owner_generation,
+      1,
+      BASE_NOW + 2,
+    );
+    await stub.recordProviderAttemptOutcome(
+      waiting.operation_id,
+      waiting.owner_generation,
+      1,
+      {
+        status: "definite_reject",
+        response_status: 429,
+        response_code: "provider_rate_limited",
+      },
+      BASE_NOW + 3,
+    );
+
+    await expect(
+      stub.drainSnapshot(prepared.shard, BASE_NOW + 4),
+    ).resolves.toMatchObject({
+      running_operations: 3,
+      prepared_provider_attempts: 1,
+      dispatched_provider_attempts: 1,
+      ambiguous_provider_attempts: 0,
+      active_provider_retries: 2,
+      waiting_provider_retries: 1,
+      execution_stop_eligible: false,
+      accepted_work_drained: false,
+    });
+  });
+
+  it("keeps ambiguous recovery out of accepted-work drain across eviction", async () => {
+    const stub = ledgerStub("drain-ambiguous-recovery");
+    const operation = operationEnvelope("drain-ambiguous-recovery");
+
+    await stub.claim(
+      operation,
+      sha256("1"),
+      "dispatch-drain-ambiguous-recovery",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await stub.startOperationWithProviderAttemptOutcome(
+      operation.operation_id,
+      operation.owner_generation,
+      { maxAttempts: 1, retryEnabled: false },
+      BASE_NOW + 1,
+    );
+    await stub.dispatchProviderAttemptOutcome(
+      operation.operation_id,
+      operation.owner_generation,
+      1,
+      BASE_NOW + 2,
+    );
+    await stub.recordProviderAttemptOutcome(
+      operation.operation_id,
+      operation.owner_generation,
+      1,
+      {
+        status: "ambiguous",
+        response_status: 202,
+        response_code: "provider_response_ambiguous",
+      },
+      BASE_NOW + 3,
+    );
+
+    const beforeEviction = await stub.drainSnapshot(operation.shard, BASE_NOW + 4);
+    expect(beforeEviction).toMatchObject({
+      claimed_operations: 0,
+      running_operations: 0,
+      prepared_provider_attempts: 0,
+      dispatched_provider_attempts: 0,
+      ambiguous_provider_attempts: 1,
+      active_provider_retries: 0,
+      waiting_provider_retries: 0,
+      pending_alarm_intents: 0,
+      recovery_required_operations: 1,
+      execution_stop_eligible: true,
+      accepted_work_drained: false,
+    });
+
+    await evictDurableObject(stub);
+    await expect(
+      stub.drainSnapshot(operation.shard, BASE_NOW + 4),
+    ).resolves.toEqual(beforeEviction);
+  });
+
+  it("requires completed and failed operations to have a final ACK before drain", async () => {
+    const stub = ledgerStub("drain-final-ack");
+    const completed = operationEnvelope("drain-completed-final-ack", {
+      operation_kind: "health_probe",
+    });
+    const failed = operationEnvelope("drain-failed-final-ack", {
+      operation_kind: "health_probe",
+    });
+
+    await stub.claim(
+      completed,
+      sha256("1"),
+      "dispatch-drain-completed-final-ack",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await stub.claim(
+      failed,
+      sha256("2"),
+      "dispatch-drain-failed-final-ack",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await stub.transition(
+      completed.operation_id,
+      completed.owner_generation,
+      "claimed",
+      "completed",
+      200,
+      BASE_NOW + 1,
+    );
+    await stub.finalizeOutcome(
+      failed.operation_id,
+      failed.owner_generation,
+      "claimed",
+      "failed",
+      503,
+      "health_probe_failed",
+      BASE_NOW + 1,
+      false,
+    );
+
+    await expect(
+      stub.drainSnapshot(completed.shard, BASE_NOW + 2),
+    ).resolves.toMatchObject({
+      completed_operations_missing_final_ack: 1,
+      failed_operations_missing_final_ack: 1,
+      execution_stop_eligible: true,
+      accepted_work_drained: false,
+    });
+
+    await expect(
+      acknowledgeTerminal(
+        stub,
+        terminalAck(completed, { result: null }),
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { finalAck: true },
+    });
+    await expect(
+      acknowledgeTerminal(
+        stub,
+        terminalAck(failed, {
+          billing_event_id: sha256("4"),
+          terminal_contract_sha256: sha256("5"),
+          reconciliation_id: sha256("6"),
+          operation_status: "failed",
+          response_status: 503,
+          response_code: "health_probe_failed",
+          result: null,
+        }),
+        BASE_NOW + 3,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: { finalAck: true },
+    });
+
+    await expect(
+      stub.drainSnapshot(completed.shard, BASE_NOW + 4),
+    ).resolves.toMatchObject({
+      completed_operations_missing_final_ack: 0,
+      failed_operations_missing_final_ack: 0,
+      execution_stop_eligible: true,
+      accepted_work_drained: true,
+    });
+  });
+
   it("serializes max + 1 concurrent claims without exceeding capacity", async () => {
     const stub = ledgerStub("concurrent-capacity");
     const maxInFlight = 3;

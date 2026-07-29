@@ -2043,3 +2043,30 @@ The local private Authority/Gateway/Controller implementation and D1 evidence
 chain now pass their aggregate gates. This closes the local mapping only;
 managed Cloudflare deployment identity, remote fault evidence, reverse sync,
 drain, billing conservation, traffic rollback, and approvals remain open.
+
+## Accepted-Work Drain And Lifecycle Mapping (2026-07-29)
+
+The source re-audit adds one important boundary to the prior lifecycle
+mapping: cinaVibeSDK Container shutdown, replacement, process health, empty
+pending input, and in-memory generation promises are execution observations,
+not durable completion receipts.
+
+| Source behavior | Rust/Cloudflare production rule | Current local proof | Still open |
+|---|---|---|---|
+| Stable Agent/SpaceDO name owns persisted workspace state | Named shard DO and persisted SQLite own local coordination across isolate/Container replacement | Deterministic shard names and eviction-persistent drain snapshot | Campaign-bound shard attestation and remote lifecycle campaign |
+| Optional hash/modulus pool selects replaceable capacity | Paid operation ownership stays bound to versioned ring, shard, and owner generation | Existing ring fence plus exact eight-shard read aggregation | Global accepted-set membership and old-Writer inventory |
+| Health checks report process `running` | Health never implies provider, ACK, billing, or reverse-sync closure | Readiness and drain predicates remain separate | Remote cross-layer stable observations |
+| Shutdown kills processes and cleans local resources best-effort | Container may stop only when no executable work remains; stop is not business drain | `onActivityExpired()` checks `execution_stop_eligible` before SIGTERM | OOM/restart/eviction fault campaign |
+| Isolate promises, timers, and abort controllers disappear on eviction | Recovery and drain truth must be persisted in DO/D1/R2 | Workerd eviction tests cover operation, attempt, retry, alarm, ambiguity, and ACK counts | D1 admission fence, billing/outbox/reconciliation, Queue, and reverse sync |
+
+The named **Accepted Work Drain and Traffic Return Safety v1** protocol is not
+operation 15. It requires admission fence and accepted-set freeze, then
+terminal ACK/billing/reconciliation/reverse-sync/drain and ambiguity
+quarantine, then operation 14, and only afterward an independent traffic-return
+review. The current Controller reader always reports
+`traffic_return_authorized=false`.
+
+See
+[`accepted-work-drain-traffic-return.md`](accepted-work-drain-traffic-return.md).
+This mapping grants no production, financial, DNS, traffic, or Go/VPS
+authority. Production remains **NO-GO**.

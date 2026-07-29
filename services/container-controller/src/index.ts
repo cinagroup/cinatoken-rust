@@ -20,6 +20,7 @@ import {
   type ReadinessProbeJournalCompletion,
   type ReadinessProbeWakePermit,
   type RelayShardLedgerPolicy,
+  type ShardDrainSnapshot as LedgerShardDrainSnapshot,
   type StorageAccessGrant,
   type StorageResultRecord,
   type TerminalAckLedgerOutcome,
@@ -145,6 +146,14 @@ import {
   type ControllerDisableAttestationEnvironment,
 } from "./controller_disable_attestation";
 import {
+  CONTROLLER_DRAIN_ATTESTATION_PATH,
+  CONTROLLER_DRAIN_ATTESTATION_SHARD_COUNT,
+  controllerDrainAttestationResponse,
+  verifyControllerDrainAttestationRequest,
+  type ControllerDrainAttestationEnvironment,
+  type ShardDrainSnapshot,
+} from "./container_drain_attestation";
+import {
   createShardPlacementAttestationV1,
   shardPlacementAttestationDigest,
   shardPlacementAttestationWriterPolicy,
@@ -165,7 +174,8 @@ interface ControllerRuntimeEnvironment
     RelayShardJurisdictionEnvironment,
     ShardPlacementAttestationWriterEnvironment,
     ShardPlacementReadinessEnvironment,
-    ControllerDisableAttestationEnvironment {
+    ControllerDisableAttestationEnvironment,
+    ControllerDrainAttestationEnvironment {
   ENVIRONMENT: string;
   CONTAINER_CONTROLLER_SERVICE_NAME: string;
   CONTAINER_CONTROLLER_ENABLED: string;
@@ -189,6 +199,7 @@ interface ControllerRuntimeEnvironment
   CONTAINER_GLOBAL_TERMINAL_COMPACTION_ENABLED: string;
   CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED: string;
   CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED: string;
+  CONTAINER_DRAIN_ATTESTATION_READ_ENABLED: string;
   CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED: string;
   CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID: string;
   CONTAINER_MAX_PROVIDER_ATTEMPTS: string;
@@ -1308,10 +1319,47 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     throw error;
   }
 
+  async readDrainSnapshot(
+    shard: OperationShard,
+    now: number,
+  ): Promise<LedgerShardDrainSnapshot> {
+    return this.ledger.readShardDrainSnapshot(shard, now);
+  }
+
   override async onActivityExpired(): Promise<void> {
-    this.ledger.recordLifecycle("draining", null, Math.floor(Date.now() / 1000));
+    const now = Math.floor(Date.now() / 1000);
+    const snapshot = this.ledger.readCurrentShardDrainSnapshot(now);
+    if (!snapshot.execution_stop_eligible) {
+      this.ledger.recordLifecycle(
+        "running",
+        activityExpiryBlockedDetail(snapshot),
+        now,
+      );
+      return;
+    }
+    this.ledger.recordLifecycle(
+      "draining",
+      "activity_expiry_stop_eligible",
+      now,
+    );
     await this.stop("SIGTERM");
   }
+}
+
+function activityExpiryBlockedDetail(
+  snapshot: LedgerShardDrainSnapshot,
+): string {
+  return [
+    "activity_expiry_blocked",
+    `unclassified=${snapshot.unclassified_operations}`,
+    `claimed=${snapshot.claimed_operations}`,
+    `running=${snapshot.running_operations}`,
+    `prepared=${snapshot.prepared_provider_attempts}`,
+    `dispatched=${snapshot.dispatched_provider_attempts}`,
+    `active_retries=${snapshot.active_provider_retries}`,
+    `waiting_retries=${snapshot.waiting_provider_retries}`,
+    `alarms=${snapshot.pending_alarm_intents}`,
+  ].join(":");
 }
 
 async function readinessJournalCompletion(
@@ -1949,12 +1997,90 @@ async function handleShardPlacementReadinessRequest(
   );
 }
 
+async function handleControllerDrainAttestationRead(
+  request: Request,
+  env: ControllerEnv,
+  now = Math.floor(Date.now() / 1_000),
+): Promise<Response> {
+  if (env.CONTAINER_DRAIN_ATTESTATION_READ_ENABLED !== "true") {
+    return jsonError("container_drain_attestation_read_disabled", 503);
+  }
+  const verified = await verifyControllerDrainAttestationRequest(
+    request,
+    env,
+    now,
+  );
+  const protocolVersion = configuredInteger(
+    env.CONTAINER_PROTOCOL_VERSION,
+    1,
+    1,
+  );
+  const ringGeneration = configuredInteger(
+    env.CONTAINER_RING_GENERATION,
+    1,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const shardCount = configuredInteger(
+    env.CONTAINER_SHARD_COUNT,
+    1,
+    1_024,
+  );
+  if (
+    protocolVersion !== 1 ||
+    shardCount !== CONTROLLER_DRAIN_ATTESTATION_SHARD_COUNT
+  ) {
+    throw new ProtocolError(
+      "controller_drain_attestation_configuration_invalid",
+      503,
+    );
+  }
+
+  const namespace = selectRelayShardNamespace(env);
+  let snapshots: ShardDrainSnapshot[];
+  try {
+    snapshots = await Promise.all(
+      Array.from(
+        { length: CONTROLLER_DRAIN_ATTESTATION_SHARD_COUNT },
+        async (_, shardIndex): Promise<ShardDrainSnapshot> => {
+          const shard: OperationShard = {
+            contract_version: 1,
+            ring_generation: ringGeneration,
+            shard_count: CONTROLLER_DRAIN_ATTESTATION_SHARD_COUNT,
+            shard_index: shardIndex,
+            instance_name: `cinatoken-relay-shard-v1-${shardIndex
+              .toString()
+              .padStart(4, "0")}`,
+          };
+          const snapshot = await namespace
+            .getByName(shard.instance_name)
+            .readDrainSnapshot(shard, now);
+          return {
+            ...snapshot,
+            ...shard,
+            contract_version: 1,
+            shard_count: CONTROLLER_DRAIN_ATTESTATION_SHARD_COUNT,
+          };
+        },
+      ),
+    );
+  } catch {
+    throw new ProtocolError(
+      "controller_drain_attestation_snapshot_unavailable",
+      503,
+    );
+  }
+  return controllerDrainAttestationResponse(verified, env, snapshots);
+}
+
 const handler: ExportedHandler<ControllerEnv> = {
   async fetch(request, env): Promise<Response> {
     try {
       const path = new URL(request.url).pathname;
       if (path === CONTROLLER_DISABLE_ATTESTATION_PATH) {
         return handleControllerDisableAttestationRequest(request, env);
+      }
+      if (path === CONTROLLER_DRAIN_ATTESTATION_PATH) {
+        return handleControllerDrainAttestationRead(request, env);
       }
       if (path === SHARD_PLACEMENT_READINESS_PROBE_PATH) {
         return handleShardPlacementReadinessRequest(

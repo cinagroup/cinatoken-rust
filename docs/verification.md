@@ -11427,8 +11427,8 @@ Remote Service Binding and Access inventory, D1 migration/catalog and zero-row
 baselines, workload identity isolation and rotation, historical credential
 revocation, structured failure metrics and alerts, audit/WORM retention,
 Controller status semantics, rollback, reverse sync, Go/VPS shadow comparison,
-operation-14 disable, old-ring drain, traffic approval, and DNS approval all
-remain required.
+accepted-work/old-ring drain and ambiguity quarantine, operation-14 disable,
+traffic approval, and DNS approval all remain required.
 
 Until those results are independently captured and reviewed, Go/VPS remains
 authoritative and production remains **NO-GO**.
@@ -11881,3 +11881,44 @@ least-privilege scope, credential rotation, retained mutation-count and
 commit-response-loss/rollout campaigns, reverse sync, drain, billing
 conservation, traffic/DNS rehearsal, and approvals remain open. Production is
 **NO-GO** and Go/VPS remains authoritative.
+
+## 2026-07-29 Accepted-Work Drain Reader Verification
+
+The local accepted-work drain foundation now passes:
+
+```text
+bun run test:container-controller
+  current-worktree unit/config tests: 267 passed
+  target/release-source-evidence historical copies: explicitly excluded
+
+bun run test:container-controller:protocol-portable
+  7 files, 179 tests passed
+
+bun run test:container-controller:runtime
+  1 Workerd file, 53 tests passed
+
+bun run check:container-controller
+  generated types current
+  TypeScript and Wrangler dry-run passed
+  all three suites above passed
+```
+
+The Workerd suite proves that the DO SQLite snapshot survives eviction and
+distinguishes active/expired claimed and running operations, prepared and
+dispatched attempts, active/waiting retries, pending alarms, provider
+ambiguity, `recovery_required`, and missing final ACK. It separately computes
+`execution_stop_eligible` and local `accepted_work_drained`; an unknown
+persisted operation status fails both predicates closed.
+
+The Controller suite proves dedicated HMAC domain and KID separation, strict
+empty-body/path/time claims, exact fixed shards 0-7, divergent or
+uninitialized shard rejection, canonical sorting, and a request-independent
+state digest. Local, staging, and production read gates remain false, secrets
+remain untracked, and every successful response fixes
+`traffic_return_authorized=false`.
+
+This is not a global drain proof. The D1 admission fence, immutable accepted
+set, billing/outbox/reconciliation/R2/Queue joins, ambiguity quarantine,
+reverse sync, stable observation pair, operation-14 prerequisite enforcement,
+and independent traffic-return review remain unimplemented. No Cloudflare
+remote state or Go/VPS authority changed. Production remains **NO-GO**.

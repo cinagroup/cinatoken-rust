@@ -1427,15 +1427,32 @@ mutate. Go/VPS remains authoritative.
 
 ### Go/VPS return gate
 
-| Evidence | Required before traffic return |
+| Ordered evidence | Required before traffic-return review |
 |---|---|
-| operation-14 disable | exact baseline deployment and Controller attestation |
-| reverse sync | every accepted Rust write reconciled |
-| provider ambiguity | quarantined, never resent through Go |
-| billing | reservation, settlement, refund, and task terminal ownership conserved |
-| drain | SSE, WebSocket, pollers, batches, and in-process work bounded to zero |
-| audit | D1 and WORM history retained |
-| operations | Go/VPS RTO/RPO, traffic and DNS rollback rehearsal accepted |
+| 1. admission fence | D1 rejects every new or stale-generation Rust admission |
+| 2. accepted-set freeze | immutable cutoff, membership keys, ring/shard inventory, Edge versions, and manifest digest |
+| 3. terminal and drain | every member joins provider disposition, task terminal, final DO ACK, billing terminal, outbox, reconciliation, R2 evidence, reverse sync, and bounded process/stream/Queue drain |
+| 4. provider ambiguity | each irreducible item has an immutable no-Rust-resend/no-Go-replay quarantine and reviewed financial exposure |
+| 5. operation 14 | only after drain: exact baseline deployment, stable Gateway readback, and all-action-gates-false Controller attestation |
+| 6. independent review | sealed D1/WORM evidence, Go/VPS RTO/RPO, traffic/DNS rehearsal, and required approvals |
 
-Operation-14 success alone cannot satisfy this matrix. Production remains
-**NO-GO**.
+The accepted-work safety protocol is named
+`Accepted Work Drain and Traffic Return Safety v1`; it is not operation
+ordinal 15. Operation-14 success alone cannot satisfy this matrix.
+
+### Accepted-work drain foundation status
+
+| Control | Current local evidence | Missing production implementation/evidence | Status |
+|---|---|---|---|
+| DO snapshot | Persisted per-shard counts cover unclassified/claimed/running operations, prepared/dispatched/ambiguous provider attempts, retries, alarms, recovery-required rows, and missing final ACK; unknown operation status fails closed | Campaign-bound cutoff/high watermark and immutable shard attestation row | Foundation only |
+| Stop eligibility | `execution_stop_eligible` excludes work that can safely continue in a Container; activity expiry refuses stop while that predicate is false | Staging eviction/OOM/restart campaign and measured lifecycle evidence | Local foundation |
+| Shard drain predicate | Local `accepted_work_drained` additionally rejects ambiguity, recovery-required, and missing final ACK | It has no global accepted membership, D1 billing/outbox/reconciliation/R2/Queue/reverse-sync join | Not a production drain proof |
+| Controller read attestation | Default-off private route validates exactly eight deterministic shards, Controller identity, canonical state digest, and always emits `traffic_return_authorized=false` | Deployed identity, key rotation, complete shard campaign, and stable global observations | Read foundation only |
+| D1 campaign/admission fence | Design in `docs/accepted-work-drain-traffic-return.md` | 0067 expand schema, compatible writers, 0068 admission enforcement, remote readback | Not implemented |
+| Accepted-set freeze | Membership/cutoff/keyset/digest contract documented | D1 repository, routes, fault tests, and remote evidence | Not implemented |
+| Ambiguity quarantine | Per-operation non-replay and financial-exposure contract documented | D1 sidecar, preview/apply authority, review workflow | Not implemented |
+| Reverse sync | Scope-bound snapshot/high-watermark/shadow contract documented | D1-to-Go exporter/importer, Go fencing, reconciliation evidence | Not implemented |
+| Traffic-return receipt | Eligibility-only contract documented; authorization is prohibited | D1 receipt, stable observation pair, independent approval workflow | Not implemented |
+
+Container/DO lifecycle state is never business drain evidence. Go/VPS remains
+authoritative and production remains **NO-GO**.

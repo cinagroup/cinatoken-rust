@@ -55,9 +55,21 @@ const placementReadinessSource = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const activationCampaignSource = await Bun.file(
+  new URL(
+    "../services/container-controller/src/shard_activation_campaign.ts",
+    import.meta.url,
+  ),
+).text();
 const disableAttestationSource = await Bun.file(
   new URL(
     "../services/container-controller/src/controller_disable_attestation.ts",
+    import.meta.url,
+  ),
+).text();
+const drainAttestationSource = await Bun.file(
+  new URL(
+    "../services/container-controller/src/container_drain_attestation.ts",
     import.meta.url,
   ),
 ).text();
@@ -129,6 +141,9 @@ describe("isolated container controller configuration", () => {
       expect(
         config.vars.CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED,
       ).toBe("false");
+      expect(config.vars.CONTAINER_DRAIN_ATTESTATION_READ_ENABLED).toBe(
+        "false",
+      );
       expect(config.vars.CONTAINER_DURABLE_OBJECT_JURISDICTION).toBe("default");
       expect(
         config.vars.CONTAINER_DURABLE_OBJECT_JURISDICTION_ENABLED,
@@ -210,6 +225,33 @@ describe("isolated container controller configuration", () => {
       expect(
         config.vars.CONTROLLER_DISABLE_ATTESTATION_PREVIOUS_SECRET,
       ).toBeUndefined();
+      expect(
+        config.vars.CONTROLLER_DRAIN_ATTESTATION_AUTHORITY_ISSUER,
+      ).toBe(
+        `cinatoken-shard-placement-authority-${controllerEnvironments[file]}`,
+      );
+      expect(
+        config.vars.CONTROLLER_DRAIN_ATTESTATION_AUTHORITY_AUDIENCE,
+      ).toBe(config.name);
+      for (const isolatedKid of [
+        config.vars.CONTAINER_AUTHORITY_CURRENT_KID,
+        config.vars.SHARD_PLACEMENT_READINESS_PROBE_CURRENT_KID,
+        config.vars.SHARD_PLACEMENT_READINESS_READBACK_CURRENT_KID,
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_CURRENT_KID,
+      ]) {
+        expect(
+          config.vars.CONTROLLER_DRAIN_ATTESTATION_CURRENT_KID,
+        ).not.toBe(isolatedKid);
+      }
+      expect(
+        config.vars.CONTROLLER_DRAIN_ATTESTATION_PREVIOUS_KID,
+      ).toBe("");
+      expect(
+        config.vars.CONTROLLER_DRAIN_ATTESTATION_CURRENT_SECRET,
+      ).toBeUndefined();
+      expect(
+        config.vars.CONTROLLER_DRAIN_ATTESTATION_PREVIOUS_SECRET,
+      ).toBeUndefined();
       expect(config.d1_databases).toHaveLength(1);
       expect(config.d1_databases[0].binding).toBe("DB");
       expect(config.kv_namespaces).toHaveLength(1);
@@ -270,6 +312,9 @@ describe("isolated container controller configuration", () => {
     expect(packageJson.scripts["test:container-controller"]).toContain(
       "controller_disable_attestation.test.ts",
     );
+    expect(packageJson.scripts["test:container-controller"]).toContain(
+      "container_drain_attestation.test.ts",
+    );
   });
 
   test("shard placement readiness has isolated probe and existing-only readback authority", () => {
@@ -312,6 +357,48 @@ describe("isolated container controller configuration", () => {
       /\b(?:DB|D1Database|RELAY_SHARDS|DurableObject|ContainerProxy|CONFIG_KV|FILE_BUCKET|PROVIDER_EGRESS)\b/,
     );
     expect(disableAttestationSource).not.toMatch(
+      /console\.(?:log|error)|fetch\("https?:\/\//,
+    );
+  });
+
+  test("accepted-work drain attestation is private, default-off, and cannot authorize traffic return", () => {
+    expect(drainAttestationSource).toContain(
+      '"/internal/v1/shard-placement/drain-attestation"',
+    );
+    expect(drainAttestationSource).toContain(
+      '"x-cinatoken-controller-drain-attestation-authority"',
+    );
+    expect(drainAttestationSource).toContain(
+      '"cinatoken:container-controller:drain-attestation-authority:v1\\0"',
+    );
+    expect(drainAttestationSource).toContain(
+      'CONTROLLER_DRAIN_ATTESTATION_ROLE = "drain_attestation"',
+    );
+    expect(drainAttestationSource).toContain(
+      "traffic_return_authorized: false",
+    );
+    expect(controllerSource).toContain(
+      "handleControllerDrainAttestationRead(request, env)",
+    );
+    expect(controllerSource).toContain(
+      'env.CONTAINER_DRAIN_ATTESTATION_READ_ENABLED !== "true"',
+    );
+    expect(controllerSource).toContain(
+      "selectRelayShardNamespace(env)",
+    );
+    expect(controllerSource).toContain(
+      "readCurrentShardDrainSnapshot(now)",
+    );
+    expect(controllerSource).toContain(
+      "if (!snapshot.execution_stop_eligible)",
+    );
+    expect(activationCampaignSource).not.toContain(
+      "CONTAINER_DRAIN_ATTESTATION_READ_ENABLED",
+    );
+    expect(drainAttestationSource).not.toMatch(
+      /\b(?:DB|D1Database|RELAY_SHARDS|DurableObject|ContainerProxy|CONFIG_KV|FILE_BUCKET|PROVIDER_EGRESS)\b/,
+    );
+    expect(drainAttestationSource).not.toMatch(
       /console\.(?:log|error)|fetch\("https?:\/\//,
     );
   });

@@ -511,22 +511,51 @@ Do not approve cutover until both behaviors and the provider-dispatch-to-
 handoff crash window have accepted production evidence. See
 `docs/relay-http-stream-durable-handoff.md`.
 
-## Operation 14 Before Traffic Return
+## Accepted-Work Drain Before Operation 14
 
-When an execution authorization has observed enable intent, Controller disable
-must be proven before any traffic return decision:
+When an execution authorization has observed enable intent, use the named
+**Accepted Work Drain and Traffic Return Safety v1** protocol. It is not
+operation ordinal 15 and must not be inserted into the operation receipt
+ledger. The required order is:
 
-1. disable new Rust admission independently;
-2. execute or recover operation 14 using the frozen baseline version;
-3. require one mutation authority and status-only behavior after ambiguity;
-4. require two stable exact-baseline Gateway observations;
-5. require the independent all-action-gates-false Controller attestation;
-6. retain all DO, Container, D1, R2, receipt, billing, and audit evidence;
-7. reverse-sync accepted Rust writes and quarantine ambiguous provider work;
-8. reconcile billing and task terminal ownership;
-9. drain process-local and streaming work; and
-10. only then evaluate Go/VPS RTO/RPO, traffic, and DNS rollback gates.
+1. activate a D1-enforced admission fence for the selected Rust scope;
+2. freeze the immutable accepted set, cutoff, ring generation, shard inventory,
+   Edge version set, and membership digest;
+3. while terminal writers remain enabled, close every accepted member through
+   provider classification, task terminal, final DO ACK, billing
+   settlement/refund, outbox, reconciliation, R2 evidence, reverse sync, and
+   process/stream/Queue drain;
+4. place each irreducible provider ambiguity into an immutable quarantine that
+   forbids Rust resend and Go replay and records financial exposure;
+5. require complete shard evidence and two stable global observations;
+6. only now execute or recover operation 14 using the frozen baseline version;
+7. require one operation-14 mutation authority, status-only behavior after
+   ambiguity, two stable exact-baseline Gateway observations, and the
+   independent all-action-gates-false Controller attestation; and
+8. submit the sealed drain, quarantine, reverse-sync, billing, operation-14,
+   Go/VPS RTO/RPO, traffic, and DNS evidence to an independent traffic-return
+   review.
+
+Do not run operation 14 before step 3. Its all-action-gates-false result closes
+the terminal ACK path needed to finish accepted work. Do not restore Go/VPS
+traffic for the selected scope before step 8 accepts the evidence packet.
+During the bounded fail-closed interval, new work is rejected rather than
+replayed across authorities.
+
+Container stop eligibility is evaluated separately. A shard may have no
+claimed/running operation, prepared/dispatched provider attempt, retry, or
+alarm and therefore be safe to stop while ambiguity, missing final ACK,
+billing, reconciliation, reverse sync, or global accepted-set proof remains
+open. Container stop, process exit, DO eviction, and Controller health never
+prove accepted-work drain.
+
+The current local batch supplies only DO drain snapshots and the default-off
+Controller read attestation. It does not implement the global D1 campaign,
+admission fence, accepted-set freeze, quarantine, reverse sync, stable global
+observations, or traffic-return receipt. Every attestation reports
+`traffic_return_authorized=false`.
 
 Operation 14 does not resend providers, refund usage, delete shard state, or
 prove that in-flight work has drained. A failed or unresolved disable remains
 `recovery_required` and blocks new authorization in the same active scope.
+See `docs/accepted-work-drain-traffic-return.md` for the complete contract.

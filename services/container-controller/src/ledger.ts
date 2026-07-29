@@ -353,6 +353,51 @@ interface ShardStateRow {
   updated_at: number;
 }
 
+interface ShardDrainCountsRow {
+  [key: string]: SqlStorageValue;
+  unclassified_operations: number;
+  claimed_operations: number;
+  active_claimed_operations: number;
+  expired_claimed_operations: number;
+  running_operations: number;
+  active_running_operations: number;
+  expired_running_operations: number;
+  prepared_provider_attempts: number;
+  dispatched_provider_attempts: number;
+  ambiguous_provider_attempts: number;
+  active_provider_retries: number;
+  waiting_provider_retries: number;
+  pending_alarm_intents: number;
+  recovery_required_operations: number;
+  completed_operations_missing_final_ack: number;
+  failed_operations_missing_final_ack: number;
+}
+
+export interface ShardDrainSnapshot {
+  initialized: boolean;
+  lifecycle_state: string | null;
+  lifecycle_detail: string | null;
+  lifecycle_updated_at: number | null;
+  unclassified_operations: number;
+  claimed_operations: number;
+  active_claimed_operations: number;
+  expired_claimed_operations: number;
+  running_operations: number;
+  active_running_operations: number;
+  expired_running_operations: number;
+  prepared_provider_attempts: number;
+  dispatched_provider_attempts: number;
+  ambiguous_provider_attempts: number;
+  active_provider_retries: number;
+  waiting_provider_retries: number;
+  pending_alarm_intents: number;
+  recovery_required_operations: number;
+  completed_operations_missing_final_ack: number;
+  failed_operations_missing_final_ack: number;
+  execution_stop_eligible: boolean;
+  accepted_work_drained: boolean;
+}
+
 export interface ShardReadinessSnapshot {
   initialized: boolean;
   lifecycle_state: string | null;
@@ -4168,6 +4213,146 @@ export class RelayShardLedger {
       expired_in_flight_operations: expiredInFlight,
       terminal_operations: terminal,
       readiness: readinessSnapshot(this.readReadinessRow()),
+    };
+  }
+
+  readShardDrainSnapshot(shard: OperationShard, now: number): ShardDrainSnapshot {
+    return this.readShardDrainSnapshotInternal(shard, now);
+  }
+
+  readCurrentShardDrainSnapshot(now: number): ShardDrainSnapshot {
+    return this.readShardDrainSnapshotInternal(null, now);
+  }
+
+  private readShardDrainSnapshotInternal(
+    shard: OperationShard | null,
+    now: number,
+  ): ShardDrainSnapshot {
+    this.ensureSchema();
+    const state = this.readShardStateRow();
+    if (state !== null && shard !== null) assertShardStateMatches(state, shard);
+    return this.readShardDrainSnapshotForState(state, now);
+  }
+
+  private readShardDrainSnapshotForState(
+    state: ShardStateRow | null,
+    now: number,
+  ): ShardDrainSnapshot {
+    const counts = this.storage.sql
+      .exec<ShardDrainCountsRow>(
+        `SELECT
+           COUNT(CASE
+             WHEN operation.status NOT IN (
+               'claimed', 'running', 'completed', 'failed', 'recovery_required'
+             )
+             THEN 1
+           END) AS unclassified_operations,
+           COUNT(CASE WHEN operation.status = 'claimed' THEN 1 END)
+             AS claimed_operations,
+           COUNT(CASE
+             WHEN operation.status = 'claimed' AND operation.deadline_at > ?1
+             THEN 1
+           END) AS active_claimed_operations,
+           COUNT(CASE
+             WHEN operation.status = 'claimed' AND operation.deadline_at <= ?1
+             THEN 1
+           END) AS expired_claimed_operations,
+           COUNT(CASE WHEN operation.status = 'running' THEN 1 END)
+             AS running_operations,
+           COUNT(CASE
+             WHEN operation.status = 'running' AND operation.deadline_at > ?1
+             THEN 1
+           END) AS active_running_operations,
+           COUNT(CASE
+             WHEN operation.status = 'running' AND operation.deadline_at <= ?1
+             THEN 1
+           END) AS expired_running_operations,
+           (
+             SELECT COUNT(*)
+               FROM cinatoken_shard_provider_attempts
+              WHERE status = 'prepared'
+           ) AS prepared_provider_attempts,
+           (
+             SELECT COUNT(*)
+               FROM cinatoken_shard_provider_attempts
+              WHERE status = 'dispatched'
+           ) AS dispatched_provider_attempts,
+           (
+             SELECT COUNT(*)
+               FROM cinatoken_shard_provider_attempts
+              WHERE status = 'ambiguous'
+           ) AS ambiguous_provider_attempts,
+           (
+             SELECT COUNT(*)
+               FROM cinatoken_shard_provider_retry_state
+              WHERE state = 'active'
+           ) AS active_provider_retries,
+           (
+             SELECT COUNT(*)
+               FROM cinatoken_shard_provider_retry_state
+              WHERE state = 'waiting'
+           ) AS waiting_provider_retries,
+           (
+             SELECT COUNT(*)
+               FROM cinatoken_shard_alarm_intents
+              WHERE state = 'pending'
+           ) AS pending_alarm_intents,
+           COUNT(CASE
+             WHEN operation.status = 'recovery_required' THEN 1
+           END) AS recovery_required_operations,
+           (
+             SELECT COUNT(*)
+               FROM cinatoken_shard_operations AS completed
+              WHERE completed.status = 'completed'
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM cinatoken_shard_terminal_acks AS ack
+                   WHERE ack.operation_id = completed.operation_id
+                     AND ack.owner_generation = completed.owner_generation
+                     AND ack.final_acked_at IS NOT NULL
+                )
+           ) AS completed_operations_missing_final_ack,
+           (
+             SELECT COUNT(*)
+               FROM cinatoken_shard_operations AS failed
+              WHERE failed.status = 'failed'
+                AND NOT EXISTS (
+                  SELECT 1
+                    FROM cinatoken_shard_terminal_acks AS ack
+                   WHERE ack.operation_id = failed.operation_id
+                     AND ack.owner_generation = failed.owner_generation
+                     AND ack.final_acked_at IS NOT NULL
+                )
+           ) AS failed_operations_missing_final_ack
+         FROM cinatoken_shard_operations AS operation`,
+        now,
+      )
+      .one();
+    const executionStopEligible =
+      counts.unclassified_operations === 0 &&
+      counts.claimed_operations === 0 &&
+      counts.running_operations === 0 &&
+      counts.prepared_provider_attempts === 0 &&
+      counts.dispatched_provider_attempts === 0 &&
+      counts.active_provider_retries === 0 &&
+      counts.waiting_provider_retries === 0 &&
+      counts.pending_alarm_intents === 0;
+    const acceptedWorkDrained =
+      state !== null &&
+      executionStopEligible &&
+      counts.recovery_required_operations === 0 &&
+      counts.ambiguous_provider_attempts === 0 &&
+      counts.completed_operations_missing_final_ack === 0 &&
+      counts.failed_operations_missing_final_ack === 0;
+
+    return {
+      initialized: state !== null,
+      lifecycle_state: state?.lifecycle_state ?? null,
+      lifecycle_detail: state?.lifecycle_detail ?? null,
+      lifecycle_updated_at: state?.updated_at ?? null,
+      ...counts,
+      execution_stop_eligible: executionStopEligible,
+      accepted_work_drained: acceptedWorkDrained,
     };
   }
 

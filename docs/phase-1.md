@@ -4497,3 +4497,37 @@ state or secret was accessed. Operations 6-14, remote proof, rollback
 campaigns, reverse sync, drain, traffic, DNS, security, SRE, and migration
 approvals remain open. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-29 Accepted-Work Drain Reader Foundation
+
+Operations 6-14 now have local control-plane implementations documented in
+the migration plan; this checkpoint corrects the rollback order around
+operation 14. The named **Accepted Work Drain and Traffic Return Safety v1**
+protocol is not operation 15:
+
+```text
+D1 admission fence
+-> immutable accepted-set freeze
+-> terminal ACK, billing, reconciliation, reverse sync, and drain
+-> per-operation ambiguity quarantine
+-> operation 14
+-> independent traffic-return review
+```
+
+The current implementation provides only persisted shard drain counts,
+separate `execution_stop_eligible` and local `accepted_work_drained`
+predicates, activity-expiry stop protection, and a default-off authenticated
+Controller read over fixed shards 0-7. Its response always sets
+`traffic_return_authorized=false`.
+
+The next implementation boundary is the expand-only 0067 global drain schema
+and D1 admission-fence design, with every new write gate false. Before 0068
+enforcement, all old writers must be inventoried and drained. Accepted-set
+membership, cross-layer financial joins, ambiguity quarantine, reverse sync,
+stable observations, operation-14 prerequisite enforcement, and independent
+traffic-return review remain open.
+
+See
+[`accepted-work-drain-traffic-return.md`](accepted-work-drain-traffic-return.md).
+No Cloudflare remote state or Go/VPS authority changed. Production remains
+**NO-GO**.

@@ -23445,7 +23445,8 @@ text. Deployed failure-path metrics and alerts remain required before staging.
    operation-5 workload receives only `ENABLE` credentials; neither secret may
    be co-injected into one execution workload.
 7. Keep Go/VPS authoritative through shadow comparison, rollback, reverse
-   sync, operation-14 disable proof, old-ring drain, and traffic/DNS approval.
+   sync, accepted-work/old-ring drain and ambiguity quarantine, operation-14
+   disable proof, and traffic/DNS approval.
 
 All new gates remain false. No credential or remote Cloudflare state was read,
 and no migration, gate, Container, traffic, billing, DNS, or Go/VPS state was
@@ -24539,3 +24540,139 @@ least-privilege deploy/read tokens, HMAC rotation, remote mutation-count,
 commit-response-loss and rollout campaigns, reverse sync, accepted-work drain,
 billing reconciliation, Go/VPS RTO/RPO, traffic and DNS rehearsals, and
 security/SRE approvals remain independent requirements.
+
+## 22.333 Accepted Work Drain And Traffic Return Safety (2026-07-29)
+
+This checkpoint corrects the rollback ordering after the operation-14 local
+implementation and records the bounded reader foundation now present in the
+Controller. The protocol is named **Accepted Work Drain and Traffic Return
+Safety v1**. It is not operation ordinal 15, does not consume an Authority
+receipt ordinal, and does not modify the operation 1-14 state machine.
+
+### Source design and migration consequence
+
+The reviewed cinaVibeSDK commit
+`918e97480ee44e357abe99bf33c27259d6ac7ebd` establishes:
+
+- stable Agent and SpaceDO identity through
+  `worker/agents/index.ts:21-36` and
+  `worker/agents/think/ThinkAgent.ts:207-211`;
+- per-name SQLite-backed workspace ownership in
+  `space/src/space/durable-object.ts:61-78`;
+- hash/modulus Container pool allocation in
+  `worker/services/sandbox/sandboxSdkClient.ts:86-107`;
+- replaceable instances rebuilt from persistent files in
+  `worker/agents/services/implementations/DeploymentManager.ts:519-606`;
+- process-running health and best-effort shutdown in
+  `worker/services/sandbox/sandboxSdkClient.ts:1128-1224`; and
+- the durable/in-memory/eviction split in `docs/llm.md:607-625`.
+
+The transferable rule is that a named DO and its persisted state own
+coordination while Container and isolate lifecycle are disposable. Health,
+shutdown, eviction, hibernation, an empty queue, or a missing in-memory promise
+cannot prove paid work drained.
+
+The reviewed Go commit
+`73652508abc5cb09214dde02d51d69d1d1ccc703` adds stricter rollback evidence:
+
+- `main.go:87-240` has no process-wide cancel/wait and graceful HTTP shutdown;
+- `relay/helper/stream_scanner.go:97-121,221` provides request-local, bounded
+  SSE cleanup only;
+- `service/task_polling.go:90-99` owns an unbounded poll loop;
+- `model/task.go:404-448` has terminal CAS, while
+  `service/task_polling.go:473-498` settles/refunds after that CAS;
+- `relay/relay_task.go:174-223` and `controller/relay.go:572-646` leave provider
+  ambiguity and a provider-success/task-insert crash window;
+- `service/billing_session.go:25-116` keeps settlement/refund guards in process
+  memory; and
+- `model/user.go:897-923` plus `model/utils.go:24-44` allow quota deltas to wait
+  in a memory batch.
+
+The billing contract in `pkg/billingexpr/expr.md` also requires the frozen
+expression, version, request context, token normalization, matched tier, and
+group ratio to remain reproducible through settlement and reconciliation.
+
+### Correct production sequence
+
+The required order is now:
+
+```text
+D1-enforced admission fence
+-> immutable accepted-set freeze
+-> terminal ACK, billing, reconciliation, reverse sync, and drain
+-> per-operation ambiguity quarantine
+-> operation 14
+-> independent traffic-return review
+```
+
+Operation 14 must not run before terminal ACK convergence because its
+all-action-gates-false proof includes the terminal ACK gate. It proves the
+frozen Controller baseline deployment only; it cannot prove accepted work,
+billing, reverse sync, or traffic safety.
+
+The accepted set consists only of operations whose D1 admission receipt and
+operation row committed atomically under the active fence generation. The
+future campaign freezes exact membership keys, cutoff, D1 high watermark,
+ring generation, shard inventory, Edge version set, and a canonical manifest
+digest. Count-only snapshots and R2 object existence are insufficient.
+
+Every frozen member must join its provider send/disposition, operation
+terminal, final DO ACK, reservation and settlement/refund terminal, outbox,
+reconciliation, required R2 artifact, and Go reverse-sync disposition.
+Irreducible ambiguity receives an immutable quarantine with provider resend,
+Rust replay, and Go replay prohibited plus a reviewed financial exposure.
+Quarantine prevents duplicates but does not waive billing conservation.
+
+### Stop and drain are separate
+
+The local DO snapshot has two deliberately different predicates:
+
+- `execution_stop_eligible` requires zero claimed/running operation,
+  unclassified operation state, prepared/dispatched provider attempt,
+  active/waiting retry, and pending alarm. It controls whether a disposable
+  Container may stop.
+- shard `accepted_work_drained` additionally requires zero
+  `recovery_required`, ambiguous provider attempt, and completed/failed
+  operation missing final ACK.
+
+Neither predicate is a global accepted-set receipt. Even all eight shard
+booleans cannot prove the D1 admission cutoff, billing/outbox/reconciliation,
+R2/Queue state, reverse sync, old-Worker absence, or stable observation
+window.
+
+### Bounded implementation status
+
+This batch implements only the local reader foundation:
+
+1. `services/container-controller/src/ledger.ts` derives persisted shard drain
+   snapshots from DO SQLite.
+2. `services/container-controller/src/index.ts` separates activity-expiry stop
+   eligibility from drain and exposes a default-off private read path.
+3. `services/container-controller/src/container_drain_attestation.ts`
+   authenticates a strict empty-body request in an independent HMAC domain,
+   validates the complete fixed eight-shard set, and returns a canonical
+   request-independent state digest.
+4. The response always contains `traffic_return_authorized=false`.
+5. Local tests cover eviction, open work, ambiguity, missing final ACK,
+   malformed shard sets, stop/drain separation, and digest stability.
+
+Not implemented in this checkpoint:
+
+- global D1 drain campaign/events/membership;
+- D1-enforced admission fence and stale-Writer rejection;
+- immutable accepted-set freeze;
+- campaign-bound shard attestation rows;
+- global billing/outbox/reconciliation/R2/Queue observations;
+- durable ambiguity quarantine;
+- reverse-sync manifest and Go shadow comparison;
+- stable global observation pair;
+- operation-14 prerequisite enforcement; or
+- eligibility-only traffic-return receipt and independent approval workflow.
+
+The detailed protocol, planned 0067 expand/0068 enforcement model, failure
+matrix, and verification requirements are in
+[`accepted-work-drain-traffic-return.md`](accepted-work-drain-traffic-return.md).
+
+No credential or Cloudflare remote state was read or changed. Go/VPS remains
+the traffic, scheduler, business, and financial authority. Production remains
+**NO-GO**.

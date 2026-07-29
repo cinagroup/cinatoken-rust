@@ -16,6 +16,7 @@ import {
   type RecordProviderAttemptOutcome,
   type RecordStorageResultOutcome,
   type RelayShardLedgerPolicy,
+  type ShardDrainSnapshot,
   type ShardReadinessSnapshot,
   type StorageAccessGrant,
   type StorageResultRecord,
@@ -485,6 +486,10 @@ export class ContainerControllerLedgerTestObject extends DurableObject<LedgerWor
 
   async readinessSnapshot(shard: OperationShard, now: number): Promise<ShardReadinessSnapshot> {
     return this.ledger.readShardReadiness(shard, now);
+  }
+
+  async drainSnapshot(shard: OperationShard, now: number): Promise<ShardDrainSnapshot> {
+    return this.ledger.readShardDrainSnapshot(shard, now);
   }
 
   async authorizeStorageOutcome(

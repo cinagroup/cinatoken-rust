@@ -11630,3 +11630,51 @@ incremental columns / 111 key indexes; Authority inventory is five migrations
 (`0001-0005`). All gates remain false, production placement configuration is
 absent, no secret or remote state was accessed, and production remains
 **NO-GO**.
+
+## 2026-07-29 Controller Deployment Gateway Foundation Verification
+
+Focused local acceptance now passes:
+
+```text
+bun run check:controller-deployment-gateway
+  typegen current
+  TypeScript + Wrangler dry-run passed
+  unit tests: 9 passed
+  Workerd runtime tests: 3 passed
+  config audit tests: 5 passed
+  migration tests: 3 passed
+bun run check
+  repository-wide gate passed, exit code 0
+```
+
+The runtime suite applies gateway migration 0001 in Workerd D1 and intercepts
+all Cloudflare API traffic locally. It proves eight concurrent create requests
+produce one `201` mutation attempt and seven `200` exact replays, exactly one
+operation/dispatch/outcome row, and no replay mutation. A later exact replay
+with a different authenticated request ID remains status-only. Status replay
+performs GET-only readback and preserves one immutable observation per status
+request ID.
+
+Protocol and client tests cover canonical body/digest binding, create/status
+HMAC role isolation, body mismatch, one-shot transport failure, 429
+ambiguity, exact 100-percent target readback, newest deployment selection,
+and annotation drift. Migration tests cover the four-table catalog,
+append-preserved update/delete guards, and outcome evidence compatibility.
+Configuration audit proves no public ingress, all gates false, no production
+config, six untracked secret bindings, fixed account digest, fixed Controller
+script, credential isolation, and exact migration inventory.
+
+The repository-wide gate also exposed a pre-existing second-boundary race in
+the shard-placement mutation-authorization test fixture. Authorization and
+campaign rows now receive one captured timestamp per transaction; the focused
+fixture passed 20 consecutive runs before the complete root gate passed. This
+changes test determinism only and does not modify production SQL.
+
+This evidence is local only. It does not prove an Authority Service Binding,
+an Authority gateway event, a real Cloudflare deployment, remote D1 schema,
+token scope, credential rotation, operation-5 terminal closure, or
+production readiness. Required next fault evidence must inject D1
+commit-response loss, pre-fetch death, in-fetch timeout, post-response death,
+outcome-commit loss, Worker rollout, target-drift sequences, and status
+outages while asserting Cloudflare mutation POST count never exceeds one.
+Go/VPS remains authoritative and production remains **NO-GO**.

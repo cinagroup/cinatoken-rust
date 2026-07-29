@@ -2147,3 +2147,67 @@ incremental columns / 111 key indexes. Authority inventory is `0001-0005`.
 Production placement configuration remains absent, no secret or remote state
 was accessed, Go/VPS remains authoritative, and production remains
 **NO-GO**.
+
+## Controller Deployment Gateway Checklist
+
+### Local foundation
+
+- [x] Create a separate private gateway Worker and dedicated D1.
+- [x] Keep `workers_dev`, preview URLs, routes, custom domains, and unrelated
+  runtime capabilities absent.
+- [x] Keep all five local/staging action gates `false`.
+- [x] Keep production gateway configuration absent.
+- [x] Keep create/status current/previous HMAC secrets and Cloudflare
+  deploy/read tokens out of tracked vars.
+- [x] Bind account digest, Controller script, command digest, Authority
+  attempt digest, `send_started` event digest, and idempotency key.
+- [x] Atomically persist operation and dispatch before mutation.
+- [x] Permit POST only after two definite first-insert results.
+- [x] Make exact/indeterminate replay status-only with no mutation retry.
+- [x] Bound canonical request to 4 KiB, response to 64 KiB, and external
+  operation budget to 3 seconds.
+- [x] Verify mutation response annotation, exact target, and 100-percent
+  allocation before classifying accepted.
+- [x] Use a separate read token for deployment-list and target-version GETs.
+- [x] Require consecutive target observations for stability.
+- [x] Pass typegen, dry-run, unit, Workerd, config, and migration gates.
+
+### Authority integration
+
+- [ ] Add migration 0006 append-only gateway dispatch, outcome, and status
+  evidence without updating migration 0005 rows.
+- [ ] Add a private Service Binding from Authority to the gateway.
+- [ ] Provision create/status HMAC identities that are pairwise isolated from
+  every existing Authority/Application/Controller role.
+- [ ] Call create only from the definite `sendAttemptCreated=true` branch.
+- [ ] Prove every Authority exact replay performs zero gateway create call.
+- [ ] Bind the Gateway request to the persisted attempt and
+  `send_started` event digests.
+- [ ] Append accepted/rejected/ambiguous outcome and consecutive stable status
+  evidence to Authority.
+- [ ] Close operation 5 only from exact stable status evidence.
+- [ ] Fix the Controller status response/Rust strict-parser contract before
+  adding optional Controller runtime attestation.
+
+### Remote staging promotion
+
+- [ ] Replace placeholder account and D1 identities through reviewed,
+  non-secret configuration.
+- [ ] Apply and read back the exact remote D1 schema, indexes, triggers, and
+  normalized trigger SQL.
+- [ ] Provision gateway secrets through stdin-backed secret operations; never
+  CLI arguments, tracked files, logs, or evidence bundles.
+- [ ] Prove deploy token scope can mutate only the intended staging script.
+- [ ] Prove read token cannot mutate and can read only required deployment and
+  version state.
+- [ ] Prove current/previous HMAC rotation, overlap, rejection, and retirement.
+- [ ] Inject commit-response loss, process death before/during/after fetch,
+  timeout, 429, 5xx, malformed/oversized response, rollout, and outcome-write
+  loss. Assert mutation POST count is at most one.
+- [ ] Inject target, baseline, manual annotation, drift, target-drift-target,
+  missing version, stale deployment, and read outage sequences.
+- [ ] Disable every gate and archive redacted evidence after the bounded
+  ceremony.
+
+No remote ceremony is authorized by the local foundation. Go/VPS remains
+authoritative and production remains **NO-GO**.

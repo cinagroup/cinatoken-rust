@@ -2831,3 +2831,37 @@ root Authority tests 28. Application inventory remains 66 migrations / 77
 tables / 1096 checked incremental columns / 111 key indexes. No secret or
 remote state was accessed. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-29 Controller Deployment Gateway Foundation Status
+
+| Item | Current status |
+|---|---|
+| Independent gateway Worker | **LOCALLY IMPLEMENTED** |
+| Public ingress | **ABSENT** |
+| Gateway D1 migration | **0001, FOUR IMMUTABLE EVIDENCE TABLES** |
+| Create-once reservation | **ATOMIC OPERATION + DISPATCH BATCH** |
+| Replay mutation | **FORBIDDEN; STATUS-ONLY** |
+| Cloudflare mutation retry | **ABSENT** |
+| Status readback | **GET DEPLOYMENTS + TARGET VERSION ONLY** |
+| Stable target | **TWO CONSECUTIVE TARGET OBSERVATIONS, >=5 SECONDS** |
+| Create/status HMAC roles | **SEPARATE CURRENT/PREVIOUS SETS** |
+| Deploy/read tokens | **GATEWAY-ONLY FUTURE SECRETS, NOT TRACKED** |
+| Local/staging gates | **ALL FALSE** |
+| Production gateway config | **ABSENT** |
+| Authority Service Binding/client | **NOT IMPLEMENTED** |
+| Authority migration 0006 events | **NOT IMPLEMENTED** |
+| Real Cloudflare/D1 evidence | **NOT COLLECTED** |
+| Operation-5 terminal closure | **NOT IMPLEMENTED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The gateway foundation passes its complete focused local gate. Workerd uses a
+synthetic outbound Cloudflare service and proves concurrent create
+linearization and zero replay mutation. No real deployment or remote read is
+claimed.
+
+The next P0 is Authority integration plus append-only gateway outcome/status
+events. Only the definite first attempt creation may submit; Authority replay
+must never call the create endpoint. Remote fault evidence, Controller status
+schema compatibility, operations 6-14, reverse sync, drain, traffic, DNS, and
+approvals remain blockers. Production remains **NO-GO**.

@@ -23872,6 +23872,158 @@ remote migration, or change Controller, Container, traffic, billing, DNS, or
 Go/VPS state. Go/VPS remains authoritative and production remains
 **NO-GO**.
 
+## 22.328 Controller Deployment Gateway Foundation (2026-07-29)
+
+This checkpoint implements the independent local
+`controller-deployment-gateway` foundation required by 22.327. It remains
+disconnected from Shard Placement Authority and has no production
+configuration. No real Cloudflare request was made.
+
+### Control-plane boundary
+
+The gateway is a private control-plane Worker beside, not inside, the four
+data-plane layers:
+
+```text
+Shard Placement Authority
+  -> private Service Binding (future)
+  -> controller-deployment-gateway
+  -> Cloudflare Deployments API
+
+Edge Worker -> keyed shard DO -> cinatoken-rust Container -> KV/D1/R2
+```
+
+The gateway has no route, custom domain, `workers.dev`, preview URL,
+Container, Durable Object, queue, KV, R2, asset, or provider binding. Only its
+dedicated D1 and version metadata are tracked. Authority, Controller, shard
+DOs, Containers, and the edge Worker receive no Cloudflare deployment
+credential.
+
+### Create-once protocol
+
+The private mutation endpoint is:
+
+```text
+POST /internal/v1/controller-deployments/{gateway_idempotency_key_sha256}/create-once
+```
+
+The request is canonical JSON bounded to 4 KiB. It contains the frozen
+Controller enable command, its digest, the pre-existing Authority gateway
+idempotency digest, and the immutable Authority attempt and `send_started`
+event digests. A dedicated `create` HMAC role binds issuer, audience,
+credential, request ID, method, complete path/query, body digest, and a
+60-second window.
+
+Gateway D1 migration 0001 creates four append-preserved evidence families:
+
+1. `operations` stores the exact command and Authority evidence identities.
+2. `dispatches` stores the canonical Cloudflare request and means
+   `unique_mutation_authority_persisted_network_may_not_have_occurred`.
+3. `outcomes` stores one accepted, rejected, or ambiguous transport result.
+4. `observations` stores status-only Cloudflare readback evidence.
+
+Operation and dispatch are inserted in one first-primary D1 batch. Only two
+definite `changes=1` results authorize the current invocation to perform one
+POST. A caught error, indeterminate commit, concurrent winner, or exact replay
+can return only `exact_replay`, `networkRequestSent=false`, and
+`recoveryAction=status_only`. Missing, partial, or divergent readback fails
+closed. The gateway does not implement mutation retry.
+
+The Cloudflare request is fixed to the configured account and Controller
+script, uses a canonical 100-percent deployment body, a deterministic
+operation annotation, a 3-second budget, a 64 KiB response bound, manual
+redirect handling, and one deploy-token attempt. A 2xx response is accepted
+only when its deployment object repeats the exact annotation, target version,
+and 100-percent allocation. Transport loss, invalid or oversized success,
+408, 425, 429, and 5xx are ambiguous.
+
+Protocol shape and readback semantics are pinned to the official
+[Workers Deployments API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/deployments/)
+and
+[Worker Versions API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/)
+references. The implementation parses the documented
+`result.deployments` envelope and validates the target version with the
+version-detail endpoint instead of inferring deployment success from the
+create response alone.
+
+### Status-only recovery
+
+The private read endpoint is:
+
+```text
+POST /internal/v1/controller-deployments/{gateway_idempotency_key_sha256}/status-readback?commandDigestSha256={sha256}
+```
+
+It uses an independent `status` HMAC identity and an independent read token.
+Each call performs only:
+
+```text
+GET /deployments
+GET /versions/{target_version_id}
+```
+
+The readback chooses the uniquely newest deployment by `created_on`, verifies
+the mutation annotation, exact target version, readable target version, and
+100-percent allocation, then records `target_observed`,
+`baseline_observed`, `deployment_drift`, or `ambiguous`. A stable target
+requires the immediately previous observation also to be
+`target_observed`, with at least five seconds between D1 timestamps. An
+intervening baseline, drift, or ambiguous observation resets stability. Only
+the two most recent observations are read for this decision.
+
+### Default-off and credential posture
+
+Tracked local and staging configurations set all five gateway gates to
+`false`. They contain only account placeholders and their digests, fixed
+service identity, empty HMAC public identities, and placeholder D1 IDs. The
+six secret bindings are absent from tracked vars: create current/previous
+HMAC secrets, status current/previous HMAC secrets, the Cloudflare deploy
+token, and the Cloudflare read token.
+
+Create and status credentials must be isolated. There is no production
+Wrangler configuration. The configuration audit rejects public ingress,
+additional runtime capabilities, enabled gates, tracked secret-like values,
+account digest mismatch, cross-role identity collision, migration drift, and
+any production config.
+
+### Local evidence and remaining P0
+
+The focused gateway gate passes type generation, TypeScript, Wrangler
+dry-run, nine unit tests, three Workerd runtime tests, five config-audit
+tests, and three migration tests. Workerd proves concurrent create
+linearization, different-request-ID exact replay with no second mutation,
+status-only replay, D1 row cardinality, role rejection before persistence,
+and immutable evidence. All Cloudflare responses are intercepted synthetic
+responses; no remote state or credential is used.
+
+The repository-wide `bun run check` also passes. During that run, a
+pre-existing second-boundary race was found in the shard-placement
+mutation-authorization test fixture; using one captured timestamp for both
+rows made the fixture deterministic across 20 consecutive focused runs
+without changing production SQL.
+
+This is not an end-to-end operation-5 sender. The remaining P0 order is:
+
+1. add Authority migration 0006 for gateway dispatch/result events without
+   rewriting migration 0005;
+2. add the private Service Binding client and isolated create/status signers;
+3. permit the gateway call only from the definite
+   `sendAttemptCreated=true` branch and never from replay;
+4. append accepted, rejected, ambiguous, and stable status evidence back to
+   Authority, then close operation 5;
+5. run crash campaigns at D1 commit, before fetch, during fetch, after
+   response, and before outcome commit, proving mutation POST count never
+   exceeds one;
+6. fix and contract-test the existing Controller `/internal/v1/status`
+   response against the Rust strict parser before using Controller runtime
+   attestation; and
+7. collect remote D1 schema/trigger, Service Binding, credential-rotation,
+   least-privilege token, status-stability, and rollback evidence.
+
+Operations 6-14, reverse sync, drain, traffic and DNS cutover, and production
+approvals remain open. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
 ## 22.327 Historical Consumption Recovery And Send Attempt (2026-07-29)
 
 This checkpoint closes the two local P0 prerequisites identified in 22.326:

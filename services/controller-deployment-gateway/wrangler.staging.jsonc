@@ -1,0 +1,47 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-controller-deployment-gateway-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "ENVIRONMENT": "staging",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_ENABLED": "false",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_ENABLED": "false",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_READ_ENABLED": "false",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_REMOTE_MUTATION_ENABLED": "false",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_REMOTE_READ_ENABLED": "false",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_PROFILE_VERSION": "1",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_STABILITY_MIN_SECONDS": "5",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_CONTROLLER_SERVICE_NAME": "cinatoken-container-controller-staging",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_ISSUER": "cinatoken-shard-placement-authority-staging",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_AUDIENCE": "cinatoken-controller-deployment-gateway-staging",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_CURRENT_KID": "",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_CURRENT_CREDENTIAL_ID_SHA256": "",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_PREVIOUS_KID": "",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256": "",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_CURRENT_KID": "",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_CURRENT_CREDENTIAL_ID_SHA256": "",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_KID": "",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256": "",
+    "CLOUDFLARE_ACCOUNT_ID": "staging-account-placeholder",
+    "CLOUDFLARE_ACCOUNT_ID_SHA256": "7a7f0ff0d78ea4772e4e172064c8f10828caf981a8a64f957901a3f57a178da9"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cinatoken-controller-deployment-gateway-staging",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

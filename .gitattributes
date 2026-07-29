@@ -1,4 +1,5 @@
 * text=auto eol=lf
 services/container-controller/worker-configuration.d.ts whitespace=-blank-at-eol
+services/controller-deployment-gateway/worker-configuration.d.ts whitespace=-blank-at-eol
 services/ring-transition-authority/worker-configuration.d.ts whitespace=-blank-at-eol
 services/shard-placement-authority/worker-configuration.d.ts whitespace=-blank-at-eol

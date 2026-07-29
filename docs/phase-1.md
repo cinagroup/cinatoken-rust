@@ -1799,6 +1799,40 @@ also remain open. Exact-response and divergence compiled-readiness claims stay
 false, all eight Container gates remain false, no remote action occurred,
 Go/VPS remains authoritative, and production remains **NO-GO**.
 
+## 2026-07-29 Controller Deployment Gateway Foundation
+
+Phase 1 now contains a separate local
+`controller-deployment-gateway`. It is a private, default-off control-plane
+Worker with a dedicated D1 database and no public route. It is the only
+component designed to hold the future Cloudflare deploy/read credentials;
+Authority, Controller, DOs, Containers, and the edge Worker remain
+credential-free.
+
+The create endpoint atomically persists immutable operation and dispatch
+evidence before external I/O. Only a definite first D1 creation may execute
+one canonical Cloudflare deployment POST. Exact replay, concurrent loss,
+indeterminate D1 result, timeout, disconnect, malformed response, response
+loss, restart, and rollout all become status-only and can never authorize a
+second POST.
+
+The status endpoint performs only deployment-list and target-version GETs
+with an independent read identity. It verifies the configured account and
+script, deterministic annotation, exact target, readable version, and
+100-percent allocation. Stable target requires the latest two consecutive
+target observations separated by at least five seconds.
+
+Focused typegen, dry-run build, unit, Workerd/D1, migration, and configuration
+checks pass. The Workerd outbound API is synthetic; all tracked gates remain
+false, production config is absent, and no real credential or remote state
+was used.
+
+The next Phase 1 P0 is Authority integration: migration 0006 append-only
+gateway events, private Service Binding, isolated create/status signers, a
+call only from the newly-created attempt branch, stable status receipt, and
+operation-5 terminal closure. The Controller status response/Rust strict
+parser incompatibility must also be fixed before Controller runtime
+attestation. Go/VPS remains authoritative and production remains **NO-GO**.
+
 ## 2026-07-16 Phase 1 Bounded Container Reconciliation Observer Gate
 
 Migration 0043 adds a default-lazy observation table and a singleton cursor;

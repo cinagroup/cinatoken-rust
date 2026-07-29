@@ -1,0 +1,200 @@
+import { applyD1Migrations, env, reset, SELF } from "cloudflare:test";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import gatewayWorker from "../services/controller-deployment-gateway/src/index.ts";
+import {
+  canonicalJson,
+  createHmacTokenForTest,
+  sha256Hex,
+} from "../services/controller-deployment-gateway/src/protocol.ts";
+import {
+  createRequestFixture,
+} from "../services/controller-deployment-gateway/tests/fixtures.ts";
+
+const origin = "https://controller-deployment-gateway-runtime.test";
+const createSecret =
+  "create-runtime-secret-00000000000000000000000000000000";
+const statusSecret =
+  "status-runtime-secret-00000000000000000000000000000000";
+
+beforeEach(async () => {
+  await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+});
+
+afterEach(async () => {
+  await reset();
+});
+
+describe("controller deployment gateway Workerd runtime", () => {
+  it("linearizes one mutation and makes every exact replay status-only", async () => {
+    const create = await createRequestFixture();
+    const body = canonicalJson(create);
+    const path =
+      `/internal/v1/controller-deployments/` +
+      `${create.gatewayIdempotencyKeySha256}/create-once`;
+    const concurrent = await Promise.all(
+      Array.from({ length: 8 }, (_, index) =>
+        gatewayFetch("POST", path, {
+          role: "create",
+          body,
+          requestId: `create-runtime-${index + 1}`,
+        })),
+    );
+    expect(concurrent.map((response) => response.status).sort()).toEqual([
+      200, 200, 200, 200, 200, 200, 200, 201,
+    ]);
+    const payloads = await Promise.all(
+      concurrent.map((response) => response.json()),
+    );
+    const sent = payloads.filter((payload) => payload.networkRequestSent);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      result: "mutation_attempt_recorded",
+      recoveryAction: "status_readback",
+      outcome: { classification: "accepted", httpStatus: 200 },
+    });
+    const replay = payloads.find((payload) => !payload.networkRequestSent);
+    expect(replay).toMatchObject({
+      result: "exact_replay",
+      recoveryAction: "status_only",
+    });
+
+    const laterReplay = await gatewayFetch("POST", path, {
+      role: "create",
+      body,
+      requestId: "create-runtime-3",
+    });
+    expect(laterReplay.status).toBe(200);
+    expect(await laterReplay.json()).toMatchObject({
+      result: "exact_replay",
+      networkRequestSent: false,
+      recoveryAction: "status_only",
+    });
+
+    const counts = await env.DB.prepare(
+      `SELECT
+        (SELECT COUNT(*) FROM controller_deployment_gateway_operations)
+          AS operations,
+        (SELECT COUNT(*) FROM controller_deployment_gateway_dispatches)
+          AS dispatches,
+        (SELECT COUNT(*) FROM controller_deployment_gateway_outcomes)
+          AS outcomes`,
+    ).first();
+    expect(counts).toEqual({
+      operations: 1,
+      dispatches: 1,
+      outcomes: 1,
+    });
+  });
+
+  it("performs repeatable status-only readback without mutation", async () => {
+    const create = await createRequestFixture();
+    const createBody = canonicalJson(create);
+    const createPath =
+      `/internal/v1/controller-deployments/` +
+      `${create.gatewayIdempotencyKeySha256}/create-once`;
+    const created = await gatewayFetch("POST", createPath, {
+      role: "create",
+      body: createBody,
+      requestId: "status-setup-create",
+    });
+    expect(created.status).toBe(201);
+
+    const statusPath =
+      `/internal/v1/controller-deployments/` +
+      `${create.gatewayIdempotencyKeySha256}/status-readback` +
+      `?commandDigestSha256=${create.controllerCommandDigestSha256}`;
+    const first = await gatewayFetch("POST", statusPath, {
+      role: "status",
+      requestId: "status-runtime-1",
+    });
+    expect(first.status).toBe(201);
+    expect(await first.json()).toMatchObject({
+      result: "status_observation_recorded",
+      remoteMutationSent: false,
+      statusRequestCount: 2,
+      targetStable: false,
+      observation: { classification: "target_observed" },
+    });
+
+    const exactReplay = await gatewayFetch("POST", statusPath, {
+      role: "status",
+      requestId: "status-runtime-1",
+    });
+    expect(exactReplay.status).toBe(200);
+    expect(await exactReplay.json()).toMatchObject({
+      result: "status_observation_replayed",
+      remoteMutationSent: false,
+      observation: { classification: "target_observed" },
+    });
+    const observationCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM controller_deployment_gateway_observations`,
+    ).first();
+    expect(observationCount).toEqual({ count: 1 });
+  });
+
+  it("fails closed before D1 or network when gates or roles are wrong", async () => {
+    const preflightPath =
+      "/internal/v1/controller-deployments/preflight";
+    const disabled = await gatewayWorker.fetch(
+      new Request(`${origin}${preflightPath}`),
+      {
+        ...env,
+        CONTROLLER_DEPLOYMENT_GATEWAY_ENABLED: "false",
+      },
+    );
+    expect(disabled.status).toBe(503);
+    expect(await disabled.json()).toEqual({ error: "gateway_disabled" });
+
+    const create = await createRequestFixture();
+    const createBody = canonicalJson(create);
+    const createPath =
+      `/internal/v1/controller-deployments/` +
+      `${create.gatewayIdempotencyKeySha256}/create-once`;
+    const wrongRole = await gatewayFetch("POST", createPath, {
+      role: "status",
+      body: createBody,
+      requestId: "wrong-role",
+    });
+    expect(wrongRole.status).toBe(403);
+    expect(await wrongRole.json()).toEqual({ error: "invalid_authority" });
+    const operationCount = await env.DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM controller_deployment_gateway_operations`,
+    ).first();
+    expect(operationCount).toEqual({ count: 0 });
+  });
+});
+
+async function gatewayFetch(method, pathAndQuery, options) {
+  const body = options.body ?? "";
+  const bytes = new TextEncoder().encode(body);
+  const now = Math.floor(Date.now() / 1000);
+  const role = options.role;
+  const credentialIdSha256 =
+    role === "create" ? "a".repeat(64) : "b".repeat(64);
+  const secret = role === "create" ? createSecret : statusSecret;
+  const keyId = role === "create" ? "create-runtime-v1" : "status-runtime-v1";
+  const token = await createHmacTokenForTest(secret, keyId, {
+    issuer: "cinatoken-shard-placement-authority-runtime-test",
+    audience: "cinatoken-controller-deployment-gateway-runtime-test",
+    role,
+    credential_id_sha256: credentialIdSha256,
+    request_id: options.requestId,
+    method,
+    path_and_query: pathAndQuery,
+    body_sha256: await sha256Hex(bytes),
+    issued_at: now - 1,
+    expires_at: now + 30,
+  });
+  const headers = {
+    "x-cinatoken-controller-deployment-gateway": token,
+  };
+  if (body.length > 0) headers["content-type"] = "application/json";
+  return SELF.fetch(`${origin}${pathAndQuery}`, {
+    method,
+    headers,
+    body: body.length > 0 ? body : undefined,
+  });
+}

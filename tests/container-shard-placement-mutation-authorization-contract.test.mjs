@@ -108,10 +108,15 @@ describe("Relay Container shard placement mutation authorization", () => {
     missing.close();
 
     const mismatch = migratedDatabase();
+    const mismatchNow = Math.floor(Date.now() / 1000);
     expect(() =>
       mismatch.transaction(() => {
-        insertAuthorization(mismatch);
-        insertCampaign(mismatch, { runtimeBuildId: "f".repeat(64) });
+        insertAuthorization(mismatch, {}, mismatchNow);
+        insertCampaign(
+          mismatch,
+          { runtimeBuildId: "f".repeat(64) },
+          mismatchNow,
+        );
       })(),
     ).toThrow("shard activation campaign authorization mismatch");
     expect(
@@ -178,9 +183,10 @@ function migratedDatabase() {
 }
 
 function createAuthorizedCampaign(db) {
+  const now = Math.floor(Date.now() / 1000);
   db.transaction(() => {
-    insertAuthorization(db);
-    insertCampaign(db);
+    insertAuthorization(db, {}, now);
+    insertCampaign(db, {}, now);
   })();
 }
 
@@ -190,8 +196,8 @@ function insertAuthorization(
     environment = "staging",
     runtimeBuildId = "1".repeat(64),
   } = {},
+  now = Math.floor(Date.now() / 1000),
 ) {
-  const now = Math.floor(Date.now() / 1000);
   db.query(
     `INSERT INTO relay_container_shard_placement_mutation_authorizations (
        authorization_id_sha256, execution_nonce_sha256,
@@ -231,8 +237,8 @@ function insertAuthorization(
 function insertCampaign(
   db,
   { runtimeBuildId = "1".repeat(64) } = {},
+  now = Math.floor(Date.now() / 1000),
 ) {
-  const now = Math.floor(Date.now() / 1000);
   db.query(
     `INSERT INTO relay_container_shard_activation_campaigns (
        campaign_id, campaign_nonce_sha256, controller_version_id,

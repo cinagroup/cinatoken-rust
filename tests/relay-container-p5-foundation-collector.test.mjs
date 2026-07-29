@@ -1265,8 +1265,8 @@ function requestFixture() {
       ringGeneration: 1,
       shardCount: 8,
       migrationHead:
-        "0070_relay_container_drain_close_command.sql",
-      migrationCount: 70,
+        "0071_relay_container_drain_accepted_set_source_seal.sql",
+      migrationCount: 71,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,

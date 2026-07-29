@@ -3090,3 +3090,35 @@ authenticated control-plane caller, exact admin audit construction, remote
 schema/trigger readback, response-loss and N/N-1 campaigns, source
 recomputation, full drain evidence, and independent traffic-return review
 remain required before production consideration.
+
+## 2026-07-30 0071 Status Update
+
+This table supersedes only the 0070 current-head and caller-attested
+accepted-source rows.
+
+| Item | Current status |
+|---|---|
+| Application D1 head | **0071_relay_container_drain_accepted_set_source_seal.sql** |
+| Application D1 inventory | **71 MIGRATIONS / 97 TABLES / 1550 CHECKED INCREMENTAL COLUMNS / 144 KEY INDEXES** |
+| Source scan | **EXACT CURRENT OPEN 0068 FENCE/HEAD + D1-DERIVED HIGH WATERMARK/COUNT/FIRST/LAST** |
+| Source members | **CONTIGUOUS KEYSET COPY OF EVERY IMMUTABLE ADMISSION COMMIT** |
+| Source pages | **DETERMINISTIC MEMBER/PAGE ORDINALS + PREVIOUS-DIGEST CHAIN** |
+| Source shards | **ALL INDICES REQUIRED IN ORDER, INCLUDING ZERO-MEMBER SHARDS** |
+| Source seal | **COMPLETE MEMBER/PAGE/SHARD SET + DISTINCT ASSEMBLER/VERIFIER IDENTITIES** |
+| Close TOCTOU | **EXACT SEAL VALUES + FINAL SOURCE MAX/COUNT RECHECK** |
+| Late admission | **BEFORE-SEAL AND AFTER-SEAL/BEFORE-CLOSE RACES DATABASE-REJECTED** |
+| Canonical digest primitives | **LOCAL RUST CONTRACT; INDEPENDENT WRITER/VERIFIER EXECUTION NOT YET DEPLOYED** |
+| D1 Session collector | **NOT IMPLEMENTED OR REMOTELY VERIFIED** |
+| Signature / authorization receipt | **NOT IMPLEMENTED; DIGEST STRINGS ALONE ARE NOT TRUST PROOF** |
+| Route / credential / runtime write gate | **ABSENT** |
+| 0068 admission provenance | **UNCHANGED; SHA-256 fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50** |
+| Billing-expression semantics | **UNCHANGED** |
+| Remote D1/Cloudflare operation | **NOT PERFORMED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The next code boundary is not gate activation. It is an authenticated,
+replay-protected root-Worker collector/verifier protocol using D1 Sessions,
+typed machine authorization plus append-preserved audit receipt, real
+signature verification, bounded pagination, stable response-loss readback,
+and isolated-staging N/N-1 and late-admission campaigns.

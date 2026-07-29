@@ -2265,7 +2265,7 @@ authoritative and production remains **NO-GO**.
 - [x] Advance the Application migration head to 0067 while preserving 0063 as
   immutable shard-placement authorization storage provenance.
 
-### Remote 0067 through 0070 promotion
+### Remote 0067 through 0071 promotion
 
 - [ ] Inventory every admission writer, version, queue consumer, cron,
   workflow, replay path, and direct D1 client.
@@ -2282,6 +2282,10 @@ authoritative and production remains **NO-GO**.
   immutable, and recovery/aborted state cannot reopen admission.
 - [x] Add the 0070 one-SQL-step close command; after 0070, the standalone
   0068 fence update and standalone 0067 campaign insert both fail closed.
+- [x] Add the 0071 immutable source scan/member/page/shard/seal ledger and
+  require an exact, still-current seal before the 0070 close command.
+- [x] Require ordered keyset members, complete chained pages, all shard
+  manifests including empty shards, and final source MAX/count recheck.
 - [ ] Add authenticated authorization and the mandatory admin audit statement
   around the otherwise unreachable 0070 repository command.
 - [ ] Inventory historical 0050 cardinality and first/last keys, then rehearse
@@ -2298,18 +2302,22 @@ authoritative and production remains **NO-GO**.
 - [ ] Implement authenticated, audited, generation-CAS initial-open and close
   writers; fence+head and close+campaign must each be one D1 batch. Do not
   expose recovery reopen under 0068.
-- [ ] Independently recompute and retain the accepted bookmark, source
-  readback, member/page and complete-set manifests; do not trust supplied
-  hashes as completeness evidence.
+- [ ] Implement the real `first-primary` D1 Session collector and independently
+  recompute and retain the accepted bookmark, source readback, member/page,
+  shard and complete-set manifests; the local 0071 rows do not make supplied
+  hashes cryptographic completeness evidence.
+- [ ] Verify assembler and verifier signatures against distinct managed keys,
+  bind a typed machine authorization/audit receipt, prevent replay, and keep
+  physical D1 writes in the root Application Worker.
 - [ ] Prove no `prepared`, `dispatched`, or `recovery_required` operation is
   outside the 0068 commit ledger before fence close.
 - [ ] Prove current-generation admission and fence closure races have one
   linearizable outcome.
 - [ ] Prove old writers and in-flight transactions are drained before 0068.
 - [ ] Apply 0068 only through a reviewed isolated-staging ceremony.
-- [ ] Before each 0068/0069/0070 candidate, advance the Worker expected migration
-  set, D1 audit, SQLite inventory, P5 head/counts, and frozen foundation
-  candidate together; prove the previous reader fails closed.
+- [ ] Before each 0068/0069/0070/0071 candidate, advance the Worker expected
+  migration set, D1 audit, SQLite inventory, P5 head/counts, and frozen
+  foundation candidate together; prove the previous reader fails closed.
 - [x] Add manifest-v3 independent P5 admission-fence evidence, an offline
   assembler, strict supporting-artifact reader, cross-evidence binding, and
   fail-closed verifier; schema totals alone cannot satisfy it.
@@ -2327,11 +2335,11 @@ authoritative and production remains **NO-GO**.
 - [ ] Do not run operation 14 or issue a traffic-return eligibility receipt
   during schema promotion.
 
-Current Application inventory is 70 migrations / 92 required tables / 1463
-checked columns / 137 key indexes. 0068 admission enforcement, 0069 typed
-evidence enforcement, and the default-unreachable 0070 close command exist
-and are locally verified, but no authenticated fence/evidence lifecycle
-route exists and no remote 0068/0069/0070 application is
-claimed. This checklist records no remote
+Current Application inventory is 71 migrations / 97 required tables / 1550
+checked columns / 144 key indexes. 0068 admission enforcement, 0069 typed
+evidence enforcement, the default-unreachable 0070 close command, and the
+0071 accepted-source seal exist and are locally verified, but no authenticated
+fence/source/evidence lifecycle route exists and no remote
+0068/0069/0070/0071 application is claimed. This checklist records no remote
 application, secret operation, route change, traffic change, or authority
 transfer. Go/VPS remains authoritative and production remains **NO-GO**.

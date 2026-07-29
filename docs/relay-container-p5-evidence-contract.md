@@ -6,15 +6,15 @@ Status: local, credential-free, campaign-aware evidence-verifier candidate. It a
 remote mutation, customer traffic, production cutover, or Go/VPS shutdown.
 
 Current candidate baseline: migration head
-`0070_relay_container_drain_close_command.sql`, migration count 70, and the
-locally verified schema shape of 92 required tables, 1463 checked incremental
-columns, and 137 key indexes. This baseline supersedes every
+`0071_relay_container_drain_accepted_set_source_seal.sql`, migration count 71,
+and the locally verified schema shape of 97 required tables, 1550 checked
+incremental columns, and 144 key indexes. This baseline supersedes every
 earlier current-candidate head/count retained below. Nothing in this document
-claims that 0070 was applied, deployed, or read back from Cloudflare.
+claims that 0071 was applied, deployed, or read back from Cloudflare.
 
 Migration 0068 remains the immutable admission-fence evidence identity, and
 0063 remains shard-placement authorization storage provenance. Advancing the
-current schema head to 0070 does not relabel either historical authority.
+current schema head to 0071 does not relabel either historical authority.
 
 Historical activation baseline, retained for continuity: 0054 ended at 54
 migrations with 58 tables, 694 incremental columns, and 83 key indexes. Those
@@ -221,8 +221,8 @@ The signed subject binds:
 - Container SBOM digest and image signature result;
 - exact D1 name/UUID, R2 bucket, KV namespace digest, Controller/egress service,
   DO namespace digest, binding, class, shard count, and ring generation;
-- D1 head 0070 and count 70, with exact 92-table, 1463-column, and
-  137-index readback totals;
+- D1 head 0071 and count 71, with exact 97-table, 1550-column, and
+  144-index readback totals;
 - response protocol 3, status contract 4, financial terminal contract 2, and
   terminal ACK contract 3;
 - a bounded, non-streaming, synthetic `/v1/chat/completions` cohort with no
@@ -248,7 +248,7 @@ All eleven kinds are required exactly once and in contract order:
 | `candidate-freeze` | Exact commit/version/image/runtime-build/provenance/SBOM inventory, image signature and runtime-to-image provenance verified, zero unapproved critical/high vulnerabilities, every action gate false |
 | `remote-inventory` | Account digest, exact shared D1/KV/R2 identities, Controller/egress services, DO namespace/binding/class, candidate runtime build and image provenance, all shards accounted for, zero unknown writers/objects/customer traffic |
 | `reader-first-rollout` | Egress before Controller, Controller before edge, readers before writers, every shard on a compatible reader, no new response write, public `/internal` 404, N/N-1 or blue/green skew proof |
-| `schema-readback` | Remote 0070/70 and exact 92-table/1463-column/137-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
+| `schema-readback` | Remote 0071/71 and exact 97-table/1550-column/144-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
 | `admission-fence` | Exact staging D1/account/scope binding, 0068 SQL and schema inventory, bounded historical backfill, N/N-1 writer drain, five false write gates, one successful fenced admission, one-step close/campaign readback, close races, rejection/replay outcomes, and 11 canonical supporting-artifact digests |
 | `lifecycle-fault-campaign` | Cold/warm start, DO eviction, Container sleep/restart/OOM, duplicate alarm, callback failure, malformed/future payload, N-1, and response loss; zero duplicate provider/financial effects |
 | `response-financial-fault-campaign` | Success, typed error, HTTP error, invalid body, and recovery; every D1 statement fault; response-class totals equal provider operations, one provider operation per send, settled plus refunded terminal conservation, zero request accounting on refund, exact client replay and classified R2 orphans |
@@ -828,11 +828,11 @@ only. P5 remains incomplete until a real release owner signs one candidate,
 the operator-owned filesystem produces retained create-new/ACL/durability
 evidence, and the exact installed launcher independently authorizes itself.
 
-## 0068 Admission Evidence On The 0070 Schema Head
+## 0068 Admission Evidence On The 0071 Schema Head
 
 The frozen P5 candidate and schema-readback evidence now require Application
-head `0070_relay_container_drain_close_command.sql`, 70 migrations, 92
-required tables, 1463 checked incremental columns, and 137 key
+head `0071_relay_container_drain_accepted_set_source_seal.sql`, 71 migrations,
+97 required tables, 1550 checked incremental columns, and 144 key
 indexes. The `admission-fence` item still requires the exact 0068 migration
 name and pinned SQL digest. Placement-mutation authorization storage
 provenance remains exactly 0063.
@@ -887,6 +887,13 @@ completeness proof. The local 0070 one-statement command now exists, but a
 remote capture still requires independent source recomputation, retained
 provider readback, authenticated audited execution, and exact command/fence/
 campaign readback. These remain production blockers.
+
+The 0071 source-seal schema now requires a structural scan/member/page/shard
+ledger before 0070 close, but it does not by itself upgrade caller digests
+into trusted evidence. A valid P5 packet still needs an authenticated
+`first-primary` D1 Session capture, independent canonical recomputation,
+verified signatures and authorization receipt, retained raw/readback
+artifacts, and remote late-admission/response-loss fault evidence.
 No P5 item may infer traffic-return authorization from 0068, a drain campaign,
 operation 14, or an eligibility receipt.
 

@@ -292,6 +292,11 @@ REQUIRED_TABLES = [
     "relay_container_traffic_return_evidence_items",
     "relay_container_traffic_return_evidence_seals",
     "relay_container_drain_close_commands",
+    "relay_container_drain_source_scans",
+    "relay_container_drain_source_members",
+    "relay_container_drain_source_pages",
+    "relay_container_drain_source_shards",
+    "relay_container_drain_source_seals",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1645,6 +1650,103 @@ REQUIRED_COLUMNS = {
         "command_digest_sha256",
         "created_at",
     },
+    "relay_container_drain_source_scans": {
+        "source_scan_id_sha256",
+        "contract_version",
+        "scan_contract",
+        "scan_migration",
+        "environment",
+        "scope_kind",
+        "scope_id_sha256",
+        "admission_fence_id_sha256",
+        "fence_generation",
+        "expected_fence_state_digest_sha256",
+        "expected_head_version",
+        "expected_head_digest_sha256",
+        "captured_high_watermark",
+        "captured_member_count",
+        "captured_first_sequence",
+        "captured_first_operation_id",
+        "captured_last_sequence",
+        "captured_last_operation_id",
+        "page_size",
+        "shard_count",
+        "collector_service_name",
+        "collector_version_id",
+        "collector_run_id_sha256",
+        "started_by_credential_id_sha256",
+        "started_at",
+    },
+    "relay_container_drain_source_members": {
+        "source_scan_id_sha256",
+        "accepted_sequence",
+        "operation_id",
+        "source_contract",
+        "admission_fence_id_sha256",
+        "fence_generation",
+        "reservation_key",
+        "atomic_admission_sha256",
+        "operation_admission_sha256",
+        "billing_snapshot_sha256",
+        "client_request_sha256",
+        "owner_generation",
+        "ring_generation",
+        "source_shard_count",
+        "shard_index",
+        "admission_commit_sha256",
+        "committed_at",
+        "page_ordinal",
+        "member_ordinal",
+        "member_digest_sha256",
+        "collected_at",
+    },
+    "relay_container_drain_source_pages": {
+        "source_scan_id_sha256",
+        "page_ordinal",
+        "page_member_count",
+        "page_first_sequence",
+        "page_first_operation_id",
+        "page_last_sequence",
+        "page_last_operation_id",
+        "previous_page_digest_sha256",
+        "page_digest_sha256",
+        "sealed_at",
+    },
+    "relay_container_drain_source_shards": {
+        "source_scan_id_sha256",
+        "shard_index",
+        "shard_member_count",
+        "shard_high_watermark",
+        "shard_first_sequence",
+        "shard_first_operation_id",
+        "shard_last_sequence",
+        "shard_last_operation_id",
+        "shard_manifest_sha256",
+        "sealed_at",
+    },
+    "relay_container_drain_source_seals": {
+        "source_seal_id_sha256",
+        "source_scan_id_sha256",
+        "contract_version",
+        "seal_contract",
+        "seal_migration",
+        "bookmark_contract",
+        "pagination_contract",
+        "accepted_bookmark_sha256",
+        "accepted_set_manifest_sha256",
+        "accepted_source_schema_sha256",
+        "accepted_source_readback_sha256",
+        "page_count",
+        "first_page_digest_sha256",
+        "last_page_digest_sha256",
+        "shard_set_manifest_sha256",
+        "assembler_identity_sha256",
+        "assembler_signature_envelope_sha256",
+        "verifier_identity_sha256",
+        "verifier_signature_envelope_sha256",
+        "seal_digest_sha256",
+        "sealed_at",
+    },
     "relay_container_traffic_return_evidence_subjects": {
         "evidence_subject_id_sha256",
         "campaign_id",
@@ -2155,6 +2257,23 @@ REQUIRED_INDEXES = {
         "idx_relay_container_drain_close_command_digest": True,
         "idx_relay_container_drain_close_command_audit": False,
     },
+    "relay_container_drain_source_scans": {
+        "idx_relay_container_drain_source_scan_run": True,
+        "idx_relay_container_drain_source_scan_scope": False,
+    },
+    "relay_container_drain_source_members": {
+        "idx_relay_container_drain_source_member_page": False,
+        "idx_relay_container_drain_source_member_shard": False,
+    },
+    "relay_container_drain_source_pages": {
+        "idx_relay_container_drain_source_page_chain": False,
+    },
+    "relay_container_drain_source_shards": {
+        "idx_relay_container_drain_source_shard_inventory": False,
+    },
+    "relay_container_drain_source_seals": {
+        "idx_relay_container_drain_source_seal_audit": False,
+    },
 }
 
 
@@ -2223,6 +2342,7 @@ def main() -> int:
     relay_container_drain_admission_enforce_rollout_verified = False
     relay_container_traffic_return_evidence_enforce_rollout_verified = False
     relay_container_drain_close_command_rollout_verified = False
+    relay_container_drain_source_seal_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -2295,6 +2415,8 @@ def main() -> int:
         relay_container_traffic_return_evidence_enforce_rollout_verified = True
         verify_relay_container_drain_close_command_rollout(schema_paths)
         relay_container_drain_close_command_rollout_verified = True
+        verify_relay_container_drain_source_seal_rollout(schema_paths)
+        relay_container_drain_source_seal_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -2444,6 +2566,21 @@ def main() -> int:
                 f"missing={sorted(expected_evidence_columns - evidence_columns)}, "
                 f"extra={sorted(evidence_columns - expected_evidence_columns)}"
             )
+    for source_table in (
+        "relay_container_drain_source_scans",
+        "relay_container_drain_source_members",
+        "relay_container_drain_source_pages",
+        "relay_container_drain_source_shards",
+        "relay_container_drain_source_seals",
+    ):
+        source_columns = table_columns(conn, source_table)
+        expected_source_columns = REQUIRED_COLUMNS[source_table]
+        if source_columns != expected_source_columns:
+            raise SystemExit(
+                f"0071 {source_table} columns differ: "
+                f"missing={sorted(expected_source_columns - source_columns)}, "
+                f"extra={sorted(source_columns - expected_source_columns)}"
+            )
 
     invalid_indexes = []
     for table, expected_indexes in REQUIRED_INDEXES.items():
@@ -2552,6 +2689,8 @@ def main() -> int:
         message += " + 0069 immutable typed traffic-return evidence"
     if relay_container_drain_close_command_rollout_verified:
         message += " + 0070 one-statement drain close command"
+    if relay_container_drain_source_seal_rollout_verified:
+        message += " + 0071 immutable accepted-source seal"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -23273,10 +23412,12 @@ def verify_relay_container_drain_close_command_rollout(
     if (
         close_index == 0
         or schema_paths[close_index - 1] != evidence_path
-        or close_index != len(schema_paths) - 1
+        or close_index + 1 >= len(schema_paths)
+        or schema_paths[close_index + 1].name
+        != "0071_relay_container_drain_accepted_set_source_seal.sql"
     ):
         raise SystemExit(
-            "0070 drain close command must follow 0069 and be the current head"
+            "0070 drain close command must follow 0069 and precede 0071"
         )
 
     close_sql = close_path.read_text(encoding="utf-8")
@@ -23327,7 +23468,7 @@ def verify_relay_container_drain_close_command_rollout(
     conn.execute("PRAGMA foreign_keys = ON")
     conn.create_function("unixepoch", 0, lambda: clock[0])
     conn.execute("CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)")
-    for schema_path in schema_paths:
+    for schema_path in schema_paths[: close_index + 1]:
         conn.executescript(schema_path.read_text(encoding="utf-8"))
         conn.execute(
             "INSERT INTO d1_migrations(name) VALUES (?)",
@@ -23756,6 +23897,1203 @@ def verify_relay_container_drain_close_command_rollout(
     if schema_after_duplicate != schema_before_duplicate:
         raise SystemExit("0070 duplicate DDL attempt changed persistent schema")
     conn.close()
+
+
+def verify_relay_container_drain_source_seal_rollout(
+    schema_paths: list[Path],
+) -> None:
+    source_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0071_relay_container_drain_accepted_set_source_seal.sql"
+        ),
+        None,
+    )
+    close_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0070_relay_container_drain_close_command.sql"
+        ),
+        None,
+    )
+    if source_path is None or close_path is None:
+        raise SystemExit("0070/0071 drain source seal chain not found")
+    source_index = schema_paths.index(source_path)
+    if (
+        source_index == 0
+        or schema_paths[source_index - 1] != close_path
+        or source_index != len(schema_paths) - 1
+    ):
+        raise SystemExit(
+            "0071 drain source seal must follow 0070 and be the current head"
+        )
+
+    source_sql = source_path.read_text(encoding="utf-8")
+    if "if not exists" in source_sql.lower():
+        raise SystemExit("0071 critical source seal objects must fail duplicate DDL")
+    required_fragments = (
+        "CREATE TABLE relay_container_drain_source_scans",
+        "CREATE TABLE relay_container_drain_source_members",
+        "CREATE TABLE relay_container_drain_source_pages",
+        "CREATE TABLE relay_container_drain_source_shards",
+        "CREATE TABLE relay_container_drain_source_seals",
+        "idx_relay_container_drain_source_scan_run",
+        "idx_relay_container_drain_source_scan_scope",
+        "idx_relay_container_drain_source_member_page",
+        "idx_relay_container_drain_source_member_shard",
+        "idx_relay_container_drain_source_page_chain",
+        "idx_relay_container_drain_source_shard_inventory",
+        "idx_relay_container_drain_source_seal_audit",
+        "relay_container_drain_source_scan_insert_guard",
+        "relay_container_drain_source_member_insert_guard",
+        "relay_container_drain_source_page_insert_guard",
+        "relay_container_drain_source_shard_insert_guard",
+        "relay_container_drain_source_seal_insert_guard",
+        "relay_container_drain_close_command_source_seal_guard",
+        "'d1-session-first-primary-bookmark-v1'",
+        "'accepted-sequence-keyset-v1'",
+        "'fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50'",
+        "drain source scan boundary is stale or unroutable",
+        "drain source scan identity already exists",
+        "drain source member keyset is not contiguous",
+        "drain source member identity already exists",
+        "drain source page is incomplete or out of order",
+        "drain source page identity already exists",
+        "drain source shard manifest does not match its members",
+        "drain source shard identity already exists",
+        "drain source seal is incomplete, stale, or detached",
+        "drain source seal identity already exists",
+        "drain close command requires an exact sealed accepted source",
+        "drain source scans are append-preserved",
+        "drain source members are append-preserved",
+        "drain source pages are append-preserved",
+        "drain source shard manifests are append-preserved",
+        "drain source seals are append-preserved",
+    )
+    for fragment in required_fragments:
+        if fragment not in source_sql:
+            raise SystemExit(f"0071 drain source seal rollout missing: {fragment}")
+    for forbidden_fragment in (
+        "SET admission_open = 1",
+        "INSERT INTO relay_container_admission_fences",
+        "UPDATE relay_container_admission_scope_heads",
+        "CREATE TABLE IF NOT EXISTS",
+        "CREATE TRIGGER IF NOT EXISTS",
+    ):
+        if forbidden_fragment in source_sql:
+            raise SystemExit(
+                "0071 drain source seal retains an authority or idempotent-DDL "
+                f"path: {forbidden_fragment}"
+            )
+
+    clock = [2_100_000_000]
+    scope_id = (
+        "53481a32b6f9f49915477efcfca093d0f"
+        "504943bf27e1a870dbcc1a0a2d69251"
+    )
+    fence_id = hashlib.sha256(b"0071-admission-fence").hexdigest()
+    fence_state = hashlib.sha256(b"0071-open-fence-state").hexdigest()
+    head_digest = hashlib.sha256(b"0071-scope-head").hexdigest()
+    source_schema_sha256 = (
+        "fa8b6a9639ef803d367a0be3013c62e9"
+        "c5bc47861a1bb38c18085fde5e1dca50"
+    )
+
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    schema_conn = sqlite3.connect(":memory:")
+    schema_conn.execute("PRAGMA foreign_keys = OFF")
+    schema_conn.create_function("unixepoch", 0, lambda: clock[0])
+    schema_conn.execute("CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)")
+    for schema_path in schema_paths:
+        schema_conn.executescript(schema_path.read_text(encoding="utf-8"))
+        schema_conn.execute(
+            "INSERT INTO d1_migrations(name) VALUES (?)",
+            (schema_path.name,),
+        )
+    schema_conn.commit()
+
+    schema_before_duplicate = schema_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        schema_conn.executescript(source_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(f"0071 duplicate DDL failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0071 critical source seal objects accepted duplicate DDL")
+    schema_after_duplicate = schema_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0071 duplicate DDL attempt changed persistent schema")
+
+    def clone_schema() -> sqlite3.Connection:
+        conn = sqlite3.connect(":memory:")
+        conn.create_function("unixepoch", 0, lambda: clock[0])
+        schema_conn.backup(conn)
+        conn.execute("PRAGMA foreign_keys = OFF")
+        # 0068 already has its own end-to-end verifier. This isolated fixture
+        # seeds its immutable source rows directly so 0071 guards can be tested
+        # without reproducing the full billing admission transaction.
+        conn.execute("DROP TRIGGER relay_container_admission_commit_insert_guard")
+        conn.commit()
+        return conn
+
+    def seed_fixture(
+        member_count: int,
+    ) -> tuple[sqlite3.Connection, list[dict[str, object]]]:
+        conn = clone_schema()
+        conn.execute(
+            """
+            INSERT INTO relay_container_admission_fences (
+              admission_fence_id_sha256, contract_version, fence_contract,
+              fence_kind, environment, scope_kind, scope_id_sha256,
+              fence_generation, admission_open, state_digest_sha256,
+              created_by_admin_id, created_at
+            ) VALUES (
+              ?, 1, 'relay-container-admission-fence-v1', 'admission',
+              'staging', 'global', ?, 1, 1, ?, 42, unixepoch()
+            )
+            """,
+            (fence_id, scope_id, fence_state),
+        )
+        conn.execute(
+            """
+            INSERT INTO relay_container_admission_scope_heads (
+              environment, scope_kind, scope_id_sha256,
+              current_fence_id_sha256, current_fence_generation,
+              head_version, head_digest_sha256,
+              updated_by_admin_id, updated_at
+            ) VALUES (
+              'staging', 'global', ?, ?, 1, 1, ?, 42, unixepoch()
+            )
+            """,
+            (scope_id, fence_id, head_digest),
+        )
+        shard_indices = (0, 2, 0, 3, 2)
+        rows: list[dict[str, object]] = []
+        for index in range(1, member_count + 1):
+            operation_id = f"relaycontainer-0071-{index:02d}"
+            row: dict[str, object] = {
+                "accepted_sequence": index,
+                "source_contract": "fenced-atomic-admission-v1",
+                "scope_id_sha256": scope_id,
+                "admission_fence_id_sha256": fence_id,
+                "fence_generation": 1,
+                "reservation_key": operation_id,
+                "operation_id": operation_id,
+                "atomic_admission_sha256": digest(f"0071-atomic:{index}"),
+                "operation_admission_sha256": digest(
+                    f"0071-operation:{index}"
+                ),
+                "billing_snapshot_sha256": digest(f"0071-billing:{index}"),
+                "client_request_sha256": digest(f"0071-request:{index}"),
+                "owner_generation": 2,
+                "ring_generation": 1,
+                "shard_count": 4,
+                "shard_index": shard_indices[index - 1],
+                "admission_commit_sha256": digest(f"0071-commit:{index}"),
+                "committed_at": clock[0] - 100 + index,
+            }
+            conn.execute(
+                """
+                INSERT INTO relay_container_admission_commits (
+                  accepted_sequence, source_contract, scope_kind,
+                  scope_id_sha256, admission_fence_id_sha256,
+                  fence_generation, reservation_key, operation_id,
+                  atomic_admission_sha256, operation_admission_sha256,
+                  billing_snapshot_sha256, client_request_sha256,
+                  owner_generation, ring_generation, shard_count,
+                  shard_index, admission_commit_sha256, committed_at
+                ) VALUES (
+                  :accepted_sequence, :source_contract, 'global',
+                  :scope_id_sha256, :admission_fence_id_sha256,
+                  :fence_generation, :reservation_key, :operation_id,
+                  :atomic_admission_sha256, :operation_admission_sha256,
+                  :billing_snapshot_sha256, :client_request_sha256,
+                  :owner_generation, :ring_generation, :shard_count,
+                  :shard_index, :admission_commit_sha256, :committed_at
+                )
+                """,
+                row,
+            )
+            rows.append(row)
+        conn.commit()
+        return conn, rows
+
+    scan_insert_sql = """
+        INSERT INTO relay_container_drain_source_scans (
+          source_scan_id_sha256, contract_version, scan_contract,
+          scan_migration, environment, scope_kind, scope_id_sha256,
+          admission_fence_id_sha256, fence_generation,
+          expected_fence_state_digest_sha256, expected_head_version,
+          expected_head_digest_sha256, captured_high_watermark,
+          captured_member_count, captured_first_sequence,
+          captured_first_operation_id, captured_last_sequence,
+          captured_last_operation_id, page_size, shard_count,
+          collector_service_name, collector_version_id,
+          collector_run_id_sha256, started_by_credential_id_sha256,
+          started_at
+        ) VALUES (
+          :source_scan_id_sha256, 1,
+          'relay-container-drain-source-scan-v1',
+          '0071_relay_container_drain_accepted_set_source_seal.sql',
+          'staging', 'global', :scope_id_sha256,
+          :admission_fence_id_sha256, 1,
+          :expected_fence_state_digest_sha256, 1,
+          :expected_head_digest_sha256, :captured_high_watermark,
+          :captured_member_count, :captured_first_sequence,
+          :captured_first_operation_id, :captured_last_sequence,
+          :captured_last_operation_id, 2, 4,
+          'drain-source-collector', 'collector-v1',
+          :collector_run_id_sha256, :started_by_credential_id_sha256,
+          unixepoch()
+        )
+    """
+
+    def scan_values(
+        label: str,
+        rows: list[dict[str, object]],
+        **overrides: object,
+    ) -> dict[str, object]:
+        member_count = len(rows)
+        values: dict[str, object] = {
+            "source_scan_id_sha256": digest(f"0071-scan:{label}"),
+            "scope_id_sha256": scope_id,
+            "admission_fence_id_sha256": fence_id,
+            "expected_fence_state_digest_sha256": fence_state,
+            "expected_head_digest_sha256": head_digest,
+            "captured_high_watermark": member_count,
+            "captured_member_count": member_count,
+            "captured_first_sequence": 1 if rows else 0,
+            "captured_first_operation_id": (
+                rows[0]["operation_id"] if rows else None
+            ),
+            "captured_last_sequence": member_count,
+            "captured_last_operation_id": (
+                rows[-1]["operation_id"] if rows else None
+            ),
+            "collector_run_id_sha256": digest(f"0071-run:{label}"),
+            "started_by_credential_id_sha256": digest(
+                f"0071-credential:{label}"
+            ),
+        }
+        values.update(overrides)
+        return values
+
+    member_insert_sql = """
+        INSERT INTO relay_container_drain_source_members (
+          source_scan_id_sha256, accepted_sequence, operation_id,
+          source_contract, admission_fence_id_sha256, fence_generation,
+          reservation_key, atomic_admission_sha256,
+          operation_admission_sha256, billing_snapshot_sha256,
+          client_request_sha256, owner_generation, ring_generation,
+          source_shard_count, shard_index, admission_commit_sha256,
+          committed_at, page_ordinal, member_ordinal,
+          member_digest_sha256, collected_at
+        ) VALUES (
+          :source_scan_id_sha256, :accepted_sequence, :operation_id,
+          :source_contract, :admission_fence_id_sha256, :fence_generation,
+          :reservation_key, :atomic_admission_sha256,
+          :operation_admission_sha256, :billing_snapshot_sha256,
+          :client_request_sha256, :owner_generation, :ring_generation,
+          :shard_count, :shard_index, :admission_commit_sha256,
+          :committed_at, :page_ordinal, :member_ordinal,
+          :member_digest_sha256, unixepoch()
+        )
+    """
+
+    def insert_members(
+        conn: sqlite3.Connection,
+        scan_id: str,
+        rows: list[dict[str, object]],
+    ) -> None:
+        for row in rows:
+            values = {
+                **row,
+                "source_scan_id_sha256": scan_id,
+                "page_ordinal": ((int(row["accepted_sequence"]) - 1) // 2) + 1,
+                "member_ordinal": ((int(row["accepted_sequence"]) - 1) % 2) + 1,
+                "member_digest_sha256": row["admission_commit_sha256"],
+            }
+            conn.execute(member_insert_sql, values)
+
+    page_insert_sql = """
+        INSERT INTO relay_container_drain_source_pages (
+          source_scan_id_sha256, page_ordinal, page_member_count,
+          page_first_sequence, page_first_operation_id,
+          page_last_sequence, page_last_operation_id,
+          previous_page_digest_sha256, page_digest_sha256, sealed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    """
+
+    def insert_pages(
+        conn: sqlite3.Connection,
+        label: str,
+        scan_id: str,
+        rows: list[dict[str, object]],
+    ) -> list[str]:
+        page_digests: list[str] = []
+        for page_start in range(0, len(rows), 2):
+            page_rows = rows[page_start : page_start + 2]
+            page_ordinal = (page_start // 2) + 1
+            page_digest = digest(f"0071-page:{label}:{page_ordinal}")
+            conn.execute(
+                page_insert_sql,
+                (
+                    scan_id,
+                    page_ordinal,
+                    len(page_rows),
+                    page_rows[0]["accepted_sequence"],
+                    page_rows[0]["operation_id"],
+                    page_rows[-1]["accepted_sequence"],
+                    page_rows[-1]["operation_id"],
+                    page_digests[-1] if page_digests else None,
+                    page_digest,
+                ),
+            )
+            page_digests.append(page_digest)
+        return page_digests
+
+    shard_insert_sql = """
+        INSERT INTO relay_container_drain_source_shards (
+          source_scan_id_sha256, shard_index, shard_member_count,
+          shard_high_watermark, shard_first_sequence,
+          shard_first_operation_id, shard_last_sequence,
+          shard_last_operation_id, shard_manifest_sha256, sealed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
+    """
+
+    def insert_shards(
+        conn: sqlite3.Connection,
+        label: str,
+        scan_id: str,
+        rows: list[dict[str, object]],
+        count: int = 4,
+    ) -> list[str]:
+        manifests: list[str] = []
+        for shard_index in range(count):
+            shard_rows = [
+                row for row in rows if row["shard_index"] == shard_index
+            ]
+            manifest = digest(f"0071-shard:{label}:{shard_index}")
+            conn.execute(
+                shard_insert_sql,
+                (
+                    scan_id,
+                    shard_index,
+                    len(shard_rows),
+                    shard_rows[-1]["accepted_sequence"] if shard_rows else 0,
+                    shard_rows[0]["accepted_sequence"] if shard_rows else 0,
+                    shard_rows[0]["operation_id"] if shard_rows else None,
+                    shard_rows[-1]["accepted_sequence"] if shard_rows else 0,
+                    shard_rows[-1]["operation_id"] if shard_rows else None,
+                    manifest,
+                ),
+            )
+            manifests.append(manifest)
+        return manifests
+
+    seal_insert_sql = """
+        INSERT INTO relay_container_drain_source_seals (
+          source_seal_id_sha256, source_scan_id_sha256,
+          contract_version, seal_contract, seal_migration,
+          bookmark_contract, pagination_contract,
+          accepted_bookmark_sha256, accepted_set_manifest_sha256,
+          accepted_source_schema_sha256,
+          accepted_source_readback_sha256, page_count,
+          first_page_digest_sha256, last_page_digest_sha256,
+          shard_set_manifest_sha256, assembler_identity_sha256,
+          assembler_signature_envelope_sha256,
+          verifier_identity_sha256,
+          verifier_signature_envelope_sha256,
+          seal_digest_sha256, sealed_at
+        ) VALUES (
+          :source_seal_id_sha256, :source_scan_id_sha256,
+          1, 'relay-container-drain-source-seal-v1',
+          '0071_relay_container_drain_accepted_set_source_seal.sql',
+          'd1-session-first-primary-bookmark-v1',
+          'accepted-sequence-keyset-v1',
+          :accepted_bookmark_sha256, :accepted_set_manifest_sha256,
+          :accepted_source_schema_sha256,
+          :accepted_source_readback_sha256, :page_count,
+          :first_page_digest_sha256, :last_page_digest_sha256,
+          :shard_set_manifest_sha256, :assembler_identity_sha256,
+          :assembler_signature_envelope_sha256,
+          :verifier_identity_sha256,
+          :verifier_signature_envelope_sha256,
+          :seal_digest_sha256, unixepoch()
+        )
+    """
+
+    def seal_values(
+        label: str,
+        scan_id: str,
+        page_digests: list[str],
+        **overrides: object,
+    ) -> dict[str, object]:
+        values: dict[str, object] = {
+            "source_seal_id_sha256": digest(f"0071-seal-id:{label}"),
+            "source_scan_id_sha256": scan_id,
+            "accepted_bookmark_sha256": digest(f"0071-bookmark:{label}"),
+            "accepted_set_manifest_sha256": digest(
+                f"0071-accepted-set:{label}"
+            ),
+            "accepted_source_schema_sha256": source_schema_sha256,
+            "accepted_source_readback_sha256": digest(
+                f"0071-readback:{label}"
+            ),
+            "page_count": len(page_digests),
+            "first_page_digest_sha256": (
+                page_digests[0] if page_digests else None
+            ),
+            "last_page_digest_sha256": (
+                page_digests[-1] if page_digests else None
+            ),
+            "shard_set_manifest_sha256": digest(
+                f"0071-shard-set:{label}"
+            ),
+            "assembler_identity_sha256": digest(
+                f"0071-assembler:{label}"
+            ),
+            "assembler_signature_envelope_sha256": digest(
+                f"0071-assembler-signature:{label}"
+            ),
+            "verifier_identity_sha256": digest(f"0071-verifier:{label}"),
+            "verifier_signature_envelope_sha256": digest(
+                f"0071-verifier-signature:{label}"
+            ),
+            "seal_digest_sha256": digest(f"0071-seal-digest:{label}"),
+        }
+        values.update(overrides)
+        return values
+
+    def build_proof(
+        conn: sqlite3.Connection,
+        label: str,
+        rows: list[dict[str, object]],
+        shard_count: int = 4,
+        include_seal: bool = True,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        scan = scan_values(label, rows)
+        conn.execute(scan_insert_sql, scan)
+        insert_members(conn, str(scan["source_scan_id_sha256"]), rows)
+        pages = insert_pages(
+            conn, label, str(scan["source_scan_id_sha256"]), rows
+        )
+        insert_shards(
+            conn,
+            label,
+            str(scan["source_scan_id_sha256"]),
+            rows,
+            shard_count,
+        )
+        seal = seal_values(
+            label,
+            str(scan["source_scan_id_sha256"]),
+            pages,
+        )
+        if include_seal:
+            conn.execute(seal_insert_sql, seal)
+        return scan, seal
+
+    command_insert_sql = """
+        INSERT INTO relay_container_drain_close_commands (
+          close_command_id_sha256, contract_version, command_contract,
+          command_migration, environment, scope_kind, scope_id_sha256,
+          admission_fence_id_sha256, fence_generation,
+          expected_fence_state_digest_sha256, expected_head_version,
+          expected_head_digest_sha256, campaign_id,
+          accepted_high_watermark, accepted_bookmark_sha256,
+          accepted_member_count, accepted_set_manifest_sha256,
+          accepted_first_sequence, accepted_first_operation_id,
+          accepted_last_sequence, accepted_last_operation_id,
+          accepted_source_schema_sha256,
+          accepted_source_readback_sha256,
+          closed_fence_state_digest_sha256, ring_generation,
+          controller_service_name, controller_version_id, shard_count,
+          shard_inventory_sha256, edge_version_set_sha256,
+          configuration_sha256, reverse_sync_snapshot_id_sha256,
+          reverse_sync_source_schema_sha256,
+          reverse_sync_target_schema_sha256, stability_window_seconds,
+          campaign_digest_sha256, requested_by_admin_id,
+          command_digest_sha256, created_at
+        ) VALUES (
+          :close_command_id_sha256, 1,
+          'relay-container-drain-close-command-v1',
+          '0070_relay_container_drain_close_command.sql',
+          'staging', 'global', :scope_id_sha256,
+          :admission_fence_id_sha256, 1,
+          :expected_fence_state_digest_sha256, 1,
+          :expected_head_digest_sha256, :campaign_id,
+          :accepted_high_watermark, :accepted_bookmark_sha256,
+          :accepted_member_count, :accepted_set_manifest_sha256,
+          :accepted_first_sequence, :accepted_first_operation_id,
+          :accepted_last_sequence, :accepted_last_operation_id,
+          :accepted_source_schema_sha256,
+          :accepted_source_readback_sha256,
+          :closed_fence_state_digest_sha256, 1,
+          'relay-controller', 'controller-v1', 4,
+          :shard_inventory_sha256, :edge_version_set_sha256,
+          :configuration_sha256, :reverse_sync_snapshot_id_sha256,
+          :reverse_sync_source_schema_sha256,
+          :reverse_sync_target_schema_sha256, 60,
+          :campaign_digest_sha256, 42,
+          :command_digest_sha256, unixepoch()
+        )
+    """
+
+    def command_values(
+        label: str,
+        rows: list[dict[str, object]],
+        seal: dict[str, object],
+        **overrides: object,
+    ) -> dict[str, object]:
+        member_count = len(rows)
+        values: dict[str, object] = {
+            "close_command_id_sha256": digest(f"0071-command-id:{label}"),
+            "scope_id_sha256": scope_id,
+            "admission_fence_id_sha256": fence_id,
+            "expected_fence_state_digest_sha256": fence_state,
+            "expected_head_digest_sha256": head_digest,
+            "campaign_id": digest(f"0071-campaign:{label}"),
+            "accepted_high_watermark": member_count,
+            "accepted_bookmark_sha256": seal["accepted_bookmark_sha256"],
+            "accepted_member_count": member_count,
+            "accepted_set_manifest_sha256": seal[
+                "accepted_set_manifest_sha256"
+            ],
+            "accepted_first_sequence": 1 if rows else 0,
+            "accepted_first_operation_id": (
+                rows[0]["operation_id"] if rows else None
+            ),
+            "accepted_last_sequence": member_count,
+            "accepted_last_operation_id": (
+                rows[-1]["operation_id"] if rows else None
+            ),
+            "accepted_source_schema_sha256": source_schema_sha256,
+            "accepted_source_readback_sha256": seal[
+                "accepted_source_readback_sha256"
+            ],
+            "closed_fence_state_digest_sha256": digest(
+                f"0071-closed-fence:{label}"
+            ),
+            "shard_inventory_sha256": digest(
+                f"0071-controller-shards:{label}"
+            ),
+            "edge_version_set_sha256": digest(f"0071-edges:{label}"),
+            "configuration_sha256": digest(f"0071-config:{label}"),
+            "reverse_sync_snapshot_id_sha256": digest(
+                f"0071-reverse-snapshot:{label}"
+            ),
+            "reverse_sync_source_schema_sha256": digest(
+                f"0071-reverse-source:{label}"
+            ),
+            "reverse_sync_target_schema_sha256": digest(
+                f"0071-reverse-target:{label}"
+            ),
+            "campaign_digest_sha256": digest(
+                f"0071-campaign-digest:{label}"
+            ),
+            "command_digest_sha256": digest(f"0071-command-digest:{label}"),
+        }
+        values.update(overrides)
+        return values
+
+    def append_late_commit(
+        conn: sqlite3.Connection,
+        accepted_sequence: int,
+    ) -> None:
+        operation_id = f"relaycontainer-0071-{accepted_sequence:02d}"
+        conn.execute(
+            """
+            INSERT INTO relay_container_admission_commits (
+              accepted_sequence, source_contract, scope_kind,
+              scope_id_sha256, admission_fence_id_sha256,
+              fence_generation, reservation_key, operation_id,
+              atomic_admission_sha256, operation_admission_sha256,
+              billing_snapshot_sha256, client_request_sha256,
+              owner_generation, ring_generation, shard_count,
+              shard_index, admission_commit_sha256, committed_at
+            ) VALUES (
+              ?, 'fenced-atomic-admission-v1', 'global', ?, ?, 1,
+              ?, ?, ?, ?, ?, ?, 2, 1, 4, 1, ?, unixepoch()
+            )
+            """,
+            (
+                accepted_sequence,
+                scope_id,
+                fence_id,
+                operation_id,
+                operation_id,
+                digest(f"0071-late-atomic:{accepted_sequence}"),
+                digest(f"0071-late-operation:{accepted_sequence}"),
+                digest(f"0071-late-billing:{accepted_sequence}"),
+                digest(f"0071-late-request:{accepted_sequence}"),
+                digest(f"0071-late-commit:{accepted_sequence}"),
+            ),
+        )
+
+    positive_conn, positive_rows = seed_fixture(5)
+    positive_scan, positive_seal = build_proof(
+        positive_conn, "positive", positive_rows
+    )
+    positive_command = command_values(
+        "positive", positive_rows, positive_seal
+    )
+    positive_conn.execute(command_insert_sql, positive_command)
+    positive_conn.commit()
+    positive_readback = positive_conn.execute(
+        """
+        SELECT command.close_command_id_sha256, fence.admission_open,
+               campaign.accepted_member_count,
+               campaign.accepted_set_manifest_sha256,
+               (SELECT COUNT(*)
+                FROM relay_container_drain_source_pages
+                WHERE source_scan_id_sha256 = ?) AS page_count,
+               (SELECT COUNT(*)
+                FROM relay_container_drain_source_shards
+                WHERE source_scan_id_sha256 = ?) AS shard_count
+        FROM relay_container_drain_close_commands AS command
+        JOIN relay_container_admission_fences AS fence
+          ON fence.admission_fence_id_sha256 =
+               command.admission_fence_id_sha256
+        JOIN relay_container_drain_campaigns AS campaign
+          ON campaign.campaign_id = command.campaign_id
+        WHERE command.close_command_id_sha256 = ?
+        """,
+        (
+            positive_scan["source_scan_id_sha256"],
+            positive_scan["source_scan_id_sha256"],
+            positive_command["close_command_id_sha256"],
+        ),
+    ).fetchone()
+    if positive_readback != (
+        positive_command["close_command_id_sha256"],
+        0,
+        5,
+        positive_seal["accepted_set_manifest_sha256"],
+        3,
+        4,
+    ):
+        raise SystemExit(
+            f"0071 multi-page/multi-shard close readback mismatch: "
+            f"{positive_readback}"
+        )
+    positive_conn.close()
+
+    empty_conn, empty_rows = seed_fixture(0)
+    _, empty_seal = build_proof(empty_conn, "empty", empty_rows)
+    empty_conn.execute(
+        command_insert_sql,
+        command_values("empty", empty_rows, empty_seal),
+    )
+    empty_conn.commit()
+    if empty_conn.execute(
+        """
+        SELECT admission_open, accepted_member_count,
+               accepted_first_operation_id, accepted_last_operation_id
+        FROM relay_container_admission_fences
+        WHERE admission_fence_id_sha256 = ?
+        """,
+        (fence_id,),
+    ).fetchone() != (0, 0, None, None):
+        raise SystemExit("0071 empty accepted source did not close exactly")
+    empty_conn.close()
+
+    marker_conn, marker_rows = seed_fixture(5)
+    for missing_migration in (
+        "0067_relay_container_drain_expand.sql",
+        "0068_relay_container_drain_admission_enforce.sql",
+        "0069_relay_container_traffic_return_evidence_enforce.sql",
+        "0070_relay_container_drain_close_command.sql",
+        "0071_relay_container_drain_accepted_set_source_seal.sql",
+    ):
+        marker_conn.execute(
+            "DELETE FROM d1_migrations WHERE name = ?",
+            (missing_migration,),
+        )
+        marker_conn.commit()
+        expect_integrity_error(
+            lambda migration=missing_migration: marker_conn.execute(
+                scan_insert_sql,
+                scan_values(f"missing-{migration}", marker_rows),
+            ),
+            f"0071 accepted a source scan without {missing_migration}",
+            "requires the complete 0067 through 0071 chain",
+        )
+        marker_conn.rollback()
+        marker_conn.execute(
+            "INSERT INTO d1_migrations(name) VALUES (?)",
+            (missing_migration,),
+        )
+        marker_conn.commit()
+    marker_conn.close()
+
+    stale_conn, stale_rows = seed_fixture(5)
+    expect_integrity_error(
+        lambda: stale_conn.execute(
+            scan_insert_sql,
+            scan_values(
+                "stale",
+                stale_rows,
+                captured_high_watermark=4,
+                captured_member_count=4,
+                captured_last_sequence=4,
+                captured_last_operation_id=stale_rows[3]["operation_id"],
+            ),
+        ),
+        "0071 accepted a stale source boundary",
+        "drain source scan boundary is stale or unroutable",
+    )
+    stale_conn.close()
+
+    member_conn, member_rows = seed_fixture(5)
+    member_scan = scan_values("member-tamper", member_rows)
+    member_conn.execute(scan_insert_sql, member_scan)
+    member_conn.commit()
+    tampered_member = {
+        **member_rows[0],
+        "source_scan_id_sha256": member_scan["source_scan_id_sha256"],
+        "page_ordinal": 1,
+        "member_ordinal": 1,
+        "member_digest_sha256": member_rows[0]["admission_commit_sha256"],
+        "billing_snapshot_sha256": digest("0071-tampered-billing"),
+    }
+    expect_integrity_error(
+        lambda: member_conn.execute(member_insert_sql, tampered_member),
+        "0071 accepted a source member field tamper",
+        "does not match the immutable admission source",
+    )
+    member_conn.rollback()
+    skipped_member = {
+        **member_rows[1],
+        "source_scan_id_sha256": member_scan["source_scan_id_sha256"],
+        "page_ordinal": 1,
+        "member_ordinal": 2,
+        "member_digest_sha256": member_rows[1]["admission_commit_sha256"],
+    }
+    expect_integrity_error(
+        lambda: member_conn.execute(member_insert_sql, skipped_member),
+        "0071 accepted a skipped source member",
+        "drain source member keyset is not contiguous",
+    )
+    member_conn.close()
+
+    premature_conn, premature_rows = seed_fixture(5)
+    premature_scan = scan_values("premature-inventory", premature_rows)
+    premature_conn.execute(scan_insert_sql, premature_scan)
+    first_member = {
+        **premature_rows[0],
+        "source_scan_id_sha256": premature_scan["source_scan_id_sha256"],
+        "page_ordinal": 1,
+        "member_ordinal": 1,
+        "member_digest_sha256": premature_rows[0]["admission_commit_sha256"],
+    }
+    premature_conn.execute(member_insert_sql, first_member)
+    expect_integrity_error(
+        lambda: premature_conn.execute(
+            page_insert_sql,
+            (
+                premature_scan["source_scan_id_sha256"],
+                1,
+                1,
+                1,
+                premature_rows[0]["operation_id"],
+                1,
+                premature_rows[0]["operation_id"],
+                None,
+                digest("0071-premature-page"),
+            ),
+        ),
+        "0071 accepted a page before source membership completed",
+        "drain source page is incomplete or out of order",
+    )
+    expect_integrity_error(
+        lambda: premature_conn.execute(
+            shard_insert_sql,
+            (
+                premature_scan["source_scan_id_sha256"],
+                0,
+                1,
+                1,
+                1,
+                premature_rows[0]["operation_id"],
+                1,
+                premature_rows[0]["operation_id"],
+                digest("0071-premature-shard"),
+            ),
+        ),
+        "0071 accepted a shard before source membership completed",
+        "drain source shard manifest does not match its members",
+    )
+    premature_conn.close()
+
+    page_conn, page_rows = seed_fixture(5)
+    page_scan = scan_values("page-chain", page_rows)
+    page_conn.execute(scan_insert_sql, page_scan)
+    insert_members(
+        page_conn, str(page_scan["source_scan_id_sha256"]), page_rows
+    )
+    first_page_digest = digest("0071-page-chain:1")
+    page_conn.execute(
+        page_insert_sql,
+        (
+            page_scan["source_scan_id_sha256"],
+            1,
+            2,
+            1,
+            page_rows[0]["operation_id"],
+            2,
+            page_rows[1]["operation_id"],
+            None,
+            first_page_digest,
+        ),
+    )
+    expect_integrity_error(
+        lambda: page_conn.execute(
+            page_insert_sql,
+            (
+                page_scan["source_scan_id_sha256"],
+                2,
+                2,
+                3,
+                page_rows[2]["operation_id"],
+                4,
+                page_rows[3]["operation_id"],
+                digest("0071-wrong-previous-page"),
+                digest("0071-page-chain:2"),
+            ),
+        ),
+        "0071 accepted a broken page chain",
+        "drain source page is incomplete or out of order",
+    )
+    page_conn.close()
+
+    shard_conn, shard_rows = seed_fixture(5)
+    shard_scan = scan_values("shard", shard_rows)
+    shard_conn.execute(scan_insert_sql, shard_scan)
+    insert_members(
+        shard_conn, str(shard_scan["source_scan_id_sha256"]), shard_rows
+    )
+    shard_pages = insert_pages(
+        shard_conn,
+        "shard",
+        str(shard_scan["source_scan_id_sha256"]),
+        shard_rows,
+    )
+    shard_conn.commit()
+    expect_integrity_error(
+        lambda: shard_conn.execute(
+            shard_insert_sql,
+            (
+                shard_scan["source_scan_id_sha256"],
+                0,
+                1,
+                1,
+                1,
+                shard_rows[0]["operation_id"],
+                1,
+                shard_rows[0]["operation_id"],
+                digest("0071-wrong-shard"),
+            ),
+        ),
+        "0071 accepted an incorrect shard inventory",
+        "drain source shard manifest does not match its members",
+    )
+    shard_conn.rollback()
+    insert_shards(
+        shard_conn,
+        "incomplete-shards",
+        str(shard_scan["source_scan_id_sha256"]),
+        shard_rows,
+        3,
+    )
+    incomplete_seal = seal_values(
+        "incomplete-shards",
+        str(shard_scan["source_scan_id_sha256"]),
+        shard_pages,
+    )
+    expect_integrity_error(
+        lambda: shard_conn.execute(seal_insert_sql, incomplete_seal),
+        "0071 sealed an incomplete shard inventory",
+        "drain source seal is incomplete, stale, or detached",
+    )
+    shard_conn.close()
+
+    identity_conn, identity_rows = seed_fixture(5)
+    identity_scan = scan_values("identity", identity_rows)
+    identity_conn.execute(scan_insert_sql, identity_scan)
+    insert_members(
+        identity_conn,
+        str(identity_scan["source_scan_id_sha256"]),
+        identity_rows,
+    )
+    identity_pages = insert_pages(
+        identity_conn,
+        "identity",
+        str(identity_scan["source_scan_id_sha256"]),
+        identity_rows,
+    )
+    insert_shards(
+        identity_conn,
+        "identity",
+        str(identity_scan["source_scan_id_sha256"]),
+        identity_rows,
+    )
+    same_identity = digest("0071-same-identity")
+    non_independent_seal = seal_values(
+        "identity",
+        str(identity_scan["source_scan_id_sha256"]),
+        identity_pages,
+        assembler_identity_sha256=same_identity,
+        verifier_identity_sha256=same_identity,
+    )
+    expect_integrity_error(
+        lambda: identity_conn.execute(
+            seal_insert_sql, non_independent_seal
+        ),
+        "0071 accepted non-independent seal roles",
+    )
+    identity_conn.close()
+
+    before_seal_conn, before_seal_rows = seed_fixture(5)
+    before_scan = scan_values("late-before-seal", before_seal_rows)
+    before_seal_conn.execute(scan_insert_sql, before_scan)
+    insert_members(
+        before_seal_conn,
+        str(before_scan["source_scan_id_sha256"]),
+        before_seal_rows,
+    )
+    before_pages = insert_pages(
+        before_seal_conn,
+        "late-before-seal",
+        str(before_scan["source_scan_id_sha256"]),
+        before_seal_rows,
+    )
+    insert_shards(
+        before_seal_conn,
+        "late-before-seal",
+        str(before_scan["source_scan_id_sha256"]),
+        before_seal_rows,
+    )
+    append_late_commit(before_seal_conn, 6)
+    expect_integrity_error(
+        lambda: before_seal_conn.execute(
+            seal_insert_sql,
+            seal_values(
+                "late-before-seal",
+                str(before_scan["source_scan_id_sha256"]),
+                before_pages,
+            ),
+        ),
+        "0071 sealed across a late admission",
+        "drain source seal is incomplete, stale, or detached",
+    )
+    before_seal_conn.close()
+
+    after_seal_conn, after_seal_rows = seed_fixture(5)
+    _, after_seal = build_proof(
+        after_seal_conn, "late-after-seal", after_seal_rows
+    )
+    append_late_commit(after_seal_conn, 6)
+    expect_integrity_error(
+        lambda: after_seal_conn.execute(
+            command_insert_sql,
+            command_values(
+                "late-after-seal", after_seal_rows, after_seal
+            ),
+        ),
+        "0071 closed across a post-seal admission",
+    )
+    after_seal_conn.close()
+
+    no_seal_conn, no_seal_rows = seed_fixture(5)
+    _, no_seal = build_proof(
+        no_seal_conn,
+        "no-seal",
+        no_seal_rows,
+        include_seal=False,
+    )
+    expect_integrity_error(
+        lambda: no_seal_conn.execute(
+            command_insert_sql,
+            command_values("no-seal", no_seal_rows, no_seal),
+        ),
+        "0071 accepted a close command without a source seal",
+        "requires an exact sealed accepted source",
+    )
+    no_seal_conn.close()
+
+    mismatch_conn, mismatch_rows = seed_fixture(5)
+    _, mismatch_seal = build_proof(
+        mismatch_conn, "command-mismatch", mismatch_rows
+    )
+    expect_integrity_error(
+        lambda: mismatch_conn.execute(
+            command_insert_sql,
+            command_values(
+                "command-mismatch",
+                mismatch_rows,
+                mismatch_seal,
+                accepted_set_manifest_sha256=digest(
+                    "0071-command-manifest-mismatch"
+                ),
+            ),
+        ),
+        "0071 accepted a command detached from its source seal",
+        "requires an exact sealed accepted source",
+    )
+    mismatch_conn.close()
+
+    immutable_conn, immutable_rows = seed_fixture(5)
+    immutable_scan, immutable_seal = build_proof(
+        immutable_conn, "immutable", immutable_rows
+    )
+    immutable_conn.commit()
+    immutable_cases = (
+        (
+            "relay_container_drain_source_scans",
+            "source_scan_id_sha256",
+            immutable_scan["source_scan_id_sha256"],
+            "collector_version_id",
+            "'collector-v2'",
+            "drain source scans are immutable",
+            "drain source scans are append-preserved",
+        ),
+        (
+            "relay_container_drain_source_members",
+            "source_scan_id_sha256",
+            immutable_scan["source_scan_id_sha256"],
+            "member_digest_sha256",
+            f"'{digest('0071-mutated-member')}'",
+            "drain source members are immutable",
+            "drain source members are append-preserved",
+        ),
+        (
+            "relay_container_drain_source_pages",
+            "source_scan_id_sha256",
+            immutable_scan["source_scan_id_sha256"],
+            "page_digest_sha256",
+            f"'{digest('0071-mutated-page')}'",
+            "drain source pages are immutable",
+            "drain source pages are append-preserved",
+        ),
+        (
+            "relay_container_drain_source_shards",
+            "source_scan_id_sha256",
+            immutable_scan["source_scan_id_sha256"],
+            "shard_manifest_sha256",
+            f"'{digest('0071-mutated-shard')}'",
+            "drain source shard manifests are immutable",
+            "drain source shard manifests are append-preserved",
+        ),
+        (
+            "relay_container_drain_source_seals",
+            "source_seal_id_sha256",
+            immutable_seal["source_seal_id_sha256"],
+            "seal_digest_sha256",
+            f"'{digest('0071-mutated-seal')}'",
+            "drain source seals are immutable",
+            "drain source seals are append-preserved",
+        ),
+    )
+    for (
+        table,
+        key_column,
+        key_value,
+        update_column,
+        update_value,
+        update_error,
+        delete_error,
+    ) in immutable_cases:
+        expect_integrity_error(
+            lambda table=table,
+            key_column=key_column,
+            key_value=key_value,
+            update_column=update_column,
+            update_value=update_value: immutable_conn.execute(
+                f"UPDATE {table} SET {update_column} = {update_value} "
+                f"WHERE {key_column} = ?",
+                (key_value,),
+            ),
+            f"0071 allowed mutation of {table}",
+            update_error,
+        )
+        immutable_conn.rollback()
+        expect_integrity_error(
+            lambda table=table,
+            key_column=key_column,
+            key_value=key_value: immutable_conn.execute(
+                f"DELETE FROM {table} WHERE {key_column} = ?",
+                (key_value,),
+            ),
+            f"0071 allowed deletion from {table}",
+            delete_error,
+        )
+        immutable_conn.rollback()
+    replace_cases = (
+        (
+            "relay_container_drain_source_scans",
+            "source_scan_id_sha256",
+            immutable_scan["source_scan_id_sha256"],
+            "drain source scan identity already exists",
+        ),
+        (
+            "relay_container_drain_source_members",
+            "source_scan_id_sha256",
+            immutable_scan["source_scan_id_sha256"],
+            "drain source member identity already exists",
+        ),
+        (
+            "relay_container_drain_source_pages",
+            "source_scan_id_sha256",
+            immutable_scan["source_scan_id_sha256"],
+            "drain source page identity already exists",
+        ),
+        (
+            "relay_container_drain_source_shards",
+            "source_scan_id_sha256",
+            immutable_scan["source_scan_id_sha256"],
+            "drain source shard identity already exists",
+        ),
+        (
+            "relay_container_drain_source_seals",
+            "source_seal_id_sha256",
+            immutable_seal["source_seal_id_sha256"],
+            "drain source seal identity already exists",
+        ),
+    )
+    for table, key_column, key_value, expected_error in replace_cases:
+        row_count = immutable_conn.execute(
+            f"SELECT COUNT(*) FROM {table}"
+        ).fetchone()
+        expect_integrity_error(
+            lambda table=table,
+            key_column=key_column,
+            key_value=key_value: immutable_conn.execute(
+                f"INSERT OR REPLACE INTO {table} "
+                f"SELECT * FROM {table} WHERE {key_column} = ?",
+                (key_value,),
+            ),
+            f"0071 allowed INSERT OR REPLACE to rewrite {table}",
+            expected_error,
+        )
+        immutable_conn.rollback()
+        if immutable_conn.execute(
+            f"SELECT COUNT(*) FROM {table}"
+        ).fetchone() != row_count:
+            raise SystemExit(
+                f"0071 INSERT OR REPLACE changed {table} cardinality"
+            )
+    immutable_conn.close()
+    schema_conn.close()
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

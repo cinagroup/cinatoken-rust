@@ -193,7 +193,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0070_relay_container_drain_close_command.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0071_relay_container_drain_accepted_set_source_seal.sql";
 const CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED_ENV: &str = "CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED";
 const CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED_ENV: &str =
     "CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED";
@@ -310,6 +310,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0068_relay_container_drain_admission_enforce.sql",
     "0069_relay_container_traffic_return_evidence_enforce.sql",
     "0070_relay_container_drain_close_command.sql",
+    "0071_relay_container_drain_accepted_set_source_seal.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -487,6 +488,7 @@ struct PlatformCapabilities {
     container_drain_admission_schema_ready: bool,
     container_traffic_return_evidence_schema_ready: bool,
     container_drain_close_command_schema_ready: bool,
+    container_drain_source_seal_schema_ready: bool,
     container_drain_campaign_write_enabled: bool,
     container_drain_observation_write_enabled: bool,
     container_ambiguity_quarantine_write_enabled: bool,
@@ -1146,6 +1148,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_drain_admission_schema_ready,
         container_traffic_return_evidence_schema_ready,
         container_drain_close_command_schema_ready,
+        container_drain_source_seal_schema_ready,
         container_chat_canary_replay_history_probe_known,
         container_chat_canary_replay_history_present,
     ) = match env.d1("DB") {
@@ -1186,6 +1189,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                 crate::d1_repositories::relay_container_drain_close_command_schema_ready(&db)
                     .await
                     .unwrap_or(false);
+            let container_drain_source_seal_schema_ready =
+                crate::d1_repositories::relay_container_drain_source_seal_schema_ready(&db)
+                    .await
+                    .unwrap_or(false);
             let container_chat_canary_replay_history_probe_known =
                 container_chat_canary_replay_history.is_ok();
             let container_chat_canary_replay_history_present =
@@ -1219,6 +1226,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                 container_drain_admission_schema_ready,
                 container_traffic_return_evidence_schema_ready,
                 container_drain_close_command_schema_ready,
+                container_drain_source_seal_schema_ready,
                 container_chat_canary_replay_history_probe_known,
                 container_chat_canary_replay_history_present,
             )
@@ -1236,6 +1244,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             TaskPollRecoveryRuntimeStatus {
                 schema_ready: false,
             },
+            false,
             false,
             false,
             false,
@@ -2099,6 +2108,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_drain_admission_schema_ready,
         container_traffic_return_evidence_schema_ready,
         container_drain_close_command_schema_ready,
+        container_drain_source_seal_schema_ready,
         container_drain_campaign_write_enabled,
         container_drain_observation_write_enabled,
         container_ambiguity_quarantine_write_enabled,
@@ -5297,13 +5307,13 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATIONS.len(), 70);
+        assert_eq!(EXPECTED_D1_MIGRATIONS.len(), 71);
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0070_relay_container_drain_close_command.sql"
+            "0071_relay_container_drain_accepted_set_source_seal.sql"
         );
         assert_eq!(
-            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 17..],
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 18..],
             &[
                 "0054_relay_container_shard_activations.sql",
                 "0055_relay_container_shard_activation_campaigns.sql",
@@ -5322,6 +5332,7 @@ mod tests {
                 "0068_relay_container_drain_admission_enforce.sql",
                 "0069_relay_container_traffic_return_evidence_enforce.sql",
                 "0070_relay_container_drain_close_command.sql",
+                "0071_relay_container_drain_accepted_set_source_seal.sql",
             ]
         );
         assert!(
@@ -5597,6 +5608,19 @@ mod tests {
         let mutation_name = ["apply_relay_container", "_drain_close_command"].concat();
         let write_gate_env = ["CONTAINER_DRAIN_CLOSE_COMMAND", "_WRITE_ENABLED"].concat();
         let write_gate_field = ["container_drain_close_command", "_write_enabled"].concat();
+        assert!(!source.contains(&mutation_name));
+        assert!(!source.contains(&write_gate_env));
+        assert!(!source.contains(&write_gate_field));
+    }
+
+    #[test]
+    fn drain_source_seal_capability_is_schema_only() {
+        let source = include_str!("platform_gateway.rs");
+        assert!(source.contains("container_drain_source_seal_schema_ready: bool"));
+        assert!(source.contains("relay_container_drain_source_seal_schema_ready(&db)"));
+        let mutation_name = ["apply_relay_container", "_drain_source_seal"].concat();
+        let write_gate_env = ["CONTAINER_DRAIN_SOURCE_SEAL", "_WRITE_ENABLED"].concat();
+        let write_gate_field = ["container_drain_source_seal", "_write_enabled"].concat();
         assert!(!source.contains(&mutation_name));
         assert!(!source.contains(&write_gate_env));
         assert!(!source.contains(&write_gate_field));

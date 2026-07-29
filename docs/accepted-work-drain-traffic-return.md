@@ -928,3 +928,48 @@ and recomputation before they can support a production close.
 No remote D1/Cloudflare operation, credential, route, gate, DNS, traffic, or
 authority change occurred. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 18. 0071 Accepted-Source Seal Checkpoint
+
+Application migration
+`0071_relay_container_drain_accepted_set_source_seal.sql` is now the local
+schema head. The exact local inventory is 71 migrations, 97 required tables,
+1550 checked incremental columns, and 144 key indexes.
+
+0071 adds immutable scan, member, page, shard, and seal authorities in front
+of the 0070 close command. The database now requires:
+
+- the exact current open 0068 fence/head and D1-derived accepted boundary;
+- contiguous keyset copying of every immutable admission commit;
+- deterministic page/member ordinals and a complete page digest chain;
+- one ordered shard manifest for every shard, including empty shards;
+- a complete seal with fixed bookmark/pagination contracts, pinned 0068
+  source-schema digest, retained readback identity, and distinct
+  assembler/verifier identities; and
+- a final source count/high-watermark recheck before the 0070 command can
+  close the fence.
+
+Local SQLite covers empty and nonempty sets, three pages across four shards,
+missing migration markers, stale boundaries, source-field tampering, skipped
+members, broken page chains, incorrect or missing shard manifests,
+non-independent seal roles, immutable rows, duplicate DDL, and admissions
+arriving both before seal and after seal but before close. Real Workerd
+coverage constructs valid source evidence before close and exercises
+multi-page/multi-shard success plus missing evidence, digest drift, and the
+post-seal late-admission race. All five insert guards explicitly reject
+primary/unique conflicts before SQLite can apply `INSERT OR REPLACE`; seal
+history cannot be implicitly deleted when recursive triggers are disabled.
+
+This is structural enforcement, not yet a production source collector.
+Independent D1 Session capture, canonical cross-runtime recomputation,
+signature verification, authenticated writer authorization, typed audit
+receipt, stable ambiguous-response readback, and remote fault evidence remain
+required. The root Application Worker must retain physical D1 ownership; a
+service-bound controller may request work only through a separately
+authenticated, replay-protected internal protocol.
+
+The immutable source-schema digest remains the 0068 SHA-256
+`fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50`.
+No billing-expression or settlement semantic changes. No remote migration,
+credential, route, gate, traffic, or authority change occurred. Go/VPS
+remains authoritative and production remains **NO-GO**.

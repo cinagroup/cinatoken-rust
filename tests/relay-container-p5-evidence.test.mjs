@@ -1225,8 +1225,8 @@ function candidateFixture() {
     ringGeneration: 1,
     shardCount: 8,
     migrationHead:
-      "0070_relay_container_drain_close_command.sql",
-    migrationCount: 70,
+      "0071_relay_container_drain_accepted_set_source_seal.sql",
+    migrationCount: 71,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -1561,10 +1561,10 @@ function factsFixture(
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 70,
-        tableCount: 92,
-        incrementalColumnCount: 1463,
-        keyIndexCount: 137,
+        migrationCount: 71,
+        tableCount: 97,
+        incrementalColumnCount: 1550,
+        keyIndexCount: 144,
         schemaFingerprintSha256: "a".repeat(64),
         businessFingerprintBeforeSha256: "b".repeat(64),
         businessFingerprintAfterSha256: "b".repeat(64),

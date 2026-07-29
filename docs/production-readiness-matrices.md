@@ -1484,3 +1484,22 @@ Application schema head is now 0070 with 70 migrations, 92 required tables,
 
 Go/VPS remains authoritative. The local atomic command is necessary database
 infrastructure, not permission to close a production fence or return traffic.
+
+## 2026-07-30 Accepted-Source Seal Overlay
+
+This overlay supersedes the 0070 schema-head and caller-attested source-proof
+rows only. Application schema head is 0071 with `71/97/1550/144`.
+
+| Control | Current local evidence | Production implementation/evidence still required | Decision |
+|---|---|---|---|
+| Schema identity | Exact 0071 marker, five source tables, 87 exact columns, seven indexes, immutable/order/completeness triggers, and the 0070 close guard | Reviewed remote backup/apply and normalized catalog/trigger/business-fingerprint readback | Local pass; remote open |
+| Source boundary | Scan must equal current open fence/head plus D1 `MAX/COUNT/first/last`; commits are copied in contiguous accepted-sequence order | Real `first-primary` D1 Session collector, retained opaque bookmark, bounded complete pagination and 1024-shard scale proof | Structural pass |
+| Member/page proof | Every member field must equal immutable 0068 source; page/member ordinals and previous-page chain are enforced | Canonical digest recomputation in two independent runtimes and retained raw/readback artifacts | Structural pass; crypto open |
+| Shard proof | All shard indices must exist in order and exactly summarize copied members, including zero-member shards | Remote Controller/DO placement and shard inventory reconciliation | Structural pass |
+| Append preservation | Every insert guard rejects PK/unique conflicts before conflict resolution; SQLite and Workerd reject `INSERT OR REPLACE` seal substitution | Remote D1 regression and retained catalog/trigger readback | Local pass; remote open |
+| Seal independence | Assembler/verifier identities and signature-envelope digests must differ; seal requires complete members/pages/shards and no late admission | Verified signatures, key lifecycle, replay protection, distinct credentials and typed authorization/audit receipt | **Blocked** |
+| Close TOCTOU | Exact seal values plus final source high-watermark/count are required immediately before 0070 close | Remote concurrent-admission, response-loss, restart and stable-readback campaign | Local database/runtime pass |
+| Physical authority | No route, credential, gate or call site; Application Worker retains D1 ownership | Authenticated service-binding protocol if an orchestrator is added; no independent control-plane D1 | Default-inert |
+| Admission provenance | Source schema is fixed to unchanged 0068 SHA-256 `fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50` | Authenticated remote source capture and independent review | Immutable local contract |
+| Billing | 0071 copies only existing admission snapshot identity and changes no expression or settlement behavior | Canonical snapshot/vector replay and finance conservation evidence | **Blocked** |
+| Promotion | Go/VPS unchanged; no remote mutation, traffic or provider action | Full drain/reverse-sync/op14/WORM/rollback evidence and independent approvals | **NO-GO** |

@@ -15,11 +15,11 @@ are ready for independent evidence assembly and owner review. The other nine
 P5 evidence kinds, the signed manifest, and all five independent approvals are
 still mandatory.
 
-Current local candidate baseline: D1 head 0070/count 70, 92 required tables,
-1463 checked incremental columns, and 137 key indexes. Migration 0055 remains
+Current local candidate baseline: D1 head 0071/count 71, 97 required tables,
+1550 checked incremental columns, and 144 key indexes. Migration 0055 remains
 the historical shard-activation campaign baseline, 0063 remains placement
 authorization storage provenance, and 0068 remains admission-fence evidence
-provenance; a new candidate must bind 0070. No live
+provenance; a new candidate must bind 0071. No live
 Cloudflare readback, migration application,
 deployment, Durable Object/Container wake, or traffic change is claimed.
 
@@ -409,3 +409,19 @@ traffic-return evidence rows, a signed P5 packet, or customer eligibility.
 The separate P5 `admission-fence` record remains pinned to 0068; the current
 schema head and the admission authority are intentionally different
 identities.
+
+## 0071 Foundation Candidate Overlay
+
+The current offline foundation candidate reports
+`0071_relay_container_drain_accepted_set_source_seal.sql`, count 71, and the
+exact `97/1550/144` schema vector. This supersedes the 0070
+current-candidate paragraph while retaining its historical evidence.
+
+The collector remains credential-free, read-only, and non-authorizing. The
+0071 schema identity proves only that structural source-seal storage is part
+of the candidate. It does not prove that a D1 Session bookmark was captured,
+that member/page/shard/set digests were independently recomputed, that
+assembler/verifier signatures are valid, or that any remote 0071 row exists.
+Remote 0067-0071 apply/readback and one immutable authenticated P5 packet
+remain required. Go/VPS remains authoritative and production remains
+**NO-GO**.

@@ -12165,3 +12165,96 @@ These are local results only. No remote D1/Cloudflare migration, readback,
 credential, route, deployment, DNS, write gate, traffic, or Go/VPS state was
 accessed or changed. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-30 Accepted-Source Seal Verification Overlay
+
+The canonical local schema baseline advances to:
+
+```text
+0071_relay_container_drain_accepted_set_source_seal.sql
+71 migrations
+97 required tables
+1550 checked incremental columns
+144 key indexes
+```
+
+Focused verification for this overlay passed:
+
+```text
+python tools/verify_sqlite.py
+  71 migrations / 97 tables / 1550 incremental columns / 144 key indexes
+  0071 immutable accepted-source seal passed
+
+bun run test:relay-container-atomic-admission:runtime
+  1 Workerd test file passed
+  26 tests passed
+
+cargo test -p cinatoken-worker --lib relay_container_drain_source
+  7 tests passed
+
+cargo test -p cinatoken-worker --lib
+  936 tests passed
+
+bun run check:do-lifecycle-runtime
+  1 Workerd test file passed
+  54 tests passed
+
+bun run check:d1:migration-config
+  71 contiguous migrations; runtime set matched
+
+bun run check:relay-container:p5-evidence
+  68 tests passed; admission-fence collector self-test passed
+
+bun run check:relay-container:p5-foundation
+  48 tests passed; foundation collector self-test passed
+
+bun run check:relay-container:ring-transition
+  132 tests passed
+```
+
+The SQLite verifier uses the complete 0001-0071 chain and exercises empty and
+nonempty sources, five accepted members, three pages, four shards including an
+empty shard, all five migration-marker failures, stale boundaries, copied-row
+tampering, skipped members, premature/stale pages and shards, broken page
+chains, incomplete shard inventory, role reuse, late admissions before seal
+and after seal but before close, command/seal digest drift, immutable
+update/delete, duplicate DDL, and `INSERT OR REPLACE` against all five source
+authorities.
+
+The real-Workerd suite creates the source scan/member/page/shard/seal rows
+before issuing the 0070 command. It verifies multi-page/multi-shard close,
+missing page and shard rejection, post-seal late-admission rejection with the
+fence still open, accepted-set/readback mismatch rejection, and that
+`INSERT OR REPLACE` cannot implicitly delete a seal.
+
+The Rust repository pins exact ordered schema shape and trigger contracts,
+decodes strict aggregate rows, and recomputes canonical member, page, shard,
+shard-set, accepted-set, retained-readback, and seal SHA-256 golden vectors.
+Platform capability exposes only
+`container_drain_source_seal_schema_ready`; there is no source mutation
+method, route, credential, environment write gate, or production call site.
+
+Two audit defects were addressed before this checkpoint. Page/shard inventory
+cannot be written until every captured member exists, and the seal rechecks
+page/shard member totals. Every insert guard also rejects primary/unique
+conflicts before SQLite conflict handling, preventing `INSERT OR REPLACE`
+from bypassing delete guards when recursive triggers are disabled.
+
+One deliberate production blocker remains: D1 validates structure and
+cardinality but cannot verify SHA-256 preimages, a real D1 Session bookmark,
+managed-key signatures, or role authorization. A caller with raw D1 mutation
+authority could manufacture valid-looking seal fields. Therefore the future
+root-Worker collector must independently recompute the complete source,
+verify distinct signatures and a typed authorization/audit receipt, and
+classify ambiguous writes by stable readback before any close route can
+exist.
+
+The aggregate `bun run check` subsequently passed with exit code zero after
+the 0071 overlay, including release builds, complete Workerd suites, Web/Bun
+checks, SQLite verification, Rust workspace tests, formatting, Wrangler
+dry-runs, and all three configured wasm32 targets.
+
+These are local results only. No remote D1/Cloudflare migration, Session,
+credential, route, deployment, DNS, gate, customer traffic, provider request,
+or Go/VPS state was accessed or changed. Go/VPS remains authoritative and
+production remains **NO-GO**.

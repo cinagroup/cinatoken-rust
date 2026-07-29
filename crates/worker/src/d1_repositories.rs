@@ -92,6 +92,10 @@ pub(crate) const RELAY_CONTAINER_TRAFFIC_RETURN_EVIDENCE_ENFORCE_MIGRATION: &str
     "0069_relay_container_traffic_return_evidence_enforce.sql";
 pub(crate) const RELAY_CONTAINER_DRAIN_CLOSE_COMMAND_MIGRATION: &str =
     "0070_relay_container_drain_close_command.sql";
+pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION: &str =
+    "0071_relay_container_drain_accepted_set_source_seal.sql";
+pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256: &str =
+    "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50";
 pub(crate) const RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256: &str =
     "53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT: i64 = 64;
@@ -1086,6 +1090,147 @@ struct RelayContainerDrainCloseCommandSchemaProbe {
     index_names: Option<String>,
     trigger_names: Option<String>,
     trigger_contract: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerDrainSourceSealSchemaProbe {
+    migration_count: i64,
+    scan_columns: Option<String>,
+    member_columns: Option<String>,
+    page_columns: Option<String>,
+    shard_columns: Option<String>,
+    seal_columns: Option<String>,
+    table_names: Option<String>,
+    index_names: Option<String>,
+    trigger_names: Option<String>,
+    trigger_contract: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read-only 0071 source scan contract; no route is enabled
+pub struct RelayContainerDrainSourceScanRow {
+    pub source_scan_id_sha256: String,
+    pub contract_version: i64,
+    pub scan_contract: String,
+    pub scan_migration: String,
+    pub environment: String,
+    pub scope_kind: String,
+    pub scope_id_sha256: String,
+    pub admission_fence_id_sha256: String,
+    pub fence_generation: i64,
+    pub expected_fence_state_digest_sha256: String,
+    pub expected_head_version: i64,
+    pub expected_head_digest_sha256: String,
+    pub captured_high_watermark: i64,
+    pub captured_member_count: i64,
+    pub captured_first_sequence: i64,
+    pub captured_first_operation_id: Option<String>,
+    pub captured_last_sequence: i64,
+    pub captured_last_operation_id: Option<String>,
+    pub page_size: i64,
+    pub shard_count: i64,
+    pub collector_service_name: String,
+    pub collector_version_id: String,
+    pub collector_run_id_sha256: String,
+    pub started_by_credential_id_sha256: String,
+    pub started_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read-only 0071 source member contract; no route is enabled
+pub struct RelayContainerDrainSourceMemberRow {
+    pub source_scan_id_sha256: String,
+    pub accepted_sequence: i64,
+    pub operation_id: String,
+    pub source_contract: String,
+    pub admission_fence_id_sha256: Option<String>,
+    pub fence_generation: i64,
+    pub reservation_key: String,
+    pub atomic_admission_sha256: String,
+    pub operation_admission_sha256: String,
+    pub billing_snapshot_sha256: String,
+    pub client_request_sha256: String,
+    pub owner_generation: i64,
+    pub ring_generation: i64,
+    pub source_shard_count: i64,
+    pub shard_index: i64,
+    pub admission_commit_sha256: String,
+    pub committed_at: i64,
+    pub page_ordinal: i64,
+    pub member_ordinal: i64,
+    pub member_digest_sha256: String,
+    pub collected_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read-only 0071 source page contract; no route is enabled
+pub struct RelayContainerDrainSourcePageRow {
+    pub source_scan_id_sha256: String,
+    pub page_ordinal: i64,
+    pub page_member_count: i64,
+    pub page_first_sequence: i64,
+    pub page_first_operation_id: String,
+    pub page_last_sequence: i64,
+    pub page_last_operation_id: String,
+    pub previous_page_digest_sha256: Option<String>,
+    pub page_digest_sha256: String,
+    pub sealed_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read-only 0071 source shard contract; no route is enabled
+pub struct RelayContainerDrainSourceShardRow {
+    pub source_scan_id_sha256: String,
+    pub shard_index: i64,
+    pub shard_member_count: i64,
+    pub shard_high_watermark: i64,
+    pub shard_first_sequence: i64,
+    pub shard_first_operation_id: Option<String>,
+    pub shard_last_sequence: i64,
+    pub shard_last_operation_id: Option<String>,
+    pub shard_manifest_sha256: String,
+    pub sealed_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read-only 0071 source seal contract; no route is enabled
+pub struct RelayContainerDrainSourceSealRow {
+    pub source_seal_id_sha256: String,
+    pub source_scan_id_sha256: String,
+    pub contract_version: i64,
+    pub seal_contract: String,
+    pub seal_migration: String,
+    pub bookmark_contract: String,
+    pub pagination_contract: String,
+    pub accepted_bookmark_sha256: String,
+    pub accepted_set_manifest_sha256: String,
+    pub accepted_source_schema_sha256: String,
+    pub accepted_source_readback_sha256: String,
+    pub page_count: i64,
+    pub first_page_digest_sha256: Option<String>,
+    pub last_page_digest_sha256: Option<String>,
+    pub shard_set_manifest_sha256: String,
+    pub assembler_identity_sha256: String,
+    pub assembler_signature_envelope_sha256: String,
+    pub verifier_identity_sha256: String,
+    pub verifier_signature_envelope_sha256: String,
+    pub seal_digest_sha256: String,
+    pub sealed_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // aggregate read-only 0071 source proof; no route is enabled
+pub struct RelayContainerDrainAcceptedSetSourceReadback {
+    pub scan: RelayContainerDrainSourceScanRow,
+    pub members: Vec<RelayContainerDrainSourceMemberRow>,
+    pub pages: Vec<RelayContainerDrainSourcePageRow>,
+    pub shards: Vec<RelayContainerDrainSourceShardRow>,
+    pub seal: RelayContainerDrainSourceSealRow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3785,6 +3930,607 @@ fn relay_container_operation_insert_statement(
 fn append_relay_container_digest_bytes(hasher: &mut Sha256, value: &[u8]) {
     hasher.update((value.len() as u64).to_be_bytes());
     hasher.update(value);
+}
+
+fn append_relay_container_digest_i64(hasher: &mut Sha256, value: i64) {
+    append_relay_container_digest_bytes(hasher, &value.to_be_bytes());
+}
+
+fn append_relay_container_digest_optional_text(hasher: &mut Sha256, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            append_relay_container_digest_bytes(hasher, b"some");
+            append_relay_container_digest_bytes(hasher, value.as_bytes());
+        }
+        None => append_relay_container_digest_bytes(hasher, b"none"),
+    }
+}
+
+fn relay_container_drain_source_canonical_error(subject: &str) -> worker::Error {
+    worker::Error::RustError(format!(
+        "relay container drain source {subject} canonical contract is invalid"
+    ))
+}
+
+fn relay_container_drain_source_expected_page_count(
+    scan: &RelayContainerDrainSourceScanRow,
+) -> Option<usize> {
+    if scan.captured_member_count < 0 || scan.page_size <= 0 {
+        return None;
+    }
+    if scan.captured_member_count == 0 {
+        return Some(0);
+    }
+    scan.captured_member_count
+        .checked_add(scan.page_size - 1)
+        .map(|count| count / scan.page_size)
+        .and_then(|count| usize::try_from(count).ok())
+}
+
+#[allow(dead_code)] // pure 0071 source-member contract; no route is enabled
+pub(crate) fn relay_container_drain_source_member_sha256(
+    scan: &RelayContainerDrainSourceScanRow,
+    member: &RelayContainerDrainSourceMemberRow,
+) -> worker::Result<String> {
+    match member.source_contract.as_str() {
+        "pre-0068-atomic-admission-v1" => Ok(member.atomic_admission_sha256.clone()),
+        "fenced-atomic-admission-v1" => {
+            let admission_fence_id_sha256 = member
+                .admission_fence_id_sha256
+                .as_deref()
+                .ok_or_else(|| relay_container_drain_source_canonical_error("member"))?;
+            let mut hasher = Sha256::new();
+            for value in [
+                "cinatoken:relay-container-admission-commit:v1",
+                member.source_contract.as_str(),
+                scan.environment.as_str(),
+                scan.scope_kind.as_str(),
+                scan.scope_id_sha256.as_str(),
+                admission_fence_id_sha256,
+                member.reservation_key.as_str(),
+                member.operation_id.as_str(),
+                member.atomic_admission_sha256.as_str(),
+                member.operation_admission_sha256.as_str(),
+                member.billing_snapshot_sha256.as_str(),
+                member.client_request_sha256.as_str(),
+            ] {
+                append_relay_container_digest_bytes(&mut hasher, value.as_bytes());
+            }
+            for value in [
+                member.fence_generation,
+                member.owner_generation,
+                member.ring_generation,
+                member.source_shard_count,
+                member.shard_index,
+            ] {
+                append_relay_container_digest_i64(&mut hasher, value);
+            }
+            Ok(format!("{:x}", hasher.finalize()))
+        }
+        _ => Err(relay_container_drain_source_canonical_error("member")),
+    }
+}
+
+#[allow(dead_code)] // pure 0071 source-page contract; no route is enabled
+pub(crate) fn relay_container_drain_source_page_sha256(
+    page: &RelayContainerDrainSourcePageRow,
+    members: &[RelayContainerDrainSourceMemberRow],
+) -> worker::Result<String> {
+    if members.len() != usize::try_from(page.page_member_count).unwrap_or(usize::MAX)
+        || members.is_empty()
+        || members.iter().any(|member| {
+            member.source_scan_id_sha256 != page.source_scan_id_sha256
+                || member.page_ordinal != page.page_ordinal
+        })
+        || members
+            .windows(2)
+            .any(|pair| pair[0].accepted_sequence >= pair[1].accepted_sequence)
+        || members.first().is_none_or(|member| {
+            member.accepted_sequence != page.page_first_sequence
+                || member.operation_id != page.page_first_operation_id
+        })
+        || members.last().is_none_or(|member| {
+            member.accepted_sequence != page.page_last_sequence
+                || member.operation_id != page.page_last_operation_id
+        })
+    {
+        return Err(relay_container_drain_source_canonical_error("page"));
+    }
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-source-page:v1",
+    );
+    append_relay_container_digest_bytes(&mut hasher, page.source_scan_id_sha256.as_bytes());
+    for value in [
+        page.page_ordinal,
+        page.page_member_count,
+        page.page_first_sequence,
+    ] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_bytes(&mut hasher, page.page_first_operation_id.as_bytes());
+    append_relay_container_digest_i64(&mut hasher, page.page_last_sequence);
+    append_relay_container_digest_bytes(&mut hasher, page.page_last_operation_id.as_bytes());
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        page.previous_page_digest_sha256.as_deref(),
+    );
+    for member in members {
+        append_relay_container_digest_i64(&mut hasher, member.accepted_sequence);
+        append_relay_container_digest_bytes(&mut hasher, member.operation_id.as_bytes());
+        append_relay_container_digest_bytes(&mut hasher, member.member_digest_sha256.as_bytes());
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[allow(dead_code)] // pure 0071 source-shard contract; no route is enabled
+pub(crate) fn relay_container_drain_source_shard_sha256(
+    shard: &RelayContainerDrainSourceShardRow,
+    members: &[RelayContainerDrainSourceMemberRow],
+) -> worker::Result<String> {
+    let members = members.iter().collect::<Vec<_>>();
+    relay_container_drain_source_shard_sha256_from_refs(shard, &members)
+}
+
+fn relay_container_drain_source_shard_sha256_from_refs(
+    shard: &RelayContainerDrainSourceShardRow,
+    members: &[&RelayContainerDrainSourceMemberRow],
+) -> worker::Result<String> {
+    if members.len() != usize::try_from(shard.shard_member_count).unwrap_or(usize::MAX)
+        || members.iter().any(|member| {
+            member.source_scan_id_sha256 != shard.source_scan_id_sha256
+                || member.shard_index != shard.shard_index
+        })
+        || members
+            .windows(2)
+            .any(|pair| pair[0].accepted_sequence >= pair[1].accepted_sequence)
+        || (members.is_empty()
+            && (shard.shard_high_watermark != 0
+                || shard.shard_first_sequence != 0
+                || shard.shard_first_operation_id.is_some()
+                || shard.shard_last_sequence != 0
+                || shard.shard_last_operation_id.is_some()))
+        || (!members.is_empty()
+            && (members.first().is_none_or(|member| {
+                member.accepted_sequence != shard.shard_first_sequence
+                    || Some(member.operation_id.as_str())
+                        != shard.shard_first_operation_id.as_deref()
+            }) || members.last().is_none_or(|member| {
+                member.accepted_sequence != shard.shard_last_sequence
+                    || member.accepted_sequence != shard.shard_high_watermark
+                    || Some(member.operation_id.as_str())
+                        != shard.shard_last_operation_id.as_deref()
+            })))
+    {
+        return Err(relay_container_drain_source_canonical_error("shard"));
+    }
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-source-shard:v1",
+    );
+    append_relay_container_digest_bytes(&mut hasher, shard.source_scan_id_sha256.as_bytes());
+    for value in [
+        shard.shard_index,
+        shard.shard_member_count,
+        shard.shard_high_watermark,
+        shard.shard_first_sequence,
+    ] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        shard.shard_first_operation_id.as_deref(),
+    );
+    append_relay_container_digest_i64(&mut hasher, shard.shard_last_sequence);
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        shard.shard_last_operation_id.as_deref(),
+    );
+    for member in members {
+        append_relay_container_digest_i64(&mut hasher, member.accepted_sequence);
+        append_relay_container_digest_bytes(&mut hasher, member.operation_id.as_bytes());
+        append_relay_container_digest_bytes(&mut hasher, member.member_digest_sha256.as_bytes());
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[allow(dead_code)] // pure 0071 shard-set contract; no route is enabled
+pub(crate) fn relay_container_drain_source_shard_set_sha256(
+    scan: &RelayContainerDrainSourceScanRow,
+    shards: &[RelayContainerDrainSourceShardRow],
+) -> worker::Result<String> {
+    if shards.len() != usize::try_from(scan.shard_count).unwrap_or(usize::MAX)
+        || shards.iter().enumerate().any(|(index, shard)| {
+            shard.source_scan_id_sha256 != scan.source_scan_id_sha256
+                || shard.shard_index != i64::try_from(index).unwrap_or(i64::MAX)
+        })
+    {
+        return Err(relay_container_drain_source_canonical_error("shard set"));
+    }
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-source-shard-set:v1",
+    );
+    append_relay_container_digest_bytes(&mut hasher, scan.source_scan_id_sha256.as_bytes());
+    append_relay_container_digest_i64(&mut hasher, scan.shard_count);
+    for shard in shards {
+        append_relay_container_digest_i64(&mut hasher, shard.shard_index);
+        append_relay_container_digest_bytes(&mut hasher, shard.shard_manifest_sha256.as_bytes());
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[allow(dead_code)] // pure 0071 accepted-set contract; no route is enabled
+pub(crate) fn relay_container_drain_accepted_set_sha256(
+    scan: &RelayContainerDrainSourceScanRow,
+    members: &[RelayContainerDrainSourceMemberRow],
+    pages: &[RelayContainerDrainSourcePageRow],
+    shards: &[RelayContainerDrainSourceShardRow],
+) -> worker::Result<String> {
+    if members.len() != usize::try_from(scan.captured_member_count).unwrap_or(usize::MAX)
+        || pages.len()
+            != relay_container_drain_source_expected_page_count(scan).unwrap_or(usize::MAX)
+        || shards.len() != usize::try_from(scan.shard_count).unwrap_or(usize::MAX)
+        || members.iter().enumerate().any(|(index, member)| {
+            member.source_scan_id_sha256 != scan.source_scan_id_sha256
+                || member.accepted_sequence != i64::try_from(index + 1).unwrap_or(i64::MAX)
+        })
+        || pages
+            .iter()
+            .any(|page| page.source_scan_id_sha256 != scan.source_scan_id_sha256)
+        || pages
+            .iter()
+            .enumerate()
+            .any(|(index, page)| page.page_ordinal != i64::try_from(index + 1).unwrap_or(i64::MAX))
+        || shards
+            .iter()
+            .any(|shard| shard.source_scan_id_sha256 != scan.source_scan_id_sha256)
+        || shards
+            .iter()
+            .enumerate()
+            .any(|(index, shard)| shard.shard_index != i64::try_from(index).unwrap_or(i64::MAX))
+    {
+        return Err(relay_container_drain_source_canonical_error("accepted set"));
+    }
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-accepted-set:v1",
+    );
+    for value in [
+        scan.source_scan_id_sha256.as_str(),
+        scan.environment.as_str(),
+        scan.scope_kind.as_str(),
+        scan.scope_id_sha256.as_str(),
+        scan.admission_fence_id_sha256.as_str(),
+        scan.expected_fence_state_digest_sha256.as_str(),
+        scan.expected_head_digest_sha256.as_str(),
+    ] {
+        append_relay_container_digest_bytes(&mut hasher, value.as_bytes());
+    }
+    for value in [
+        scan.fence_generation,
+        scan.expected_head_version,
+        scan.captured_high_watermark,
+        scan.captured_member_count,
+        scan.captured_first_sequence,
+    ] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        scan.captured_first_operation_id.as_deref(),
+    );
+    append_relay_container_digest_i64(&mut hasher, scan.captured_last_sequence);
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        scan.captured_last_operation_id.as_deref(),
+    );
+    for value in [scan.page_size, scan.shard_count] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_i64(
+        &mut hasher,
+        i64::try_from(members.len()).unwrap_or(i64::MAX),
+    );
+    for member in members {
+        append_relay_container_digest_i64(&mut hasher, member.accepted_sequence);
+        append_relay_container_digest_bytes(&mut hasher, member.operation_id.as_bytes());
+        append_relay_container_digest_bytes(&mut hasher, member.member_digest_sha256.as_bytes());
+    }
+    append_relay_container_digest_i64(&mut hasher, i64::try_from(pages.len()).unwrap_or(i64::MAX));
+    for page in pages {
+        append_relay_container_digest_i64(&mut hasher, page.page_ordinal);
+        append_relay_container_digest_bytes(&mut hasher, page.page_digest_sha256.as_bytes());
+    }
+    append_relay_container_digest_i64(&mut hasher, i64::try_from(shards.len()).unwrap_or(i64::MAX));
+    for shard in shards {
+        append_relay_container_digest_i64(&mut hasher, shard.shard_index);
+        append_relay_container_digest_bytes(&mut hasher, shard.shard_manifest_sha256.as_bytes());
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn relay_container_drain_source_scan_record_sha256(
+    scan: &RelayContainerDrainSourceScanRow,
+) -> String {
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-source-scan-readback:v1",
+    );
+    for value in [
+        scan.source_scan_id_sha256.as_str(),
+        scan.scan_contract.as_str(),
+        scan.scan_migration.as_str(),
+        scan.environment.as_str(),
+        scan.scope_kind.as_str(),
+        scan.scope_id_sha256.as_str(),
+        scan.admission_fence_id_sha256.as_str(),
+        scan.expected_fence_state_digest_sha256.as_str(),
+        scan.expected_head_digest_sha256.as_str(),
+    ] {
+        append_relay_container_digest_bytes(&mut hasher, value.as_bytes());
+    }
+    for value in [
+        scan.contract_version,
+        scan.fence_generation,
+        scan.expected_head_version,
+        scan.captured_high_watermark,
+        scan.captured_member_count,
+        scan.captured_first_sequence,
+    ] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        scan.captured_first_operation_id.as_deref(),
+    );
+    append_relay_container_digest_i64(&mut hasher, scan.captured_last_sequence);
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        scan.captured_last_operation_id.as_deref(),
+    );
+    for value in [scan.page_size, scan.shard_count] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    for value in [
+        scan.collector_service_name.as_str(),
+        scan.collector_version_id.as_str(),
+        scan.collector_run_id_sha256.as_str(),
+        scan.started_by_credential_id_sha256.as_str(),
+    ] {
+        append_relay_container_digest_bytes(&mut hasher, value.as_bytes());
+    }
+    append_relay_container_digest_i64(&mut hasher, scan.started_at);
+    format!("{:x}", hasher.finalize())
+}
+
+fn relay_container_drain_source_member_record_sha256(
+    member: &RelayContainerDrainSourceMemberRow,
+) -> String {
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-source-member-readback:v1",
+    );
+    append_relay_container_digest_bytes(&mut hasher, member.source_scan_id_sha256.as_bytes());
+    append_relay_container_digest_i64(&mut hasher, member.accepted_sequence);
+    for value in [
+        member.operation_id.as_str(),
+        member.source_contract.as_str(),
+    ] {
+        append_relay_container_digest_bytes(&mut hasher, value.as_bytes());
+    }
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        member.admission_fence_id_sha256.as_deref(),
+    );
+    append_relay_container_digest_i64(&mut hasher, member.fence_generation);
+    for value in [
+        member.reservation_key.as_str(),
+        member.atomic_admission_sha256.as_str(),
+        member.operation_admission_sha256.as_str(),
+        member.billing_snapshot_sha256.as_str(),
+        member.client_request_sha256.as_str(),
+    ] {
+        append_relay_container_digest_bytes(&mut hasher, value.as_bytes());
+    }
+    for value in [
+        member.owner_generation,
+        member.ring_generation,
+        member.source_shard_count,
+        member.shard_index,
+    ] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_bytes(&mut hasher, member.admission_commit_sha256.as_bytes());
+    for value in [
+        member.committed_at,
+        member.page_ordinal,
+        member.member_ordinal,
+    ] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_bytes(&mut hasher, member.member_digest_sha256.as_bytes());
+    append_relay_container_digest_i64(&mut hasher, member.collected_at);
+    format!("{:x}", hasher.finalize())
+}
+
+fn relay_container_drain_source_page_record_sha256(
+    page: &RelayContainerDrainSourcePageRow,
+) -> String {
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-source-page-readback:v1",
+    );
+    append_relay_container_digest_bytes(&mut hasher, page.source_scan_id_sha256.as_bytes());
+    for value in [
+        page.page_ordinal,
+        page.page_member_count,
+        page.page_first_sequence,
+    ] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_bytes(&mut hasher, page.page_first_operation_id.as_bytes());
+    append_relay_container_digest_i64(&mut hasher, page.page_last_sequence);
+    append_relay_container_digest_bytes(&mut hasher, page.page_last_operation_id.as_bytes());
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        page.previous_page_digest_sha256.as_deref(),
+    );
+    append_relay_container_digest_bytes(&mut hasher, page.page_digest_sha256.as_bytes());
+    append_relay_container_digest_i64(&mut hasher, page.sealed_at);
+    format!("{:x}", hasher.finalize())
+}
+
+fn relay_container_drain_source_shard_record_sha256(
+    shard: &RelayContainerDrainSourceShardRow,
+) -> String {
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-source-shard-readback:v1",
+    );
+    append_relay_container_digest_bytes(&mut hasher, shard.source_scan_id_sha256.as_bytes());
+    for value in [
+        shard.shard_index,
+        shard.shard_member_count,
+        shard.shard_high_watermark,
+        shard.shard_first_sequence,
+    ] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        shard.shard_first_operation_id.as_deref(),
+    );
+    append_relay_container_digest_i64(&mut hasher, shard.shard_last_sequence);
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        shard.shard_last_operation_id.as_deref(),
+    );
+    append_relay_container_digest_bytes(&mut hasher, shard.shard_manifest_sha256.as_bytes());
+    append_relay_container_digest_i64(&mut hasher, shard.sealed_at);
+    format!("{:x}", hasher.finalize())
+}
+
+#[allow(dead_code)] // pure 0071 exact-readback contract; no route is enabled
+pub(crate) fn relay_container_drain_source_readback_sha256(
+    scan: &RelayContainerDrainSourceScanRow,
+    members: &[RelayContainerDrainSourceMemberRow],
+    pages: &[RelayContainerDrainSourcePageRow],
+    shards: &[RelayContainerDrainSourceShardRow],
+) -> worker::Result<String> {
+    if members.len() != usize::try_from(scan.captured_member_count).unwrap_or(usize::MAX)
+        || pages.len()
+            != relay_container_drain_source_expected_page_count(scan).unwrap_or(usize::MAX)
+        || shards.len() != usize::try_from(scan.shard_count).unwrap_or(usize::MAX)
+        || members.iter().enumerate().any(|(index, member)| {
+            member.source_scan_id_sha256 != scan.source_scan_id_sha256
+                || member.accepted_sequence != i64::try_from(index + 1).unwrap_or(i64::MAX)
+        })
+        || pages
+            .iter()
+            .any(|page| page.source_scan_id_sha256 != scan.source_scan_id_sha256)
+        || pages
+            .iter()
+            .enumerate()
+            .any(|(index, page)| page.page_ordinal != i64::try_from(index + 1).unwrap_or(i64::MAX))
+        || shards
+            .iter()
+            .any(|shard| shard.source_scan_id_sha256 != scan.source_scan_id_sha256)
+        || shards
+            .iter()
+            .enumerate()
+            .any(|(index, shard)| shard.shard_index != i64::try_from(index).unwrap_or(i64::MAX))
+    {
+        return Err(relay_container_drain_source_canonical_error("readback"));
+    }
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-source-readback:v1",
+    );
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        relay_container_drain_source_scan_record_sha256(scan).as_bytes(),
+    );
+    append_relay_container_digest_i64(
+        &mut hasher,
+        i64::try_from(members.len()).unwrap_or(i64::MAX),
+    );
+    for member in members {
+        append_relay_container_digest_bytes(
+            &mut hasher,
+            relay_container_drain_source_member_record_sha256(member).as_bytes(),
+        );
+    }
+    append_relay_container_digest_i64(&mut hasher, i64::try_from(pages.len()).unwrap_or(i64::MAX));
+    for page in pages {
+        append_relay_container_digest_bytes(
+            &mut hasher,
+            relay_container_drain_source_page_record_sha256(page).as_bytes(),
+        );
+    }
+    append_relay_container_digest_i64(&mut hasher, i64::try_from(shards.len()).unwrap_or(i64::MAX));
+    for shard in shards {
+        append_relay_container_digest_bytes(
+            &mut hasher,
+            relay_container_drain_source_shard_record_sha256(shard).as_bytes(),
+        );
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[allow(dead_code)] // pure 0071 source-seal contract; no route is enabled
+pub(crate) fn relay_container_drain_source_seal_sha256(
+    seal: &RelayContainerDrainSourceSealRow,
+) -> String {
+    let mut hasher = Sha256::new();
+    append_relay_container_digest_bytes(
+        &mut hasher,
+        b"cinatoken:relay-container-drain-source-seal:v1",
+    );
+    for value in [
+        seal.source_seal_id_sha256.as_str(),
+        seal.source_scan_id_sha256.as_str(),
+        seal.seal_contract.as_str(),
+        seal.seal_migration.as_str(),
+        seal.bookmark_contract.as_str(),
+        seal.pagination_contract.as_str(),
+        seal.accepted_bookmark_sha256.as_str(),
+        seal.accepted_set_manifest_sha256.as_str(),
+        seal.accepted_source_schema_sha256.as_str(),
+        seal.accepted_source_readback_sha256.as_str(),
+    ] {
+        append_relay_container_digest_bytes(&mut hasher, value.as_bytes());
+    }
+    for value in [seal.contract_version, seal.page_count] {
+        append_relay_container_digest_i64(&mut hasher, value);
+    }
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        seal.first_page_digest_sha256.as_deref(),
+    );
+    append_relay_container_digest_optional_text(
+        &mut hasher,
+        seal.last_page_digest_sha256.as_deref(),
+    );
+    for value in [
+        seal.shard_set_manifest_sha256.as_str(),
+        seal.assembler_identity_sha256.as_str(),
+        seal.assembler_signature_envelope_sha256.as_str(),
+        seal.verifier_identity_sha256.as_str(),
+        seal.verifier_signature_envelope_sha256.as_str(),
+    ] {
+        append_relay_container_digest_bytes(&mut hasher, value.as_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 fn relay_container_idempotency_aliases_sha256(aliases: &[&str]) -> String {
@@ -15132,6 +15878,898 @@ pub async fn relay_container_drain_close_command_schema_ready(
             && row.trigger_names.as_deref() == Some(TRIGGER_NAMES)
             && row.trigger_contract == Some(1)
     }))
+}
+
+#[allow(dead_code)] // fail-closed 0071 probe; no route or production gate is enabled
+pub async fn relay_container_drain_source_seal_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    if !relay_container_drain_close_command_schema_ready(db).await? {
+        return Ok(false);
+    }
+    const SCAN_COLUMNS: &str = "source_scan_id_sha256,contract_version,scan_contract,scan_migration,environment,scope_kind,scope_id_sha256,admission_fence_id_sha256,fence_generation,expected_fence_state_digest_sha256,expected_head_version,expected_head_digest_sha256,captured_high_watermark,captured_member_count,captured_first_sequence,captured_first_operation_id,captured_last_sequence,captured_last_operation_id,page_size,shard_count,collector_service_name,collector_version_id,collector_run_id_sha256,started_by_credential_id_sha256,started_at";
+    const MEMBER_COLUMNS: &str = "source_scan_id_sha256,accepted_sequence,operation_id,source_contract,admission_fence_id_sha256,fence_generation,reservation_key,atomic_admission_sha256,operation_admission_sha256,billing_snapshot_sha256,client_request_sha256,owner_generation,ring_generation,source_shard_count,shard_index,admission_commit_sha256,committed_at,page_ordinal,member_ordinal,member_digest_sha256,collected_at";
+    const PAGE_COLUMNS: &str = "source_scan_id_sha256,page_ordinal,page_member_count,page_first_sequence,page_first_operation_id,page_last_sequence,page_last_operation_id,previous_page_digest_sha256,page_digest_sha256,sealed_at";
+    const SHARD_COLUMNS: &str = "source_scan_id_sha256,shard_index,shard_member_count,shard_high_watermark,shard_first_sequence,shard_first_operation_id,shard_last_sequence,shard_last_operation_id,shard_manifest_sha256,sealed_at";
+    const SEAL_COLUMNS: &str = "source_seal_id_sha256,source_scan_id_sha256,contract_version,seal_contract,seal_migration,bookmark_contract,pagination_contract,accepted_bookmark_sha256,accepted_set_manifest_sha256,accepted_source_schema_sha256,accepted_source_readback_sha256,page_count,first_page_digest_sha256,last_page_digest_sha256,shard_set_manifest_sha256,assembler_identity_sha256,assembler_signature_envelope_sha256,verifier_identity_sha256,verifier_signature_envelope_sha256,seal_digest_sha256,sealed_at";
+    const TABLE_NAMES: &str = "relay_container_drain_source_members|relay_container_drain_source_pages|relay_container_drain_source_scans|relay_container_drain_source_seals|relay_container_drain_source_shards";
+    const INDEX_NAMES: &str = "idx_relay_container_drain_source_member_page|idx_relay_container_drain_source_member_shard|idx_relay_container_drain_source_page_chain|idx_relay_container_drain_source_scan_run|idx_relay_container_drain_source_scan_scope|idx_relay_container_drain_source_seal_audit|idx_relay_container_drain_source_shard_inventory";
+    const TRIGGER_NAMES: &str = "relay_container_drain_close_command_source_seal_guard|relay_container_drain_source_member_delete_guard|relay_container_drain_source_member_insert_guard|relay_container_drain_source_member_update_guard|relay_container_drain_source_page_delete_guard|relay_container_drain_source_page_insert_guard|relay_container_drain_source_page_update_guard|relay_container_drain_source_scan_delete_guard|relay_container_drain_source_scan_insert_guard|relay_container_drain_source_scan_update_guard|relay_container_drain_source_seal_delete_guard|relay_container_drain_source_seal_insert_guard|relay_container_drain_source_seal_update_guard|relay_container_drain_source_shard_delete_guard|relay_container_drain_source_shard_insert_guard|relay_container_drain_source_shard_update_guard";
+    let migration = [D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT
+              (SELECT COUNT(1)
+               FROM d1_migrations
+               WHERE name = ?1) AS migration_count,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_drain_source_scans'
+                 )
+                 ORDER BY cid
+               )) AS scan_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_drain_source_members'
+                 )
+                 ORDER BY cid
+               )) AS member_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_drain_source_pages'
+                 )
+                 ORDER BY cid
+               )) AS page_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_drain_source_shards'
+                 )
+                 ORDER BY cid
+               )) AS shard_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_drain_source_seals'
+                 )
+                 ORDER BY cid
+               )) AS seal_columns,
+              (SELECT group_concat(name, '|') FROM (
+                 SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                     'relay_container_drain_source_scans',
+                     'relay_container_drain_source_members',
+                     'relay_container_drain_source_pages',
+                     'relay_container_drain_source_shards',
+                     'relay_container_drain_source_seals'
+                   )
+                 ORDER BY name
+               )) AS table_names,
+              (SELECT group_concat(name, '|') FROM (
+                 SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'index'
+                   AND tbl_name IN (
+                     'relay_container_drain_source_scans',
+                     'relay_container_drain_source_members',
+                     'relay_container_drain_source_pages',
+                     'relay_container_drain_source_shards',
+                     'relay_container_drain_source_seals'
+                   )
+                   AND name NOT LIKE 'sqlite_autoindex_%'
+                 ORDER BY name
+               )) AS index_names,
+              (SELECT group_concat(name, '|') FROM (
+                 SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'trigger'
+                   AND (
+                     tbl_name IN (
+                       'relay_container_drain_source_scans',
+                       'relay_container_drain_source_members',
+                       'relay_container_drain_source_pages',
+                       'relay_container_drain_source_shards',
+                       'relay_container_drain_source_seals'
+                     )
+                     OR name =
+                       'relay_container_drain_close_command_source_seal_guard'
+                   )
+                 ORDER BY name
+               )) AS trigger_names,
+              (SELECT CASE WHEN
+                 EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'table'
+                     AND name = 'relay_container_drain_source_scans'
+                     AND instr(
+                       sql,
+                       'relay-container-drain-source-scan-v1'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       '0071_relay_container_drain_accepted_set_source_seal.sql'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'table'
+                     AND name = 'relay_container_drain_source_seals'
+                     AND instr(
+                       sql,
+                       'relay-container-drain-source-seal-v1'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'd1-session-first-primary-bookmark-v1'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'accepted-sequence-keyset-v1'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_scan_insert_guard'
+                     AND instr(
+                       sql,
+                       'complete 0067 through 0071 chain'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source scan boundary is stale or unroutable'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source scan identity already exists'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_member_insert_guard'
+                     AND instr(
+                       sql,
+                       'immutable admission source'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source member keyset is not contiguous'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source member identity already exists'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_page_insert_guard'
+                     AND instr(
+                       sql,
+                       'scan.captured_member_count = ('
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source page is incomplete or out of order'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source page identity already exists'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_shard_insert_guard'
+                     AND instr(
+                       sql,
+                       'scan.captured_member_count = ('
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source shard manifest does not match its members'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source shard identity already exists'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_seal_insert_guard'
+                     AND instr(
+                       sql,
+                       'SUM(page.page_member_count)'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'SUM(shard.shard_member_count)'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source seal is incomplete, stale, or detached'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain source seal identity already exists'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_close_command_source_seal_guard'
+                     AND instr(
+                       sql,
+                       'seal.accepted_source_readback_sha256'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'drain close command requires an exact sealed accepted source'
+                     ) > 0
+                 )
+                THEN 1 ELSE 0 END) AS trigger_contract
+            "#,
+        )
+        .bind_refs(&migration)?
+        .first::<RelayContainerDrainSourceSealSchemaProbe>(None)
+        .await?;
+    Ok(row.is_some_and(|row| {
+        row.migration_count == 1
+            && row.scan_columns.as_deref() == Some(SCAN_COLUMNS)
+            && row.member_columns.as_deref() == Some(MEMBER_COLUMNS)
+            && row.page_columns.as_deref() == Some(PAGE_COLUMNS)
+            && row.shard_columns.as_deref() == Some(SHARD_COLUMNS)
+            && row.seal_columns.as_deref() == Some(SEAL_COLUMNS)
+            && row.table_names.as_deref() == Some(TABLE_NAMES)
+            && row.index_names.as_deref() == Some(INDEX_NAMES)
+            && row.trigger_names.as_deref() == Some(TRIGGER_NAMES)
+            && row.trigger_contract == Some(1)
+    }))
+}
+
+fn validate_relay_container_drain_source_operation_id(
+    value: &str,
+    field: &str,
+) -> worker::Result<()> {
+    validate_relay_container_token(value, field, 1, 128, |byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+    })?;
+    if !value
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+    {
+        return Err(relay_container_drain_source_canonical_error(field));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_drain_source_scan(
+    scan: &RelayContainerDrainSourceScanRow,
+) -> worker::Result<()> {
+    for (value, field) in [
+        (scan.source_scan_id_sha256.as_str(), "source scan ID digest"),
+        (scan.scope_id_sha256.as_str(), "source scan scope ID digest"),
+        (
+            scan.admission_fence_id_sha256.as_str(),
+            "source scan admission fence digest",
+        ),
+        (
+            scan.expected_fence_state_digest_sha256.as_str(),
+            "source scan fence state digest",
+        ),
+        (
+            scan.expected_head_digest_sha256.as_str(),
+            "source scan head digest",
+        ),
+        (
+            scan.collector_run_id_sha256.as_str(),
+            "source scan collector run digest",
+        ),
+        (
+            scan.started_by_credential_id_sha256.as_str(),
+            "source scan credential digest",
+        ),
+    ] {
+        validate_relay_container_sha256(value, field)?;
+    }
+    let empty_set = scan.captured_member_count == 0
+        && scan.captured_high_watermark == 0
+        && scan.captured_first_sequence == 0
+        && scan.captured_first_operation_id.is_none()
+        && scan.captured_last_sequence == 0
+        && scan.captured_last_operation_id.is_none();
+    let non_empty_set = scan.captured_member_count > 0
+        && scan.captured_high_watermark == scan.captured_member_count
+        && scan.captured_first_sequence == 1
+        && scan.captured_first_operation_id.is_some()
+        && scan.captured_last_sequence == scan.captured_high_watermark
+        && scan.captured_last_operation_id.is_some();
+    if scan.contract_version != 1
+        || scan.scan_contract != "relay-container-drain-source-scan-v1"
+        || scan.scan_migration != RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION
+        || !matches!(scan.environment.as_str(), "staging" | "production")
+        || scan.scope_kind != "global"
+        || scan.scope_id_sha256 != RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256
+        || scan.fence_generation != 1
+        || scan.expected_head_version != 1
+        || !(1..=512).contains(&scan.page_size)
+        || !(1..=1024).contains(&scan.shard_count)
+        || scan.started_at <= 0
+        || !(empty_set || non_empty_set)
+    {
+        return Err(relay_container_drain_source_canonical_error("scan"));
+    }
+    validate_relay_container_token(
+        &scan.collector_service_name,
+        "source scan collector service name",
+        1,
+        128,
+        |byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-',
+    )?;
+    if !scan
+        .collector_service_name
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphanumeric)
+        || !scan
+            .collector_service_name
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
+    {
+        return Err(relay_container_drain_source_canonical_error("scan"));
+    }
+    validate_relay_container_drain_source_operation_id(
+        &scan.collector_version_id,
+        "source scan collector version ID",
+    )?;
+    for operation_id in [
+        scan.captured_first_operation_id.as_deref(),
+        scan.captured_last_operation_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        validate_relay_container_drain_source_operation_id(
+            operation_id,
+            "source scan operation ID",
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_relay_container_drain_source_member(
+    scan: &RelayContainerDrainSourceScanRow,
+    member: &RelayContainerDrainSourceMemberRow,
+) -> worker::Result<()> {
+    for (value, field) in [
+        (
+            member.source_scan_id_sha256.as_str(),
+            "source member scan digest",
+        ),
+        (
+            member.atomic_admission_sha256.as_str(),
+            "source member atomic admission digest",
+        ),
+        (
+            member.operation_admission_sha256.as_str(),
+            "source member operation admission digest",
+        ),
+        (
+            member.billing_snapshot_sha256.as_str(),
+            "source member billing snapshot digest",
+        ),
+        (
+            member.client_request_sha256.as_str(),
+            "source member client request digest",
+        ),
+        (
+            member.admission_commit_sha256.as_str(),
+            "source member admission commit digest",
+        ),
+        (member.member_digest_sha256.as_str(), "source member digest"),
+    ] {
+        validate_relay_container_sha256(value, field)?;
+    }
+    if let Some(admission_fence_id_sha256) = member.admission_fence_id_sha256.as_deref() {
+        validate_relay_container_sha256(
+            admission_fence_id_sha256,
+            "source member admission fence digest",
+        )?;
+    }
+    validate_relay_container_drain_source_operation_id(
+        &member.operation_id,
+        "source member operation ID",
+    )?;
+    validate_relay_container_drain_source_operation_id(
+        &member.reservation_key,
+        "source member reservation key",
+    )?;
+    let legacy = member.source_contract == "pre-0068-atomic-admission-v1"
+        && member.admission_fence_id_sha256.is_none()
+        && member.fence_generation == 0
+        && member.admission_commit_sha256 == member.atomic_admission_sha256;
+    let fenced = member.source_contract == "fenced-atomic-admission-v1"
+        && member.admission_fence_id_sha256.is_some()
+        && member.fence_generation > 0;
+    if member.source_scan_id_sha256 != scan.source_scan_id_sha256
+        || member.accepted_sequence <= 0
+        || member.accepted_sequence > scan.captured_high_watermark
+        || member.reservation_key != member.operation_id
+        || member.owner_generation <= 0
+        || !(1..=1_000_000).contains(&member.ring_generation)
+        || !(1..=1024).contains(&member.source_shard_count)
+        || member.shard_index < 0
+        || member.shard_index >= member.source_shard_count
+        || member.shard_index >= scan.shard_count
+        || member.committed_at <= 0
+        || member.page_ordinal != ((member.accepted_sequence - 1) / scan.page_size) + 1
+        || member.member_ordinal != ((member.accepted_sequence - 1) % scan.page_size) + 1
+        || member.collected_at < scan.started_at
+        || member.member_digest_sha256 != member.admission_commit_sha256
+        || !(legacy || fenced)
+        || relay_container_drain_source_member_sha256(scan, member)? != member.member_digest_sha256
+    {
+        return Err(relay_container_drain_source_canonical_error("member"));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_drain_source_page(
+    scan: &RelayContainerDrainSourceScanRow,
+    page: &RelayContainerDrainSourcePageRow,
+) -> worker::Result<()> {
+    validate_relay_container_sha256(&page.source_scan_id_sha256, "source page scan digest")?;
+    validate_relay_container_sha256(&page.page_digest_sha256, "source page digest")?;
+    if let Some(previous_page_digest_sha256) = page.previous_page_digest_sha256.as_deref() {
+        validate_relay_container_sha256(
+            previous_page_digest_sha256,
+            "source page previous digest",
+        )?;
+    }
+    validate_relay_container_drain_source_operation_id(
+        &page.page_first_operation_id,
+        "source page first operation ID",
+    )?;
+    validate_relay_container_drain_source_operation_id(
+        &page.page_last_operation_id,
+        "source page last operation ID",
+    )?;
+    let chain_shape = (page.page_ordinal == 1 && page.previous_page_digest_sha256.is_none())
+        || (page.page_ordinal > 1
+            && page.previous_page_digest_sha256.is_some()
+            && page.previous_page_digest_sha256.as_deref()
+                != Some(page.page_digest_sha256.as_str()));
+    if page.source_scan_id_sha256 != scan.source_scan_id_sha256
+        || page.page_ordinal <= 0
+        || page.page_member_count <= 0
+        || page.page_member_count > scan.page_size
+        || page.page_first_sequence <= 0
+        || page.page_last_sequence < page.page_first_sequence
+        || page.sealed_at < scan.started_at
+        || !chain_shape
+    {
+        return Err(relay_container_drain_source_canonical_error("page"));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_drain_source_shard(
+    scan: &RelayContainerDrainSourceScanRow,
+    shard: &RelayContainerDrainSourceShardRow,
+) -> worker::Result<()> {
+    validate_relay_container_sha256(&shard.source_scan_id_sha256, "source shard scan digest")?;
+    validate_relay_container_sha256(&shard.shard_manifest_sha256, "source shard manifest")?;
+    for operation_id in [
+        shard.shard_first_operation_id.as_deref(),
+        shard.shard_last_operation_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        validate_relay_container_drain_source_operation_id(
+            operation_id,
+            "source shard operation ID",
+        )?;
+    }
+    let empty = shard.shard_member_count == 0
+        && shard.shard_high_watermark == 0
+        && shard.shard_first_sequence == 0
+        && shard.shard_first_operation_id.is_none()
+        && shard.shard_last_sequence == 0
+        && shard.shard_last_operation_id.is_none();
+    let non_empty = shard.shard_member_count > 0
+        && shard.shard_high_watermark > 0
+        && shard.shard_first_sequence > 0
+        && shard.shard_first_operation_id.is_some()
+        && shard.shard_last_sequence >= shard.shard_first_sequence
+        && shard.shard_last_sequence == shard.shard_high_watermark
+        && shard.shard_last_operation_id.is_some();
+    if shard.source_scan_id_sha256 != scan.source_scan_id_sha256
+        || shard.shard_index < 0
+        || shard.shard_index >= scan.shard_count
+        || shard.sealed_at < scan.started_at
+        || !(empty || non_empty)
+    {
+        return Err(relay_container_drain_source_canonical_error("shard"));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_drain_source_seal(
+    scan: &RelayContainerDrainSourceScanRow,
+    seal: &RelayContainerDrainSourceSealRow,
+) -> worker::Result<()> {
+    for (value, field) in [
+        (seal.source_seal_id_sha256.as_str(), "source seal ID digest"),
+        (
+            seal.source_scan_id_sha256.as_str(),
+            "source seal scan digest",
+        ),
+        (
+            seal.accepted_bookmark_sha256.as_str(),
+            "source seal bookmark digest",
+        ),
+        (
+            seal.accepted_set_manifest_sha256.as_str(),
+            "source seal accepted-set digest",
+        ),
+        (
+            seal.accepted_source_schema_sha256.as_str(),
+            "source seal schema digest",
+        ),
+        (
+            seal.accepted_source_readback_sha256.as_str(),
+            "source seal readback digest",
+        ),
+        (
+            seal.shard_set_manifest_sha256.as_str(),
+            "source seal shard-set digest",
+        ),
+        (
+            seal.assembler_identity_sha256.as_str(),
+            "source seal assembler identity digest",
+        ),
+        (
+            seal.assembler_signature_envelope_sha256.as_str(),
+            "source seal assembler signature digest",
+        ),
+        (
+            seal.verifier_identity_sha256.as_str(),
+            "source seal verifier identity digest",
+        ),
+        (
+            seal.verifier_signature_envelope_sha256.as_str(),
+            "source seal verifier signature digest",
+        ),
+        (seal.seal_digest_sha256.as_str(), "source seal digest"),
+    ] {
+        validate_relay_container_sha256(value, field)?;
+    }
+    for page_digest in [
+        seal.first_page_digest_sha256.as_deref(),
+        seal.last_page_digest_sha256.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        validate_relay_container_sha256(page_digest, "source seal page digest")?;
+    }
+    let empty_pages = seal.page_count == 0
+        && seal.first_page_digest_sha256.is_none()
+        && seal.last_page_digest_sha256.is_none();
+    let non_empty_pages = seal.page_count > 0
+        && seal.first_page_digest_sha256.is_some()
+        && seal.last_page_digest_sha256.is_some();
+    if seal.source_scan_id_sha256 != scan.source_scan_id_sha256
+        || seal.contract_version != 1
+        || seal.seal_contract != "relay-container-drain-source-seal-v1"
+        || seal.seal_migration != RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION
+        || seal.bookmark_contract != "d1-session-first-primary-bookmark-v1"
+        || seal.pagination_contract != "accepted-sequence-keyset-v1"
+        || seal.accepted_source_schema_sha256 != RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256
+        || seal.sealed_at < scan.started_at
+        || !(empty_pages || non_empty_pages)
+        || seal.assembler_identity_sha256 == seal.verifier_identity_sha256
+        || seal.assembler_signature_envelope_sha256 == seal.verifier_signature_envelope_sha256
+        || seal.source_seal_id_sha256 == seal.seal_digest_sha256
+    {
+        return Err(relay_container_drain_source_canonical_error("seal"));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_drain_source_readback(
+    readback: &RelayContainerDrainAcceptedSetSourceReadback,
+) -> worker::Result<()> {
+    let scan = &readback.scan;
+    let seal = &readback.seal;
+    validate_relay_container_drain_source_scan(scan)?;
+    validate_relay_container_drain_source_seal(scan, seal)?;
+    if readback.members.len() != usize::try_from(scan.captured_member_count).unwrap_or(usize::MAX)
+        || readback.members.iter().enumerate().any(|(index, member)| {
+            member.accepted_sequence != i64::try_from(index + 1).unwrap_or(i64::MAX)
+        })
+    {
+        return Err(relay_container_drain_source_canonical_error("readback"));
+    }
+    for member in &readback.members {
+        validate_relay_container_drain_source_member(scan, member)?;
+    }
+    if readback
+        .members
+        .first()
+        .map(|member| (member.accepted_sequence, Some(member.operation_id.as_str())))
+        != match scan.captured_member_count {
+            0 => None,
+            _ => Some((
+                scan.captured_first_sequence,
+                scan.captured_first_operation_id.as_deref(),
+            )),
+        }
+        || readback
+            .members
+            .last()
+            .map(|member| (member.accepted_sequence, Some(member.operation_id.as_str())))
+            != match scan.captured_member_count {
+                0 => None,
+                _ => Some((
+                    scan.captured_last_sequence,
+                    scan.captured_last_operation_id.as_deref(),
+                )),
+            }
+    {
+        return Err(relay_container_drain_source_canonical_error("readback"));
+    }
+    let expected_page_count = relay_container_drain_source_expected_page_count(scan)
+        .ok_or_else(|| relay_container_drain_source_canonical_error("page set"))?;
+    if readback.pages.len() != expected_page_count
+        || seal.page_count != i64::try_from(expected_page_count).unwrap_or(i64::MAX)
+    {
+        return Err(relay_container_drain_source_canonical_error("readback"));
+    }
+    for (index, page) in readback.pages.iter().enumerate() {
+        validate_relay_container_drain_source_page(scan, page)?;
+        let page_ordinal = i64::try_from(index + 1).unwrap_or(i64::MAX);
+        let start = (page_ordinal - 1)
+            .checked_mul(scan.page_size)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| relay_container_drain_source_canonical_error("page"))?;
+        let end = start
+            .checked_add(usize::try_from(page.page_member_count).unwrap_or(usize::MAX))
+            .ok_or_else(|| relay_container_drain_source_canonical_error("page"))?;
+        let expected_end = start
+            .checked_add(usize::try_from(scan.page_size).unwrap_or(usize::MAX))
+            .map(|value| value.min(readback.members.len()))
+            .ok_or_else(|| relay_container_drain_source_canonical_error("page"))?;
+        let members = readback
+            .members
+            .get(start..end)
+            .ok_or_else(|| relay_container_drain_source_canonical_error("page"))?;
+        let expected_previous = index
+            .checked_sub(1)
+            .and_then(|previous| readback.pages.get(previous))
+            .map(|previous| previous.page_digest_sha256.as_str());
+        if page.page_ordinal != page_ordinal
+            || end != expected_end
+            || page.previous_page_digest_sha256.as_deref() != expected_previous
+            || relay_container_drain_source_page_sha256(page, members)? != page.page_digest_sha256
+        {
+            return Err(relay_container_drain_source_canonical_error("page"));
+        }
+    }
+    let expected_first_page = readback
+        .pages
+        .first()
+        .map(|page| page.page_digest_sha256.as_str());
+    let expected_last_page = readback
+        .pages
+        .last()
+        .map(|page| page.page_digest_sha256.as_str());
+    if seal.first_page_digest_sha256.as_deref() != expected_first_page
+        || seal.last_page_digest_sha256.as_deref() != expected_last_page
+    {
+        return Err(relay_container_drain_source_canonical_error("seal"));
+    }
+    if readback.shards.len() != usize::try_from(scan.shard_count).unwrap_or(usize::MAX) {
+        return Err(relay_container_drain_source_canonical_error("readback"));
+    }
+    let mut shard_member_count = 0_i64;
+    for (index, shard) in readback.shards.iter().enumerate() {
+        validate_relay_container_drain_source_shard(scan, shard)?;
+        let shard_index = i64::try_from(index).unwrap_or(i64::MAX);
+        let members = readback
+            .members
+            .iter()
+            .filter(|member| member.shard_index == shard_index)
+            .collect::<Vec<_>>();
+        shard_member_count = shard_member_count
+            .checked_add(shard.shard_member_count)
+            .ok_or_else(|| relay_container_drain_source_canonical_error("shard set"))?;
+        if shard.shard_index != shard_index
+            || relay_container_drain_source_shard_sha256_from_refs(shard, &members)?
+                != shard.shard_manifest_sha256
+        {
+            return Err(relay_container_drain_source_canonical_error("shard"));
+        }
+    }
+    if shard_member_count != scan.captured_member_count
+        || relay_container_drain_source_shard_set_sha256(scan, &readback.shards)?
+            != seal.shard_set_manifest_sha256
+        || relay_container_drain_accepted_set_sha256(
+            scan,
+            &readback.members,
+            &readback.pages,
+            &readback.shards,
+        )? != seal.accepted_set_manifest_sha256
+        || relay_container_drain_source_readback_sha256(
+            scan,
+            &readback.members,
+            &readback.pages,
+            &readback.shards,
+        )? != seal.accepted_source_readback_sha256
+        || relay_container_drain_source_seal_sha256(seal) != seal.seal_digest_sha256
+    {
+        return Err(relay_container_drain_source_canonical_error("readback"));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)] // read-only 0071 aggregate; no route or production gate is enabled
+pub async fn relay_container_drain_accepted_set_source_readback(
+    db: &D1Database,
+    source_seal_id_sha256: &str,
+) -> worker::Result<Option<RelayContainerDrainAcceptedSetSourceReadback>> {
+    if !relay_container_drain_source_seal_schema_ready(db).await? {
+        return Err(worker::Error::RustError(
+            "relay container drain source seal schema is not ready".to_string(),
+        ));
+    }
+    validate_relay_container_sha256(source_seal_id_sha256, "drain source seal ID")?;
+    let seal = db
+        .prepare(
+            r#"
+            SELECT
+              source_seal_id_sha256, source_scan_id_sha256,
+              contract_version, seal_contract, seal_migration,
+              bookmark_contract, pagination_contract,
+              accepted_bookmark_sha256, accepted_set_manifest_sha256,
+              accepted_source_schema_sha256,
+              accepted_source_readback_sha256, page_count,
+              first_page_digest_sha256, last_page_digest_sha256,
+              shard_set_manifest_sha256, assembler_identity_sha256,
+              assembler_signature_envelope_sha256,
+              verifier_identity_sha256,
+              verifier_signature_envelope_sha256,
+              seal_digest_sha256, sealed_at
+            FROM relay_container_drain_source_seals
+            WHERE source_seal_id_sha256 = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind_refs(&D1Type::Text(source_seal_id_sha256))?
+        .first::<RelayContainerDrainSourceSealRow>(None)
+        .await?;
+    let Some(seal) = seal else {
+        return Ok(None);
+    };
+    let source_scan_id_sha256 = seal.source_scan_id_sha256.clone();
+    let scan = db
+        .prepare(
+            r#"
+            SELECT
+              source_scan_id_sha256, contract_version, scan_contract,
+              scan_migration, environment, scope_kind, scope_id_sha256,
+              admission_fence_id_sha256, fence_generation,
+              expected_fence_state_digest_sha256, expected_head_version,
+              expected_head_digest_sha256, captured_high_watermark,
+              captured_member_count, captured_first_sequence,
+              captured_first_operation_id, captured_last_sequence,
+              captured_last_operation_id, page_size, shard_count,
+              collector_service_name, collector_version_id,
+              collector_run_id_sha256,
+              started_by_credential_id_sha256, started_at
+            FROM relay_container_drain_source_scans
+            WHERE source_scan_id_sha256 = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind_refs(&D1Type::Text(&source_scan_id_sha256))?
+        .first::<RelayContainerDrainSourceScanRow>(None)
+        .await?
+        .ok_or_else(|| relay_container_drain_source_canonical_error("scan readback"))?;
+    let members = db
+        .prepare(
+            r#"
+            SELECT
+              source_scan_id_sha256, accepted_sequence, operation_id,
+              source_contract, admission_fence_id_sha256,
+              fence_generation, reservation_key,
+              atomic_admission_sha256, operation_admission_sha256,
+              billing_snapshot_sha256, client_request_sha256,
+              owner_generation, ring_generation, source_shard_count,
+              shard_index, admission_commit_sha256, committed_at,
+              page_ordinal, member_ordinal, member_digest_sha256,
+              collected_at
+            FROM relay_container_drain_source_members
+            WHERE source_scan_id_sha256 = ?1
+            ORDER BY accepted_sequence ASC
+            "#,
+        )
+        .bind_refs(&D1Type::Text(&source_scan_id_sha256))?
+        .all()
+        .await?
+        .results::<RelayContainerDrainSourceMemberRow>()?;
+    let pages = db
+        .prepare(
+            r#"
+            SELECT
+              source_scan_id_sha256, page_ordinal, page_member_count,
+              page_first_sequence, page_first_operation_id,
+              page_last_sequence, page_last_operation_id,
+              previous_page_digest_sha256, page_digest_sha256, sealed_at
+            FROM relay_container_drain_source_pages
+            WHERE source_scan_id_sha256 = ?1
+            ORDER BY page_ordinal ASC
+            "#,
+        )
+        .bind_refs(&D1Type::Text(&source_scan_id_sha256))?
+        .all()
+        .await?
+        .results::<RelayContainerDrainSourcePageRow>()?;
+    let shards = db
+        .prepare(
+            r#"
+            SELECT
+              source_scan_id_sha256, shard_index, shard_member_count,
+              shard_high_watermark, shard_first_sequence,
+              shard_first_operation_id, shard_last_sequence,
+              shard_last_operation_id, shard_manifest_sha256, sealed_at
+            FROM relay_container_drain_source_shards
+            WHERE source_scan_id_sha256 = ?1
+            ORDER BY shard_index ASC
+            "#,
+        )
+        .bind_refs(&D1Type::Text(&source_scan_id_sha256))?
+        .all()
+        .await?
+        .results::<RelayContainerDrainSourceShardRow>()?;
+    let readback = RelayContainerDrainAcceptedSetSourceReadback {
+        scan,
+        members,
+        pages,
+        shards,
+        seal,
+    };
+    validate_relay_container_drain_source_readback(&readback)?;
+    Ok(Some(readback))
 }
 
 fn validate_relay_container_drain_close_command(
@@ -34749,5 +36387,572 @@ mod tests {
             &relay_container_drain_close_command_from_row(&invalid_admin)
         )
         .is_err());
+    }
+
+    fn relay_container_drain_source_test_readback() -> RelayContainerDrainAcceptedSetSourceReadback
+    {
+        let scan = RelayContainerDrainSourceScanRow {
+            source_scan_id_sha256: relay_container_traffic_return_test_sha256(60),
+            contract_version: 1,
+            scan_contract: "relay-container-drain-source-scan-v1".to_string(),
+            scan_migration: RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION.to_string(),
+            environment: "staging".to_string(),
+            scope_kind: "global".to_string(),
+            scope_id_sha256: RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256.to_string(),
+            admission_fence_id_sha256: relay_container_traffic_return_test_sha256(61),
+            fence_generation: 1,
+            expected_fence_state_digest_sha256: relay_container_traffic_return_test_sha256(62),
+            expected_head_version: 1,
+            expected_head_digest_sha256: relay_container_traffic_return_test_sha256(63),
+            captured_high_watermark: 2,
+            captured_member_count: 2,
+            captured_first_sequence: 1,
+            captured_first_operation_id: Some("operation:0001".to_string()),
+            captured_last_sequence: 2,
+            captured_last_operation_id: Some("operation:0002".to_string()),
+            page_size: 1,
+            shard_count: 3,
+            collector_service_name: "cinatoken-drain-collector".to_string(),
+            collector_version_id: "version:0071".to_string(),
+            collector_run_id_sha256: relay_container_traffic_return_test_sha256(64),
+            started_by_credential_id_sha256: relay_container_traffic_return_test_sha256(65),
+            started_at: 1_000,
+        };
+        let mut first_member = RelayContainerDrainSourceMemberRow {
+            source_scan_id_sha256: scan.source_scan_id_sha256.clone(),
+            accepted_sequence: 1,
+            operation_id: "operation:0001".to_string(),
+            source_contract: "fenced-atomic-admission-v1".to_string(),
+            admission_fence_id_sha256: Some(scan.admission_fence_id_sha256.clone()),
+            fence_generation: 1,
+            reservation_key: "operation:0001".to_string(),
+            atomic_admission_sha256: relay_container_traffic_return_test_sha256(66),
+            operation_admission_sha256: relay_container_traffic_return_test_sha256(67),
+            billing_snapshot_sha256: relay_container_traffic_return_test_sha256(68),
+            client_request_sha256: relay_container_traffic_return_test_sha256(69),
+            owner_generation: 2,
+            ring_generation: 7,
+            source_shard_count: 3,
+            shard_index: 0,
+            admission_commit_sha256: relay_container_traffic_return_test_sha256(1),
+            committed_at: 900,
+            page_ordinal: 1,
+            member_ordinal: 1,
+            member_digest_sha256: relay_container_traffic_return_test_sha256(1),
+            collected_at: 1_001,
+        };
+        first_member.admission_commit_sha256 =
+            relay_container_drain_source_member_sha256(&scan, &first_member).unwrap();
+        first_member.member_digest_sha256 = first_member.admission_commit_sha256.clone();
+        let mut second_member = RelayContainerDrainSourceMemberRow {
+            source_scan_id_sha256: scan.source_scan_id_sha256.clone(),
+            accepted_sequence: 2,
+            operation_id: "operation:0002".to_string(),
+            source_contract: "fenced-atomic-admission-v1".to_string(),
+            admission_fence_id_sha256: Some(scan.admission_fence_id_sha256.clone()),
+            fence_generation: 1,
+            reservation_key: "operation:0002".to_string(),
+            atomic_admission_sha256: relay_container_traffic_return_test_sha256(70),
+            operation_admission_sha256: relay_container_traffic_return_test_sha256(71),
+            billing_snapshot_sha256: relay_container_traffic_return_test_sha256(72),
+            client_request_sha256: relay_container_traffic_return_test_sha256(73),
+            owner_generation: 3,
+            ring_generation: 7,
+            source_shard_count: 3,
+            shard_index: 2,
+            admission_commit_sha256: relay_container_traffic_return_test_sha256(2),
+            committed_at: 901,
+            page_ordinal: 2,
+            member_ordinal: 1,
+            member_digest_sha256: relay_container_traffic_return_test_sha256(2),
+            collected_at: 1_002,
+        };
+        second_member.admission_commit_sha256 =
+            relay_container_drain_source_member_sha256(&scan, &second_member).unwrap();
+        second_member.member_digest_sha256 = second_member.admission_commit_sha256.clone();
+        let members = vec![first_member, second_member];
+
+        let mut first_page = RelayContainerDrainSourcePageRow {
+            source_scan_id_sha256: scan.source_scan_id_sha256.clone(),
+            page_ordinal: 1,
+            page_member_count: 1,
+            page_first_sequence: 1,
+            page_first_operation_id: "operation:0001".to_string(),
+            page_last_sequence: 1,
+            page_last_operation_id: "operation:0001".to_string(),
+            previous_page_digest_sha256: None,
+            page_digest_sha256: relay_container_traffic_return_test_sha256(3),
+            sealed_at: 1_003,
+        };
+        first_page.page_digest_sha256 =
+            relay_container_drain_source_page_sha256(&first_page, &members[0..1]).unwrap();
+        let mut second_page = RelayContainerDrainSourcePageRow {
+            source_scan_id_sha256: scan.source_scan_id_sha256.clone(),
+            page_ordinal: 2,
+            page_member_count: 1,
+            page_first_sequence: 2,
+            page_first_operation_id: "operation:0002".to_string(),
+            page_last_sequence: 2,
+            page_last_operation_id: "operation:0002".to_string(),
+            previous_page_digest_sha256: Some(first_page.page_digest_sha256.clone()),
+            page_digest_sha256: relay_container_traffic_return_test_sha256(4),
+            sealed_at: 1_004,
+        };
+        second_page.page_digest_sha256 =
+            relay_container_drain_source_page_sha256(&second_page, &members[1..2]).unwrap();
+        let pages = vec![first_page, second_page];
+
+        let mut first_shard = RelayContainerDrainSourceShardRow {
+            source_scan_id_sha256: scan.source_scan_id_sha256.clone(),
+            shard_index: 0,
+            shard_member_count: 1,
+            shard_high_watermark: 1,
+            shard_first_sequence: 1,
+            shard_first_operation_id: Some("operation:0001".to_string()),
+            shard_last_sequence: 1,
+            shard_last_operation_id: Some("operation:0001".to_string()),
+            shard_manifest_sha256: relay_container_traffic_return_test_sha256(5),
+            sealed_at: 1_005,
+        };
+        first_shard.shard_manifest_sha256 =
+            relay_container_drain_source_shard_sha256(&first_shard, &members[0..1]).unwrap();
+        let mut empty_shard = RelayContainerDrainSourceShardRow {
+            source_scan_id_sha256: scan.source_scan_id_sha256.clone(),
+            shard_index: 1,
+            shard_member_count: 0,
+            shard_high_watermark: 0,
+            shard_first_sequence: 0,
+            shard_first_operation_id: None,
+            shard_last_sequence: 0,
+            shard_last_operation_id: None,
+            shard_manifest_sha256: relay_container_traffic_return_test_sha256(6),
+            sealed_at: 1_006,
+        };
+        empty_shard.shard_manifest_sha256 =
+            relay_container_drain_source_shard_sha256(&empty_shard, &[]).unwrap();
+        let mut last_shard = RelayContainerDrainSourceShardRow {
+            source_scan_id_sha256: scan.source_scan_id_sha256.clone(),
+            shard_index: 2,
+            shard_member_count: 1,
+            shard_high_watermark: 2,
+            shard_first_sequence: 2,
+            shard_first_operation_id: Some("operation:0002".to_string()),
+            shard_last_sequence: 2,
+            shard_last_operation_id: Some("operation:0002".to_string()),
+            shard_manifest_sha256: relay_container_traffic_return_test_sha256(7),
+            sealed_at: 1_007,
+        };
+        last_shard.shard_manifest_sha256 =
+            relay_container_drain_source_shard_sha256(&last_shard, &members[1..2]).unwrap();
+        let shards = vec![first_shard, empty_shard, last_shard];
+
+        let mut seal = RelayContainerDrainSourceSealRow {
+            source_seal_id_sha256: relay_container_traffic_return_test_sha256(74),
+            source_scan_id_sha256: scan.source_scan_id_sha256.clone(),
+            contract_version: 1,
+            seal_contract: "relay-container-drain-source-seal-v1".to_string(),
+            seal_migration: RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION.to_string(),
+            bookmark_contract: "d1-session-first-primary-bookmark-v1".to_string(),
+            pagination_contract: "accepted-sequence-keyset-v1".to_string(),
+            accepted_bookmark_sha256: relay_container_traffic_return_test_sha256(75),
+            accepted_set_manifest_sha256: relay_container_traffic_return_test_sha256(8),
+            accepted_source_schema_sha256: RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256.to_string(),
+            accepted_source_readback_sha256: relay_container_traffic_return_test_sha256(9),
+            page_count: 2,
+            first_page_digest_sha256: Some(pages[0].page_digest_sha256.clone()),
+            last_page_digest_sha256: Some(pages[1].page_digest_sha256.clone()),
+            shard_set_manifest_sha256: relay_container_traffic_return_test_sha256(10),
+            assembler_identity_sha256: relay_container_traffic_return_test_sha256(76),
+            assembler_signature_envelope_sha256: relay_container_traffic_return_test_sha256(77),
+            verifier_identity_sha256: relay_container_traffic_return_test_sha256(78),
+            verifier_signature_envelope_sha256: relay_container_traffic_return_test_sha256(79),
+            seal_digest_sha256: relay_container_traffic_return_test_sha256(11),
+            sealed_at: 1_008,
+        };
+        seal.shard_set_manifest_sha256 =
+            relay_container_drain_source_shard_set_sha256(&scan, &shards).unwrap();
+        seal.accepted_set_manifest_sha256 =
+            relay_container_drain_accepted_set_sha256(&scan, &members, &pages, &shards).unwrap();
+        seal.accepted_source_readback_sha256 =
+            relay_container_drain_source_readback_sha256(&scan, &members, &pages, &shards).unwrap();
+        seal.seal_digest_sha256 = relay_container_drain_source_seal_sha256(&seal);
+        RelayContainerDrainAcceptedSetSourceReadback {
+            scan,
+            members,
+            pages,
+            shards,
+            seal,
+        }
+    }
+
+    fn relay_container_drain_source_trigger_sql<'a>(
+        migration: &'a str,
+        trigger_name: &str,
+    ) -> &'a str {
+        let marker = format!("CREATE TRIGGER {trigger_name}");
+        let start = migration
+            .find(&marker)
+            .unwrap_or_else(|| panic!("missing source trigger {trigger_name}"));
+        let tail = &migration[start..];
+        let end = tail[marker.len()..]
+            .find("\nCREATE TRIGGER ")
+            .map(|offset| marker.len() + offset)
+            .unwrap_or(tail.len());
+        &tail[..end]
+    }
+
+    fn relay_container_drain_source_completion_guards_present(
+        page: &str,
+        shard: &str,
+        seal: &str,
+    ) -> bool {
+        let member_completion = "scan.captured_member_count = (";
+        page.contains(member_completion)
+            && shard.contains(member_completion)
+            && seal.contains("SUM(page.page_member_count)")
+            && seal.contains("SUM(shard.shard_member_count)")
+    }
+
+    #[test]
+    fn relay_container_drain_source_repository_is_exact_and_read_only() {
+        let migration = include_str!(
+            "../../../migrations/d1/0071_relay_container_drain_accepted_set_source_seal.sql"
+        );
+        assert_eq!(
+            RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION,
+            "0071_relay_container_drain_accepted_set_source_seal.sql"
+        );
+        assert_eq!(migration.matches("CREATE TABLE ").count(), 5);
+        assert_eq!(migration.matches("CREATE UNIQUE INDEX ").count(), 1);
+        assert_eq!(migration.matches("CREATE INDEX ").count(), 6);
+        assert_eq!(migration.matches("CREATE TRIGGER ").count(), 16);
+        for fragment in [
+            "CREATE TABLE relay_container_drain_source_scans",
+            "CREATE TABLE relay_container_drain_source_members",
+            "CREATE TABLE relay_container_drain_source_pages",
+            "CREATE TABLE relay_container_drain_source_shards",
+            "CREATE TABLE relay_container_drain_source_seals",
+            "relay_container_drain_close_command_source_seal_guard",
+            "d1-session-first-primary-bookmark-v1",
+            "accepted-sequence-keyset-v1",
+            RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256,
+            "SUM(page.page_member_count)",
+            "drain source scan identity already exists",
+            "drain source member identity already exists",
+            "drain source page identity already exists",
+            "drain source shard identity already exists",
+            "drain source seal identity already exists",
+            "drain close command requires an exact sealed accepted source",
+        ] {
+            assert!(
+                migration.contains(fragment),
+                "missing 0071 source invariant: {fragment}"
+            );
+        }
+
+        let source = include_str!("d1_repositories.rs");
+        let readiness_start = source
+            .find("pub async fn relay_container_drain_source_seal_schema_ready")
+            .unwrap();
+        let readback_start = source
+            .find("pub async fn relay_container_drain_accepted_set_source_readback")
+            .unwrap();
+        let close_validation_start = source[readback_start..]
+            .find("fn validate_relay_container_drain_close_command")
+            .map(|offset| readback_start + offset)
+            .unwrap();
+        let readiness = &source[readiness_start..readback_start];
+        let readback = &source[readback_start..close_validation_start];
+        for fragment in [
+            "relay_container_drain_close_command_schema_ready(db).await?",
+            "SCAN_COLUMNS",
+            "MEMBER_COLUMNS",
+            "PAGE_COLUMNS",
+            "SHARD_COLUMNS",
+            "SEAL_COLUMNS",
+            "TABLE_NAMES",
+            "INDEX_NAMES",
+            "TRIGGER_NAMES",
+            "'scan.captured_member_count = ('",
+            "'SUM(page.page_member_count)'",
+            "'SUM(shard.shard_member_count)'",
+            "'drain source scan identity already exists'",
+            "'drain source member identity already exists'",
+            "'drain source page identity already exists'",
+            "'drain source shard identity already exists'",
+            "'drain source seal identity already exists'",
+            "row.trigger_contract == Some(1)",
+        ] {
+            assert!(
+                readiness.contains(fragment),
+                "missing strict 0071 schema probe: {fragment}"
+            );
+        }
+        for fragment in [
+            "FROM relay_container_drain_source_seals",
+            "FROM relay_container_drain_source_scans",
+            "FROM relay_container_drain_source_members",
+            "FROM relay_container_drain_source_pages",
+            "FROM relay_container_drain_source_shards",
+            "ORDER BY accepted_sequence ASC",
+            "ORDER BY page_ordinal ASC",
+            "ORDER BY shard_index ASC",
+            "validate_relay_container_drain_source_readback",
+        ] {
+            assert!(
+                readback.contains(fragment),
+                "missing 0071 readback contract: {fragment}"
+            );
+        }
+        assert!(!readback.contains("INSERT INTO"));
+        assert!(!readback.contains("UPDATE relay_container"));
+        assert!(!readback.contains("DELETE FROM"));
+    }
+
+    #[test]
+    fn relay_container_drain_source_completion_guards_reject_weakened_sql() {
+        let migration = include_str!(
+            "../../../migrations/d1/0071_relay_container_drain_accepted_set_source_seal.sql"
+        );
+        let page = relay_container_drain_source_trigger_sql(
+            migration,
+            "relay_container_drain_source_page_insert_guard",
+        );
+        let shard = relay_container_drain_source_trigger_sql(
+            migration,
+            "relay_container_drain_source_shard_insert_guard",
+        );
+        let seal = relay_container_drain_source_trigger_sql(
+            migration,
+            "relay_container_drain_source_seal_insert_guard",
+        );
+        let member_completion = "scan.captured_member_count = (";
+        assert!(relay_container_drain_source_completion_guards_present(
+            page, shard, seal
+        ));
+
+        let weakened_page = page.replacen(member_completion, "1 = (", 1);
+        let weakened_shard = shard.replacen(member_completion, "1 = (", 1);
+        let weakened_seal = seal.replacen("SUM(page.page_member_count)", "COUNT(*)", 1);
+        assert!(!relay_container_drain_source_completion_guards_present(
+            &weakened_page,
+            shard,
+            seal,
+        ));
+        assert!(!relay_container_drain_source_completion_guards_present(
+            page,
+            &weakened_shard,
+            seal,
+        ));
+        assert!(!relay_container_drain_source_completion_guards_present(
+            page,
+            shard,
+            &weakened_seal,
+        ));
+
+        let source = include_str!("d1_repositories.rs");
+        let readiness_start = source
+            .find("pub async fn relay_container_drain_source_seal_schema_ready")
+            .unwrap();
+        let readback_start = source
+            .find("pub async fn relay_container_drain_accepted_set_source_readback")
+            .unwrap();
+        let readiness = &source[readiness_start..readback_start];
+        assert_eq!(
+            readiness
+                .matches("'scan.captured_member_count = ('")
+                .count(),
+            2
+        );
+        assert_eq!(
+            readiness.matches("'SUM(page.page_member_count)'").count(),
+            1
+        );
+        assert_eq!(
+            readiness.matches("'SUM(shard.shard_member_count)'").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn relay_container_drain_source_rows_decode_exact_shapes() {
+        let readback = relay_container_drain_source_test_readback();
+        let mut scan = serde_json::to_value(readback.scan.clone()).unwrap();
+        assert_eq!(
+            serde_json::from_value::<RelayContainerDrainSourceScanRow>(scan.clone()).unwrap(),
+            readback.scan
+        );
+        scan.as_object_mut()
+            .unwrap()
+            .remove("source_scan_id_sha256");
+        assert!(serde_json::from_value::<RelayContainerDrainSourceScanRow>(scan).is_err());
+
+        let mut member = serde_json::to_value(readback.members[0].clone()).unwrap();
+        member
+            .as_object_mut()
+            .unwrap()
+            .insert("unexpected".to_string(), Value::Bool(true));
+        assert!(serde_json::from_value::<RelayContainerDrainSourceMemberRow>(member).is_err());
+
+        let mut page = serde_json::to_value(readback.pages[0].clone()).unwrap();
+        page.as_object_mut().unwrap().remove("page_digest_sha256");
+        assert!(serde_json::from_value::<RelayContainerDrainSourcePageRow>(page).is_err());
+
+        let mut shard = serde_json::to_value(readback.shards[0].clone()).unwrap();
+        shard
+            .as_object_mut()
+            .unwrap()
+            .remove("shard_manifest_sha256");
+        assert!(serde_json::from_value::<RelayContainerDrainSourceShardRow>(shard).is_err());
+
+        let mut seal = serde_json::to_value(readback.seal).unwrap();
+        seal.as_object_mut().unwrap().remove("seal_digest_sha256");
+        assert!(serde_json::from_value::<RelayContainerDrainSourceSealRow>(seal).is_err());
+    }
+
+    #[test]
+    fn relay_container_drain_source_hash_contract_has_stable_golden_vectors() {
+        let readback = relay_container_drain_source_test_readback();
+        assert_eq!(
+            relay_container_drain_source_member_sha256(&readback.scan, &readback.members[0])
+                .unwrap(),
+            "ef5d625d13d003ef5da626cf891e4aa6a0d18346912d548820c67ecf7c1397c8"
+        );
+        assert_eq!(
+            readback.pages[0].page_digest_sha256,
+            "c1c7ca4bafd7e24fd5971cb8c1cfba7b6c76ae48851d42b6c4bc7d56d684cdec"
+        );
+        assert_eq!(
+            readback.shards[1].shard_manifest_sha256,
+            "1b61a8020fbd932d623aba0a69ed735168ff2e4f3d1c941b25fb902b2d4063d7"
+        );
+        assert_eq!(
+            readback.seal.shard_set_manifest_sha256,
+            "94675ee46d83eb6eeb402598eb9af5bdd034e9e4376378c832542586d6cf3058"
+        );
+        assert_eq!(
+            readback.seal.accepted_set_manifest_sha256,
+            "fbf3858c5adba3e3775dec9b8ac31c8e9fd2e4ecb32505ffc31d7bc5dee56596"
+        );
+        assert_eq!(
+            readback.seal.accepted_source_readback_sha256,
+            "fd481cda17d232236969e5314d63d491a08115ad06fd7f438d0acdd61f089fd1"
+        );
+        assert_eq!(
+            readback.seal.seal_digest_sha256,
+            "3f73b15a964293c588bc63102367f5391bb8f72932d1e67601c9bc4cba174474"
+        );
+        validate_relay_container_drain_source_readback(&readback).unwrap();
+    }
+
+    #[test]
+    fn relay_container_drain_source_readback_accepts_empty_source_set() {
+        let mut readback = relay_container_drain_source_test_readback();
+        readback.scan.captured_high_watermark = 0;
+        readback.scan.captured_member_count = 0;
+        readback.scan.captured_first_sequence = 0;
+        readback.scan.captured_first_operation_id = None;
+        readback.scan.captured_last_sequence = 0;
+        readback.scan.captured_last_operation_id = None;
+        readback.members.clear();
+        readback.pages.clear();
+        for shard in &mut readback.shards {
+            shard.shard_member_count = 0;
+            shard.shard_high_watermark = 0;
+            shard.shard_first_sequence = 0;
+            shard.shard_first_operation_id = None;
+            shard.shard_last_sequence = 0;
+            shard.shard_last_operation_id = None;
+            shard.shard_manifest_sha256 =
+                relay_container_drain_source_shard_sha256(shard, &[]).unwrap();
+        }
+        readback.seal.page_count = 0;
+        readback.seal.first_page_digest_sha256 = None;
+        readback.seal.last_page_digest_sha256 = None;
+        readback.seal.shard_set_manifest_sha256 =
+            relay_container_drain_source_shard_set_sha256(&readback.scan, &readback.shards)
+                .unwrap();
+        readback.seal.accepted_set_manifest_sha256 = relay_container_drain_accepted_set_sha256(
+            &readback.scan,
+            &readback.members,
+            &readback.pages,
+            &readback.shards,
+        )
+        .unwrap();
+        readback.seal.accepted_source_readback_sha256 =
+            relay_container_drain_source_readback_sha256(
+                &readback.scan,
+                &readback.members,
+                &readback.pages,
+                &readback.shards,
+            )
+            .unwrap();
+        readback.seal.seal_digest_sha256 = relay_container_drain_source_seal_sha256(&readback.seal);
+        validate_relay_container_drain_source_readback(&readback).unwrap();
+    }
+
+    #[test]
+    fn relay_container_drain_source_member_preserves_0068_legacy_digest() {
+        let readback = relay_container_drain_source_test_readback();
+        let mut member = readback.members[0].clone();
+        member.source_contract = "pre-0068-atomic-admission-v1".to_string();
+        member.admission_fence_id_sha256 = None;
+        member.fence_generation = 0;
+        member.admission_commit_sha256 = member.atomic_admission_sha256.clone();
+        member.member_digest_sha256 = member.atomic_admission_sha256.clone();
+        assert_eq!(
+            relay_container_drain_source_member_sha256(&readback.scan, &member).unwrap(),
+            member.atomic_admission_sha256
+        );
+        validate_relay_container_drain_source_member(&readback.scan, &member).unwrap();
+    }
+
+    #[test]
+    fn relay_container_drain_source_readback_rejects_drift() {
+        let mut reordered = relay_container_drain_source_test_readback();
+        reordered.members.swap(0, 1);
+        assert!(validate_relay_container_drain_source_readback(&reordered).is_err());
+
+        let mut page_drift = relay_container_drain_source_test_readback();
+        page_drift.pages[0].page_digest_sha256 = relay_container_traffic_return_test_sha256(90);
+        assert!(validate_relay_container_drain_source_readback(&page_drift).is_err());
+
+        let mut schema_drift = relay_container_drain_source_test_readback();
+        schema_drift.seal.accepted_source_schema_sha256 =
+            relay_container_traffic_return_test_sha256(91);
+        assert!(validate_relay_container_drain_source_readback(&schema_drift).is_err());
+
+        let mut identity_reuse = relay_container_drain_source_test_readback();
+        identity_reuse.seal.verifier_identity_sha256 =
+            identity_reuse.seal.assembler_identity_sha256.clone();
+        assert!(validate_relay_container_drain_source_readback(&identity_reuse).is_err());
+
+        let mut incomplete_page = relay_container_drain_source_test_readback();
+        incomplete_page.scan.page_size = 2;
+        incomplete_page.members[1].page_ordinal = 1;
+        incomplete_page.members[1].member_ordinal = 2;
+        incomplete_page.pages.truncate(1);
+        incomplete_page.seal.page_count = 1;
+        incomplete_page.seal.last_page_digest_sha256 =
+            incomplete_page.seal.first_page_digest_sha256.clone();
+        incomplete_page.seal.accepted_set_manifest_sha256 =
+            relay_container_drain_accepted_set_sha256(
+                &incomplete_page.scan,
+                &incomplete_page.members,
+                &incomplete_page.pages,
+                &incomplete_page.shards,
+            )
+            .unwrap();
+        incomplete_page.seal.accepted_source_readback_sha256 =
+            relay_container_drain_source_readback_sha256(
+                &incomplete_page.scan,
+                &incomplete_page.members,
+                &incomplete_page.pages,
+                &incomplete_page.shards,
+            )
+            .unwrap();
+        incomplete_page.seal.seal_digest_sha256 =
+            relay_container_drain_source_seal_sha256(&incomplete_page.seal);
+        assert!(validate_relay_container_drain_source_readback(&incomplete_page).is_err());
     }
 }

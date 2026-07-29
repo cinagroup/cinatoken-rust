@@ -25275,3 +25275,129 @@ route, DNS, gate, traffic, or Go/VPS state was accessed or changed. An
 authenticated close control plane, independently recomputed source evidence,
 remote fault campaigns, and the rest of the drain/traffic-return protocol
 remain open. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.337 Accepted-Set Source Seal (2026-07-30)
+
+Application migration
+`0071_relay_container_drain_accepted_set_source_seal.sql` is now the local
+schema head. The exact Application inventory advances as one versioned
+contract:
+
+```text
+71 migrations
+97 required tables
+1550 checked incremental columns
+144 key indexes
+```
+
+0071 removes the ability to send the four accepted-source identities directly
+to the 0070 close command without a matching immutable source record. It adds:
+
+1. `relay_container_drain_source_scans`, which binds one capture to the exact
+   current 0068 scope head, still-open fence, accepted high watermark, member
+   count, first/last accepted key, page size, shard count, collector build,
+   run identity, and credential identity;
+2. `relay_container_drain_source_members`, which copies every immutable 0068
+   admission commit through contiguous `accepted_sequence` keyset order and
+   preserves its operation, fence, admission, billing-snapshot, request,
+   owner, ring, shard, commit-digest, and commit-time fields;
+3. `relay_container_drain_source_pages`, which records deterministic page
+   boundaries and a previous-page digest chain;
+4. `relay_container_drain_source_shards`, which requires an ordered manifest
+   for every shard index, including zero-member shards; and
+5. `relay_container_drain_source_seals`, which binds the D1 bookmark contract,
+   keyset-pagination contract, accepted-set manifest, pinned source-schema
+   digest, retained readback digest, page chain, shard-set manifest, and
+   distinct assembler/verifier identities and signature-envelope digests.
+
+All five authorities are append-preserved. Member, page, and shard insertion
+is ordered and blocked after seal. A seal is rejected unless source
+cardinality still equals the scan boundary, every member is present, every
+page and shard row is complete, the first/last identities agree, and the
+current head/fence still match. The 0071 close-command guard then requires the
+0070 command to name the exact scan and seal values and rechecks source
+`MAX(accepted_sequence)` and `COUNT(*)` immediately before close. An admission
+that lands after scan but before seal invalidates the seal; one that lands
+after seal but before close invalidates the close.
+
+Every 0071 insert guard also rejects an existing primary or unique identity
+before SQLite conflict handling. This is required because
+`INSERT OR REPLACE` can otherwise perform an implicit delete without invoking
+a delete trigger when recursive triggers are disabled. Local SQLite and
+Workerd regression tests prove that REPLACE cannot erase or substitute source
+history.
+
+The intended production collection order is fixed:
+
+1. establish a D1 Session with `first-primary` consistency and retain its
+   opaque bookmark outside logs;
+2. read the current scope head, open fence, source high watermark, count, and
+   first/last keys in that session;
+3. enumerate `relay_container_admission_commits` with
+   `accepted_sequence > last_seen AND accepted_sequence <= high_watermark`,
+   never offset pagination;
+4. recompute each canonical member digest and insert the exact copied row;
+5. recompute each page digest in ordinal order and bind the previous digest;
+6. recompute all shard manifests for indices `0..shard_count-1`, including
+   empty shards, and then the shard-set manifest;
+7. recompute the complete accepted-set and retained-readback digests;
+8. have a distinct verifier independently reread and recompute the same
+   source, then register both signature-envelope identities; and
+9. submit the 0070 close command only after exact seal readback, with no retry
+   after an ambiguous mutation response until stable authoritative readback
+   classifies the outcome.
+
+The current batch implements the durable SQL structure, fail-closed read
+contracts, canonical digest primitives, and local negative matrix. It does
+not yet implement the independently authenticated D1 Session collector,
+signature verification, or a typed control-plane authorization receipt.
+SQLite cannot itself recompute SHA-256 or validate an external signature, so
+valid-looking digest and identity strings are not production completeness
+proof. The future writer must execute in the root Application Worker that owns
+this D1 binding; a service-bound placement/control worker may orchestrate, but
+must not gain an independent unbound D1 authority. Service binding isolation
+also does not replace request authentication, replay protection, least
+privilege, or an append-preserved admin authorization receipt.
+
+### Promotion sequence
+
+0071 remains reader-first and default-inert:
+
+1. keep Go/VPS authoritative, all five drain gates false, and every source
+   table empty;
+2. deploy the compatible Worker and verify an older Worker fails closed
+   against the new expected migration head;
+3. archive pre-apply D1 catalog, normalized trigger SQL, business
+   fingerprints, row counts, bookmark/Time Travel evidence, and writer
+   inventory;
+4. apply 0071 only to isolated staging after the 0068 historical-backfill and
+   N/N-1 admission-writer drain are proven;
+5. read back the exact five tables, 87 columns, seven indexes, 15
+   source-table triggers plus one close guard, and zero source rows;
+6. introduce the authenticated collector/verifier behind a separately
+   reviewed default-false gate and immutable authorization/audit contract;
+7. run multi-page, 1024-shard, empty-shard, malformed member, reordered page,
+   missing shard, duplicate identity, response-loss, process-loss, bookmark
+   expiry, late-admission, and concurrent-close campaigns;
+8. retain independent source, signature, D1, DO, R2, Queue, billing,
+   operation-14, reverse-sync, WORM, and Go/VPS rollback evidence; and
+9. require an independent go/no-go decision before any production fence
+   closure or traffic-return review.
+
+Rollback never drops 0071 or deletes its evidence. It disables the future
+collector and close writer, leaves Go/VPS authoritative, preserves an open
+fence if close was not proven, preserves a closed fence if close committed,
+classifies ambiguous responses by stable readback, and repairs forward with a
+new scan/seal/authorization generation. It never reopens admission under
+0068.
+
+The pinned source-schema identity remains the normalized SHA-256 of immutable
+0068:
+`fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50`.
+0071 does not evaluate, copy, normalize, tier, convert, reserve, settle, or
+reinterpret a billing expression.
+
+No remote migration, D1 Session, credential, Cloudflare API, deployment,
+route, DNS, gate, customer traffic, provider request, or Go/VPS authority was
+accessed or changed. Go/VPS remains authoritative and production remains
+**NO-GO**.

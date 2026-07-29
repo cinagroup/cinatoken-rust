@@ -10,6 +10,8 @@ const reservedQuota = 125;
 const admissionScopeId =
   "53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251";
 const admissionFenceId = "6".repeat(64);
+const acceptedSourceSchemaSha256 =
+  "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50";
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
@@ -99,7 +101,8 @@ describe("migration 0050 atomic relay Container admission", () => {
       .first();
     expect(commit).toEqual({ accepted_sequence: 1 });
 
-    const command = await drainCloseCommand(intent, commit.accepted_sequence);
+    const source = await sealAcceptedSource([intent], { pageSize: 1 });
+    const command = await drainCloseCommand(intent, source);
     await drainCloseCommandStatement(command).run();
 
     const readback = await env.DB.prepare(
@@ -183,6 +186,197 @@ describe("migration 0050 atomic relay Container admission", () => {
         .bind(late.operationId)
         .first(),
     ).resolves.toEqual({ commits: 0, admissions: 0, operations: 0 });
+  });
+
+  it("closes a deterministic multi-page, multi-shard accepted source seal", async () => {
+    await seedAuthorityState();
+    const intents = await admitAcceptedSet("drain-source-multi", [0, 3, 7]);
+    const source = await sealAcceptedSource(intents, { pageSize: 2 });
+    const command = await drainCloseCommand(intents[0], source);
+
+    await drainCloseCommandStatement(command).run();
+
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM relay_container_drain_source_members
+            WHERE source_scan_id_sha256 = ?1) AS members,
+           (SELECT COUNT(*) FROM relay_container_drain_source_pages
+            WHERE source_scan_id_sha256 = ?1) AS pages,
+           (SELECT COUNT(*) FROM relay_container_drain_source_shards
+            WHERE source_scan_id_sha256 = ?1) AS shards,
+           (SELECT COUNT(*) FROM relay_container_drain_source_seals
+            WHERE source_scan_id_sha256 = ?1) AS seals,
+           (SELECT COUNT(*) FROM relay_container_drain_close_commands
+            WHERE close_command_id_sha256 = ?2) AS commands`,
+      )
+        .bind(source.sourceScanIdSha256, command.closeCommandIdSha256)
+        .first(),
+    ).resolves.toEqual({
+      members: 3,
+      pages: 2,
+      shards: 8,
+      seals: 1,
+      commands: 1,
+    });
+    await expect(
+      env.DB.prepare(
+        `SELECT accepted_high_watermark, accepted_member_count,
+                accepted_first_operation_id, accepted_last_operation_id,
+                state
+         FROM relay_container_drain_campaigns
+         WHERE campaign_id = ?1`,
+      )
+        .bind(command.campaignId)
+        .first(),
+    ).resolves.toEqual({
+      accepted_high_watermark: 3,
+      accepted_member_count: 3,
+      accepted_first_operation_id: intents[0].operationId,
+      accepted_last_operation_id: intents[2].operationId,
+      state: "fenced",
+    });
+  });
+
+  it("rejects an accepted source seal with a missing page", async () => {
+    await seedAuthorityState();
+    const intents = await admitAcceptedSet("drain-source-missing-page", [
+      0, 3, 7,
+    ]);
+    const source = await prepareAcceptedSource(intents, {
+      pageSize: 2,
+      omittedPageOrdinals: [2],
+    });
+
+    await expect(sourceSealStatement(source).run()).rejects.toThrow(
+      /drain source seal is incomplete, stale, or detached/,
+    );
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM relay_container_drain_source_seals
+         WHERE source_scan_id_sha256 = ?1`,
+      )
+        .bind(source.sourceScanIdSha256)
+        .first(),
+    ).resolves.toEqual({ count: 0 });
+  });
+
+  it("rejects an accepted source seal with a missing shard manifest", async () => {
+    await seedAuthorityState();
+    const intents = await admitAcceptedSet("drain-source-missing-shard", [3]);
+    const source = await prepareAcceptedSource(intents, {
+      pageSize: 1,
+      omittedShardIndexes: [7],
+    });
+
+    await expect(sourceSealStatement(source).run()).rejects.toThrow(
+      /drain source seal is incomplete, stale, or detached/,
+    );
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM relay_container_drain_source_shards
+         WHERE source_scan_id_sha256 = ?1`,
+      )
+        .bind(source.sourceScanIdSha256)
+        .first(),
+    ).resolves.toEqual({ count: 7 });
+  });
+
+  it("rejects close after a late admission advances a sealed source", async () => {
+    await seedAuthorityState();
+    const [accepted] = await admitAcceptedSet("drain-source-before-late", [3]);
+    const source = await sealAcceptedSource([accepted], { pageSize: 1 });
+    const command = await drainCloseCommand(accepted, source);
+    const [late] = await admitAcceptedSet("drain-source-after-seal", [7]);
+
+    await expect(
+      env.DB.prepare(
+        `SELECT accepted_sequence
+         FROM relay_container_admission_commits
+         WHERE operation_id = ?1`,
+      )
+        .bind(late.operationId)
+        .first(),
+    ).resolves.toEqual({ accepted_sequence: 2 });
+    await expect(drainCloseCommandStatement(command).run()).rejects.toThrow(
+      /drain close command requires an exact sealed accepted source/,
+    );
+    await expect(
+      env.DB.prepare(
+        `SELECT admission_open, closed_campaign_id
+         FROM relay_container_admission_fences
+         WHERE admission_fence_id_sha256 = ?1`,
+      )
+        .bind(admissionFenceId)
+        .first(),
+    ).resolves.toEqual({ admission_open: 1, closed_campaign_id: null });
+  });
+
+  it("rejects close commands with a mismatched sealed digest or manifest", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet("drain-source-command-mismatch", [
+      3,
+    ]);
+    const source = await sealAcceptedSource([intent], { pageSize: 1 });
+    const command = await drainCloseCommand(intent, source);
+
+    await expect(
+      drainCloseCommandStatement({
+        ...command,
+        acceptedSetManifestSha256: await sha256Text(
+          "mismatched-accepted-set-manifest",
+        ),
+      }).run(),
+    ).rejects.toThrow(
+      /drain close command requires an exact sealed accepted source/,
+    );
+    await expect(
+      drainCloseCommandStatement({
+        ...command,
+        acceptedSourceReadbackSha256: await sha256Text(
+          "mismatched-accepted-source-readback",
+        ),
+      }).run(),
+    ).rejects.toThrow(
+      /drain close command requires an exact sealed accepted source/,
+    );
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM relay_container_drain_close_commands)
+             AS commands,
+           (SELECT COUNT(*) FROM relay_container_drain_campaigns)
+             AS campaigns`,
+      ).first(),
+    ).resolves.toEqual({ commands: 0, campaigns: 0 });
+  });
+
+  it("rejects INSERT OR REPLACE from deleting sealed source history", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet("drain-source-replace", [3]);
+    const source = await sealAcceptedSource([intent], { pageSize: 1 });
+
+    await expect(
+      env.DB.prepare(
+        `INSERT OR REPLACE INTO relay_container_drain_source_seals
+         SELECT *
+         FROM relay_container_drain_source_seals
+         WHERE source_seal_id_sha256 = ?1`,
+      )
+        .bind(source.sourceSealIdSha256)
+        .run(),
+    ).rejects.toThrow(/drain source seal identity already exists/);
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM relay_container_drain_source_seals
+         WHERE source_seal_id_sha256 = ?1`,
+      )
+        .bind(source.sourceSealIdSha256)
+        .first(),
+    ).resolves.toEqual({ count: 1 });
   });
 
   it("classifies concurrent equivalents and exact replay through either alias without another debit", async () => {
@@ -1162,22 +1356,297 @@ async function runAtomicAdmissionBatch(
   ]);
 }
 
-async function drainCloseCommand(intent, acceptedSequence) {
+async function admitAcceptedSet(suffix, shardIndexes) {
+  const intents = [];
+  for (const [index, shardIndex] of shardIndexes.entries()) {
+    const seed = `relay-container-source-runtime:${suffix}:${index + 1}`;
+    const clientIdempotencyHmacSha256 = await sha256Text(`${seed}:alias`);
+    const intent = await atomicAdmissionIntent(`${suffix}-${index + 1}`, {
+      atomicAdmissionSha256: await sha256Text(`${seed}:atomic-admission`),
+      operationAdmissionSha256: await sha256Text(
+        `${seed}:operation-admission`,
+      ),
+      clientIdempotencyHmacSha256,
+      clientIdempotencyHmacAliases: [clientIdempotencyHmacSha256],
+      clientRequestSha256: await sha256Text(`${seed}:client-request`),
+      reconciliationId: await sha256Text(`${seed}:reconciliation`),
+      inputSha256: await sha256Text(`${seed}:input`),
+      shardIndex,
+    });
+    await runAtomicAdmissionBatch(intent);
+    intents.push(intent);
+  }
+  return intents;
+}
+
+async function prepareAcceptedSource(
+  intents,
+  {
+    pageSize,
+    omittedPageOrdinals = [],
+    omittedShardIndexes = [],
+  },
+) {
+  const commitResult = await env.DB.prepare(
+    `SELECT accepted_sequence, operation_id, source_contract,
+            admission_fence_id_sha256, fence_generation, reservation_key,
+            atomic_admission_sha256, operation_admission_sha256,
+            billing_snapshot_sha256, client_request_sha256,
+            owner_generation, ring_generation,
+            shard_count AS source_shard_count, shard_index,
+            admission_commit_sha256, committed_at
+     FROM relay_container_admission_commits
+     WHERE scope_kind = 'global' AND scope_id_sha256 = ?1
+     ORDER BY accepted_sequence`,
+  )
+    .bind(admissionScopeId)
+    .all();
+  const commits = commitResult.results;
+  expect(commits).toHaveLength(intents.length);
+  expect(commits.length).toBeGreaterThan(0);
+
+  const fixtureKey = intents.map(({ operationId }) => operationId).join(":");
+  const digest = (field) =>
+    sha256Text(`relay-container-drain-source:${fixtureKey}:${field}`);
+  const source = {
+    sourceScanIdSha256: await digest("scan-id"),
+    capturedHighWatermark: commits.at(-1).accepted_sequence,
+    capturedMemberCount: commits.length,
+    capturedFirstSequence: commits[0].accepted_sequence,
+    capturedFirstOperationId: commits[0].operation_id,
+    capturedLastSequence: commits.at(-1).accepted_sequence,
+    capturedLastOperationId: commits.at(-1).operation_id,
+    pageSize,
+    shardCount: commits[0].source_shard_count,
+    acceptedBookmarkSha256: await digest("bookmark"),
+    acceptedSetManifestSha256: await digest("accepted-set-manifest"),
+    acceptedSourceSchemaSha256,
+    acceptedSourceReadbackSha256: await digest("source-readback"),
+    shardSetManifestSha256: await digest("shard-set-manifest"),
+    sourceSealIdSha256: await digest("seal-id"),
+    assemblerIdentitySha256: await digest("assembler-identity"),
+    assemblerSignatureEnvelopeSha256: await digest("assembler-signature"),
+    verifierIdentitySha256: await digest("verifier-identity"),
+    verifierSignatureEnvelopeSha256: await digest("verifier-signature"),
+    sealDigestSha256: await digest("seal-digest"),
+  };
+
+  await env.DB.prepare(
+    `INSERT INTO relay_container_drain_source_scans (
+       source_scan_id_sha256, contract_version, scan_contract,
+       scan_migration, environment, scope_kind, scope_id_sha256,
+       admission_fence_id_sha256, fence_generation,
+       expected_fence_state_digest_sha256, expected_head_version,
+       expected_head_digest_sha256, captured_high_watermark,
+       captured_member_count, captured_first_sequence,
+       captured_first_operation_id, captured_last_sequence,
+       captured_last_operation_id, page_size, shard_count,
+       collector_service_name, collector_version_id,
+       collector_run_id_sha256, started_by_credential_id_sha256
+     ) VALUES (
+       ?1, 1, 'relay-container-drain-source-scan-v1',
+       '0071_relay_container_drain_accepted_set_source_seal.sql',
+       'staging', 'global', ?2, ?3, 1, ?4, 1, ?5, ?6, ?7, ?8, ?9,
+       ?10, ?11, ?12, ?13, 'relay-source-collector', 'runtime-test-v1',
+       ?14, ?15
+     )`,
+  )
+    .bind(
+      source.sourceScanIdSha256,
+      admissionScopeId,
+      admissionFenceId,
+      hex("7"),
+      hex("8"),
+      source.capturedHighWatermark,
+      source.capturedMemberCount,
+      source.capturedFirstSequence,
+      source.capturedFirstOperationId,
+      source.capturedLastSequence,
+      source.capturedLastOperationId,
+      source.pageSize,
+      source.shardCount,
+      await digest("collector-run"),
+      await digest("collector-credential"),
+    )
+    .run();
+
+  for (const commit of commits) {
+    const pageOrdinal =
+      Math.floor((commit.accepted_sequence - 1) / pageSize) + 1;
+    const memberOrdinal = ((commit.accepted_sequence - 1) % pageSize) + 1;
+    await env.DB.prepare(
+      `INSERT INTO relay_container_drain_source_members (
+         source_scan_id_sha256, accepted_sequence, operation_id,
+         source_contract, admission_fence_id_sha256, fence_generation,
+         reservation_key, atomic_admission_sha256,
+         operation_admission_sha256, billing_snapshot_sha256,
+         client_request_sha256, owner_generation, ring_generation,
+         source_shard_count, shard_index, admission_commit_sha256,
+         committed_at, page_ordinal, member_ordinal, member_digest_sha256
+       ) VALUES (
+         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+         ?14, ?15, ?16, ?17, ?18, ?19, ?16
+       )`,
+    )
+      .bind(
+        source.sourceScanIdSha256,
+        commit.accepted_sequence,
+        commit.operation_id,
+        commit.source_contract,
+        commit.admission_fence_id_sha256,
+        commit.fence_generation,
+        commit.reservation_key,
+        commit.atomic_admission_sha256,
+        commit.operation_admission_sha256,
+        commit.billing_snapshot_sha256,
+        commit.client_request_sha256,
+        commit.owner_generation,
+        commit.ring_generation,
+        commit.source_shard_count,
+        commit.shard_index,
+        commit.admission_commit_sha256,
+        commit.committed_at,
+        pageOrdinal,
+        memberOrdinal,
+      )
+      .run();
+  }
+
+  const pageCount = Math.ceil(commits.length / pageSize);
+  const pageDigests = [];
+  for (let pageOrdinal = 1; pageOrdinal <= pageCount; pageOrdinal += 1) {
+    pageDigests.push(await digest(`page-${pageOrdinal}`));
+  }
+  for (let pageOrdinal = 1; pageOrdinal <= pageCount; pageOrdinal += 1) {
+    if (omittedPageOrdinals.includes(pageOrdinal)) {
+      continue;
+    }
+    const pageMembers = commits.filter(
+      (commit) =>
+        Math.floor((commit.accepted_sequence - 1) / pageSize) + 1 ===
+        pageOrdinal,
+    );
+    await env.DB.prepare(
+      `INSERT INTO relay_container_drain_source_pages (
+         source_scan_id_sha256, page_ordinal, page_member_count,
+         page_first_sequence, page_first_operation_id, page_last_sequence,
+         page_last_operation_id, previous_page_digest_sha256,
+         page_digest_sha256
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+    )
+      .bind(
+        source.sourceScanIdSha256,
+        pageOrdinal,
+        pageMembers.length,
+        pageMembers[0].accepted_sequence,
+        pageMembers[0].operation_id,
+        pageMembers.at(-1).accepted_sequence,
+        pageMembers.at(-1).operation_id,
+        pageOrdinal === 1 ? null : pageDigests[pageOrdinal - 2],
+        pageDigests[pageOrdinal - 1],
+      )
+      .run();
+  }
+
+  for (let shardIndex = 0; shardIndex < source.shardCount; shardIndex += 1) {
+    if (omittedShardIndexes.includes(shardIndex)) {
+      continue;
+    }
+    const shardMembers = commits.filter(
+      (commit) => commit.shard_index === shardIndex,
+    );
+    const first = shardMembers[0] ?? null;
+    const last = shardMembers.at(-1) ?? null;
+    await env.DB.prepare(
+      `INSERT INTO relay_container_drain_source_shards (
+         source_scan_id_sha256, shard_index, shard_member_count,
+         shard_high_watermark, shard_first_sequence,
+         shard_first_operation_id, shard_last_sequence,
+         shard_last_operation_id, shard_manifest_sha256
+       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`,
+    )
+      .bind(
+        source.sourceScanIdSha256,
+        shardIndex,
+        shardMembers.length,
+        last?.accepted_sequence ?? 0,
+        first?.accepted_sequence ?? 0,
+        first?.operation_id ?? null,
+        last?.accepted_sequence ?? 0,
+        last?.operation_id ?? null,
+        await digest(`shard-${shardIndex}`),
+      )
+      .run();
+  }
+
+  return {
+    ...source,
+    pageCount,
+    firstPageDigestSha256: pageDigests[0],
+    lastPageDigestSha256: pageDigests.at(-1),
+  };
+}
+
+function sourceSealStatement(source) {
+  return env.DB.prepare(
+    `INSERT INTO relay_container_drain_source_seals (
+       source_seal_id_sha256, source_scan_id_sha256, contract_version,
+       seal_contract, seal_migration, bookmark_contract,
+       pagination_contract, accepted_bookmark_sha256,
+       accepted_set_manifest_sha256, accepted_source_schema_sha256,
+       accepted_source_readback_sha256, page_count,
+       first_page_digest_sha256, last_page_digest_sha256,
+       shard_set_manifest_sha256, assembler_identity_sha256,
+       assembler_signature_envelope_sha256, verifier_identity_sha256,
+       verifier_signature_envelope_sha256, seal_digest_sha256
+     ) VALUES (
+       ?1, ?2, 1, 'relay-container-drain-source-seal-v1',
+       '0071_relay_container_drain_accepted_set_source_seal.sql',
+       'd1-session-first-primary-bookmark-v1',
+       'accepted-sequence-keyset-v1', ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+       ?10, ?11, ?12, ?13, ?14, ?15
+     )`,
+  ).bind(
+    source.sourceSealIdSha256,
+    source.sourceScanIdSha256,
+    source.acceptedBookmarkSha256,
+    source.acceptedSetManifestSha256,
+    source.acceptedSourceSchemaSha256,
+    source.acceptedSourceReadbackSha256,
+    source.pageCount,
+    source.firstPageDigestSha256,
+    source.lastPageDigestSha256,
+    source.shardSetManifestSha256,
+    source.assemblerIdentitySha256,
+    source.assemblerSignatureEnvelopeSha256,
+    source.verifierIdentitySha256,
+    source.verifierSignatureEnvelopeSha256,
+    source.sealDigestSha256,
+  );
+}
+
+async function sealAcceptedSource(intents, options) {
+  const source = await prepareAcceptedSource(intents, options);
+  await sourceSealStatement(source).run();
+  return source;
+}
+
+async function drainCloseCommand(intent, source) {
   const digest = (field) =>
     sha256Text(`relay-container-drain-close:${intent.operationId}:${field}`);
   return {
     closeCommandIdSha256: await digest("command-id"),
     campaignId: await digest("campaign-id"),
-    acceptedHighWatermark: acceptedSequence,
-    acceptedBookmarkSha256: await digest("bookmark"),
-    acceptedMemberCount: 1,
-    acceptedSetManifestSha256: await digest("accepted-set"),
-    acceptedFirstSequence: acceptedSequence,
-    acceptedFirstOperationId: intent.operationId,
-    acceptedLastSequence: acceptedSequence,
-    acceptedLastOperationId: intent.operationId,
-    acceptedSourceSchemaSha256: await digest("source-schema"),
-    acceptedSourceReadbackSha256: await digest("source-readback"),
+    acceptedHighWatermark: source.capturedHighWatermark,
+    acceptedBookmarkSha256: source.acceptedBookmarkSha256,
+    acceptedMemberCount: source.capturedMemberCount,
+    acceptedSetManifestSha256: source.acceptedSetManifestSha256,
+    acceptedFirstSequence: source.capturedFirstSequence,
+    acceptedFirstOperationId: source.capturedFirstOperationId,
+    acceptedLastSequence: source.capturedLastSequence,
+    acceptedLastOperationId: source.capturedLastOperationId,
+    acceptedSourceSchemaSha256: source.acceptedSourceSchemaSha256,
+    acceptedSourceReadbackSha256: source.acceptedSourceReadbackSha256,
     closedFenceStateDigestSha256: await digest("closed-fence-state"),
     shardInventorySha256: await digest("shard-inventory"),
     edgeVersionSetSha256: await digest("edge-version-set"),
@@ -1415,9 +1884,9 @@ function preparedOperationStatement(
        status, created_at, updated_at
      ) VALUES (
        ?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-       1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003', ?10, 'r2', ?11,
-       ?12, ?13, 0, 'application/json', ?14, ?15, ?16, ?17${responseArtifactContractValue},
-       'prepared', ?18, ?18
+       1, ?10, ?11, ?12, ?13, ?14, 'r2', ?15,
+       ?16, ?17, 0, 'application/json', ?18, ?19, ?20, ?21${responseArtifactContractValue},
+       'prepared', ?22, ?22
      )`,
   ).bind(
     intent.operationId,
@@ -1429,6 +1898,10 @@ function preparedOperationStatement(
     intent.providerOperationId,
     intent.operationAdmissionSha256,
     protocolVersion,
+    intent.ringGeneration,
+    intent.shardCount,
+    intent.shardIndex,
+    `cinatoken-relay-shard-v1-${String(intent.shardIndex).padStart(4, "0")}`,
     intent.executionDeadlineAt,
     intent.inputObjectKey,
     intent.inputObjectVersion,

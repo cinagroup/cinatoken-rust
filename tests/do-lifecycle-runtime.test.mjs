@@ -1723,11 +1723,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       success: true,
       data: {
         d1_migration_status_available: true,
-        d1_migration_applied_count: 70,
+        d1_migration_applied_count: 71,
         d1_migration_latest:
-          "0070_relay_container_drain_close_command.sql",
+          "0071_relay_container_drain_accepted_set_source_seal.sql",
         d1_expected_migration:
-          "0070_relay_container_drain_close_command.sql",
+          "0071_relay_container_drain_accepted_set_source_seal.sql",
         d1_expected_migration_applied: true,
         d1_migration_set_matches: true,
         d1_migration_ready: true,
@@ -1748,6 +1748,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
         container_drain_admission_schema_ready: true,
         container_traffic_return_evidence_schema_ready: true,
         container_drain_close_command_schema_ready: true,
+        container_drain_source_seal_schema_ready: true,
         container_drain_campaign_write_enabled: false,
         container_drain_observation_write_enabled: false,
         container_ambiguity_quarantine_write_enabled: false,

@@ -292,3 +292,56 @@ Local Workerd verifies a nonempty accepted set and late-admission rejection;
 the SQLite verifier proves downstream campaign failure rolls back the command
 and fence together. No remote D1/Cloudflare state was accessed or changed.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Migration 0071 Accepted-Source Seal Read Boundary
+
+Migration
+`0071_relay_container_drain_accepted_set_source_seal.sql` advances the local
+Application head to 71 migrations, 97 required tables, 1550 checked
+incremental columns, and 144 key indexes.
+
+`relay_container_drain_source_seal_schema_ready()` is an exact fail-closed
+probe for:
+
+- the 0071 migration marker;
+- ordered scan/member/page/shard/seal columns;
+- exactly five source table names and seven explicit indexes;
+- all 15 source-table immutable/order/completeness trigger names plus the
+  0070 close source-seal guard; and
+- critical trigger SQL for complete migration markers, current open
+  fence/head binding, full membership before page/shard inventory, fixed
+  bookmark/pagination contracts, pinned 0068 schema identity, and the final
+  close-time source recheck; and
+- explicit primary/unique conflict rejection in every source insert guard, so
+  `INSERT OR REPLACE` cannot bypass append preservation through an implicit
+  delete.
+
+`relay_container_drain_accepted_set_source_readback()` accepts only a
+lowercase SHA-256 seal identity and returns one sealed aggregate in strict
+accepted-sequence, page-ordinal, and shard-index order. It rejects malformed
+contracts, bounds, operation identities, page chains, missing or reordered
+members, incomplete shard coverage, stale first/last identities, digest
+drift, non-independent roles, source-schema drift, and any mismatch among the
+accepted-set, shard-set, retained-readback, or seal digests.
+
+The pure canonical helpers use length-prefixed bytes and big-endian integers
+for admission-member, page, shard, shard-set, accepted-set, exact-readback and
+seal SHA-256 contracts. Historical pre-0068 members retain their original
+atomic-admission digest; fenced members recompute the existing admission
+commit v1 domain. The repository validates these values on read rather than
+trusting syntactically valid hashes.
+
+There is deliberately no source scan/member/page/shard/seal mutation method,
+HTTP route, credential, or runtime write gate. Platform capability exposure
+is the single schema-readiness boolean only. The current code also does not
+claim that D1 itself verified an external signature: assembler/verifier
+identity and signature-envelope fields become trusted only after a future
+authenticated collector verifies managed keys and records a typed
+authorization/audit receipt.
+
+The future writer must remain in the root Application Worker that owns the D1
+binding, use a real `first-primary` D1 Session with bounded keyset pagination,
+and classify ambiguous mutation responses through stable readback. A
+service-bound controller may orchestrate but must not gain an independent D1
+or bypass authentication. Go/VPS remains authoritative and production remains
+**NO-GO**.

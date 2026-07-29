@@ -4728,3 +4728,33 @@ admission source.
 D1/Cloudflare migration, readback, credential, route, gate, deployment, DNS,
 traffic, or Go/VPS authority was accessed or changed. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-30 Accepted-Set Source Seal
+
+Application D1 head is now
+`0071_relay_container_drain_accepted_set_source_seal.sql`, with 71 migrations,
+97 required tables, 1550 checked incremental columns, and 144 key indexes.
+
+Five append-preserved source-evidence tables now bind the 0070 command to an
+exact 0068 admission scan. D1 enforces contiguous accepted-sequence copying,
+deterministic member/page ordinals, complete chained pages, all shard
+manifests including empty shards, distinct assembly/verification identities,
+and source cardinality checks at both seal and close time. The close command
+cannot use a caller-supplied bookmark, accepted-set manifest, source-schema
+digest, or source-readback digest unless the same values resolve through one
+complete immutable seal.
+
+The source-schema identity remains pinned to the unchanged 0068 normalized SQL
+SHA-256
+`fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50`.
+Local SQLite and Workerd verify multi-page/multi-shard success, empty shards,
+missing evidence, tampering, ordering errors, identity conflicts, and late
+admission before seal or close.
+
+Phase 1 still does not have a production writer. The next boundary is a root
+Application Worker D1 Session collector plus independent verifier, typed
+machine authorization/audit receipt, signature validation, response-loss
+classification, and isolated-staging N/N-1 fault campaign. No route, secret,
+gate, or remote apply is included here. Billing-expression and settlement
+semantics are unchanged. Go/VPS remains authoritative and production remains
+**NO-GO**.

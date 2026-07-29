@@ -84,6 +84,8 @@ pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_MIGRATION: &st
     "0065_relay_container_shard_placement_pre_enable_grants.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_MIGRATION: &str =
     "0066_relay_container_shard_placement_dispatch_consumptions.sql";
+pub(crate) const RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION: &str =
+    "0067_relay_container_drain_expand.sql";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT: i64 = 64;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
@@ -971,6 +973,62 @@ struct RelayContainerShardPlacementSchemaProbe {
     pre_enable_grant_columns: String,
     dispatch_consumption_columns: String,
     schema_objects: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerDrainSchemaProbe {
+    migration_count: i64,
+    campaign_columns: String,
+    event_columns: String,
+    member_columns: String,
+    observation_columns: String,
+    shard_observation_columns: String,
+    quarantine_columns: String,
+    reverse_sync_columns: String,
+    traffic_return_columns: String,
+    schema_objects: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)] // consumed when 0068 enables drain admission routes
+pub struct RelayContainerDrainCampaignRow {
+    pub campaign_id: String,
+    pub contract_version: i64,
+    pub campaign_contract: String,
+    pub environment: String,
+    pub scope_kind: String,
+    pub scope_id_sha256: String,
+    pub fence_generation: i64,
+    pub admission_fence_id_sha256: String,
+    pub admission_open: i64,
+    pub fence_enforcement_migration: String,
+    pub cutoff_at: i64,
+    pub accepted_high_watermark: i64,
+    pub accepted_bookmark_sha256: String,
+    pub accepted_member_count: i64,
+    pub accepted_set_manifest_sha256: String,
+    pub accepted_first_sequence: i64,
+    pub accepted_first_operation_id: Option<String>,
+    pub accepted_last_sequence: i64,
+    pub accepted_last_operation_id: Option<String>,
+    pub drain_ledger_schema_migration: String,
+    pub ring_generation: i64,
+    pub controller_service_name: String,
+    pub controller_version_id: String,
+    pub shard_count: i64,
+    pub shard_inventory_sha256: String,
+    pub edge_version_set_sha256: String,
+    pub configuration_sha256: String,
+    pub reverse_sync_snapshot_id_sha256: String,
+    pub reverse_sync_source_schema_sha256: String,
+    pub reverse_sync_target_schema_sha256: String,
+    pub stability_window_seconds: i64,
+    pub campaign_digest_sha256: String,
+    pub state: String,
+    pub state_version: i64,
+    pub last_event_digest_sha256: Option<String>,
+    pub created_by_admin_id: i64,
+    pub created_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14128,6 +14186,143 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
             && row.dispatch_consumption_columns == DISPATCH_CONSUMPTION_COLUMNS
             && row.schema_objects == SCHEMA_OBJECTS
     }))
+}
+
+pub async fn relay_container_drain_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    const CAMPAIGN_COLUMNS: &str = "campaign_id,contract_version,campaign_contract,environment,scope_kind,scope_id_sha256,fence_generation,admission_fence_id_sha256,admission_open,fence_enforcement_migration,cutoff_at,accepted_high_watermark,accepted_bookmark_sha256,accepted_member_count,accepted_set_manifest_sha256,accepted_first_sequence,accepted_first_operation_id,accepted_last_sequence,accepted_last_operation_id,drain_ledger_schema_migration,ring_generation,controller_service_name,controller_version_id,shard_count,shard_inventory_sha256,edge_version_set_sha256,configuration_sha256,reverse_sync_snapshot_id_sha256,reverse_sync_source_schema_sha256,reverse_sync_target_schema_sha256,stability_window_seconds,campaign_digest_sha256,state,state_version,last_event_digest_sha256,created_by_admin_id,created_at";
+    const EVENT_COLUMNS: &str = "campaign_id,event_sequence,event_code,from_state,to_state,previous_event_digest_sha256,page_ordinal,page_member_count,page_first_accepted_sequence,page_first_operation_id,page_last_accepted_sequence,page_last_operation_id,sealed_page_count,sealed_member_count,membership_manifest_sha256,first_observation_id_sha256,second_observation_id_sha256,reverse_sync_manifest_id_sha256,operation14_receipt_sha256,operation14_baseline_sha256,traffic_return_receipt_id_sha256,evidence_manifest_sha256,actor_identity_sha256,event_digest_sha256,recorded_at";
+    const MEMBER_COLUMNS: &str = "campaign_id,accepted_sequence,operation_id,owner_generation,shard_index,page_ordinal,member_ordinal,admission_receipt_sha256,provider_attempt_identity_sha256,reservation_key_sha256,expected_terminal_identity_sha256,expected_final_ack_identity_sha256,required_r2_artifact_class,billing_contract_ref_sha256,billing_expression_sha256,billing_expression_version,usage_semantic,request_input_sha256,member_digest_sha256,recorded_at";
+    const OBSERVATION_COLUMNS: &str = "observation_id_sha256,campaign_id,observation_kind,observation_generation,campaign_event_sequence,operation_id,owner_generation,closure_class,terminal_event_sha256,final_ack_sha256,financial_terminal_sha256,billing_audit_sha256,outbox_disposition_sha256,reconciliation_sha256,r2_evidence_sha256,reverse_sync_disposition_sha256,request_id_sha256,observer_identity_sha256,controller_version_id,shard_inventory_sha256,member_count,member_closure_count,quarantine_count,reverse_manifest_count,d1_open_count,billing_open_count,outbox_open_count,reconciliation_open_count,r2_missing_count,queue_open_count,reverse_sync_open_count,memory_batch_open_count,unclassified_open_count,member_closure_manifest_sha256,quarantine_manifest_sha256,reverse_sync_manifest_sha256,billing_conservation_sha256,state_digest_sha256,observation_digest_sha256,observed_at";
+    const SHARD_OBSERVATION_COLUMNS: &str = "observation_id_sha256,campaign_id,placement_attestation_digest_sha256,shard_index,ring_generation,owner_generation,local_high_watermark,snapshot_digest_sha256,controller_state_digest_sha256,execution_stop_eligible,accepted_work_drained,executable_open_count,final_ack_open_count,ambiguity_open_count,unclassified_operation_count,shard_observation_digest_sha256,observed_at";
+    const QUARANTINE_COLUMNS: &str = "quarantine_id_sha256,campaign_id,operation_id,owner_generation,reservation_key_sha256,provider_operation_id_sha256,send_before_journal_sha256,request_sha256,last_provider_observation_sha256,evidence_manifest_sha256,provider_resend_allowed,rust_replay_allowed,go_replay_allowed,reconciliation_owner,review_deadline_at,customer_exposure_quota,provider_exposure_microunits,accounting_disposition,accounting_disposition_sha256,go_tombstone_sha256,approval_manifest_sha256,worm_object_key_sha256,retention_until,quarantine_digest_sha256,quarantined_by_admin_id,quarantined_at";
+    const REVERSE_SYNC_COLUMNS: &str = "manifest_id_sha256,campaign_id,sync_generation,snapshot_id_sha256,source_schema_sha256,target_schema_sha256,source_bookmark_sha256,source_high_watermark,target_high_watermark,source_count,target_count,rejected_count,partition_count,partition_manifest_sha256,go_import_identity_sha256,shadow_result,shadow_manifest_sha256,rust_writes_fenced,go_writes_enabled,status,manifest_digest_sha256,recorded_at";
+    const TRAFFIC_RETURN_COLUMNS: &str = "receipt_id_sha256,campaign_id,contract_version,receipt_contract,evidence_enforcement_migration,first_observation_id_sha256,second_observation_id_sha256,reverse_sync_manifest_id_sha256,membership_manifest_sha256,member_closure_manifest_sha256,quarantine_manifest_sha256,billing_conservation_sha256,operation14_receipt_sha256,operation14_baseline_sha256,go_vps_readiness_sha256,traffic_rehearsal_sha256,slo_approval_sha256,security_approval_sha256,finance_approval_sha256,release_approval_sha256,immutable_evidence_location_sha256,retention_policy_sha256,eligible_for_traffic_return_review,traffic_return_authorized,reviewer_identity_sha256,receipt_digest_sha256,issued_at";
+    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_drain_active_scope|index:idx_relay_container_drain_campaign_digest|index:idx_relay_container_drain_campaign_state|index:idx_relay_container_drain_event_digest|index:idx_relay_container_drain_global_observations|index:idx_relay_container_drain_member_closure|index:idx_relay_container_drain_member_digest|index:idx_relay_container_drain_members_page|index:idx_relay_container_drain_observation_digest|index:idx_relay_container_drain_page_seal|index:idx_relay_container_drain_shard_observation_digest|index:idx_relay_container_quarantine_digest|index:idx_relay_container_quarantine_review|index:idx_relay_container_reverse_sync_status|index:idx_relay_container_traffic_return_receipt_digest|table:relay_container_ambiguity_quarantines|table:relay_container_drain_campaigns|table:relay_container_drain_events|table:relay_container_drain_members|table:relay_container_drain_observations|table:relay_container_drain_shard_observations|table:relay_container_reverse_sync_manifests|table:relay_container_traffic_return_receipts|trigger:relay_container_ambiguity_quarantine_delete_guard|trigger:relay_container_ambiguity_quarantine_insert_guard|trigger:relay_container_ambiguity_quarantine_update_guard|trigger:relay_container_drain_campaign_delete_guard|trigger:relay_container_drain_campaign_insert_guard|trigger:relay_container_drain_campaign_update_guard|trigger:relay_container_drain_event_apply|trigger:relay_container_drain_event_delete_guard|trigger:relay_container_drain_event_insert_guard|trigger:relay_container_drain_event_update_guard|trigger:relay_container_drain_member_delete_guard|trigger:relay_container_drain_member_insert_guard|trigger:relay_container_drain_member_update_guard|trigger:relay_container_drain_observation_delete_guard|trigger:relay_container_drain_observation_insert_guard|trigger:relay_container_drain_observation_update_guard|trigger:relay_container_drain_shard_observation_delete_guard|trigger:relay_container_drain_shard_observation_insert_guard|trigger:relay_container_drain_shard_observation_update_guard|trigger:relay_container_reverse_sync_manifest_delete_guard|trigger:relay_container_reverse_sync_manifest_insert_guard|trigger:relay_container_reverse_sync_manifest_update_guard|trigger:relay_container_traffic_return_receipt_delete_guard|trigger:relay_container_traffic_return_receipt_insert_guard|trigger:relay_container_traffic_return_receipt_update_guard";
+    let migration = [D1Type::Text(RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION)];
+    let row = db
+        .prepare(
+            r#"
+            SELECT
+              (SELECT COUNT(1)
+               FROM d1_migrations
+               WHERE name = ?1) AS migration_count,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_drain_campaigns')
+                 ORDER BY cid
+               )) AS campaign_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_drain_events')
+                 ORDER BY cid
+               )) AS event_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_drain_members')
+                 ORDER BY cid
+               )) AS member_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_drain_observations')
+                 ORDER BY cid
+               )) AS observation_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_drain_shard_observations'
+                 )
+                 ORDER BY cid
+               )) AS shard_observation_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_ambiguity_quarantines'
+                 )
+                 ORDER BY cid
+               )) AS quarantine_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_reverse_sync_manifests'
+                 )
+                 ORDER BY cid
+               )) AS reverse_sync_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_traffic_return_receipts'
+                 )
+                 ORDER BY cid
+               )) AS traffic_return_columns,
+              (SELECT group_concat(type || ':' || name, '|') FROM (
+                 SELECT type, name
+                 FROM sqlite_master
+                 WHERE tbl_name IN (
+                   'relay_container_drain_campaigns',
+                   'relay_container_drain_events',
+                   'relay_container_drain_members',
+                   'relay_container_drain_observations',
+                   'relay_container_drain_shard_observations',
+                   'relay_container_ambiguity_quarantines',
+                   'relay_container_reverse_sync_manifests',
+                   'relay_container_traffic_return_receipts'
+                 )
+                   AND name NOT LIKE 'sqlite_autoindex_%'
+                 ORDER BY type || ':' || name
+               )) AS schema_objects
+            "#,
+        )
+        .bind_refs(&migration)?
+        .first::<RelayContainerDrainSchemaProbe>(None)
+        .await?;
+    Ok(row.is_some_and(|row| {
+        row.migration_count == 1
+            && row.campaign_columns == CAMPAIGN_COLUMNS
+            && row.event_columns == EVENT_COLUMNS
+            && row.member_columns == MEMBER_COLUMNS
+            && row.observation_columns == OBSERVATION_COLUMNS
+            && row.shard_observation_columns == SHARD_OBSERVATION_COLUMNS
+            && row.quarantine_columns == QUARANTINE_COLUMNS
+            && row.reverse_sync_columns == REVERSE_SYNC_COLUMNS
+            && row.traffic_return_columns == TRAFFIC_RETURN_COLUMNS
+            && row.schema_objects == SCHEMA_OBJECTS
+    }))
+}
+
+#[allow(dead_code)] // consumed when 0068 enables drain admission routes
+pub async fn relay_container_drain_campaign(
+    db: &D1Database,
+    campaign_id: &str,
+) -> worker::Result<Option<RelayContainerDrainCampaignRow>> {
+    validate_relay_container_token(campaign_id, "drain campaign ID", 64, 64, |byte| {
+        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+    })?;
+    db.prepare(
+        r#"
+        SELECT campaign_id, contract_version, campaign_contract, environment,
+               scope_kind, scope_id_sha256, fence_generation,
+               admission_fence_id_sha256, admission_open,
+               fence_enforcement_migration, cutoff_at,
+               accepted_high_watermark, accepted_bookmark_sha256,
+               accepted_member_count, accepted_set_manifest_sha256,
+               accepted_first_sequence, accepted_first_operation_id,
+               accepted_last_sequence, accepted_last_operation_id,
+               drain_ledger_schema_migration, ring_generation,
+               controller_service_name, controller_version_id, shard_count,
+               shard_inventory_sha256, edge_version_set_sha256,
+               configuration_sha256, reverse_sync_snapshot_id_sha256,
+               reverse_sync_source_schema_sha256,
+               reverse_sync_target_schema_sha256, stability_window_seconds,
+               campaign_digest_sha256, state, state_version,
+               last_event_digest_sha256, created_by_admin_id, created_at
+        FROM relay_container_drain_campaigns
+        WHERE campaign_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&[D1Type::Text(campaign_id)])?
+    .first::<RelayContainerDrainCampaignRow>(None)
+    .await
 }
 
 pub async fn relay_container_shard_placement_snapshot(
@@ -32132,5 +32327,68 @@ mod tests {
         assert!(admission.contains("MatchingReplay"));
         assert!(source.contains("pub async fn authorize_relay_http_stream_dispatch"));
         assert!(source.contains("sweep_expired_relay_http_stream_dispatch_intents"));
+    }
+
+    #[test]
+    fn relay_container_drain_repository_is_read_only_and_exact_schema_gated() {
+        let migration =
+            include_str!("../../../migrations/d1/0067_relay_container_drain_expand.sql");
+        for fragment in [
+            "0068_relay_container_drain_admission_enforce.sql",
+            "idx_relay_container_drain_active_scope",
+            "state NOT IN ('aborted', 'recovery_required')",
+            "drain campaign fence generation must advance exactly once",
+            "drain membership page seal is not keyset-complete",
+            "campaign.accepted_member_count",
+            "campaign.accepted_set_manifest_sha256",
+            "campaign.accepted_first_sequence",
+            "campaign.accepted_last_sequence",
+            "member.expected_terminal_identity_sha256",
+            "member.expected_final_ack_identity_sha256",
+            "NEW.observation_generation = (",
+            "second_observation.observation_generation =",
+            "SELECT MAX(observation.observation_generation)",
+            "NEW.local_high_watermark = COALESCE((",
+            "relay_container_shard_placement_attestations AS placement",
+            "NEW.placement_attestation_digest_sha256",
+            "second_shard.snapshot_digest_sha256 IS NOT",
+            "second_shard.controller_state_digest_sha256 IS NOT",
+            "quarantine.accounting_disposition = 'billing_hold'",
+            "campaign.reverse_sync_snapshot_id_sha256",
+            "campaign.accepted_bookmark_sha256",
+            "reverse_sync.sync_generation = (",
+            "drain seal lacks two stable complete observations",
+            "first_observation.billing_conservation_sha256",
+            "0069_relay_container_traffic_return_evidence_enforce.sql",
+            "eligible_for_traffic_return_review = 1",
+            "traffic_return_authorized = 0",
+        ] {
+            assert!(
+                migration.contains(fragment),
+                "missing 0067 invariant: {fragment}"
+            );
+        }
+
+        let source = include_str!("d1_repositories.rs");
+        let schema_start = source
+            .find("pub async fn relay_container_drain_schema_ready")
+            .unwrap();
+        let read_start = source[schema_start..]
+            .find("pub async fn relay_container_drain_campaign")
+            .map(|offset| schema_start + offset)
+            .unwrap();
+        let next_repository = source[read_start..]
+            .find("pub async fn relay_container_shard_placement_snapshot")
+            .map(|offset| read_start + offset)
+            .unwrap();
+        let schema = &source[schema_start..read_start];
+        let read = &source[read_start..next_repository];
+        assert!(schema.contains("RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION"));
+        assert!(schema.contains("relay_container_traffic_return_receipts"));
+        assert!(schema.contains("relay_container_drain_event_apply"));
+        assert!(read.contains("FROM relay_container_drain_campaigns"));
+        assert!(!read.contains("INSERT INTO"));
+        assert!(!read.contains("UPDATE relay_container"));
+        assert!(!read.contains("DELETE FROM"));
     }
 }

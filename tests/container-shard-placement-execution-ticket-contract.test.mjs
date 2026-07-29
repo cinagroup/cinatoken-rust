@@ -168,8 +168,9 @@ describe("Relay Container shard placement execution ticket", () => {
     const db = migratedDatabase();
     expect(() =>
       db.transaction(() => {
-        insertAuthorization(db);
-        insertCampaign(db);
+        const now = epoch();
+        insertAuthorization(db, now);
+        insertCampaign(db, now);
       })(),
     ).toThrow("shard activation campaign execution ticket mismatch");
     expect(
@@ -628,15 +629,15 @@ function migratedDatabase() {
 }
 
 function prepareCampaign(db) {
+  const now = epoch();
   db.transaction(() => {
-    insertAuthorization(db);
-    insertTicket(db);
-    insertCampaign(db);
+    insertAuthorization(db, now);
+    insertTicket(db, now);
+    insertCampaign(db, now);
   })();
 }
 
-function insertAuthorization(db) {
-  const now = epoch();
+function insertAuthorization(db, now = epoch()) {
   db.query(
     `INSERT INTO relay_container_shard_placement_mutation_authorizations (
        authorization_id_sha256, execution_nonce_sha256,
@@ -672,8 +673,7 @@ function insertAuthorization(db) {
   );
 }
 
-function insertTicket(db) {
-  const now = epoch();
+function insertTicket(db, now = epoch()) {
   db.query(
     `INSERT INTO relay_container_shard_placement_execution_tickets (
        ticket_id_sha256, contract_version, ticket_contract,
@@ -736,8 +736,7 @@ function insertTicket(db) {
   );
 }
 
-function insertCampaign(db) {
-  const now = epoch();
+function insertCampaign(db, now = epoch()) {
   db.query(
     `INSERT INTO relay_container_shard_activation_campaigns (
        campaign_id, campaign_nonce_sha256, controller_version_id,

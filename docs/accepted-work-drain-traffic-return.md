@@ -11,18 +11,22 @@ to Go/VPS. It is a named protocol, not a shard-placement operation. It MUST
 NOT be assigned operation ordinal 15, inserted into the operation 1-14 receipt
 ledger, or used to extend operation 14.
 
-The current implementation batch provides only:
+The current implementation batch provides:
 
 - a persisted per-shard Durable Object drain snapshot;
 - a separate `execution_stop_eligible` predicate;
 - a default-off, authenticated Controller read attestation over the fixed
   eight-shard set; and
 - a request-independent state digest whose response always says
-  `traffic_return_authorized=false`.
+  `traffic_return_authorized=false`;
+- an expand-only 0067 D1 ledger for campaigns, frozen membership, closures,
+  shard/global observations, quarantines, reverse sync, and eligibility-only
+  receipts; and
+- exact read-only Worker schema readiness and campaign lookup boundaries.
 
-It does not provide the global D1 campaign, admission fence, frozen accepted
-set, ambiguity quarantine, reverse synchronization, stable global
-observations, or traffic-return receipt described below.
+It does not provide the 0068 admission enforcement transaction, any 0067
+writer route, the 0069 typed approval/WORM evidence registry, or remote
+production evidence. All five write gates remain false.
 
 ## 1. Mandatory order
 
@@ -277,8 +281,8 @@ Normal member closure is one of:
 
 - `settled_terminal`: successful business terminal and durable settlement;
 - `failed_terminal`: definite failure and durable refund/zero-charge terminal;
-- `quarantine_pending`: provider outcome cannot be proved and must enter the
-  next phase.
+- `quarantined`: provider outcome cannot be proved and has entered the
+  immutable non-replay quarantine phase.
 
 `recovery_required` is not a successful terminal classification. A terminal
 task without billing, billing without a terminal task, a final event without
@@ -415,23 +419,29 @@ The Container may be stopped when execution is no longer safe or useful even
 while ambiguity is quarantined. That stop must never be recorded as evidence
 that the accepted set financially reconciled.
 
-## 7. Planned persistent model
+## 7. Persistent model
 
-The following is a design target, not an implemented migration.
+Application migration `0067_relay_container_drain_expand.sql` now implements
+the expand-only global ledger locally. It does not implement admission
+enforcement, expose a write route, or make any tracked write gate safe to
+enable.
 
 ### 7.1 D1 expand migration
 
-A future `0067_relay_container_drain_expand.sql` should add:
+`0067_relay_container_drain_expand.sql` adds:
 
 - `relay_container_drain_campaigns`: scope, fence generation, cutoff,
-  accepted high watermark, ring/shard inventory, state, and campaign digest;
+  accepted high watermark/bookmark, campaign-declared frozen member
+  count/manifest and first/last key, immutable 0067 ledger-schema identity,
+  Controller/ring/shard inventory, reverse-export identity, state, and
+  campaign digest;
 - `relay_container_drain_events`: append-only state/evidence hash chain;
 - `relay_container_drain_members`: immutable accepted operation membership and
   required closure identities;
 - `relay_container_drain_observations`: generation-bound global D1, billing,
   outbox, reconciliation, R2, Queue, and reverse-sync observations;
 - `relay_container_drain_shard_observations`: exact shard snapshot and
-  Controller state digests;
+  Controller state digests bound to an immutable 0061 placement attestation;
 - `relay_container_ambiguity_quarantines`: per-operation non-replay and
   financial-exposure sidecars;
 - `relay_container_reverse_sync_manifests`: source/target high watermarks,
@@ -442,17 +452,64 @@ A future `0067_relay_container_drain_expand.sql` should add:
 Every table is scope-bound. Historical global dead letters or unrelated
 tenants must not contaminate campaign counts.
 
-Required constraints include:
+Implemented database constraints include:
 
-- unique active campaign per scope;
-- immutable campaign scope/fence/cutoff after sealing;
+- unique active campaign per scope; `recovery_required` and `aborted` release
+  the active slot only for the next exact fence generation;
+- campaign creation rejected unless the future 0068 migration marker already
+  exists, even if an application write gate is accidentally enabled;
+- immutable campaign scope/fence/cutoff and event-owned state transitions;
 - unique accepted member per campaign and operation generation;
-- keyset-contiguous page seals;
+- strictly increasing accepted keys, contiguous member/page ordinals, and
+  keyset-complete page seals, with explicit NULL rejection;
+- membership cannot seal until copied count, declared manifest, and global
+  first/last keys exactly equal the campaign freeze values that 0068 must
+  derive atomically from the authoritative admission source;
 - append-only events, observations, quarantines, and receipts;
 - no successful drain state before complete membership seal;
-- no operation-14 reference before a successful drain/quarantine seal;
-- no receipt without two stable observations and exact shard inventory; and
-- update/delete denial after terminal or sealed states.
+- one immutable closure observation for every accepted member, bound to the
+  member's frozen terminal and final-ACK identities, with quarantine required
+  before a `quarantined` closure;
+- no drain seal without the latest two consecutive stable global observation
+  generations, equal state and billing-conservation digests, exact shard
+  inventory, zero open/unclassified work, complete member closures, and a
+  passing reverse-sync manifest;
+- shard watermarks must equal the frozen member high watermark for that shard;
+  placement, ring, owner generation, snapshot digest, Controller state, drain
+  predicates, and open counts must remain semantically equal across the
+  observation pair;
+- reverse-sync snapshot/schema/bookmark/count/high-watermark values must equal
+  the campaign freeze, generations must be contiguous, and only the latest
+  generation is eligible for drain;
+- a `billing_hold` quarantine contributes at least one billing-open item, so a
+  zero-open global observation cannot conceal it;
+- no operation-14 reference before a successful drain seal;
+- no eligibility receipt before matching drain, member-closure, quarantine,
+  billing-conservation, reverse-sync, and operation-14 evidence; and
+- no eligibility receipt at all until the future 0069 typed-evidence
+  enforcement migration is installed; and
+- `eligible_for_traffic_return_review=1` together with the database-enforced
+  `traffic_return_authorized=0`.
+
+The Rust D1 repository exposes an exact 0067 schema/object readiness probe and
+a validated read-only campaign lookup. It contains no 0067 mutation method.
+The platform capability response reports schema readiness, each tracked gate,
+`container_drain_write_gates_all_false`, and
+`container_traffic_return_authorization_compiled=false`.
+
+0067 does not recompute the membership manifest from member rows and cannot
+prove that intermediate members equal the authoritative admission source.
+That proof belongs to the 0068 admission/freeze transaction and its
+independent source readback: canonicalize every source and copied member,
+recompute page and complete-set manifests, compare counts/partitions and every
+key, then retain the result. Until that writer/readback exists, the 0067 seal
+is a structural and declared-digest boundary, not production completeness.
+
+Likewise, member billing fields retain only the identity needed to resolve the
+existing billing truth. A production writer must join the immutable
+pre-consume snapshot and canonical billing contract, then replay normalized
+usage, matched tier, group ratio, expression version, and quota conversion
+without copying or redefining the billing formula in this ledger.
 
 ### 7.2 D1 enforcement migration
 
@@ -469,7 +526,20 @@ admission transaction guard and terminal invariants only after:
 0068 is not a down-migration tool. Rollback keeps evidence and fences in place
 and repairs forward.
 
-### 7.3 Durable Object schema
+### 7.3 Typed traffic-return evidence enforcement
+
+A later `0069_relay_container_traffic_return_evidence_enforce.sql` must add an
+immutable, campaign-bound registry for Go/VPS readiness, traffic rehearsal,
+SLO, security, finance, release, retention, and WORM-location evidence. It
+must enforce evidence type, subject, issuer role, validity window, retention,
+reviewer independence, and one canonical digest per approved artifact.
+
+0067 receipt rows name 0069 as their enforcement migration, and the 0067
+insert trigger rejects every receipt while the 0069 migration marker is
+absent. A collection of syntactically valid SHA-256 values is therefore not
+eligible evidence.
+
+### 7.4 Durable Object schema
 
 A future DO schema version may add append-only
 `cinatoken_shard_drain_attestations` rows binding:
@@ -538,7 +608,7 @@ authorize traffic.
 
 ## 9. Planned routes and gates
 
-These routes and gates are design only:
+These routes remain design only:
 
 ```text
 POST /api/platform/container/drains
@@ -549,7 +619,8 @@ POST /api/platform/container/drains/:drain_id/ambiguities/:operation_id/quaranti
 POST /api/platform/container/drains/:drain_id/traffic-return/receipt
 ```
 
-Planned write gates, all default `false`:
+Tracked write gates now exist in local, staging, and production Worker
+configuration, all default `false`:
 
 - `CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED`;
 - `CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED`;
@@ -557,7 +628,8 @@ Planned write gates, all default `false`:
 - `CONTAINER_REVERSE_SYNC_MANIFEST_WRITE_ENABLED`; and
 - `CONTAINER_TRAFFIC_RETURN_RECEIPT_WRITE_ENABLED`.
 
-The existing read attestation gate remains independent. Its route is not added
+There is no route behind these gates yet. The existing read attestation gate
+remains independent. Its route is not added
 to operation 14's action-gate count; operation 14 attests mutating Controller
 action gates, while this protocol consumes read-only shard evidence.
 
@@ -570,7 +642,7 @@ quarantine:
 - different authenticated observation identities where the deployed trust
   model permits;
 - exact campaign, fence, cutoff, ring, shard inventory, Controller version,
-  and schema identity;
+  placement attestation, and schema identity;
 - equal request-independent state digest;
 - no intervening event or membership mutation; and
 - a minimum gap at least the maximum of owner lease, execution deadline,
@@ -598,6 +670,7 @@ the drain observation pair.
 | unknown persisted operation status | stop and drain both fail closed; repair or quarantine under reviewed evidence |
 | claimed/running/prepared/dispatched work remains | Container stop ineligible; continue bounded owner recovery |
 | only ambiguity or missing financial closure remains | Container may be stop-eligible; global drain remains blocked pending quarantine/reconciliation |
+| any quarantine remains in `billing_hold` | billing-open count cannot be zero; drain seal remains blocked |
 | terminal event lacks final ACK | member remains open |
 | task terminal and billing terminal do not join | member remains open; finance owner required |
 | R2 artifact missing or digest differs | member remains open or quarantined with explicit evidence |
@@ -620,6 +693,8 @@ The complete implementation must cover:
 - admission/fence races with stale and current Worker generations;
 - exact accepted-set keyset pagination, crash/resume, and source digest;
 - missing, duplicate, reordered, and cross-ring members;
+- NULL page/count fields, zero/partial copied membership, and frozen
+  count/manifest/first/last-key drift;
 - DO eviction between every snapshot and terminal boundary;
 - Container restart/OOM/stop with unchanged DO ownership;
 - claimed/running/prepared/dispatched/retry/alarm stop blockers;
@@ -631,10 +706,14 @@ The complete implementation must cover:
 - R2 missing/corrupt/orphan artifacts;
 - Queue/DLQ/parking and stream finalization backlog;
 - eight-shard missing/duplicate/divergent observations;
+- stale placement attestations and per-shard semantic drift between stable
+  observations;
 - two stable observation timing and drift reset;
 - operation 14 alone never satisfying drain or traffic-return review;
 - reverse-sync rejects and Go shadow mismatch;
 - traffic-return receipt never outputting authorization; and
+- traffic-return receipt rejected until typed 0069 evidence enforcement is
+  installed; and
 - all planned write gates default false in local, staging, and production
   configuration.
 
@@ -663,19 +742,21 @@ Local green tests are not remote evidence.
 
 ## 13. Rollout and rollback
 
-The implementation order is:
+The implementation order and current status are:
 
-1. land this protocol and reader-only shard foundation;
-2. add 0067 expand-only D1 tables with all gates false;
+1. land this protocol and reader-only shard foundation: complete locally;
+2. add 0067 expand-only D1 tables with all gates false: complete locally;
 3. deploy compatible readers and collect old-writer inventory;
 4. implement campaign creation and accepted-set freeze;
 5. implement member closure observations and reverse-sync manifests;
 6. implement per-operation ambiguity quarantine;
 7. run local and isolated staging fault campaigns;
 8. apply 0068 enforcement only after writer drain proof;
-9. integrate operation-14 prerequisite checking;
-10. implement an eligibility-only traffic-return receipt; and
-11. rehearse independent Go/VPS review without moving production traffic.
+9. integrate the already enforced D1 event order with the real operation-14
+   runtime/write path;
+10. add and verify the 0069 typed approval/WORM evidence registry;
+11. implement an eligibility-only traffic-return receipt; and
+12. rehearse independent Go/VPS review without moving production traffic.
 
 Rollback at any implementation stage:
 
@@ -690,16 +771,24 @@ Rollback at any implementation stage:
 
 This batch does not claim the complete protocol. Specifically absent are:
 
-- global D1 drain campaign and event tables;
+- authenticated write routes and writer implementation for the 0067 ledger;
 - D1-enforced admission fence;
-- immutable accepted-set freeze and manifest;
+- typed 0069 approval/WORM evidence enforcement and reviewer-independence
+  checks;
+- remote accepted-set freeze and manifest evidence;
+- authoritative source-to-member canonical recomputation for every accepted
+  key, page manifest, and complete-set manifest;
 - campaign-bound DO attestation rows;
-- global D1/billing/outbox/reconciliation/R2/Queue observations;
-- durable ambiguity quarantine;
-- reverse-sync manifest and Go shadow workflow;
-- stable global observation pair;
-- operation-14 prerequisite enforcement; and
-- eligibility-only traffic-return receipt and independent approval workflow.
+- deployed global D1/billing/outbox/reconciliation/R2/Queue observations;
+- canonical billing snapshot resolution and full settlement-vector replay
+  against the existing single expression truth;
+- deployed per-operation ambiguity quarantine workflow;
+- deployed reverse-sync and Go shadow workflow;
+- deployed stable global observation pair;
+- integration of the D1 event-order prerequisite with the real operation-14
+  runtime/write path; and
+- an authenticated eligibility-only traffic-return review workflow and
+  independent approval process.
 
 Until all of those are implemented and verified against one immutable remote
 candidate, Go/VPS remains authoritative and production remains **NO-GO**.

@@ -2944,3 +2944,50 @@ followed by operations 7-13 and independent operation-14 disable/recovery.
 Remote schema and trigger readback, least-privilege credentials, rotation,
 fault campaigns, mutation-count evidence, reverse sync, drain, cutover, and
 approvals remain blockers. Production remains **NO-GO**.
+
+## 2026-07-29 Accepted-Work Drain 0067 Status
+
+| Item | Current status |
+|---|---|
+| Application D1 head | **0067_relay_container_drain_expand.sql** |
+| Application D1 inventory | **67 MIGRATIONS / 85 TABLES / 1310 CHECKED COLUMNS / 126 KEY INDEXES** |
+| Global drain persistence | **EIGHT SCOPE-BOUND EVIDENCE FAMILIES, LOCALLY VERIFIED** |
+| Campaign before 0068 enforcement | **DATABASE-REJECTED** |
+| Active campaign cardinality | **ONE PER ENVIRONMENT/SCOPE; RECOVERY ADVANCES EXACTLY ONE GENERATION** |
+| Accepted-set structural seal | **CAMPAIGN-FROZEN COUNT/DECLARED MANIFEST/FIRST/LAST KEY + NULL-SAFE SEALS** |
+| Authoritative source/member recomputation | **NOT IMPLEMENTED; 0068 BLOCKER** |
+| Accepted-set page/member ordering | **STRICT KEYSET + CONTIGUOUS ORDINALS** |
+| Member closure | **ONE IMMUTABLE OBSERVATION PER OPERATION GENERATION, BOUND TO FROZEN TERMINAL/ACK** |
+| Ambiguous provider replay | **PROVIDER/RUST/GO REPLAY ALL FORCED FALSE** |
+| Billing hold | **CANNOT COEXIST WITH ZERO BILLING-OPEN OBSERVATION** |
+| Billing snapshot/vector replay | **NOT IMPLEMENTED; EXISTING SINGLE EXPRESSION TRUTH REMAINS AUTHORITATIVE** |
+| Drain seal | **LATEST TWO CONSECUTIVE STABLE GENERATIONS + EXACT/STABLE SHARD SNAPSHOTS + ZERO OPEN/UNKNOWN** |
+| Reverse/shard freshness | **FROZEN REVERSE EXPORT + LATEST GENERATION + 0061 PLACEMENT + EXACT WATERMARKS** |
+| Operation 14 before drain | **DATABASE-REJECTED** |
+| Traffic-return result | **STABLE MANIFEST-BOUND ELIGIBILITY ONLY; AUTHORIZATION FORCED FALSE** |
+| Rust 0067 write repository/route | **ABSENT** |
+| Tracked 0067 write gates | **FIVE, ALL FALSE IN LOCAL/STAGING/PRODUCTION** |
+| Remote 0067 application/readback | **NOT PERFORMED** |
+| 0068 admission enforcement | **NOT IMPLEMENTED** |
+| 0069 typed approval/WORM evidence enforcement | **NOT IMPLEMENTED; RECEIPTS DATABASE-BLOCKED UNTIL PRESENT** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The 0067 migration is an expand-only compatibility boundary. Rust exposes an
+exact schema/object readiness probe and a validated read-only campaign lookup,
+but no mutation method. Even accidental gate activation cannot create a
+campaign before the 0068 migration marker exists.
+
+The local verifier executes the complete ledger lifecycle and its critical
+negative paths. This is not remote evidence and does not prove old-Writer
+absence, admission fencing, provider/billing/Queue/R2 convergence, reverse
+sync against Go, deployed stable intervals, or traffic safety.
+
+The next production boundary is the 0068 design and writer inventory:
+enumerate every admission path, deploy compatible 0067 readers with gates
+false, prove stale/current Worker races in isolated staging, retain
+Time-Travel/export evidence, and only then add database-enforced admission
+generation matching. No credential or remote Cloudflare state was accessed.
+After 0068, 0069 must enforce typed campaign evidence, validity, retention,
+and reviewer independence before any receipt writer is considered. Production
+remains **NO-GO**.

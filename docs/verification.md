@@ -11917,8 +11917,80 @@ state digest. Local, staging, and production read gates remain false, secrets
 remain untracked, and every successful response fixes
 `traffic_return_authorized=false`.
 
-This is not a global drain proof. The D1 admission fence, immutable accepted
+That reader checkpoint was not a global drain proof. The D1 admission fence, immutable accepted
 set, billing/outbox/reconciliation/R2/Queue joins, ambiguity quarantine,
 reverse sync, stable observation pair, operation-14 prerequisite enforcement,
 and independent traffic-return review remain unimplemented. No Cloudflare
 remote state or Go/VPS authority changed. Production remains **NO-GO**.
+
+## 2026-07-29 Global Drain 0067 Verification
+
+The local expand-only ledger passes:
+
+```text
+python tools/verify_sqlite.py
+  67 migrations
+  85 required tables
+  1310 checked incremental columns
+  126 key indexes
+  0067 deterministic lifecycle and negative probes passed
+
+bun tools/audit_d1_migration_config.mjs --json
+  3 D1 bindings use migrations/d1
+  migration set contiguous 0001..0067
+  Rust expected head and exact migration set match
+
+bun test tests/container-scheduler-config.test.mjs
+  local, staging, production write gates all false
+```
+
+The deterministic SQLite lifecycle test uses a controlled D1 clock and proves:
+
+- a campaign is rejected while 0068 is absent;
+- duplicate active scope is rejected;
+- a `recovery_required` campaign releases the scope only to the next exact
+  fence generation;
+- NULL page/count fields and incomplete copied membership are rejected;
+- accepted member and page keysets seal only when count, declared manifest,
+  and global first/last keys equal the campaign freeze;
+- closure evidence with a terminal or final-ACK identity different from the
+  frozen member is rejected;
+- operation 14 is rejected before drain;
+- an ambiguous member requires immutable provider/Rust/Go non-replay
+  quarantine;
+- member closure and passing reverse synchronization are preserved;
+- reverse snapshot/schema/bookmark/count/high-watermark drift, skipped
+  generations, and false per-shard accepted watermarks are rejected, and drain
+  can reference only the latest reverse-sync generation;
+- stale placement attestations are rejected;
+- a `billing_hold` quarantine cannot be paired with a zero billing-open
+  observation;
+- the latest two consecutive global generations, distinct observers and
+  requests, stable state and billing-conservation digests, elapsed windows,
+  exact all-drained shard sets, and stable per-shard
+  placement/owner/snapshot/Controller/open-count semantics are required;
+- skipped global generations, an `A -> B -> A` observation window, and
+  snapshot-only shard drift are rejected;
+- the successful drain can then reference operation 14;
+- every receipt is rejected while the future 0069 typed-evidence enforcement
+  marker is absent;
+- after the test-only 0069 marker, a receipt with a drifted
+  closure/quarantine/billing manifest is rejected;
+- the independent matching receipt reports eligibility while authorization
+  remains false; and
+- update, delete, and duplicate DDL attempts fail without changing schema.
+
+Focused Rust tests also pass for exact schema readiness, read-only campaign
+access, and the 67-file platform migration marker. The P5 evidence suite passes
+after separating current Application head 0067 from immutable placement
+authorization storage provenance 0063.
+
+These are local compatibility results. No write route, 0068 enforcement, 0069
+typed approval/WORM evidence registry,
+remote D1 application/readback, old-Writer race, real reverse sync, deployed
+stable interval, traffic review, credential use, or Cloudflare mutation is
+claimed. Go/VPS remains authoritative and production remains **NO-GO**.
+
+The local verifier does not recompute the declared membership manifest from
+the authoritative admission source and does not replay the canonical billing
+snapshot/vector. Those remain explicit 0068 writer/readback blockers.

@@ -277,6 +277,14 @@ REQUIRED_TABLES = [
     "relay_container_shard_placement_execution_ticket_authority_acks",
     "relay_container_shard_placement_pre_enable_grants",
     "relay_container_shard_placement_dispatch_consumptions",
+    "relay_container_drain_campaigns",
+    "relay_container_drain_events",
+    "relay_container_drain_members",
+    "relay_container_drain_observations",
+    "relay_container_drain_shard_observations",
+    "relay_container_ambiguity_quarantines",
+    "relay_container_reverse_sync_manifests",
+    "relay_container_traffic_return_receipts",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1489,6 +1497,236 @@ REQUIRED_COLUMNS = {
         "consumption_state",
         "consumed_at",
     },
+    "relay_container_drain_campaigns": {
+        "campaign_id",
+        "contract_version",
+        "campaign_contract",
+        "environment",
+        "scope_kind",
+        "scope_id_sha256",
+        "fence_generation",
+        "admission_fence_id_sha256",
+        "admission_open",
+        "fence_enforcement_migration",
+        "cutoff_at",
+        "accepted_high_watermark",
+        "accepted_bookmark_sha256",
+        "accepted_member_count",
+        "accepted_set_manifest_sha256",
+        "accepted_first_sequence",
+        "accepted_first_operation_id",
+        "accepted_last_sequence",
+        "accepted_last_operation_id",
+        "drain_ledger_schema_migration",
+        "ring_generation",
+        "controller_service_name",
+        "controller_version_id",
+        "shard_count",
+        "shard_inventory_sha256",
+        "edge_version_set_sha256",
+        "configuration_sha256",
+        "reverse_sync_snapshot_id_sha256",
+        "reverse_sync_source_schema_sha256",
+        "reverse_sync_target_schema_sha256",
+        "stability_window_seconds",
+        "campaign_digest_sha256",
+        "state",
+        "state_version",
+        "last_event_digest_sha256",
+        "created_by_admin_id",
+        "created_at",
+    },
+    "relay_container_drain_members": {
+        "campaign_id",
+        "accepted_sequence",
+        "operation_id",
+        "owner_generation",
+        "shard_index",
+        "page_ordinal",
+        "member_ordinal",
+        "admission_receipt_sha256",
+        "provider_attempt_identity_sha256",
+        "reservation_key_sha256",
+        "expected_terminal_identity_sha256",
+        "expected_final_ack_identity_sha256",
+        "required_r2_artifact_class",
+        "billing_contract_ref_sha256",
+        "billing_expression_sha256",
+        "billing_expression_version",
+        "usage_semantic",
+        "request_input_sha256",
+        "member_digest_sha256",
+        "recorded_at",
+    },
+    "relay_container_ambiguity_quarantines": {
+        "quarantine_id_sha256",
+        "campaign_id",
+        "operation_id",
+        "owner_generation",
+        "reservation_key_sha256",
+        "provider_operation_id_sha256",
+        "send_before_journal_sha256",
+        "request_sha256",
+        "last_provider_observation_sha256",
+        "evidence_manifest_sha256",
+        "provider_resend_allowed",
+        "rust_replay_allowed",
+        "go_replay_allowed",
+        "reconciliation_owner",
+        "review_deadline_at",
+        "customer_exposure_quota",
+        "provider_exposure_microunits",
+        "accounting_disposition",
+        "accounting_disposition_sha256",
+        "go_tombstone_sha256",
+        "approval_manifest_sha256",
+        "worm_object_key_sha256",
+        "retention_until",
+        "quarantine_digest_sha256",
+        "quarantined_by_admin_id",
+        "quarantined_at",
+    },
+    "relay_container_reverse_sync_manifests": {
+        "manifest_id_sha256",
+        "campaign_id",
+        "sync_generation",
+        "snapshot_id_sha256",
+        "source_schema_sha256",
+        "target_schema_sha256",
+        "source_bookmark_sha256",
+        "source_high_watermark",
+        "target_high_watermark",
+        "source_count",
+        "target_count",
+        "rejected_count",
+        "partition_count",
+        "partition_manifest_sha256",
+        "go_import_identity_sha256",
+        "shadow_result",
+        "shadow_manifest_sha256",
+        "rust_writes_fenced",
+        "go_writes_enabled",
+        "status",
+        "manifest_digest_sha256",
+        "recorded_at",
+    },
+    "relay_container_drain_observations": {
+        "observation_id_sha256",
+        "campaign_id",
+        "observation_kind",
+        "observation_generation",
+        "campaign_event_sequence",
+        "operation_id",
+        "owner_generation",
+        "closure_class",
+        "terminal_event_sha256",
+        "final_ack_sha256",
+        "financial_terminal_sha256",
+        "billing_audit_sha256",
+        "outbox_disposition_sha256",
+        "reconciliation_sha256",
+        "r2_evidence_sha256",
+        "reverse_sync_disposition_sha256",
+        "request_id_sha256",
+        "observer_identity_sha256",
+        "controller_version_id",
+        "shard_inventory_sha256",
+        "member_count",
+        "member_closure_count",
+        "quarantine_count",
+        "reverse_manifest_count",
+        "d1_open_count",
+        "billing_open_count",
+        "outbox_open_count",
+        "reconciliation_open_count",
+        "r2_missing_count",
+        "queue_open_count",
+        "reverse_sync_open_count",
+        "memory_batch_open_count",
+        "unclassified_open_count",
+        "member_closure_manifest_sha256",
+        "quarantine_manifest_sha256",
+        "reverse_sync_manifest_sha256",
+        "billing_conservation_sha256",
+        "state_digest_sha256",
+        "observation_digest_sha256",
+        "observed_at",
+    },
+    "relay_container_drain_shard_observations": {
+        "observation_id_sha256",
+        "campaign_id",
+        "placement_attestation_digest_sha256",
+        "shard_index",
+        "ring_generation",
+        "owner_generation",
+        "local_high_watermark",
+        "snapshot_digest_sha256",
+        "controller_state_digest_sha256",
+        "execution_stop_eligible",
+        "accepted_work_drained",
+        "executable_open_count",
+        "final_ack_open_count",
+        "ambiguity_open_count",
+        "unclassified_operation_count",
+        "shard_observation_digest_sha256",
+        "observed_at",
+    },
+    "relay_container_traffic_return_receipts": {
+        "receipt_id_sha256",
+        "campaign_id",
+        "contract_version",
+        "receipt_contract",
+        "evidence_enforcement_migration",
+        "first_observation_id_sha256",
+        "second_observation_id_sha256",
+        "reverse_sync_manifest_id_sha256",
+        "membership_manifest_sha256",
+        "member_closure_manifest_sha256",
+        "quarantine_manifest_sha256",
+        "billing_conservation_sha256",
+        "operation14_receipt_sha256",
+        "operation14_baseline_sha256",
+        "go_vps_readiness_sha256",
+        "traffic_rehearsal_sha256",
+        "slo_approval_sha256",
+        "security_approval_sha256",
+        "finance_approval_sha256",
+        "release_approval_sha256",
+        "immutable_evidence_location_sha256",
+        "retention_policy_sha256",
+        "eligible_for_traffic_return_review",
+        "traffic_return_authorized",
+        "reviewer_identity_sha256",
+        "receipt_digest_sha256",
+        "issued_at",
+    },
+    "relay_container_drain_events": {
+        "campaign_id",
+        "event_sequence",
+        "event_code",
+        "from_state",
+        "to_state",
+        "previous_event_digest_sha256",
+        "page_ordinal",
+        "page_member_count",
+        "page_first_accepted_sequence",
+        "page_first_operation_id",
+        "page_last_accepted_sequence",
+        "page_last_operation_id",
+        "sealed_page_count",
+        "sealed_member_count",
+        "membership_manifest_sha256",
+        "first_observation_id_sha256",
+        "second_observation_id_sha256",
+        "reverse_sync_manifest_id_sha256",
+        "operation14_receipt_sha256",
+        "operation14_baseline_sha256",
+        "traffic_return_receipt_id_sha256",
+        "evidence_manifest_sha256",
+        "actor_identity_sha256",
+        "event_digest_sha256",
+        "recorded_at",
+    },
 }
 
 REQUIRED_INDEXES = {
@@ -1689,6 +1927,37 @@ REQUIRED_INDEXES = {
     "relay_container_shard_placement_dispatch_consumptions": {
         "idx_relay_container_shard_placement_dispatch_consumptions_claim": False,
     },
+    "relay_container_drain_campaigns": {
+        "idx_relay_container_drain_active_scope": True,
+        "idx_relay_container_drain_campaign_digest": True,
+        "idx_relay_container_drain_campaign_state": False,
+    },
+    "relay_container_drain_members": {
+        "idx_relay_container_drain_member_digest": True,
+        "idx_relay_container_drain_members_page": False,
+    },
+    "relay_container_drain_events": {
+        "idx_relay_container_drain_event_digest": True,
+        "idx_relay_container_drain_page_seal": True,
+    },
+    "relay_container_drain_observations": {
+        "idx_relay_container_drain_member_closure": True,
+        "idx_relay_container_drain_global_observations": False,
+        "idx_relay_container_drain_observation_digest": True,
+    },
+    "relay_container_drain_shard_observations": {
+        "idx_relay_container_drain_shard_observation_digest": True,
+    },
+    "relay_container_ambiguity_quarantines": {
+        "idx_relay_container_quarantine_digest": True,
+        "idx_relay_container_quarantine_review": False,
+    },
+    "relay_container_reverse_sync_manifests": {
+        "idx_relay_container_reverse_sync_status": False,
+    },
+    "relay_container_traffic_return_receipts": {
+        "idx_relay_container_traffic_return_receipt_digest": True,
+    },
 }
 
 
@@ -1753,6 +2022,7 @@ def main() -> int:
     relay_http_stream_client_abort_rollout_verified = False
     relay_container_ring_transition_claim_rollout_verified = False
     relay_container_shard_placement_attestation_rollout_verified = False
+    relay_container_drain_expand_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -1812,6 +2082,8 @@ def main() -> int:
         relay_container_ring_transition_claim_rollout_verified = True
         verify_relay_container_shard_placement_attestation_rollout(schema_paths)
         relay_container_shard_placement_attestation_rollout_verified = True
+        verify_relay_container_drain_expand_rollout(schema_paths)
+        relay_container_drain_expand_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -2048,6 +2320,8 @@ def main() -> int:
             " + 0065 immutable pre-enable application grants"
             " + 0066 immutable dispatch consumptions"
         )
+    if relay_container_drain_expand_rollout_verified:
+        message += " + 0067 default-inert accepted-work drain ledger"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -19350,7 +19624,7 @@ def verify_relay_container_ring_transition_claim_rollout(
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
     placement_event_index = schema_paths.index(placement_event_path)
-    if placement_event_index != len(schema_paths) - 5:
+    if placement_event_index + 1 >= len(schema_paths):
         raise SystemExit("0062 shard placement events must immediately precede 0063")
     if (
         placement_event_index == 0
@@ -19358,14 +19632,18 @@ def verify_relay_container_ring_transition_claim_rollout(
     ):
         raise SystemExit("0062 shard placement events must follow 0061")
     placement_authorization_index = schema_paths.index(placement_authorization_path)
-    if placement_authorization_index != len(schema_paths) - 4:
+    if schema_paths[placement_event_index + 1] != placement_authorization_path:
         raise SystemExit("0063 shard placement authorization must immediately precede 0064")
     if schema_paths[placement_authorization_index - 1] != placement_event_path:
         raise SystemExit("0063 shard placement authorization must follow 0062")
     placement_execution_ticket_index = schema_paths.index(
         placement_execution_ticket_path
     )
-    if placement_execution_ticket_index != len(schema_paths) - 3:
+    if (
+        placement_authorization_index + 1 >= len(schema_paths)
+        or schema_paths[placement_authorization_index + 1]
+        != placement_execution_ticket_path
+    ):
         raise SystemExit(
             "0064 shard placement execution ticket must immediately precede 0065"
         )
@@ -19377,7 +19655,11 @@ def verify_relay_container_ring_transition_claim_rollout(
     placement_pre_enable_grant_index = schema_paths.index(
         placement_pre_enable_grant_path
     )
-    if placement_pre_enable_grant_index != len(schema_paths) - 2:
+    if (
+        placement_execution_ticket_index + 1 >= len(schema_paths)
+        or schema_paths[placement_execution_ticket_index + 1]
+        != placement_pre_enable_grant_path
+    ):
         raise SystemExit(
             "0065 shard placement pre-enable grant must immediately precede 0066"
         )
@@ -19389,8 +19671,14 @@ def verify_relay_container_ring_transition_claim_rollout(
     placement_dispatch_consumption_index = schema_paths.index(
         placement_dispatch_consumption_path
     )
-    if placement_dispatch_consumption_index != len(schema_paths) - 1:
-        raise SystemExit("0066 shard placement dispatch consumption must be the D1 head")
+    if (
+        placement_pre_enable_grant_index + 1 >= len(schema_paths)
+        or schema_paths[placement_pre_enable_grant_index + 1]
+        != placement_dispatch_consumption_path
+    ):
+        raise SystemExit(
+            "0066 shard placement dispatch consumption must immediately follow 0065"
+        )
     if (
         schema_paths[placement_dispatch_consumption_index - 1]
         != placement_pre_enable_grant_path
@@ -19791,7 +20079,7 @@ def verify_relay_container_shard_placement_attestation_rollout(
     if placement_index == 0 or schema_paths[placement_index - 1] != authority_path:
         raise SystemExit("0061 shard placement attestations must follow 0060")
     placement_event_index = schema_paths.index(placement_event_path)
-    if placement_event_index != len(schema_paths) - 5:
+    if placement_event_index + 1 >= len(schema_paths):
         raise SystemExit("0062 shard placement events must immediately precede 0063")
     if (
         placement_event_index == 0
@@ -19799,14 +20087,18 @@ def verify_relay_container_shard_placement_attestation_rollout(
     ):
         raise SystemExit("0062 shard placement events must follow 0061")
     placement_authorization_index = schema_paths.index(placement_authorization_path)
-    if placement_authorization_index != len(schema_paths) - 4:
+    if schema_paths[placement_event_index + 1] != placement_authorization_path:
         raise SystemExit("0063 shard placement authorization must immediately precede 0064")
     if schema_paths[placement_authorization_index - 1] != placement_event_path:
         raise SystemExit("0063 shard placement authorization must follow 0062")
     placement_execution_ticket_index = schema_paths.index(
         placement_execution_ticket_path
     )
-    if placement_execution_ticket_index != len(schema_paths) - 3:
+    if (
+        placement_authorization_index + 1 >= len(schema_paths)
+        or schema_paths[placement_authorization_index + 1]
+        != placement_execution_ticket_path
+    ):
         raise SystemExit(
             "0064 shard placement execution ticket must immediately precede 0065"
         )
@@ -19818,7 +20110,11 @@ def verify_relay_container_shard_placement_attestation_rollout(
     placement_pre_enable_grant_index = schema_paths.index(
         placement_pre_enable_grant_path
     )
-    if placement_pre_enable_grant_index != len(schema_paths) - 2:
+    if (
+        placement_execution_ticket_index + 1 >= len(schema_paths)
+        or schema_paths[placement_execution_ticket_index + 1]
+        != placement_pre_enable_grant_path
+    ):
         raise SystemExit(
             "0065 shard placement pre-enable grant must immediately precede 0066"
         )
@@ -19830,8 +20126,14 @@ def verify_relay_container_shard_placement_attestation_rollout(
     placement_dispatch_consumption_index = schema_paths.index(
         placement_dispatch_consumption_path
     )
-    if placement_dispatch_consumption_index != len(schema_paths) - 1:
-        raise SystemExit("0066 shard placement dispatch consumption must be the D1 head")
+    if (
+        placement_pre_enable_grant_index + 1 >= len(schema_paths)
+        or schema_paths[placement_pre_enable_grant_index + 1]
+        != placement_dispatch_consumption_path
+    ):
+        raise SystemExit(
+            "0066 shard placement dispatch consumption must immediately follow 0065"
+        )
     if (
         schema_paths[placement_dispatch_consumption_index - 1]
         != placement_pre_enable_grant_path
@@ -19986,6 +20288,1360 @@ def verify_relay_container_shard_placement_attestation_rollout(
             raise SystemExit(
                 f"0066 shard placement dispatch consumption rollout missing: {fragment}"
             )
+
+
+def verify_relay_container_drain_expand_rollout(
+    schema_paths: list[Path],
+) -> None:
+    drain_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0067_relay_container_drain_expand.sql"
+        ),
+        None,
+    )
+    dispatch_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0066_relay_container_shard_placement_dispatch_consumptions.sql"
+        ),
+        None,
+    )
+    if drain_path is None or dispatch_path is None:
+        raise SystemExit("0066/0067 accepted-work drain rollout migrations not found")
+    drain_index = schema_paths.index(drain_path)
+    if (
+        drain_index == 0
+        or schema_paths[drain_index - 1] != dispatch_path
+        or drain_index != len(schema_paths) - 1
+    ):
+        raise SystemExit("0067 accepted-work drain expand migration must follow 0066")
+
+    drain_sql = drain_path.read_text(encoding="utf-8")
+    if "if not exists" in drain_sql.lower():
+        raise SystemExit("0067 critical drain objects must fail duplicate DDL")
+    for fragment in (
+        "CREATE TABLE relay_container_drain_campaigns",
+        "CREATE TABLE relay_container_drain_events",
+        "CREATE TABLE relay_container_drain_members",
+        "CREATE TABLE relay_container_drain_observations",
+        "CREATE TABLE relay_container_drain_shard_observations",
+        "CREATE TABLE relay_container_ambiguity_quarantines",
+        "CREATE TABLE relay_container_reverse_sync_manifests",
+        "CREATE TABLE relay_container_traffic_return_receipts",
+        "idx_relay_container_drain_active_scope",
+        "WHERE state NOT IN ('aborted', 'recovery_required')",
+        "0068_relay_container_drain_admission_enforce.sql",
+        "drain campaign fence generation must advance exactly once",
+        "relay_container_drain_campaign_insert_guard",
+        "relay_container_drain_campaign_update_guard",
+        "relay_container_drain_member_insert_guard",
+        "drain membership page seal is not keyset-complete",
+        "drain membership seal is incomplete",
+        "campaign.accepted_member_count",
+        "campaign.accepted_set_manifest_sha256",
+        "campaign.accepted_first_sequence",
+        "campaign.accepted_last_sequence",
+        "provider_resend_allowed = 0",
+        "rust_replay_allowed = 0",
+        "go_replay_allowed = 0",
+        "NEW.sync_generation = (",
+        "NEW.snapshot_id_sha256 =",
+        "campaign.reverse_sync_snapshot_id_sha256",
+        "NEW.source_bookmark_sha256 =",
+        "campaign.accepted_bookmark_sha256",
+        "reverse_sync.sync_generation = (",
+        "relay_container_drain_observation_insert_guard",
+        "member.expected_terminal_identity_sha256",
+        "member.expected_final_ack_identity_sha256",
+        "drain member closure evidence mismatch",
+        "NEW.observation_generation = (",
+        "second_observation.observation_generation =",
+        "SELECT MAX(observation.observation_generation)",
+        "NEW.local_high_watermark = COALESCE((",
+        "relay_container_shard_placement_attestations AS placement",
+        "NEW.placement_attestation_digest_sha256",
+        "second_shard.snapshot_digest_sha256 IS NOT",
+        "second_shard.controller_state_digest_sha256 IS NOT",
+        "quarantine.accounting_disposition = 'billing_hold'",
+        "drain seal lacks two stable complete observations",
+        "relay_container_traffic_return_receipt_insert_guard",
+        "0069_relay_container_traffic_return_evidence_enforce.sql",
+        "traffic return receipt requires typed evidence enforcement migration 0069",
+        "first_observation.billing_conservation_sha256",
+        "second_observation.billing_conservation_sha256",
+        "eligible_for_traffic_return_review = 1",
+        "traffic_return_authorized = 0",
+        "relay_container_drain_event_apply",
+        "relay_container_drain_event_update_guard",
+        "relay_container_drain_event_delete_guard",
+    ):
+        if fragment not in drain_sql:
+            raise SystemExit(f"0067 accepted-work drain rollout missing: {fragment}")
+
+    clock = [1_800_000_000]
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.create_function("unixepoch", 0, lambda: clock[0])
+    conn.execute("CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)")
+    conn.execute(
+        "INSERT INTO d1_migrations(name) VALUES (?)",
+        ("0067_relay_container_drain_expand.sql",),
+    )
+    conn.execute(
+        """
+        CREATE TABLE relay_container_shard_placement_attestations (
+          placement_attestation_digest_sha256 TEXT PRIMARY KEY,
+          environment TEXT NOT NULL,
+          controller_service_name TEXT NOT NULL,
+          controller_version_id TEXT NOT NULL,
+          ring_generation INTEGER NOT NULL,
+          shard_count INTEGER NOT NULL,
+          shard_index INTEGER NOT NULL
+        )
+        """
+    )
+    conn.executescript(drain_sql)
+
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    campaign_id = digest("drain-campaign")
+    scope_id = digest("global-scope")
+    shard_inventory = digest("shard-inventory")
+    membership_manifest = digest("membership-manifest")
+    accepted_bookmark = digest("accepted-bookmark")
+    reverse_snapshot = digest("reverse-snapshot")
+    reverse_source_schema = digest("reverse-source-schema")
+    reverse_target_schema = digest("reverse-target-schema")
+    placement_attestation = digest("placement-attestation")
+    wrong_placement_attestation = digest("wrong-placement-attestation")
+    stable_controller_state = digest("stable-controller-state")
+    member_closure_manifest = digest("member-closure-manifest")
+    quarantine_manifest = digest("quarantine-manifest")
+    billing_conservation = digest("billing-conservation")
+    reverse_manifest_id = digest("reverse-manifest-id")
+    reverse_manifest_digest = digest("reverse-manifest-digest")
+    first_observation_id = digest("first-global-observation")
+    second_observation_id = digest("second-global-observation")
+    operation14_receipt = digest("operation-14-receipt")
+    operation14_baseline = digest("operation-14-baseline")
+    traffic_receipt_id = digest("traffic-return-receipt")
+
+    campaign_sql = """
+        INSERT INTO relay_container_drain_campaigns (
+          campaign_id, contract_version, campaign_contract, environment,
+          scope_kind, scope_id_sha256, fence_generation,
+          admission_fence_id_sha256, admission_open,
+          fence_enforcement_migration, cutoff_at,
+          accepted_high_watermark, accepted_bookmark_sha256,
+          accepted_member_count, accepted_set_manifest_sha256,
+          accepted_first_sequence, accepted_first_operation_id,
+          accepted_last_sequence, accepted_last_operation_id,
+          drain_ledger_schema_migration, ring_generation,
+          controller_service_name, controller_version_id, shard_count,
+          shard_inventory_sha256, edge_version_set_sha256,
+          configuration_sha256, reverse_sync_snapshot_id_sha256,
+          reverse_sync_source_schema_sha256,
+          reverse_sync_target_schema_sha256, stability_window_seconds,
+          campaign_digest_sha256, state, state_version,
+          last_event_digest_sha256, created_by_admin_id, created_at
+        ) VALUES (
+          ?, 1, 'accepted-work-drain-v1', 'staging',
+          'global', ?, ?, ?, 0,
+          '0068_relay_container_drain_admission_enforce.sql',
+          unixepoch(), 1, ?, 1, ?, 1, 'operation-1',
+          1, 'operation-1',
+          '0067_relay_container_drain_expand.sql', 1,
+          'cinatoken-relay-controller', 'controller-v1', 1,
+          ?, ?, ?, ?, ?, ?, 60, ?,
+          'fenced', 0, NULL, 42, unixepoch()
+        )
+    """
+    campaign_args = (
+        campaign_id,
+        scope_id,
+        1,
+        digest("admission-fence"),
+        accepted_bookmark,
+        membership_manifest,
+        shard_inventory,
+        digest("edge-version-set"),
+        digest("configuration"),
+        reverse_snapshot,
+        reverse_source_schema,
+        reverse_target_schema,
+        digest("campaign-contract"),
+    )
+    try:
+        conn.execute(campaign_sql, campaign_args)
+    except sqlite3.Error as error:
+        if "requires D1 admission enforcement migration 0068" not in str(error):
+            raise SystemExit(
+                f"0067 pre-enforcement campaign guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed a drain campaign before migration 0068")
+
+    conn.execute(
+        "INSERT INTO d1_migrations(name) VALUES (?)",
+        ("0068_relay_container_drain_admission_enforce.sql",),
+    )
+    conn.execute(campaign_sql, campaign_args)
+
+    duplicate_args = (
+        digest("duplicate-campaign"),
+        scope_id,
+        2,
+        digest("duplicate-fence"),
+        digest("duplicate-bookmark"),
+        digest("duplicate-membership-manifest"),
+        shard_inventory,
+        digest("duplicate-edge-set"),
+        digest("duplicate-config"),
+        digest("duplicate-reverse-snapshot"),
+        digest("duplicate-reverse-source-schema"),
+        digest("duplicate-reverse-target-schema"),
+        digest("duplicate-campaign-contract"),
+    )
+    try:
+        conn.execute(campaign_sql, duplicate_args)
+    except sqlite3.Error as error:
+        if "UNIQUE constraint failed" not in str(error):
+            raise SystemExit(
+                f"0067 active-scope uniqueness failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed two active drain campaigns for one scope")
+
+    recovery_scope_id = digest("recovery-scope")
+    recovery_campaign_id = digest("recovery-campaign")
+    recovery_campaign_args = (
+        recovery_campaign_id,
+        recovery_scope_id,
+        1,
+        digest("recovery-admission-fence"),
+        digest("recovery-accepted-bookmark"),
+        digest("recovery-membership-manifest"),
+        digest("recovery-shard-inventory"),
+        digest("recovery-edge-set"),
+        digest("recovery-configuration"),
+        digest("recovery-reverse-snapshot"),
+        digest("recovery-reverse-source-schema"),
+        digest("recovery-reverse-target-schema"),
+        digest("recovery-campaign-contract"),
+    )
+    conn.execute(campaign_sql, recovery_campaign_args)
+    conn.execute(
+        """
+        INSERT INTO relay_container_drain_events (
+          campaign_id, event_sequence, event_code, from_state, to_state,
+          previous_event_digest_sha256, evidence_manifest_sha256,
+          actor_identity_sha256, event_digest_sha256, recorded_at
+        ) VALUES (
+          ?, 1, 'recovery_required', 'fenced', 'recovery_required',
+          NULL, ?, ?, ?, unixepoch()
+        )
+        """,
+        (
+            recovery_campaign_id,
+            digest("recovery-evidence"),
+            digest("recovery-actor"),
+            digest("recovery-event"),
+        ),
+    )
+    repaired_campaign_args = (
+        digest("repaired-campaign"),
+        recovery_scope_id,
+        2,
+        digest("repaired-admission-fence"),
+        digest("repaired-accepted-bookmark"),
+        digest("repaired-membership-manifest"),
+        digest("repaired-shard-inventory"),
+        digest("repaired-edge-set"),
+        digest("repaired-configuration"),
+        digest("repaired-reverse-snapshot"),
+        digest("repaired-reverse-source-schema"),
+        digest("repaired-reverse-target-schema"),
+        digest("repaired-campaign-contract"),
+    )
+    conn.execute(campaign_sql, repaired_campaign_args)
+    stale_generation_args = (
+        digest("stale-generation-campaign"),
+        recovery_scope_id,
+        1,
+        digest("stale-generation-fence"),
+        digest("stale-generation-bookmark"),
+        digest("stale-generation-membership-manifest"),
+        digest("stale-generation-shards"),
+        digest("stale-generation-edge-set"),
+        digest("stale-generation-config"),
+        digest("stale-generation-reverse-snapshot"),
+        digest("stale-generation-reverse-source-schema"),
+        digest("stale-generation-reverse-target-schema"),
+        digest("stale-generation-contract"),
+    )
+    try:
+        conn.execute(campaign_sql, stale_generation_args)
+    except sqlite3.Error as error:
+        if "fence generation must advance exactly once" not in str(error):
+            raise SystemExit(
+                f"0067 recovery generation guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed a stale recovery campaign generation")
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO relay_container_drain_events (
+              campaign_id, event_sequence, event_code, from_state, to_state,
+              previous_event_digest_sha256, sealed_page_count,
+              sealed_member_count, membership_manifest_sha256,
+              evidence_manifest_sha256, actor_identity_sha256,
+              event_digest_sha256, recorded_at
+            ) VALUES (
+              ?, 1, 'membership_sealed', 'fenced', 'membership_sealed',
+              NULL, 0, 0, ?, ?, ?, ?, unixepoch()
+            )
+            """,
+            (
+                campaign_id,
+                membership_manifest,
+                digest("incomplete-membership-evidence"),
+                digest("membership-seal-actor"),
+                digest("incomplete-membership-event"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "drain membership seal is incomplete" not in str(error):
+            raise SystemExit(
+                f"0067 incomplete frozen membership guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 sealed an incompletely copied frozen membership")
+
+    conn.execute(
+        """
+        INSERT INTO relay_container_drain_members (
+          campaign_id, accepted_sequence, operation_id, owner_generation,
+          shard_index, page_ordinal, member_ordinal,
+          admission_receipt_sha256, provider_attempt_identity_sha256,
+          reservation_key_sha256, expected_terminal_identity_sha256,
+          expected_final_ack_identity_sha256, required_r2_artifact_class,
+          billing_contract_ref_sha256, billing_expression_sha256,
+          billing_expression_version, usage_semantic, request_input_sha256,
+          member_digest_sha256, recorded_at
+        ) VALUES (
+          ?, 1, 'operation-1', 2, 0, 1, 1, ?, ?, ?, ?, ?,
+          'input_and_result', ?, ?, 1, 'tokens', ?, ?, unixepoch()
+        )
+        """,
+        (
+            campaign_id,
+            digest("admission-receipt"),
+            digest("provider-attempt"),
+            digest("reservation"),
+            digest("terminal-identity"),
+            digest("final-ack-identity"),
+            digest("billing-contract"),
+            digest("billing-expression"),
+            digest("request-input"),
+            digest("member"),
+        ),
+    )
+
+    event_one = digest("event-one")
+    try:
+        conn.execute(
+            """
+            INSERT INTO relay_container_drain_events (
+              campaign_id, event_sequence, event_code, from_state, to_state,
+              previous_event_digest_sha256, page_ordinal, page_member_count,
+              page_first_accepted_sequence, page_first_operation_id,
+              page_last_accepted_sequence, page_last_operation_id,
+              operation14_receipt_sha256, operation14_baseline_sha256,
+              evidence_manifest_sha256, actor_identity_sha256,
+              event_digest_sha256, recorded_at
+            ) VALUES (
+              ?, 1, 'membership_page_sealed', 'fenced', 'membership_copying',
+              NULL, 1, 1, 1, 'operation-1', 1, 'operation-1', ?, ?,
+              ?, ?, ?, unixepoch()
+            )
+            """,
+            (
+                campaign_id,
+                operation14_receipt,
+                operation14_baseline,
+                digest("smuggled-operation-14-evidence"),
+                digest("membership-actor"),
+                digest("smuggled-operation-14-event"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "CHECK constraint failed" not in str(error):
+            raise SystemExit(
+                f"0067 event evidence exclusivity failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed event-specific operation 14 evidence smuggling")
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO relay_container_drain_events (
+              campaign_id, event_sequence, event_code, from_state, to_state,
+              previous_event_digest_sha256, page_ordinal, page_member_count,
+              page_first_accepted_sequence, page_first_operation_id,
+              page_last_accepted_sequence, page_last_operation_id,
+              evidence_manifest_sha256, actor_identity_sha256,
+              event_digest_sha256, recorded_at
+            ) VALUES (
+              ?, 1, 'membership_page_sealed', 'fenced', 'membership_copying',
+              NULL, 1, NULL, 1, 'operation-1', 1, 'operation-1',
+              ?, ?, ?, unixepoch()
+            )
+            """,
+            (
+                campaign_id,
+                digest("null-page-count-evidence"),
+                digest("membership-actor"),
+                digest("null-page-count-event"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "drain membership page seal is not keyset-complete" not in str(error):
+            raise SystemExit(
+                f"0067 NULL page-count guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed a NULL membership page count")
+
+    conn.execute(
+        """
+        INSERT INTO relay_container_drain_events (
+          campaign_id, event_sequence, event_code, from_state, to_state,
+          previous_event_digest_sha256, page_ordinal, page_member_count,
+          page_first_accepted_sequence, page_first_operation_id,
+          page_last_accepted_sequence, page_last_operation_id,
+          evidence_manifest_sha256, actor_identity_sha256,
+          event_digest_sha256, recorded_at
+        ) VALUES (
+          ?, 1, 'membership_page_sealed', 'fenced', 'membership_copying',
+          NULL, 1, 1, 1, 'operation-1', 1, 'operation-1',
+          ?, ?, ?, unixepoch()
+        )
+        """,
+        (
+            campaign_id,
+            digest("page-evidence"),
+            digest("membership-actor"),
+            event_one,
+        ),
+    )
+
+    event_two = digest("event-two")
+    try:
+        conn.execute(
+            """
+            INSERT INTO relay_container_drain_events (
+              campaign_id, event_sequence, event_code, from_state, to_state,
+              previous_event_digest_sha256, sealed_page_count,
+              sealed_member_count, membership_manifest_sha256,
+              evidence_manifest_sha256, actor_identity_sha256,
+              event_digest_sha256, recorded_at
+            ) VALUES (
+              ?, 2, 'membership_sealed', 'membership_copying',
+              'membership_sealed', ?, 1, NULL, ?, ?, ?, ?, unixepoch()
+            )
+            """,
+            (
+                campaign_id,
+                event_one,
+                membership_manifest,
+                digest("null-membership-count-evidence"),
+                digest("membership-seal-actor"),
+                digest("null-membership-count-event"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "drain membership seal is incomplete" not in str(error):
+            raise SystemExit(
+                f"0067 NULL membership-count guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed a NULL sealed membership count")
+
+    conn.execute(
+        """
+        INSERT INTO relay_container_drain_events (
+          campaign_id, event_sequence, event_code, from_state, to_state,
+          previous_event_digest_sha256, sealed_page_count,
+          sealed_member_count, membership_manifest_sha256,
+          evidence_manifest_sha256, actor_identity_sha256,
+          event_digest_sha256, recorded_at
+        ) VALUES (
+          ?, 2, 'membership_sealed', 'membership_copying',
+          'membership_sealed', ?, 1, 1, ?, ?, ?, ?, unixepoch()
+        )
+        """,
+        (
+            campaign_id,
+            event_one,
+            membership_manifest,
+            digest("membership-seal-evidence"),
+            digest("membership-seal-actor"),
+            event_two,
+        ),
+    )
+
+    event_three = digest("event-three")
+    conn.execute(
+        """
+        INSERT INTO relay_container_drain_events (
+          campaign_id, event_sequence, event_code, from_state, to_state,
+          previous_event_digest_sha256, evidence_manifest_sha256,
+          actor_identity_sha256, event_digest_sha256, recorded_at
+        ) VALUES (
+          ?, 3, 'drain_started', 'membership_sealed', 'draining',
+          ?, ?, ?, ?, unixepoch()
+        )
+        """,
+        (
+            campaign_id,
+            event_two,
+            digest("drain-start-evidence"),
+            digest("drain-actor"),
+            event_three,
+        ),
+    )
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO relay_container_drain_events (
+              campaign_id, event_sequence, event_code, from_state, to_state,
+              previous_event_digest_sha256, operation14_receipt_sha256,
+              operation14_baseline_sha256, evidence_manifest_sha256,
+              actor_identity_sha256, event_digest_sha256, recorded_at
+            ) VALUES (
+              ?, 4, 'operation14_completed', 'draining',
+              'operation14_complete', ?, ?, ?, ?, ?, ?, unixepoch()
+            )
+            """,
+            (
+                campaign_id,
+                event_three,
+                operation14_receipt,
+                operation14_baseline,
+                digest("early-operation-14-evidence"),
+                digest("operation-14-actor"),
+                digest("early-operation-14-event"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "lifecycle transition is invalid" not in str(error):
+            raise SystemExit(
+                f"0067 operation-14 ordering guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed operation 14 before a successful drain seal")
+
+    reverse_manifest_sql = """
+        INSERT INTO relay_container_reverse_sync_manifests (
+          manifest_id_sha256, campaign_id, sync_generation,
+          snapshot_id_sha256, source_schema_sha256, target_schema_sha256,
+          source_bookmark_sha256, source_high_watermark,
+          target_high_watermark, source_count, target_count,
+          rejected_count, partition_count, partition_manifest_sha256,
+          go_import_identity_sha256, shadow_result, shadow_manifest_sha256,
+          rust_writes_fenced, go_writes_enabled, status,
+          manifest_digest_sha256, recorded_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 0, 1, ?,
+          ?, 'matched', ?, 1, 0, 'passed', ?, unixepoch()
+        )
+    """
+    reverse_manifest_args = (
+        reverse_manifest_id,
+        campaign_id,
+        1,
+        reverse_snapshot,
+        reverse_source_schema,
+        reverse_target_schema,
+        accepted_bookmark,
+        digest("reverse-partitions"),
+        digest("go-import"),
+        digest("shadow-result"),
+        reverse_manifest_digest,
+    )
+    mismatched_reverse_args = list(reverse_manifest_args)
+    mismatched_reverse_args[0] = digest("mismatched-reverse-manifest")
+    mismatched_reverse_args[6] = digest("mismatched-reverse-bookmark")
+    mismatched_reverse_args[-1] = digest(
+        "mismatched-reverse-manifest-digest"
+    )
+    try:
+        conn.execute(reverse_manifest_sql, tuple(mismatched_reverse_args))
+    except sqlite3.Error as error:
+        if "reverse sync manifest campaign mismatch" not in str(error):
+            raise SystemExit(
+                f"0067 reverse sync identity guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed reverse sync for a different bookmark")
+
+    skipped_reverse_generation_args = list(reverse_manifest_args)
+    skipped_reverse_generation_args[0] = digest("skipped-reverse-manifest")
+    skipped_reverse_generation_args[2] = 2
+    skipped_reverse_generation_args[-1] = digest(
+        "skipped-reverse-manifest-digest"
+    )
+    try:
+        conn.execute(
+            reverse_manifest_sql,
+            tuple(skipped_reverse_generation_args),
+        )
+    except sqlite3.Error as error:
+        if "reverse sync manifest campaign mismatch" not in str(error):
+            raise SystemExit(
+                f"0067 reverse sync generation guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed a skipped reverse sync generation")
+
+    conn.execute(
+        reverse_manifest_sql,
+        reverse_manifest_args,
+    )
+
+    member_closure_sql = """
+        INSERT INTO relay_container_drain_observations (
+          observation_id_sha256, campaign_id, observation_kind,
+          observation_generation, campaign_event_sequence, operation_id,
+          owner_generation, closure_class, terminal_event_sha256,
+          final_ack_sha256, financial_terminal_sha256, billing_audit_sha256,
+          outbox_disposition_sha256, reconciliation_sha256,
+          r2_evidence_sha256, reverse_sync_disposition_sha256,
+          observation_digest_sha256, observed_at
+        ) VALUES (
+          ?, ?, 'member_closure', 1, 3, 'operation-1', 2,
+          'settled_terminal', ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch()
+        )
+    """
+    try:
+        conn.execute(
+            member_closure_sql,
+            (
+                digest("mismatched-member-closure"),
+                campaign_id,
+                digest("wrong-terminal-identity"),
+                digest("final-ack-identity"),
+                digest("financial-terminal"),
+                digest("billing-audit"),
+                digest("outbox-disposition"),
+                digest("reconciliation"),
+                digest("r2-evidence"),
+                digest("reverse-sync-disposition"),
+                digest("mismatched-member-closure-digest"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "drain member closure evidence mismatch" not in str(error):
+            raise SystemExit(
+                f"0067 member closure identity guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed closure evidence for the wrong terminal")
+
+    conn.execute(
+        member_closure_sql,
+        (
+            digest("member-closure-observation"),
+            campaign_id,
+            digest("terminal-identity"),
+            digest("final-ack-identity"),
+            digest("financial-terminal"),
+            digest("billing-audit"),
+            digest("outbox-disposition"),
+            digest("reconciliation"),
+            digest("r2-evidence"),
+            digest("reverse-sync-disposition"),
+            digest("member-closure-observation-digest"),
+        ),
+    )
+
+    global_observation_sql = """
+        INSERT INTO relay_container_drain_observations (
+          observation_id_sha256, campaign_id, observation_kind,
+          observation_generation, campaign_event_sequence,
+          request_id_sha256, observer_identity_sha256,
+          controller_version_id, shard_inventory_sha256,
+          member_count, member_closure_count, quarantine_count,
+          reverse_manifest_count, d1_open_count, billing_open_count,
+          outbox_open_count, reconciliation_open_count, r2_missing_count,
+          queue_open_count, reverse_sync_open_count, memory_batch_open_count,
+          unclassified_open_count, member_closure_manifest_sha256,
+          quarantine_manifest_sha256, reverse_sync_manifest_sha256,
+          billing_conservation_sha256, state_digest_sha256,
+          observation_digest_sha256, observed_at
+        ) VALUES (
+          ?, ?, 'global', ?, 3, ?, ?, 'controller-v1', ?,
+          1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+          ?, ?, ?, ?, ?, ?, unixepoch()
+        )
+    """
+    state_digest = digest("stable-state")
+    first_global_args = (
+        first_observation_id,
+        campaign_id,
+        1,
+        digest("first-request"),
+        digest("first-observer"),
+        shard_inventory,
+        member_closure_manifest,
+        quarantine_manifest,
+        reverse_manifest_digest,
+        billing_conservation,
+        state_digest,
+        digest("first-observation-digest"),
+    )
+    quarantine_sql = """
+        INSERT INTO relay_container_ambiguity_quarantines (
+          quarantine_id_sha256, campaign_id, operation_id,
+          owner_generation, reservation_key_sha256,
+          provider_operation_id_sha256, send_before_journal_sha256,
+          request_sha256, last_provider_observation_sha256,
+          evidence_manifest_sha256, provider_resend_allowed,
+          rust_replay_allowed, go_replay_allowed, reconciliation_owner,
+          review_deadline_at, customer_exposure_quota,
+          provider_exposure_microunits, accounting_disposition,
+          accounting_disposition_sha256, go_tombstone_sha256,
+          approval_manifest_sha256, worm_object_key_sha256,
+          retention_until, quarantine_digest_sha256,
+          quarantined_by_admin_id, quarantined_at
+        ) VALUES (
+          ?, ?, 'operation-1', 2, ?, ?, ?, ?, ?, ?,
+          0, 0, 0, 'joint_review', unixepoch() + 3600,
+          ?, ?, ?, ?, ?, ?, ?, unixepoch() + 7200, ?, 42, unixepoch()
+        )
+    """
+
+    def quarantine_args(
+        identity: str,
+        customer_exposure: int,
+        provider_exposure: int,
+        disposition: str,
+    ) -> tuple[object, ...]:
+        return (
+            digest(f"{identity}-id"),
+            campaign_id,
+            digest("reservation"),
+            digest(f"{identity}-provider-operation"),
+            digest(f"{identity}-send-before"),
+            digest(f"{identity}-provider-request"),
+            digest(f"{identity}-provider-observation"),
+            digest(f"{identity}-evidence"),
+            customer_exposure,
+            provider_exposure,
+            disposition,
+            digest(f"{identity}-accounting-disposition"),
+            digest(f"{identity}-go-tombstone"),
+            digest(f"{identity}-approval"),
+            digest(f"{identity}-worm-key"),
+            digest(identity),
+        )
+
+    conn.execute("SAVEPOINT billing_hold_probe")
+    conn.execute(
+        quarantine_sql,
+        quarantine_args("billing-hold-quarantine", 100, 200, "billing_hold"),
+    )
+    try:
+        conn.execute(global_observation_sql, first_global_args)
+    except sqlite3.Error as error:
+        if "drain observation campaign generation mismatch" not in str(error):
+            conn.execute("ROLLBACK TO billing_hold_probe")
+            conn.execute("RELEASE billing_hold_probe")
+            raise SystemExit(
+                f"0067 billing-hold observation guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        conn.execute("ROLLBACK TO billing_hold_probe")
+        conn.execute("RELEASE billing_hold_probe")
+        raise SystemExit("0067 allowed billing_hold with zero billing-open count")
+    conn.execute("ROLLBACK TO billing_hold_probe")
+    conn.execute("RELEASE billing_hold_probe")
+    conn.execute(
+        quarantine_sql,
+        quarantine_args(
+            "reviewed-zero-exposure-quarantine",
+            0,
+            0,
+            "reviewed_zero_exposure",
+        ),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO relay_container_shard_placement_attestations (
+          placement_attestation_digest_sha256, environment,
+          controller_service_name, controller_version_id,
+          ring_generation, shard_count, shard_index
+        ) VALUES (?, 'staging', 'cinatoken-relay-controller',
+                  'controller-v1', 1, 1, 0)
+        """,
+        (placement_attestation,),
+    )
+    conn.execute(
+        """
+        INSERT INTO relay_container_shard_placement_attestations (
+          placement_attestation_digest_sha256, environment,
+          controller_service_name, controller_version_id,
+          ring_generation, shard_count, shard_index
+        ) VALUES (?, 'staging', 'cinatoken-relay-controller',
+                  'controller-v2', 1, 1, 0)
+        """,
+        (wrong_placement_attestation,),
+    )
+    skipped_global_args = list(first_global_args)
+    skipped_global_args[0] = digest("skipped-global-observation")
+    skipped_global_args[2] = 2
+    skipped_global_args[-1] = digest("skipped-global-observation-digest")
+    try:
+        conn.execute(global_observation_sql, tuple(skipped_global_args))
+    except sqlite3.Error as error:
+        if "drain observation campaign generation mismatch" not in str(error):
+            raise SystemExit(
+                f"0067 global observation generation guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed a skipped global observation generation")
+
+    conn.execute(global_observation_sql, first_global_args)
+
+    shard_observation_sql = """
+        INSERT INTO relay_container_drain_shard_observations (
+          observation_id_sha256, campaign_id,
+          placement_attestation_digest_sha256, shard_index,
+          ring_generation, owner_generation, local_high_watermark,
+          snapshot_digest_sha256, controller_state_digest_sha256,
+          execution_stop_eligible, accepted_work_drained,
+          executable_open_count, final_ack_open_count,
+          ambiguity_open_count, unclassified_operation_count,
+          shard_observation_digest_sha256, observed_at
+        ) VALUES (
+          ?, ?, ?, 0, 1, 2, ?, ?, ?, 1, 1, 0, 0, 0, 0, ?, unixepoch()
+        )
+    """
+    try:
+        conn.execute(
+            shard_observation_sql,
+            (
+                first_observation_id,
+                campaign_id,
+                wrong_placement_attestation,
+                1,
+                digest("wrong-placement-shard-snapshot"),
+                stable_controller_state,
+                digest("wrong-placement-shard-observation"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "drain shard observation binding mismatch" not in str(error):
+            raise SystemExit(
+                f"0067 shard placement guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed a shard observation from stale placement")
+
+    try:
+        conn.execute(
+            shard_observation_sql,
+            (
+                first_observation_id,
+                campaign_id,
+                placement_attestation,
+                2,
+                digest("wrong-watermark-shard-snapshot"),
+                digest("wrong-watermark-controller-state"),
+                digest("wrong-watermark-shard-observation"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "drain shard observation binding mismatch" not in str(error):
+            raise SystemExit(
+                f"0067 shard watermark guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed a shard observation with a false watermark")
+
+    conn.execute(
+        shard_observation_sql,
+        (
+            first_observation_id,
+            campaign_id,
+            placement_attestation,
+            1,
+            digest("stable-shard-snapshot"),
+            stable_controller_state,
+            digest("first-shard-observation"),
+        ),
+    )
+
+    stability_probe_clock = clock[0]
+    conn.execute("SAVEPOINT global_stability_probe")
+    try:
+        drifted_observation_id = digest("drifted-global-observation")
+        clock[0] += 60
+        conn.execute(
+            global_observation_sql,
+            (
+                drifted_observation_id,
+                campaign_id,
+                2,
+                digest("drifted-request"),
+                digest("drifted-observer"),
+                shard_inventory,
+                member_closure_manifest,
+                quarantine_manifest,
+                reverse_manifest_digest,
+                billing_conservation,
+                digest("drifted-state"),
+                digest("drifted-global-observation-digest"),
+            ),
+        )
+        conn.execute(
+            shard_observation_sql,
+            (
+                drifted_observation_id,
+                campaign_id,
+                placement_attestation,
+                1,
+                digest("stable-shard-snapshot"),
+                stable_controller_state,
+                digest("drifted-global-shard-observation"),
+            ),
+        )
+
+        recovered_observation_id = digest("recovered-global-observation")
+        clock[0] += 60
+        conn.execute(
+            global_observation_sql,
+            (
+                recovered_observation_id,
+                campaign_id,
+                3,
+                digest("recovered-request"),
+                digest("recovered-observer"),
+                shard_inventory,
+                member_closure_manifest,
+                quarantine_manifest,
+                reverse_manifest_digest,
+                billing_conservation,
+                state_digest,
+                digest("recovered-global-observation-digest"),
+            ),
+        )
+        conn.execute(
+            shard_observation_sql,
+            (
+                recovered_observation_id,
+                campaign_id,
+                placement_attestation,
+                1,
+                digest("stable-shard-snapshot"),
+                stable_controller_state,
+                digest("recovered-global-shard-observation"),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO relay_container_drain_events (
+              campaign_id, event_sequence, event_code, from_state, to_state,
+              previous_event_digest_sha256, first_observation_id_sha256,
+              second_observation_id_sha256, reverse_sync_manifest_id_sha256,
+              evidence_manifest_sha256, actor_identity_sha256,
+              event_digest_sha256, recorded_at
+            ) VALUES (
+              ?, 4, 'drain_sealed', 'draining', 'drained', ?, ?, ?, ?,
+              ?, ?, ?, unixepoch()
+            )
+            """,
+            (
+                campaign_id,
+                event_three,
+                first_observation_id,
+                recovered_observation_id,
+                reverse_manifest_id,
+                digest("recovered-state-drain-seal-evidence"),
+                digest("drain-seal-actor"),
+                digest("recovered-state-drain-seal-event"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "drain seal lacks two stable complete observations" not in str(error):
+            conn.execute("ROLLBACK TO global_stability_probe")
+            conn.execute("RELEASE global_stability_probe")
+            clock[0] = stability_probe_clock
+            raise SystemExit(
+                f"0067 continuous stability guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        conn.execute("ROLLBACK TO global_stability_probe")
+        conn.execute("RELEASE global_stability_probe")
+        clock[0] = stability_probe_clock
+        raise SystemExit("0067 allowed an A-to-B-to-A observation window")
+    conn.execute("ROLLBACK TO global_stability_probe")
+    conn.execute("RELEASE global_stability_probe")
+    clock[0] = stability_probe_clock
+
+    clock[0] += 60
+    conn.execute(
+        global_observation_sql,
+        (
+            second_observation_id,
+            campaign_id,
+            2,
+            digest("second-request"),
+            digest("second-observer"),
+            shard_inventory,
+            member_closure_manifest,
+            quarantine_manifest,
+            reverse_manifest_digest,
+            billing_conservation,
+            state_digest,
+            digest("second-observation-digest"),
+        ),
+    )
+    conn.execute("SAVEPOINT shard_semantic_probe")
+    conn.execute(
+        shard_observation_sql,
+        (
+            second_observation_id,
+            campaign_id,
+            placement_attestation,
+            1,
+            digest("drifted-second-shard-snapshot"),
+            digest("drifted-controller-state"),
+            digest("drifted-second-shard-observation"),
+        ),
+    )
+    try:
+        conn.execute(
+            """
+            INSERT INTO relay_container_drain_events (
+              campaign_id, event_sequence, event_code, from_state, to_state,
+              previous_event_digest_sha256, first_observation_id_sha256,
+              second_observation_id_sha256, reverse_sync_manifest_id_sha256,
+              evidence_manifest_sha256, actor_identity_sha256,
+              event_digest_sha256, recorded_at
+            ) VALUES (
+              ?, 4, 'drain_sealed', 'draining', 'drained', ?, ?, ?, ?,
+              ?, ?, ?, unixepoch()
+            )
+            """,
+            (
+                campaign_id,
+                event_three,
+                first_observation_id,
+                second_observation_id,
+                reverse_manifest_id,
+                digest("drifted-shard-drain-seal-evidence"),
+                digest("drain-seal-actor"),
+                digest("drifted-shard-drain-seal-event"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "drain seal lacks two stable complete observations" not in str(error):
+            conn.execute("ROLLBACK TO shard_semantic_probe")
+            conn.execute("RELEASE shard_semantic_probe")
+            raise SystemExit(
+                f"0067 stable shard semantic guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        conn.execute("ROLLBACK TO shard_semantic_probe")
+        conn.execute("RELEASE shard_semantic_probe")
+        raise SystemExit("0067 allowed shard controller-state drift")
+    conn.execute("ROLLBACK TO shard_semantic_probe")
+    conn.execute("RELEASE shard_semantic_probe")
+
+    conn.execute("SAVEPOINT shard_snapshot_probe")
+    conn.execute(
+        shard_observation_sql,
+        (
+            second_observation_id,
+            campaign_id,
+            placement_attestation,
+            1,
+            digest("drifted-snapshot-only"),
+            stable_controller_state,
+            digest("drifted-snapshot-only-observation"),
+        ),
+    )
+    try:
+        conn.execute(
+            """
+            INSERT INTO relay_container_drain_events (
+              campaign_id, event_sequence, event_code, from_state, to_state,
+              previous_event_digest_sha256, first_observation_id_sha256,
+              second_observation_id_sha256, reverse_sync_manifest_id_sha256,
+              evidence_manifest_sha256, actor_identity_sha256,
+              event_digest_sha256, recorded_at
+            ) VALUES (
+              ?, 4, 'drain_sealed', 'draining', 'drained', ?, ?, ?, ?,
+              ?, ?, ?, unixepoch()
+            )
+            """,
+            (
+                campaign_id,
+                event_three,
+                first_observation_id,
+                second_observation_id,
+                reverse_manifest_id,
+                digest("drifted-snapshot-drain-seal-evidence"),
+                digest("drain-seal-actor"),
+                digest("drifted-snapshot-drain-seal-event"),
+            ),
+        )
+    except sqlite3.Error as error:
+        if "drain seal lacks two stable complete observations" not in str(error):
+            conn.execute("ROLLBACK TO shard_snapshot_probe")
+            conn.execute("RELEASE shard_snapshot_probe")
+            raise SystemExit(
+                f"0067 stable shard snapshot guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        conn.execute("ROLLBACK TO shard_snapshot_probe")
+        conn.execute("RELEASE shard_snapshot_probe")
+        raise SystemExit("0067 allowed shard snapshot drift")
+    conn.execute("ROLLBACK TO shard_snapshot_probe")
+    conn.execute("RELEASE shard_snapshot_probe")
+
+    conn.execute(
+        shard_observation_sql,
+        (
+            second_observation_id,
+            campaign_id,
+            placement_attestation,
+            1,
+            digest("stable-shard-snapshot"),
+            stable_controller_state,
+            digest("second-shard-observation"),
+        ),
+    )
+
+    event_four = digest("event-four")
+    conn.execute(
+        """
+        INSERT INTO relay_container_drain_events (
+          campaign_id, event_sequence, event_code, from_state, to_state,
+          previous_event_digest_sha256, first_observation_id_sha256,
+          second_observation_id_sha256, reverse_sync_manifest_id_sha256,
+          evidence_manifest_sha256, actor_identity_sha256,
+          event_digest_sha256, recorded_at
+        ) VALUES (
+          ?, 4, 'drain_sealed', 'draining', 'drained', ?, ?, ?, ?,
+          ?, ?, ?, unixepoch()
+        )
+        """,
+        (
+            campaign_id,
+            event_three,
+            first_observation_id,
+            second_observation_id,
+            reverse_manifest_id,
+            digest("drain-seal-evidence"),
+            digest("drain-seal-actor"),
+            event_four,
+        ),
+    )
+
+    event_five = digest("event-five")
+    conn.execute(
+        """
+        INSERT INTO relay_container_drain_events (
+          campaign_id, event_sequence, event_code, from_state, to_state,
+          previous_event_digest_sha256, operation14_receipt_sha256,
+          operation14_baseline_sha256, evidence_manifest_sha256,
+          actor_identity_sha256, event_digest_sha256, recorded_at
+        ) VALUES (
+          ?, 5, 'operation14_completed', 'drained',
+          'operation14_complete', ?, ?, ?, ?, ?, ?, unixepoch()
+        )
+        """,
+        (
+            campaign_id,
+            event_four,
+            operation14_receipt,
+            operation14_baseline,
+            digest("operation-14-evidence"),
+            digest("operation-14-actor"),
+            event_five,
+        ),
+    )
+
+    traffic_receipt_sql = """
+        INSERT INTO relay_container_traffic_return_receipts (
+          receipt_id_sha256, campaign_id, contract_version,
+          receipt_contract, evidence_enforcement_migration,
+          first_observation_id_sha256,
+          second_observation_id_sha256, reverse_sync_manifest_id_sha256,
+          membership_manifest_sha256, member_closure_manifest_sha256,
+          quarantine_manifest_sha256, billing_conservation_sha256,
+          operation14_receipt_sha256, operation14_baseline_sha256,
+          go_vps_readiness_sha256, traffic_rehearsal_sha256,
+          slo_approval_sha256, security_approval_sha256,
+          finance_approval_sha256, release_approval_sha256,
+          immutable_evidence_location_sha256, retention_policy_sha256,
+          eligible_for_traffic_return_review, traffic_return_authorized,
+          reviewer_identity_sha256, receipt_digest_sha256, issued_at
+        ) VALUES (
+          ?, ?, 1, 'traffic-return-review-eligibility-v1',
+          '0069_relay_container_traffic_return_evidence_enforce.sql',
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          1, 0, ?, ?, unixepoch()
+        )
+    """
+    traffic_receipt_args = (
+        traffic_receipt_id,
+        campaign_id,
+        first_observation_id,
+        second_observation_id,
+        reverse_manifest_id,
+        membership_manifest,
+        member_closure_manifest,
+        quarantine_manifest,
+        billing_conservation,
+        operation14_receipt,
+        operation14_baseline,
+        digest("go-vps-readiness"),
+        digest("traffic-rehearsal"),
+        digest("slo-approval"),
+        digest("security-approval"),
+        digest("finance-approval"),
+        digest("release-approval"),
+        digest("immutable-evidence-location"),
+        digest("retention-policy"),
+        digest("independent-reviewer"),
+        digest("traffic-return-receipt-digest"),
+    )
+    try:
+        conn.execute(traffic_receipt_sql, traffic_receipt_args)
+    except sqlite3.Error as error:
+        if "requires typed evidence enforcement migration 0069" not in str(error):
+            raise SystemExit(
+                f"0067 pre-evidence receipt guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit(
+            "0067 allowed a traffic-return receipt before typed evidence enforcement"
+        )
+
+    conn.execute(
+        "INSERT INTO d1_migrations(name) VALUES (?)",
+        ("0069_relay_container_traffic_return_evidence_enforce.sql",),
+    )
+    drifted_receipt_args = list(traffic_receipt_args)
+    drifted_receipt_args[0] = digest("drifted-traffic-return-receipt")
+    drifted_receipt_args[6] = digest("drifted-member-closure-manifest")
+    drifted_receipt_args[-1] = digest("drifted-traffic-return-receipt-digest")
+    try:
+        conn.execute(traffic_receipt_sql, tuple(drifted_receipt_args))
+    except sqlite3.Error as error:
+        if "traffic return receipt evidence mismatch" not in str(error):
+            raise SystemExit(
+                f"0067 traffic receipt manifest guard failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit("0067 allowed a drifted traffic return manifest")
+
+    conn.execute(traffic_receipt_sql, traffic_receipt_args)
+
+    event_six = digest("event-six")
+    conn.execute(
+        """
+        INSERT INTO relay_container_drain_events (
+          campaign_id, event_sequence, event_code, from_state, to_state,
+          previous_event_digest_sha256, traffic_return_receipt_id_sha256,
+          evidence_manifest_sha256, actor_identity_sha256,
+          event_digest_sha256, recorded_at
+        ) VALUES (
+          ?, 6, 'traffic_return_receipt_sealed', 'operation14_complete',
+          'eligible_for_traffic_return_review', ?, ?, ?, ?, ?, unixepoch()
+        )
+        """,
+        (
+            campaign_id,
+            event_five,
+            traffic_receipt_id,
+            digest("traffic-return-event-evidence"),
+            digest("traffic-return-event-actor"),
+            event_six,
+        ),
+    )
+
+    terminal = conn.execute(
+        """
+        SELECT campaign.state, campaign.state_version,
+               receipt.eligible_for_traffic_return_review,
+               receipt.traffic_return_authorized
+        FROM relay_container_drain_campaigns AS campaign
+        JOIN relay_container_traffic_return_receipts AS receipt
+          ON receipt.campaign_id = campaign.campaign_id
+        WHERE campaign.campaign_id = ?
+        """,
+        (campaign_id,),
+    ).fetchone()
+    if terminal != ("eligible_for_traffic_return_review", 6, 1, 0):
+        raise SystemExit(f"0067 traffic-return terminal state mismatch: {terminal}")
+
+    for label, statement in (
+        (
+            "member update",
+            """
+            UPDATE relay_container_drain_members
+            SET operation_id = 'operation-2'
+            WHERE campaign_id = ?
+            """,
+        ),
+        (
+            "receipt delete",
+            """
+            DELETE FROM relay_container_traffic_return_receipts
+            WHERE campaign_id = ?
+            """,
+        ),
+    ):
+        try:
+            conn.execute(statement, (campaign_id,))
+        except sqlite3.Error as error:
+            if "immutable" not in str(error) and "append-preserved" not in str(error):
+                raise SystemExit(
+                    f"0067 {label} guard failed unexpectedly: {error}"
+                ) from error
+        else:
+            raise SystemExit(f"0067 allowed forbidden {label}")
+
+    schema_before_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        conn.executescript(drain_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(f"0067 duplicate DDL failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0067 critical drain objects accepted duplicate DDL")
+    schema_after_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0067 duplicate DDL attempt changed persistent schema")
+    conn.close()
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

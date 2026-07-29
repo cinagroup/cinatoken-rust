@@ -28,6 +28,11 @@ const expected = {
   CONTAINER_DIVERGENCE_RECONCILIATION_VERIFIED: "false",
   CONTAINER_CHAT_CANARY_ENABLED: "false",
   CONTAINER_OPERATION_STAGING_VERIFIED: "false",
+  CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED: "false",
+  CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED: "false",
+  CONTAINER_AMBIGUITY_QUARANTINE_WRITE_ENABLED: "false",
+  CONTAINER_REVERSE_SYNC_MANIFEST_WRITE_ENABLED: "false",
+  CONTAINER_TRAFFIC_RETURN_RECEIPT_WRITE_ENABLED: "false",
   CONTAINER_CONTROLLER_PROBE_ENABLED: "false",
   CONTAINER_SHARD_READINESS_PROBE_ENABLED: "false",
   CONTAINER_SHARD_READINESS_WAKE_ENABLED: "false",
@@ -68,6 +73,14 @@ const operationGates = [
   "CONTAINER_OPERATION_STAGING_VERIFIED",
 ];
 
+const drainWriteGates = [
+  "CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED",
+  "CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED",
+  "CONTAINER_AMBIGUITY_QUARANTINE_WRITE_ENABLED",
+  "CONTAINER_REVERSE_SYNC_MANIFEST_WRITE_ENABLED",
+  "CONTAINER_TRAFFIC_RETURN_RECEIPT_WRITE_ENABLED",
+];
+
 describe("container scheduler Wrangler foundation", () => {
   for (const [environment, scope, vars, controllerService, authorityEnvironment] of environments) {
     test(`${environment} keeps the ring valid and runtime fail-closed`, () => {
@@ -103,6 +116,16 @@ describe("container scheduler Wrangler foundation", () => {
         "false",
       ]);
       expect(operationGates.some((name) => vars[name] === "true")).toBeFalse();
+      expect(drainWriteGates.map((name) => vars[name])).toEqual([
+        "false",
+        "false",
+        "false",
+        "false",
+        "false",
+      ]);
+      expect(
+        drainWriteGates.some((name) => operationGates.includes(name)),
+      ).toBeFalse();
       expect(vars.CONTAINER_SCHEDULER_ROUTING_SECRET).toBeUndefined();
       expect(vars.CONTAINER_AUTHORITY_CURRENT_SECRET).toBeUndefined();
       expect(vars.CONTAINER_AUTHORITY_ISSUER).toBe(

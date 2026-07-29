@@ -802,6 +802,9 @@ describe("Relay Container P5 foundation collector", () => {
     const authorization =
       result.subject.evidenceFacts.candidateFreeze.shardActivationCampaign
         .placementMutationAuthorization;
+    expect(authorization.storageMigration).toBe(
+      "0063_relay_container_shard_placement_mutation_authorizations.sql",
+    );
     expect(authorization.authorizationIdSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(authorization.rowSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(authorization).not.toHaveProperty("executionNonce");
@@ -1262,8 +1265,8 @@ function requestFixture() {
       ringGeneration: 1,
       shardCount: 8,
       migrationHead:
-        "0066_relay_container_shard_placement_dispatch_consumptions.sql",
-      migrationCount: 66,
+        "0067_relay_container_drain_expand.sql",
+      migrationCount: 67,
       responseProtocolVersion: 3,
       statusContractVersion: 4,
       financialTerminalContractVersion: 2,

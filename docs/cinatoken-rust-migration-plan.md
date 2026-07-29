@@ -24640,9 +24640,9 @@ booleans cannot prove the D1 admission cutoff, billing/outbox/reconciliation,
 R2/Queue state, reverse sync, old-Worker absence, or stable observation
 window.
 
-### Bounded implementation status
+### Prior bounded implementation status
 
-This batch implements only the local reader foundation:
+The earlier reader checkpoint implemented only the local reader foundation:
 
 1. `services/container-controller/src/ledger.ts` derives persisted shard drain
    snapshots from DO SQLite.
@@ -24656,7 +24656,7 @@ This batch implements only the local reader foundation:
 5. Local tests cover eviction, open work, ambiguity, missing final ACK,
    malformed shard sets, stop/drain separation, and digest stability.
 
-Not implemented in this checkpoint:
+Not implemented at that checkpoint:
 
 - global D1 drain campaign/events/membership;
 - D1-enforced admission fence and stale-Writer rejection;
@@ -24676,3 +24676,172 @@ matrix, and verification requirements are in
 No credential or Cloudflare remote state was read or changed. Go/VPS remains
 the traffic, scheduler, business, and financial authority. Production remains
 **NO-GO**.
+
+## 22.334 Global Drain Expand-Only Persistence (2026-07-29)
+
+Application D1 migration `0067_relay_container_drain_expand.sql` implements
+the first persistent global boundary of Accepted Work Drain and Traffic Return
+Safety v1. This is an expand-only compatibility release. It does not alter the
+existing admission transaction, expose a mutation route, invoke Controller or
+Cloudflare, or authorize traffic.
+
+### Eight scope-bound evidence families
+
+The migration adds:
+
+1. `relay_container_drain_campaigns`: immutable scope, 0068 fence identity,
+   cutoff, accepted high watermark/bookmark, campaign-declared frozen member
+   count/manifest and first/last key, immutable 0067 ledger-schema identity,
+   Controller/ring/shard inventory, version/configuration and reverse-export
+   identities, stability window, and event-projected state.
+2. `relay_container_drain_events`: append-preserved lifecycle and evidence
+   chain, including page seals, membership seal, drain seal, operation 14, and
+   traffic-return eligibility.
+3. `relay_container_drain_members`: immutable accepted operation generation,
+   shard, admission, provider attempt, reservation, terminal/ACK, R2, billing
+   expression reference/hash/version, usage semantic, and request digest.
+4. `relay_container_drain_observations`: one immutable closure per accepted
+   member plus generation-bound global observations of D1, billing, outbox,
+   reconciliation, R2, Queue, reverse-sync, memory-batch, and unclassified
+   open work.
+5. `relay_container_drain_shard_observations`: exact ring/shard/owner snapshot,
+   immutable 0061 placement-attestation reference, Controller state digest,
+   local watermark, stop/drain flags, and open-work counts.
+6. `relay_container_ambiguity_quarantines`: operation-specific send-before,
+   provider observation, non-replay, exposure, accounting, Go tombstone,
+   approval, WORM, and retention evidence.
+7. `relay_container_reverse_sync_manifests`: source/target schema, bookmark,
+   high-watermark, count, reject, partition, Go import, shadow comparison, and
+   writer-fence evidence.
+8. `relay_container_traffic_return_receipts`: references the sealed evidence
+   packet, requires the future 0069 typed-evidence enforcement migration, and
+   can express eligibility for independent review only.
+
+No prompt, response body, credential, provider secret, or raw billing
+expression is stored. Billing-resolution identity is retained through an
+immutable reference, expression digest/version, usage semantic, and
+request-input digest, but 0067 alone does not prove reproducibility. The
+future writer and readback must resolve the existing immutable pre-consume
+snapshot and replay
+normalized usage, matched tier, group ratio, expression version, and quota
+conversion against the single canonical expression truth. Actual settlement
+remains owned by the existing billing contracts; this ledger must not copy or
+reinterpret the formula.
+
+### Database-enforced ordering
+
+The 0067 ledger cannot be used to claim an admission fence by configuration
+alone. Its campaign insert trigger requires the future
+`0068_relay_container_drain_admission_enforce.sql` marker in `d1_migrations`.
+This makes 0067 locally and remotely inert until the enforcement migration is
+deliberately installed.
+
+The remaining ordering is enforced in SQLite:
+
+- one active campaign per environment/scope; terminal `recovery_required` or
+  `aborted` releases the slot only for the next exact fence generation;
+- campaign identity is immutable and state changes require the next
+  append-only event digest;
+- membership keys are strictly increasing and page/member ordinals are
+  contiguous;
+- page seals explicitly reject NULL fields and must match exact first/last
+  keys and counts;
+- the membership seal must equal the campaign's frozen member count, declared
+  manifest, and global first/last key; 0068 must atomically derive those
+  values from the authoritative admission source and independently recompute
+  every member/page/set digest before this becomes a completeness claim;
+- every member closure must match the frozen terminal and final-ACK identities,
+  and a quarantined closure cannot exist before its exact quarantine;
+- shard observations must match the frozen per-shard accepted watermark and
+  the campaign's Controller/ring/shard identity through an immutable 0061
+  placement attestation;
+- reverse-sync snapshot/schema/bookmark/count/high-watermark values must match
+  the campaign freeze, generations are contiguous, and only the latest may
+  satisfy drain;
+- `billing_hold` quarantine rows prevent a zero billing-open observation;
+- a drain seal requires every member closure, exact quarantine/reverse-sync
+  counts, the latest two consecutive independent global observation
+  generations, equal state and billing-conservation digests, elapsed frozen
+  stability window, zero open/unclassified counts, exact all-drained shard
+  coverage, and stable per-shard placement/owner/snapshot/Controller/open-count
+  semantics;
+- operation 14 is a valid transition only after the drain seal;
+- the eligibility receipt must reference the same drain observations,
+  member-closure, quarantine, billing-conservation, reverse-sync, membership,
+  and operation-14 evidence; and
+- the receipt insert is rejected until
+  `0069_relay_container_traffic_return_evidence_enforce.sql` is installed;
+  0069 must provide typed, campaign-bound approval/WORM evidence and reviewer
+  independence, not merely well-formed hashes; and
+- every receipt is constrained to
+  `eligible_for_traffic_return_review=1` and
+  `traffic_return_authorized=0`.
+
+### Runtime compatibility and gates
+
+`d1_repositories.rs` adds an exact ordered-column plus object-inventory
+readiness probe and a validated read-only campaign lookup. There is no 0067
+write repository or route in this release.
+
+The main Worker tracks five new gates, each `false` in local, staging, and
+production configuration:
+
+```text
+CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED
+CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED
+CONTAINER_AMBIGUITY_QUARANTINE_WRITE_ENABLED
+CONTAINER_REVERSE_SYNC_MANIFEST_WRITE_ENABLED
+CONTAINER_TRAFFIC_RETURN_RECEIPT_WRITE_ENABLED
+```
+
+They are independent from operation 14's Controller action-gate inventory.
+The platform capability response exposes each value, an all-false aggregate,
+the exact 0067 schema readiness, and
+`container_traffic_return_authorization_compiled=false`.
+
+### Verification and next boundary
+
+The canonical SQLite verifier now replays 67 migrations and inventories 85
+required tables, 1310 checked columns, and 126 key indexes. Its deterministic
+clock test executes the complete ledger path and proves missing-0068 rejection,
+active-scope uniqueness, exact recovery generation, incomplete and NULL
+membership rejection, immutable membership, terminal/ACK identity binding,
+exact page/membership seals, per-operation quarantine, billing-hold blocking,
+frozen reverse-export identity, placement and shard-watermark guards, stable
+per-shard semantics across two observations, skipped global-generation and
+`A -> B -> A` stability rejection, snapshot-digest drift rejection,
+operation-14 ordering, pre-0069 receipt rejection, receipt-manifest binding,
+non-authorizing eligibility, forbidden updates/deletes, and duplicate-DDL
+failure.
+
+The P5 evidence contract now distinguishes the current Application schema head
+(`0067`) from immutable shard-placement authorization storage provenance
+(`0063`). Advancing the former must never rewrite the latter.
+
+The next boundary is 0068 design, not gate activation:
+
+1. enumerate every old and current admission writer and transaction shape;
+2. define the scope/fence generation row joined by every admission;
+3. prove compatible 0067 readers on isolated staging with all gates false;
+4. test stale/current Worker races, transaction rollback, bookmark/readback,
+   and old-writer rejection before provider I/O;
+5. retain D1 Time Travel/export and forward-repair evidence; and
+6. only then add admission enforcement and campaign creation as one reviewed
+   transaction contract.
+
+After 0068 is proven, 0069 must add the typed evidence registry and independent
+review constraints before the receipt writer can be considered. Neither
+migration alone enables a tracked gate.
+
+Each schema promotion must first update and verify the Worker expected
+migration set, D1 config audit, SQLite inventory, P5 head/counts, and frozen
+foundation candidate. A fail-closed 0067 reader is expected to reject 0068 or
+0069 until those exact contracts advance together.
+
+Protected attribution remains an explicit migration invariant: existing
+`new-api` and `QuantumNous` references must not be removed, replaced, or
+rewritten while this architecture is applied.
+
+No Cloudflare API, remote database, deployment, route, DNS record, or secret
+was accessed in this checkpoint. Go/VPS remains authoritative and production
+remains **NO-GO**.

@@ -193,8 +193,16 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str =
-    "0066_relay_container_shard_placement_dispatch_consumptions.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0067_relay_container_drain_expand.sql";
+const CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED_ENV: &str = "CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED";
+const CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED_ENV: &str =
+    "CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED";
+const CONTAINER_AMBIGUITY_QUARANTINE_WRITE_ENABLED_ENV: &str =
+    "CONTAINER_AMBIGUITY_QUARANTINE_WRITE_ENABLED";
+const CONTAINER_REVERSE_SYNC_MANIFEST_WRITE_ENABLED_ENV: &str =
+    "CONTAINER_REVERSE_SYNC_MANIFEST_WRITE_ENABLED";
+const CONTAINER_TRAFFIC_RETURN_RECEIPT_WRITE_ENABLED_ENV: &str =
+    "CONTAINER_TRAFFIC_RETURN_RECEIPT_WRITE_ENABLED";
 pub const TASK_POLL_LEASE_STAGING_VERIFIED_ENV: &str = "TASK_POLL_LEASE_STAGING_VERIFIED";
 pub const TASK_POLL_SCHEDULER_STAGING_VERIFIED_ENV: &str = "TASK_POLL_SCHEDULER_STAGING_VERIFIED";
 const RELAY_BILLING_PREBIND_OWNER_GENERATION_CUTOVER_GUARDS: &[&str] = &[
@@ -298,6 +306,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0064_relay_container_shard_placement_execution_tickets.sql",
     "0065_relay_container_shard_placement_pre_enable_grants.sql",
     "0066_relay_container_shard_placement_dispatch_consumptions.sql",
+    "0067_relay_container_drain_expand.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -471,6 +480,14 @@ struct PlatformCapabilities {
     container_scheduled_terminalizer_schema_ready: bool,
     container_provider_response_artifact_schema_ready: bool,
     container_scheduled_terminalizer_runtime_ready: bool,
+    container_drain_schema_ready: bool,
+    container_drain_campaign_write_enabled: bool,
+    container_drain_observation_write_enabled: bool,
+    container_ambiguity_quarantine_write_enabled: bool,
+    container_reverse_sync_manifest_write_enabled: bool,
+    container_traffic_return_receipt_write_enabled: bool,
+    container_drain_write_gates_all_false: bool,
+    container_traffic_return_authorization_compiled: bool,
     container_chat_canary_replay_history_probe_known: bool,
     container_chat_canary_replay_history_present: bool,
     container_chat_canary_replay_compiled: bool,
@@ -1119,6 +1136,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduled_terminalizer_schema_ready,
         container_provider_response_artifact_schema_ready,
         container_financial_terminal_v2_schema_ready,
+        container_drain_schema_ready,
         container_chat_canary_replay_history_probe_known,
         container_chat_canary_replay_history_present,
     ) = match env.d1("DB") {
@@ -1141,6 +1159,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                 .unwrap_or(false);
             let container_financial_terminal_v2_schema_ready =
                 crate::d1_repositories::relay_container_financial_terminal_v2_schema_ready(&db)
+                    .await
+                    .unwrap_or(false);
+            let container_drain_schema_ready =
+                crate::d1_repositories::relay_container_drain_schema_ready(&db)
                     .await
                     .unwrap_or(false);
             let container_chat_canary_replay_history_probe_known =
@@ -1172,6 +1194,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                 container_scheduled_terminalizer_schema_ready,
                 container_provider_response_artifact_schema_ready,
                 container_financial_terminal_v2_schema_ready,
+                container_drain_schema_ready,
                 container_chat_canary_replay_history_probe_known,
                 container_chat_canary_replay_history_present,
             )
@@ -1195,8 +1218,24 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             false,
             false,
             false,
+            false,
         ),
     };
+    let container_drain_campaign_write_enabled =
+        env_flag(&env, CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED_ENV);
+    let container_drain_observation_write_enabled =
+        env_flag(&env, CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED_ENV);
+    let container_ambiguity_quarantine_write_enabled =
+        env_flag(&env, CONTAINER_AMBIGUITY_QUARANTINE_WRITE_ENABLED_ENV);
+    let container_reverse_sync_manifest_write_enabled =
+        env_flag(&env, CONTAINER_REVERSE_SYNC_MANIFEST_WRITE_ENABLED_ENV);
+    let container_traffic_return_receipt_write_enabled =
+        env_flag(&env, CONTAINER_TRAFFIC_RETURN_RECEIPT_WRITE_ENABLED_ENV);
+    let container_drain_write_gates_all_false = !container_drain_campaign_write_enabled
+        && !container_drain_observation_write_enabled
+        && !container_ambiguity_quarantine_write_enabled
+        && !container_reverse_sync_manifest_write_enabled
+        && !container_traffic_return_receipt_write_enabled;
     let ai_gateway_id = runtime_value(&env, AI_GATEWAY_ID_ENV);
     let cloudflare_account_id = runtime_value(&env, CLOUDFLARE_ACCOUNT_ID_ENV);
     let cloudflare_ai_gateway_token = secret_or_var(
@@ -2029,6 +2068,14 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_scheduled_terminalizer_schema_ready,
         container_provider_response_artifact_schema_ready,
         container_scheduled_terminalizer_runtime_ready,
+        container_drain_schema_ready,
+        container_drain_campaign_write_enabled,
+        container_drain_observation_write_enabled,
+        container_ambiguity_quarantine_write_enabled,
+        container_reverse_sync_manifest_write_enabled,
+        container_traffic_return_receipt_write_enabled,
+        container_drain_write_gates_all_false,
+        container_traffic_return_authorization_compiled: false,
         container_chat_canary_replay_history_probe_known,
         container_chat_canary_replay_history_present,
         container_chat_canary_replay_compiled,
@@ -5222,10 +5269,10 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0066_relay_container_shard_placement_dispatch_consumptions.sql"
+            "0067_relay_container_drain_expand.sql"
         );
         assert_eq!(
-            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 13..],
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 14..],
             &[
                 "0054_relay_container_shard_activations.sql",
                 "0055_relay_container_shard_activation_campaigns.sql",
@@ -5240,6 +5287,7 @@ mod tests {
                 "0064_relay_container_shard_placement_execution_tickets.sql",
                 "0065_relay_container_shard_placement_pre_enable_grants.sql",
                 "0066_relay_container_shard_placement_dispatch_consumptions.sql",
+                "0067_relay_container_drain_expand.sql",
             ]
         );
         assert!(

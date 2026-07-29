@@ -103,7 +103,9 @@ const PINNED_GO_SOURCE_COMMIT =
 const PINNED_VIBE_SOURCE_COMMIT =
   "918e97480ee44e357abe99bf33c27259d6ac7ebd";
 const EXPECTED_MIGRATION_HEAD =
-  "0066_relay_container_shard_placement_dispatch_consumptions.sql";
+  "0067_relay_container_drain_expand.sql";
+const EXPECTED_PLACEMENT_STORAGE_MIGRATION =
+  "0063_relay_container_shard_placement_mutation_authorizations.sql";
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const gitCommitPattern = /^[0-9a-f]{40}$/;
@@ -609,7 +611,7 @@ function validateCandidate(value) {
   requireInteger(candidate.ringGeneration, 1, 1_000_000, "[candidate] ring generation");
   requireInteger(candidate.shardCount, 1, 1024, "[candidate] shard count");
   requireExact(candidate.migrationHead, EXPECTED_MIGRATION_HEAD, "[candidate] migration head");
-  requireExact(candidate.migrationCount, 66, "[candidate] migration count");
+  requireExact(candidate.migrationCount, 67, "[candidate] migration count");
   requireExact(candidate.responseProtocolVersion, 3, "[candidate] response protocol");
   requireExact(candidate.statusContractVersion, 4, "[candidate] status contract");
   requireExact(candidate.financialTerminalContractVersion, 2, "[candidate] terminal contract");
@@ -1610,7 +1612,7 @@ function validatePlacementMutationAuthorizationEvidence(
   );
   requireExact(
     authorization.storageMigration,
-    EXPECTED_MIGRATION_HEAD,
+    EXPECTED_PLACEMENT_STORAGE_MIGRATION,
     `[${label}] placement authorization storage migration`,
   );
   requireExact(
@@ -1908,10 +1910,10 @@ function validateSchemaReadback(facts) {
     "[schema-readback] facts",
   );
   requireExact(facts.migrationHead, EXPECTED_MIGRATION_HEAD, "[schema-readback] migration head");
-  requireExact(facts.migrationCount, 66, "[schema-readback] migration count");
-  requireExact(facts.tableCount, 77, "[schema-readback] table count");
-  requireExact(facts.incrementalColumnCount, 1096, "[schema-readback] incremental columns");
-  requireExact(facts.keyIndexCount, 111, "[schema-readback] key indexes");
+  requireExact(facts.migrationCount, 67, "[schema-readback] migration count");
+  requireExact(facts.tableCount, 85, "[schema-readback] table count");
+  requireExact(facts.incrementalColumnCount, 1310, "[schema-readback] incremental columns");
+  requireExact(facts.keyIndexCount, 126, "[schema-readback] key indexes");
   requireSha256(facts.schemaFingerprintSha256, "[schema-readback] schema fingerprint");
   requireSha256(facts.businessFingerprintBeforeSha256, "[schema-readback] before fingerprint");
   requireExact(

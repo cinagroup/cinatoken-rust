@@ -218,11 +218,37 @@ describe("Relay Container P5 evidence contract", () => {
     );
   });
 
+  test("keeps immutable placement authorization storage provenance at 0063", async () => {
+    const bundle = await createBundle({
+      mutateFoundationCapture: (capture) => {
+        for (const kind of ["candidateFreeze", "remoteInventory"]) {
+          capture.subject.evidenceFacts[kind].shardActivationCampaign
+            .placementMutationAuthorization.storageMigration =
+            "0067_relay_container_drain_expand.sql";
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      /placement authorization storage migration/,
+    );
+  });
+
   test("rejects the pre-0060 schema totals", async () => {
     const bundle = await createBundle({
       mutateEvidence: (kind, evidence) => {
         if (kind === "schema-readback") {
           evidence.facts.incrementalColumnCount = 770;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/incremental columns/);
+  });
+
+  test("rejects the pre-audit 0067 column inventory", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "schema-readback") {
+          evidence.facts.incrementalColumnCount = 1297;
         }
       },
     });
@@ -784,8 +810,8 @@ function candidateFixture() {
     ringGeneration: 1,
     shardCount: 8,
     migrationHead:
-      "0066_relay_container_shard_placement_dispatch_consumptions.sql",
-    migrationCount: 66,
+      "0067_relay_container_drain_expand.sql",
+    migrationCount: 67,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -1012,7 +1038,7 @@ function placementMutationAuthorizationFixture(candidate) {
   );
   const authorization = {
     storageMigration:
-      "0066_relay_container_shard_placement_dispatch_consumptions.sql",
+      "0063_relay_container_shard_placement_mutation_authorizations.sql",
     contractVersion: 1,
     authorizationContract:
       "cinatoken-relay-shard-placement-mutation-authorization-v1",
@@ -1115,10 +1141,10 @@ function factsFixture(kind, candidate, foundationBinding) {
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 66,
-        tableCount: 77,
-        incrementalColumnCount: 1096,
-        keyIndexCount: 111,
+        migrationCount: 67,
+        tableCount: 85,
+        incrementalColumnCount: 1310,
+        keyIndexCount: 126,
         schemaFingerprintSha256: "a".repeat(64),
         businessFingerprintBeforeSha256: "b".repeat(64),
         businessFingerprintAfterSha256: "b".repeat(64),

@@ -4514,13 +4514,13 @@ D1 admission fence
 -> independent traffic-return review
 ```
 
-The current implementation provides only persisted shard drain counts,
+The preceding reader checkpoint provided only persisted shard drain counts,
 separate `execution_stop_eligible` and local `accepted_work_drained`
 predicates, activity-expiry stop protection, and a default-off authenticated
 Controller read over fixed shards 0-7. Its response always sets
 `traffic_return_authorized=false`.
 
-The next implementation boundary is the expand-only 0067 global drain schema
+Its next implementation boundary was the expand-only 0067 global drain schema
 and D1 admission-fence design, with every new write gate false. Before 0068
 enforcement, all old writers must be inventoried and drained. Accepted-set
 membership, cross-layer financial joins, ambiguity quarantine, reverse sync,
@@ -4531,3 +4531,90 @@ See
 [`accepted-work-drain-traffic-return.md`](accepted-work-drain-traffic-return.md).
 No Cloudflare remote state or Go/VPS authority changed. Production remains
 **NO-GO**.
+
+## 2026-07-29 Global Accepted-Work Drain Expand Ledger
+
+Application migration `0067_relay_container_drain_expand.sql` now provides the
+local expand-only global ledger for the accepted-work drain protocol. It adds
+eight scope-bound tables for campaigns, events, frozen members, member/global
+observations, exact shard observations, per-operation ambiguity quarantine,
+reverse synchronization, and eligibility-only traffic-return receipts.
+
+The database contract is deliberately default-inert:
+
+- campaign insertion requires the future
+  `0068_relay_container_drain_admission_enforce.sql` migration marker;
+- one active campaign is allowed per environment and scope; a terminal
+  `recovery_required` or `aborted` campaign permits only the next exact fence
+  generation;
+- accepted membership uses strictly increasing
+  `(accepted_sequence, operation_id)` keysets and contiguous page/member
+  ordinals; NULL page/count fields are rejected, and the seal must equal the
+  campaign's frozen member count, declared manifest, and first/last key;
+- campaign state can advance only through an append-preserved hash-linked
+  event;
+- every accepted member needs one immutable terminal/ACK/financial/outbox/
+  reconciliation/R2/reverse-sync closure observation whose terminal and ACK
+  identities match the frozen member;
+- a quarantined closure requires its exact immutable non-replay quarantine;
+- shard observations must use the frozen per-shard accepted watermark and an
+  immutable 0061 placement attestation for the exact Controller/ring/shard;
+- reverse-sync snapshot/schema/bookmark/count/high-watermark values must match
+  the campaign freeze, generations are contiguous, and only the latest is
+  eligible for drain;
+- a `billing_hold` quarantine prevents a zero billing-open observation;
+- drain sealing requires the latest two consecutive observation generations
+  separated by the frozen stability window, equal request-independent state
+  and billing-conservation digests, exact shard coverage, zero open or
+  unclassified work, and a passing reverse-sync manifest, with stable
+  per-shard placement, owner generation, snapshot digest, Controller state,
+  drain predicates, and open counts;
+- operation 14 cannot be recorded before the successful drain seal; and
+- a traffic-return record must bind the stable closure, quarantine, billing,
+  reverse-sync, and operation-14 evidence, is rejected until future 0069 typed
+  evidence enforcement is installed, and can state only
+  `eligible_for_traffic_return_review=1` while the database requires
+  `traffic_return_authorized=0`.
+
+The Rust repository adds exact migration, ordered-column, index, and trigger
+readiness plus a validated read-only campaign lookup. It does not expose a
+0067 mutation method. `/api/platform/capabilities` now reports 0067 readiness,
+all five write gates, their aggregate all-false state, and that traffic-return
+authorization is not compiled.
+
+This is structural binding, not yet authoritative source completeness. 0068
+must derive the frozen values atomically from admission rows and independently
+recompute every source/member/page/set digest. The production writer must also
+resolve the existing immutable billing snapshot and replay the complete
+normalized settlement vector against the canonical expression; 0067 does not
+duplicate or prove that formula.
+
+The five gates are explicitly `false` in tracked local, staging, and production
+Worker configuration:
+
+- `CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED`;
+- `CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED`;
+- `CONTAINER_AMBIGUITY_QUARANTINE_WRITE_ENABLED`;
+- `CONTAINER_REVERSE_SYNC_MANIFEST_WRITE_ENABLED`; and
+- `CONTAINER_TRAFFIC_RETURN_RECEIPT_WRITE_ENABLED`.
+
+The canonical local SQLite verifier now executes the complete positive
+lifecycle and negative cases for missing 0068, incomplete and NULL membership,
+duplicate active scope, exact recovery generation, terminal/ACK identity
+drift, operation-14 ordering, append-only evidence, frozen reverse-export
+identity, reverse-generation gaps, stale placement, shard-watermark and
+Controller-state drift, snapshot-digest drift, billing-hold blocking, skipped
+global generations, `A -> B -> A` stability resets, exact shard coverage,
+missing 0069, receipt manifest drift, and non-authorizing receipts.
+Application inventory is 67
+migrations / 85 required tables / 1310 checked incremental columns / 126 key
+indexes.
+
+Next is not to enable a gate. The next production boundary is 0068 design and
+stale-writer inventory: enumerate every admission writer, prove compatible
+0067 readers are deployed, freeze the exact admission transaction contract,
+and test old/current Worker races in isolated staging before enforcement is
+created. After 0068, 0069 must add typed campaign-bound approval/WORM evidence,
+validity/retention rules, and reviewer independence before the receipt writer
+can be considered. No Cloudflare remote state or credential was accessed.
+Go/VPS remains authoritative and production remains **NO-GO**.

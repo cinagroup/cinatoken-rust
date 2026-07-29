@@ -2142,8 +2142,9 @@ Go/VPS remains authoritative and production remains **NO-GO**.
 - [ ] Keep all local/staging mutation gates false until the complete staging
   evidence bundle is approved.
 
-Application inventory remains 66 migrations / 77 tables / 1096 checked
-incremental columns / 111 key indexes. Authority inventory is `0001-0006`.
+At that deployment-gateway checkpoint, Application inventory was 66
+migrations / 77 tables / 1096 checked incremental columns / 111 key indexes.
+Authority inventory was `0001-0006`.
 Production placement configuration remains absent, no secret or remote state
 was accessed, Go/VPS remains authoritative, and production remains
 **NO-GO**.
@@ -2211,3 +2212,96 @@ was accessed, Go/VPS remains authoritative, and production remains
 
 No remote ceremony is authorized by the local foundation. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## Accepted-Work Drain 0067 Checklist
+
+### Local expand-only contract
+
+- [x] Add eight scope-bound 0067 evidence tables without altering existing
+  admissions or business rows.
+- [x] Reject campaign creation at D1 unless the 0068 enforcement migration
+  marker exists.
+- [x] Enforce one active campaign per environment/scope.
+- [x] Make campaign scope, fence, cutoff, high watermark/bookmark, authoritative
+  member count/manifest/first/last key, Controller/ring/inventory,
+  reverse-export identity, and configuration immutable.
+- [x] Require hash-linked append-only campaign events for every state change.
+- [x] Enforce strictly increasing accepted keys and contiguous page/member
+  ordinals.
+- [x] Reject NULL event page/count fields and require exact page seals.
+- [x] Require membership count, declared manifest, and global first/last key
+  to match the campaign freeze.
+- [x] Require one immutable closure observation per accepted operation
+  generation.
+- [x] Require per-operation immutable quarantine before a quarantined closure.
+- [x] Force provider, Rust, and Go replay flags to zero in quarantine.
+- [x] Bind reverse synchronization to the frozen snapshot/schema/bookmark,
+  member count, and high watermark, then require equal source/target values,
+  zero rejects, matched shadow, Rust fenced, and Go writes disabled.
+- [x] Bind every shard observation to an immutable 0061 placement attestation
+  and exact Controller/ring/shard identity.
+- [x] Prevent `billing_hold` quarantines from being hidden behind zero
+  billing-open observations.
+- [x] Require the latest two consecutive stable global observation
+  generations, exact shard coverage, all shard drain flags true, stable
+  per-shard snapshot semantics, and every open/unclassified count zero before
+  drain seal.
+- [x] Reject operation 14 before the drain seal.
+- [x] Constrain traffic-return output to review eligibility and force
+  `traffic_return_authorized=0`.
+- [x] Reject every traffic-return receipt until the future 0069 typed-evidence
+  enforcement migration is installed.
+- [x] Add exact Rust schema readiness and read-only campaign lookup.
+- [x] Keep every 0067 write repository and HTTP route absent.
+
+### Configuration
+
+- [x] Set all five drain write gates to `false` in top-level, staging, and
+  production Worker vars.
+- [x] Report each gate and an all-false aggregate in platform capabilities.
+- [x] Report `container_traffic_return_authorization_compiled=false`.
+- [x] Keep the drain gates outside operation 14's Controller action-gate
+  inventory.
+- [x] Advance the Application migration head to 0067 while preserving 0063 as
+  immutable shard-placement authorization storage provenance.
+
+### Remote 0067, 0068, and 0069 promotion
+
+- [ ] Inventory every admission writer, version, queue consumer, cron,
+  workflow, replay path, and direct D1 client.
+- [ ] Archive a normalized remote pre-0067 schema/catalog/trigger fingerprint.
+- [ ] Apply 0067 remotely with all gates false and read back all eight tables,
+  15 indexes, and 25 immutable/lifecycle triggers.
+- [ ] Deploy compatible readers and prove N/N-1 behavior without a 0067 write.
+- [ ] Export or retain D1 Time Travel evidence before 0068.
+- [ ] Specify the exact 0068 scope/fence row and atomic admission predicate.
+- [ ] Make the 0068 writer derive count/first/last from the authoritative
+  admission source, recompute every copied member/page/set digest, and reject
+  any intermediate-key substitution.
+- [ ] Resolve each member's existing immutable billing snapshot and prove
+  normalized usage, tier, group-ratio, expression-version, and conversion
+  replay without copying the billing expression.
+- [ ] Prove stale Worker generations fail in D1 before provider, Queue,
+  billing, R2 publication, or accepted membership.
+- [ ] Prove current-generation admission and fence closure races have one
+  linearizable outcome.
+- [ ] Prove old writers and in-flight transactions are drained before 0068.
+- [ ] Apply 0068 only through a reviewed isolated-staging ceremony.
+- [ ] Before each 0068/0069 candidate, advance the Worker expected migration
+  set, D1 audit, SQLite inventory, P5 head/counts, and frozen foundation
+  candidate together; prove the previous reader fails closed.
+- [ ] Define 0069 immutable evidence types for Go readiness, traffic
+  rehearsal, SLO, security, finance, release, WORM location, and retention.
+- [ ] Enforce evidence subject/issuer/validity/retention plus reviewer
+  independence in D1, and prove arbitrary valid hashes cannot satisfy 0069.
+- [ ] Apply 0069 only after 0068 campaign/freeze behavior is proven in
+  isolated staging.
+- [ ] Keep all five gates false after 0068 until campaign writers and complete
+  fault evidence are separately approved.
+- [ ] Do not run operation 14 or issue a traffic-return eligibility receipt
+  during schema promotion.
+
+Current Application inventory is 67 migrations / 85 required tables / 1310
+checked columns / 126 key indexes. This checklist records no remote
+application, secret operation, route change, traffic change, or authority
+transfer. Go/VPS remains authoritative and production remains **NO-GO**.

@@ -2082,7 +2082,7 @@ fallback and production remains **NO-GO**.
 ## 2026-07-19 P5 Evidence Decision Addendum
 
 The R5 isolated-staging exit now has an executable verifier contract in
-`docs/relay-container-p5-evidence-contract.md`. Ten exact evidence kinds and
+`docs/relay-container-p5-evidence-contract.md`. Eleven exact evidence kinds and
 five external Ed25519 approvals bind one immutable candidate. The verifier is
 offline, bounded, credential-free, and has no deployment or traffic authority.
 
@@ -2192,7 +2192,7 @@ the other.
     `evidence/foundation-capture.json`; the manifest must bind its byte count
     and full SHA-256, and its emitted facts must exactly match the two evidence
     records.
-12. Only after the ten P5 evidence categories and five signatures pass may the
+12. Only after the eleven P5 evidence categories and five signatures pass may the
     isolated synthetic canary be reviewed. Customer and production authority
     remain separate decisions.
 
@@ -2235,7 +2235,7 @@ effect is not promotable.
 | D campaign create | Root plus step-up creates one 60-3600 second campaign | Open status with zero claims/consumptions; exact candidate/action-gate/foundation digest; nonce handled only in operator memory | Legacy writer enabled, any action gate true, active/conflicting campaign, schema not ready |
 | E shard consumption | Submit one deterministic campaign readiness request per index | D1 claim precedes DO lookup; completed retry is replay-only; result JSON/hash stable; no second wake | Ambiguous journal, timeout, result/hash mismatch, readiness rejection, version/ring/build drift |
 | F seal and readback | Read root campaign status and 0054 frozen snapshot | `sealed_complete`, N/N, receipts `0..N-1`, one-to-one activation rows, final seal digest/timestamp match | Any non-complete seal, gap/duplicate, stale or execution-ready receipt, unexpected activation |
-| G S4 stability and P5 | Capture campaign, activation, action-gate, SBOM/provenance, R2, traffic and control-plane sources over 300-7200 seconds | Identical before/after campaign and activation digests, sources-v3, explicit all-page proof, ten P5 kinds, five signatures | Drift, partial pagination, traffic, unknown writer/object, stale evidence, signature failure |
+| G S4 stability and P5 | Capture campaign, activation, action-gate, SBOM/provenance, R2, traffic and control-plane sources over 300-7200 seconds | Identical before/after campaign and activation digests, sources-v3, explicit all-page proof, eleven P5 kinds, five signatures | Drift, partial pagination, traffic, unknown writer/object, stale evidence, signature failure |
 
 The campaign capability bypasses only the ordinary edge readiness probe/wake
 flags when a strict campaign credential is present. Ordinary probes remain

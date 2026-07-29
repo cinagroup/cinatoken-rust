@@ -2279,8 +2279,10 @@ authoritative and production remains **NO-GO**.
 - [x] Preserve 0050-only replay before the 0068 marker and require commit
   readback after it, so the compatible Worker can deploy before migration.
 - [x] Make 0068 one-way: close requires the exact current head, the head is
-  immutable, recovery/aborted state cannot reopen admission, and a
-  cross-second close+campaign batch remains time ordered.
+  immutable, and recovery/aborted state cannot reopen admission.
+- [ ] Add a one-SQL-step close command in the next migration; 0067 and 0068
+  intentionally reject a two-statement close+campaign sequence that crosses
+  a D1 clock second.
 - [ ] Inventory historical 0050 cardinality and first/last keys, then rehearse
   the one-shot window backfill against isolated D1 within current statement
   limits; replace it with a staged protocol if the bound is not proven.
@@ -2307,8 +2309,12 @@ authoritative and production remains **NO-GO**.
 - [ ] Before each 0068/0069 candidate, advance the Worker expected migration
   set, D1 audit, SQLite inventory, P5 head/counts, and frozen foundation
   candidate together; prove the previous reader fails closed.
-- [ ] Add an independent P5 admission-fence evidence type and verifier; schema
-  totals alone are not lifecycle or accepted-set evidence.
+- [x] Add manifest-v3 independent P5 admission-fence evidence, an offline
+  assembler, strict supporting-artifact reader, cross-evidence binding, and
+  fail-closed verifier; schema totals alone cannot satisfy it.
+- [ ] Collect an authenticated remote admission-fence packet with independent
+  accepted-set/source recomputation; digest-only local projections are not
+  lifecycle or completeness evidence.
 - [ ] Define 0069 immutable evidence types for Go readiness, traffic
   rehearsal, SLO, security, finance, release, WORM location, and retention.
 - [ ] Enforce evidence subject/issuer/validity/retention plus reviewer

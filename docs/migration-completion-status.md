@@ -1640,10 +1640,10 @@ traffic and financial authority; production remains **NO-GO**.
 
 ### Verified locally
 
-`bun run check:relay-container:p5-evidence` passes 42/42. The expanded
+`bun run check:relay-container:p5-evidence` now passes 66/66. The expanded
 Controller config suite passes 12/12, and the deploy-preflight suite passes
 18/18; its shared bounded-subprocess suite adds 4/4 termination/UTF-8 tests.
-The contract-description command reports ten evidence kinds, five
+The contract-description command reports eleven evidence kinds, five
 approval roles, and explicit false authority for remote mutation, customer
 traffic, and production cutover.
 
@@ -3005,13 +3005,13 @@ This table supersedes the preceding 0067 current-state rows.
 | Atomic financial admission | **COMMIT + 0050 RECEIPT + ALIASES + RESERVATION + DEBITS + OPERATION IN ONE D1 BATCH** |
 | Replay/settlement integrity | **SCHEMA-AWARE PRE-0068 READ; POST-0068 COMMIT REQUIRED AND CURRENT DIGEST RECOMPUTED** |
 | Fence close | **EXACT CURRENT HEAD + D1-DERIVED HIGH WATERMARK/COUNT/FIRST/LAST; UNCOMMITTED OPEN OPERATION REJECTED** |
-| Campaign close transaction | **FENCE CLOSE AND 0067 CAMPAIGN MUST COMMIT TOGETHER; CROSS-SECOND ORDER ACCEPTED** |
+| Campaign close transaction | **FENCE CLOSE AND 0067 CAMPAIGN MUST SHARE ONE SQLITE COMMAND TIME; CROSS-SECOND TWO-STATEMENT CLOSE REJECTED** |
 | Recovery generation | **REOPEN PROHIBITED UNDER 0068; FUTURE SEPARATE MIGRATION/APPROVAL REQUIRED** |
 | Environment isolation | **ONE ADMISSION ENVIRONMENT PER APPLICATION D1; SEPARATE D1 STILL REQUIRED** |
 | Fence lifecycle repository/route | **ABSENT; APPLIED SCHEMA REMAINS DEFAULT-CLOSED** |
 | Historical backfill scale | **ONE-SHOT WINDOW BACKFILL; REMOTE CARDINALITY/DURATION PROOF ABSENT** |
 | Source bookmark/manifest recomputation | **NOT IMPLEMENTED; VALUES ARE CALLER-ATTESTED** |
-| P5 admission-fence evidence type | **NOT IMPLEMENTED; SCHEMA TOTALS ONLY** |
+| P5 admission-fence evidence type | **MANIFEST V3 + EVIDENCE V2 + OFFLINE ASSEMBLER IMPLEMENTED; AUTHENTICATED REMOTE CAPTURE ABSENT** |
 | 0067 evidence writers | **ABSENT; FIVE TRACKED GATES REMAIN FALSE** |
 | Remote 0068 application/readback | **NOT PERFORMED** |
 | 0069 typed approval/WORM evidence | **NOT IMPLEMENTED** |
@@ -3021,8 +3021,14 @@ This table supersedes the preceding 0067 current-state rows.
 
 The next code boundary is an authenticated and audited initial-open/close
 control plane plus independently recomputed accepted-set source/page/complete
-manifests and a dedicated P5 evidence item. It must create fence+head and
-close fence+campaign only as atomic D1 batches, retain readback evidence,
+manifests. It must create fence+head atomically and close fence+campaign through
+one SQLite command step, retain readback evidence,
 preflight/rehearse the historical backfill, and remain disabled in every
 tracked environment until isolated-staging fault campaigns pass. It must not
 add an admission-reopen command.
+
+The local P5 gate now has eleven evidence kinds and 66 focused tests. The
+offline admission-fence assembler reads no credential, performs no network
+request, writes no file, and only emits canonical evidence-v2 to standard
+output. Its digest-only supporting projections are not source completeness
+proof and do not change the production **NO-GO** verdict.

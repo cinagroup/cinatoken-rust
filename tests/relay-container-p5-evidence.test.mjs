@@ -15,10 +15,14 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  ADMISSION_FENCE_CAPTURE_CONTRACT,
+  ADMISSION_FENCE_RAW_ARTIFACT_CONTRACT,
   EVIDENCE_CONTRACT,
   FOUNDATION_CAPTURE_CONTRACT,
   FOUNDATION_COLLECTOR_VERSION,
   MANIFEST_CONTRACT,
+  REQUIRED_ADMISSION_FENCE_ARTIFACT_PURPOSES,
+  REQUIRED_DRAIN_WRITE_GATES,
   REQUIRED_APPROVAL_ROLES,
   REQUIRED_EVIDENCE_KINDS,
   REQUIRED_LIFECYCLE_SCENARIOS,
@@ -30,6 +34,11 @@ import {
   sha256Hex,
   verifyP5Bundle,
 } from "../tools/relay_container_p5_evidence_contract.mjs";
+import {
+  collectAdmissionFenceEvidence,
+  describeAdmissionFenceCollector,
+  parseAdmissionFenceCollectorArgs,
+} from "../tools/collect_relay_container_p5_admission_fence.mjs";
 
 const fixedNow = new Date("2026-07-19T10:07:00.000Z");
 const capturedAt = "2026-07-19T10:00:00.000Z";
@@ -40,6 +49,11 @@ const temporaryRoots = [];
 const foundationCollectorSha256 = "e".repeat(64);
 const foundationObservationStartedAt = "2026-07-19T09:50:00.000Z";
 const foundationObservationEndedAt = "2026-07-19T09:58:00.000Z";
+const admissionCaptureIdSha256 = "4".repeat(64);
+const admissionFenceIdSha256 = "5".repeat(64);
+const drainCampaignIdSha256 = "6".repeat(64);
+const acceptedSetManifestSha256 = "7".repeat(64);
+const admissionGateReadbackSha256 = "8".repeat(64);
 
 afterAll(async () => {
   await Promise.all(
@@ -69,6 +83,55 @@ describe("Relay Container P5 evidence contract", () => {
     });
   }, 15_000);
 
+  test("assembles admission-fence evidence offline from one canonical capture", async () => {
+    const bundle = await createBundle();
+    const manifest = JSON.parse(await readFile(bundle.manifestPath, "utf8"));
+    const admissionEvidence = JSON.parse(
+      await readFile(bundle.evidencePaths.get("admission-fence"), "utf8"),
+    );
+    const capture = {
+      schemaVersion: 1,
+      contract: ADMISSION_FENCE_CAPTURE_CONTRACT,
+      environment: "staging",
+      candidate: manifest.subject.candidate,
+      candidateDigestSha256: manifest.subject.candidateDigestSha256,
+      foundationCaptureSha256:
+        admissionEvidence.foundationCaptureSha256,
+      capturedAt: admissionEvidence.capturedAt,
+      expiresAt: admissionEvidence.expiresAt,
+      facts: admissionEvidence.facts,
+    };
+    const capturePath = path.join(bundle.root, "admission-fence-capture.json");
+    await writeCanonical(capturePath, capture);
+    const collected = await collectAdmissionFenceEvidence({
+      capturePath,
+      bundleRoot: bundle.root,
+    });
+    expect(collected).toEqual(admissionEvidence);
+  });
+
+  test("keeps the admission-fence collector offline and rejects live options", () => {
+    const described = describeAdmissionFenceCollector();
+    expect(described.requiredSupportingArtifactPurposes).toHaveLength(11);
+    expect(described.safetyBoundary).toEqual({
+      credentialsRead: false,
+      networkRequests: false,
+      remoteMutationPerformed: false,
+      filesWritten: false,
+      customerTrafficAuthorized: false,
+      productionCutoverAuthorized: false,
+    });
+    expect(() =>
+      parseAdmissionFenceCollectorArgs([
+        "--capture",
+        "capture.json",
+        "--bundle-root",
+        ".",
+        "--live",
+      ]),
+    ).toThrow(/unknown option/);
+  });
+
   test("rejects noncanonical manifest JSON", async () => {
     const bundle = await createBundle();
     const manifest = JSON.parse(await readFile(bundle.manifestPath, "utf8"));
@@ -87,6 +150,37 @@ describe("Relay Container P5 evidence contract", () => {
     await expect(verify(bundle)).rejects.toThrow(/schemaVersion/);
   });
 
+  test("rejects the superseded manifest v2 contract", async () => {
+    const bundle = await createBundle({
+      mutateManifest: (manifest) => {
+        manifest.schemaVersion = 2;
+        manifest.contract =
+          "cinatoken-relay-container-p5-promotion-manifest-v2";
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/schemaVersion/);
+  });
+
+  test("rejects a packet missing the admission-fence evidence item", async () => {
+    const bundle = await createBundle({
+      mutateArtifactRecords: (records) => {
+        records.splice(REQUIRED_EVIDENCE_KINDS.indexOf("admission-fence"), 1);
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/exactly 11 evidence records/);
+  });
+
+  test("requires every evidence envelope to bind the foundation capture", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          delete evidence.foundationCaptureSha256;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/unknown or missing fields/);
+  });
+
   test("rejects duplicate JSON members", async () => {
     const bundle = await createBundle();
     const manifest = await readFile(bundle.manifestPath, "utf8");
@@ -102,7 +196,7 @@ describe("Relay Container P5 evidence contract", () => {
     await writeFile(
       negativeZero.manifestPath,
       (await readFile(negativeZero.manifestPath, "utf8")).replace(
-        '"schemaVersion":2',
+        '"schemaVersion":3',
         '"schemaVersion":-0',
       ),
     );
@@ -112,7 +206,7 @@ describe("Relay Container P5 evidence contract", () => {
     await writeFile(
       unsafeInteger.manifestPath,
       (await readFile(unsafeInteger.manifestPath, "utf8")).replace(
-        '"schemaVersion":2',
+        '"schemaVersion":3',
         '"schemaVersion":9007199254740992',
       ),
     );
@@ -269,6 +363,214 @@ describe("Relay Container P5 evidence contract", () => {
       },
     });
     await expect(verify(bundle)).rejects.toThrow(/migration head/);
+  });
+
+  test("rejects a tampered admission-fence supporting artifact", async () => {
+    const bundle = await createBundle({
+      afterWrite: async ({ admissionFenceSupportingArtifactPaths }) => {
+        await writeFile(
+          admissionFenceSupportingArtifactPaths.get("gate-readback"),
+          "{}\n",
+        );
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      /gate-readback artifact byte count mismatch|gate-readback artifact digest mismatch/,
+    );
+  });
+
+  test("rejects a symlinked admission-fence supporting artifact", async () => {
+    const bundle = await createBundle({
+      afterWrite: async ({ admissionFenceSupportingArtifactPaths }) => {
+        const artifactPath = admissionFenceSupportingArtifactPaths.get(
+          "rollback-readback",
+        );
+        if (process.platform === "win32") {
+          const targetPath = `${artifactPath}.target`;
+          await mkdir(targetPath);
+          await rm(artifactPath);
+          await symlink(targetPath, artifactPath, "junction");
+        } else {
+          const targetPath = `${artifactPath}.target`;
+          await rename(artifactPath, targetPath);
+          await symlink(path.basename(targetPath), artifactPath, "file");
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/regular non-symlink file/);
+  });
+
+  test("rejects an admission-fence supporting path outside its canonical slot", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.supportingArtifacts[0].path =
+            "evidence/admission-fence/../../manifest.json";
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/artifact path is invalid/);
+  });
+
+  test("rejects stale or nonmonotonic admission-fence supporting evidence", async () => {
+    const stale = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.supportingArtifacts[0].capturedAt =
+            "2026-07-19T07:59:59.000Z";
+        }
+      },
+    });
+    await expect(verify(stale)).rejects.toThrow(/outside the capture window/);
+
+    const nonmonotonic = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.supportingArtifacts[1].capturedAt =
+            "2026-07-19T09:59:59.000Z";
+        }
+      },
+    });
+    await expect(verify(nonmonotonic)).rejects.toThrow(
+      /chronology is not monotonic/,
+    );
+  });
+
+  test("rejects inconsistent or over-budget admission backfill evidence", async () => {
+    const inconsistent = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.backfill.historicalCommitCount = 1;
+        }
+      },
+    });
+    await expect(verify(inconsistent)).rejects.toThrow(
+      /historical commit conservation/,
+    );
+
+    const overBudget = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.backfill.maximumDurationMs = 25_001;
+        }
+      },
+    });
+    await expect(verify(overBudget)).rejects.toThrow(
+      /backfill duration is out of range/,
+    );
+  });
+
+  test("rejects a collapsed N and N-1 writer inventory", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.writerDrain.nMinusOneWriterVersionId =
+            evidence.facts.writerDrain.currentWriterVersionId;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/must differ/);
+  });
+
+  test("rejects an enabled drain write gate", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.writerDrain.drainGates[
+            REQUIRED_DRAIN_WRITE_GATES[0]
+          ] = true;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      new RegExp(REQUIRED_DRAIN_WRITE_GATES[0]),
+    );
+  });
+
+  test("rejects a two-statement close that crosses a D1 clock second", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.close.campaignCreatedAt += 1;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/one-step campaign time/);
+  });
+
+  test("rejects an accepted-set freeze with an uncommitted open operation", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.close.openOperationWithoutCommitCount = 1;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      /open operations outside commit ledger/,
+    );
+  });
+
+  test("rejects rejection evidence with business side effects", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.rejectionCases["late-admission"].providerCallDelta =
+            1;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      /late-admission providerCallDelta/,
+    );
+  });
+
+  test("rejects reopen acceptance and duplicate replay durability", async () => {
+    const reopen = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.rejectionCases["aborted-reopen"].outcome = "accepted";
+        }
+      },
+    });
+    await expect(verify(reopen)).rejects.toThrow(/aborted-reopen outcome/);
+
+    const duplicate = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.replayCases["d1-response-loss"].durableCommitCount =
+            2;
+        }
+      },
+    });
+    await expect(verify(duplicate)).rejects.toThrow(
+      /d1-response-loss durableCommitCount/,
+    );
+  });
+
+  test("rejects rollback evidence that drifts from the closed fence", async () => {
+    const highWatermark = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "rollback-rehearsal") {
+          evidence.facts.acceptedHighWatermark = 4;
+        }
+      },
+    });
+    await expect(verify(highWatermark)).rejects.toThrow(
+      /accepted high-watermark binding/,
+    );
+
+    const commitCount = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "rollback-rehearsal") {
+          evidence.facts.commitCountBefore = 4;
+          evidence.facts.commitCountAfter = 4;
+        }
+      },
+    });
+    await expect(verify(commitCount)).rejects.toThrow(
+      /accepted commit-count binding/,
+    );
   });
 
   test("rejects evidence facts that differ from the bound foundation artifact", async () => {
@@ -553,6 +855,15 @@ describe("Relay Container P5 evidence contract", () => {
     await expect(verify(bundle)).rejects.toThrow(/predates the complete evidence bundle/);
   });
 
+  test("rejects approval signed at the exact latest evidence timestamp", async () => {
+    const bundle = await createBundle({
+      approvalSignedAt: capturedAt,
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      /predates the complete evidence bundle/,
+    );
+  });
+
   test("rejects an approval whose signature time is not before its expiry", async () => {
     const bundle = await createBundle({
       approvalSignedAt: "2026-07-19T20:01:00.000Z",
@@ -679,19 +990,33 @@ async function createBundle(options = {}) {
     sha256: sha256Hex(foundationBytes),
     bytes: foundationBytes.length,
   };
+  const {
+    records: admissionFenceSupportingArtifacts,
+    paths: admissionFenceSupportingArtifactPaths,
+  } = await writeAdmissionFenceSupportingArtifacts({
+    root,
+    candidateDigestSha256,
+    mutateArtifact: options.mutateAdmissionFenceArtifact,
+  });
   const evidencePaths = new Map();
   const records = [];
   for (const kind of REQUIRED_EVIDENCE_KINDS) {
     const evidence = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       contract: EVIDENCE_CONTRACT,
       kind,
       environment: "staging",
       candidateDigestSha256,
+      foundationCaptureSha256: foundationCapture.foundationCaptureSha256,
       capturedAt,
       expiresAt,
       status: "pass",
-      facts: factsFixture(kind, candidate, foundationCapture.binding),
+      facts: factsFixture(
+        kind,
+        candidate,
+        foundationCapture.binding,
+        admissionFenceSupportingArtifacts,
+      ),
     };
     options.mutateEvidence?.(kind, evidence);
     const relativePath = `evidence/${kind}.json`;
@@ -770,7 +1095,7 @@ async function createBundle(options = {}) {
   });
   options.mutateApprovals?.(approvals);
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     contract: MANIFEST_CONTRACT,
     subject,
     subjectDigestSha256,
@@ -785,6 +1110,7 @@ async function createBundle(options = {}) {
   await options.afterWrite?.({
     root,
     evidencePaths,
+    admissionFenceSupportingArtifactPaths,
     foundationPath,
     manifestPath,
     trustPolicyPath,
@@ -798,6 +1124,45 @@ async function createBundle(options = {}) {
     foundationCaptureSha256: foundationCapture.foundationCaptureSha256,
     foundationArtifactSha256: foundationRecord.sha256,
   };
+}
+
+async function writeAdmissionFenceSupportingArtifacts({
+  root,
+  candidateDigestSha256,
+  mutateArtifact,
+}) {
+  const directory = path.join(root, "evidence", "admission-fence");
+  await mkdir(directory);
+  const records = [];
+  const paths = new Map();
+  for (const purpose of REQUIRED_ADMISSION_FENCE_ARTIFACT_PURPOSES) {
+    const artifact = {
+      schemaVersion: 1,
+      contract: ADMISSION_FENCE_RAW_ARTIFACT_CONTRACT,
+      purpose,
+      environment: "staging",
+      candidateDigestSha256,
+      captureIdSha256: admissionCaptureIdSha256,
+      capturedAt,
+      payload: {
+        payloadSha256: sha256Hex(Buffer.from(`${purpose}\n`, "utf8")),
+      },
+    };
+    mutateArtifact?.(purpose, artifact);
+    const relativePath = `evidence/admission-fence/${purpose}.json`;
+    const absolutePath = path.join(root, ...relativePath.split("/"));
+    const bytes = Buffer.from(`${canonicalJson(artifact)}\n`, "utf8");
+    await writeFile(absolutePath, bytes);
+    paths.set(purpose, absolutePath);
+    records.push({
+      purpose,
+      path: relativePath,
+      sha256: sha256Hex(bytes),
+      bytes: bytes.length,
+      capturedAt: artifact.capturedAt,
+    });
+  }
+  return { records, paths };
 }
 
 function candidateFixture() {
@@ -1126,7 +1491,12 @@ function placementMutationAuthorizationFixture(candidate) {
   };
 }
 
-function factsFixture(kind, candidate, foundationBinding) {
+function factsFixture(
+  kind,
+  candidate,
+  foundationBinding,
+  admissionFenceSupportingArtifacts,
+) {
   switch (kind) {
     case "candidate-freeze":
       return {
@@ -1170,6 +1540,11 @@ function factsFixture(kind, candidate, foundationBinding) {
         providerCallDelta: 0,
         financialMutationDelta: 0,
       };
+    case "admission-fence":
+      return admissionFenceFactsFixture(
+        candidate,
+        admissionFenceSupportingArtifacts,
+      );
     case "lifecycle-fault-campaign":
       return {
         scenarioResults: Object.fromEntries(
@@ -1232,6 +1607,12 @@ function factsFixture(kind, candidate, foundationBinding) {
       };
     case "rollback-rehearsal":
       return {
+        admissionCaptureIdSha256,
+        admissionFenceIdSha256,
+        admissionFenceGeneration: 1,
+        closedCampaignIdSha256: drainCampaignIdSha256,
+        acceptedHighWatermark: 3,
+        acceptedSetManifestSha256,
         disableFirst: true,
         allActionGatesFalseReadback: true,
         newRustAdmissionsAfterDisable: 0,
@@ -1242,6 +1623,13 @@ function factsFixture(kind, candidate, foundationBinding) {
         goVpsAuthorityRestored: true,
         p3ReadersRetained: true,
         migration0054Retained: true,
+        migration0068Retained: true,
+        scopeHeadUnchanged: true,
+        fenceRemainedClosed: true,
+        reopenRejected: true,
+        commitCountBefore: 3,
+        commitCountAfter: 3,
+        gateReadbackSha256: admissionGateReadbackSha256,
         evidenceRetained: true,
         rollbackDurationSeconds: 180,
       };
@@ -1260,6 +1648,247 @@ function factsFixture(kind, candidate, foundationBinding) {
     default:
       throw new Error(`unsupported fixture kind: ${kind}`);
   }
+}
+
+function admissionFenceFactsFixture(candidate, supportingArtifacts) {
+  const currentWriterVersionId = candidate.edgeWorkerVersionId;
+  const nMinusOneWriterVersionId = "edge-version-000";
+  const drainGates = Object.fromEntries(
+    REQUIRED_DRAIN_WRITE_GATES.map((gate) => [gate, false]),
+  );
+  const rejection = ({
+    writerVersionId,
+    errorClass,
+    digestCharacter,
+  }) => ({
+    attemptSha256: digestCharacter.repeat(64),
+    writerVersionId,
+    outcome: "rejected-before-provider",
+    errorClass,
+    businessBeforeSha256: "b".repeat(64),
+    businessAfterSha256: "b".repeat(64),
+    providerCallDelta: 0,
+    queueDelta: 0,
+    billingMutationDelta: 0,
+    r2InputObjectDelta: 0,
+    r2OrphanObservedCount: 0,
+    r2OrphanMutationCount: 0,
+    commitDelta: 0,
+    atomicAdmissionDelta: 0,
+    reservationDelta: 0,
+    operationDelta: 0,
+    fenceDelta: 0,
+    headDelta: 0,
+  });
+  const replay = (digestCharacter) => ({
+    attemptSha256: digestCharacter.repeat(64),
+    writerVersionId: currentWriterVersionId,
+    outcome: "matching-immutable-readback",
+    durableCommitCount: 1,
+    durableReceiptCount: 1,
+    durableReservationCount: 1,
+    durableOperationCount: 1,
+    duplicateFinancialMutations: 0,
+    providerCallDelta: 0,
+    readbackSha256: digestCharacter.repeat(64),
+  });
+  return {
+    captureIdSha256: admissionCaptureIdSha256,
+    accountIdSha256: "9".repeat(64),
+    d1DatabaseName: candidate.d1DatabaseName,
+    d1DatabaseId: candidate.d1DatabaseId,
+    scopeKind: "global",
+    scopeIdSha256:
+      "53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251",
+    migration: {
+      name: "0068_relay_container_drain_admission_enforce.sql",
+      sqlSha256:
+        "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50",
+      markerCount: 1,
+      tables: [
+        "relay_container_admission_fences",
+        "relay_container_admission_scope_heads",
+        "relay_container_admission_commits",
+      ],
+      indexes: [
+        "idx_relay_container_admission_open_scope",
+        "idx_relay_container_admission_fence_generation",
+        "idx_relay_container_admission_commits_scope",
+      ],
+      triggers: [
+        "relay_container_admission_fence_insert_guard",
+        "relay_container_admission_fence_update_guard",
+        "relay_container_admission_fence_delete_guard",
+        "relay_container_admission_scope_head_insert_guard",
+        "relay_container_admission_scope_head_update_guard",
+        "relay_container_admission_scope_head_delete_guard",
+        "relay_container_admission_commit_insert_guard",
+        "relay_container_admission_commit_update_guard",
+        "relay_container_admission_commit_delete_guard",
+        "relay_container_atomic_admission_fence_guard",
+        "relay_container_operation_admission_fence_guard",
+        "relay_container_drain_campaign_admission_fence_guard",
+        "relay_container_drain_campaign_source_identity_update_guard",
+      ],
+      schemaFingerprintSha256: "a".repeat(64),
+      businessFingerprintBeforeSha256: "b".repeat(64),
+      businessFingerprintAfterSha256: "b".repeat(64),
+    },
+    environmentIsolation: {
+      fenceEnvironment: "staging",
+      distinctFenceEnvironmentCount: 1,
+      foreignEnvironmentFenceCount: 0,
+      databaseBindingInventorySha256: "1".repeat(64),
+    },
+    backfill: {
+      preApplyAtomicAdmissionCount: 2,
+      historicalCommitCount: 2,
+      pre0068SourceContractCount: 2,
+      firstAcceptedSequence: 1,
+      lastAcceptedSequence: 2,
+      firstOperationId: "historical-operation-001",
+      lastOperationId: "historical-operation-002",
+      pageCount: 1,
+      paginationComplete: true,
+      rowManifestSha256: "2".repeat(64),
+      sourceReadbackSha256: "3".repeat(64),
+      rehearsalRowCount: 2,
+      rehearsalRuns: 2,
+      maximumDurationMs: 20_000,
+      statementLimitMs: 30_000,
+      safetyMarginMs: 5_000,
+    },
+    writerDrain: {
+      inventorySha256: "4".repeat(64),
+      currentWriterVersionId,
+      nMinusOneWriterVersionId,
+      overlapStartedAt: "2026-07-19T09:52:00.000Z",
+      overlapEndedAt: "2026-07-19T09:59:00.000Z",
+      writers: [
+        {
+          writerId: "edge-writer-n-minus-one",
+          versionId: nMinusOneWriterVersionId,
+          writerContract: "pre-0068-atomic-admission-v1",
+          state: "drained",
+        },
+        {
+          writerId: "edge-writer-current",
+          versionId: currentWriterVersionId,
+          writerContract: "fenced-atomic-admission-v1",
+          state: "current",
+        },
+      ],
+      unknownWriterCount: 0,
+      drainGates,
+      configReadbackSha256: admissionGateReadbackSha256,
+      capabilityReadbackSha256: "9".repeat(64),
+    },
+    initialOpen: {
+      fenceIdSha256: admissionFenceIdSha256,
+      fenceGeneration: 1,
+      headVersion: 1,
+      adminIdentitySha256: "a".repeat(64),
+      requestSha256: "b".repeat(64),
+      batchSha256: "c".repeat(64),
+      readbackSha256: "d".repeat(64),
+      fenceInsertChanges: 1,
+      headInsertChanges: 1,
+      admissionOpen: true,
+      createdAt: 1_753_000_000,
+    },
+    successfulAdmission: {
+      acceptedSequence: 3,
+      operationId: "current-operation-003",
+      reservationKey: "current-operation-003",
+      atomicAdmissionSha256: "1".repeat(64),
+      admissionCommitSha256: "2".repeat(64),
+      receiptRowSha256: "3".repeat(64),
+      reservationRowSha256: "4".repeat(64),
+      financialBeforeSha256: "5".repeat(64),
+      financialAfterSha256: "6".repeat(64),
+      operationRowSha256: "7".repeat(64),
+      batchSha256: "8".repeat(64),
+      readbackSha256: "9".repeat(64),
+      providerCallDelta: 0,
+      queueDelta: 0,
+    },
+    close: {
+      campaignIdSha256: drainCampaignIdSha256,
+      fenceIdSha256: admissionFenceIdSha256,
+      fenceGeneration: 1,
+      headVersion: 1,
+      headFenceIdSha256: admissionFenceIdSha256,
+      headGeneration: 1,
+      admissionOpen: false,
+      cutoffAt: 1_753_000_010,
+      closedAt: 1_753_000_010,
+      campaignCreatedAt: 1_753_000_010,
+      acceptedHighWatermark: 3,
+      acceptedMemberCount: 3,
+      acceptedFirstSequence: 1,
+      acceptedFirstOperationId: "historical-operation-001",
+      acceptedLastSequence: 3,
+      acceptedLastOperationId: "current-operation-003",
+      acceptedBookmarkSha256: "d".repeat(64),
+      acceptedSetManifestSha256,
+      acceptedSourceSchemaSha256: "a".repeat(64),
+      acceptedSourceReadbackSha256: "e".repeat(64),
+      openOperationWithoutCommitCount: 0,
+      commitCountAtOrBelowHighWatermark: 3,
+      fenceUpdateChanges: 1,
+      campaignInsertChanges: 1,
+      batchSha256: "f".repeat(64),
+      readbackSha256: "0".repeat(64),
+    },
+    closeRace: {
+      admissionWins: {
+        outcome: "admission-wins",
+        acceptedCommitDelta: 1,
+        rejectedAdmissionCount: 0,
+        batchSha256: "1".repeat(64),
+        readbackSha256: "2".repeat(64),
+      },
+      closeWins: {
+        outcome: "close-wins",
+        acceptedCommitDelta: 0,
+        rejectedAdmissionCount: 1,
+        batchSha256: "3".repeat(64),
+        readbackSha256: "4".repeat(64),
+      },
+    },
+    rejectionCases: {
+      "old-writer": rejection({
+        writerVersionId: nMinusOneWriterVersionId,
+        errorClass: "missing-fenced-commit",
+        digestCharacter: "1",
+      }),
+      "stale-generation": rejection({
+        writerVersionId: currentWriterVersionId,
+        errorClass: "stale-fence-generation",
+        digestCharacter: "2",
+      }),
+      "late-admission": rejection({
+        writerVersionId: currentWriterVersionId,
+        errorClass: "closed-fence",
+        digestCharacter: "3",
+      }),
+      "recovery-required-reopen": rejection({
+        writerVersionId: currentWriterVersionId,
+        errorClass: "admission-reopen-prohibited",
+        digestCharacter: "4",
+      }),
+      "aborted-reopen": rejection({
+        writerVersionId: currentWriterVersionId,
+        errorClass: "admission-reopen-prohibited",
+        digestCharacter: "5",
+      }),
+    },
+    replayCases: {
+      "process-loss": replay("6"),
+      "d1-response-loss": replay("7"),
+    },
+    supportingArtifacts,
+  };
 }
 
 async function writeCanonical(file, value) {

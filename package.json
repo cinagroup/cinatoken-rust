@@ -93,7 +93,7 @@
     "check:relay-http-stream-handoff:config": "bun tools/audit_relay_http_stream_handoff_config.mjs --json",
     "audit:relay-container:enforcement-readiness": "bun tools/audit_relay_container_enforcement_readiness.mjs",
     "check:relay-container:enforcement-readiness": "bun tools/audit_relay_container_enforcement_readiness.mjs --self-test --json",
-    "check:relay-container:p5-evidence": "bun test tests/relay-container-p5-evidence.test.mjs",
+    "check:relay-container:p5-evidence": "bun test --path-ignore-patterns=\"target/**\" tests/relay-container-p5-evidence.test.mjs && bun tools/collect_relay_container_p5_admission_fence.mjs --self-test",
     "plan:relay-container:p5-evidence": "bun tools/verify_relay_container_p5_evidence.mjs --describe --json",
     "verify:relay-container:p5-evidence": "bun tools/verify_relay_container_p5_evidence.mjs",
     "check:relay-container:p5-foundation": "bun test tests/relay-container-p5-foundation-collector.test.mjs && bun tools/collect_relay_container_p5_foundation.mjs --self-test",

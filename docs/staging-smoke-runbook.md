@@ -186,7 +186,7 @@ registry. Missing shard-ledger, action-gate, SBOM/signature, R2 writer/object,
 traffic, or pagination proof must remain `not-proven`.
 
 Use `docs/relay-container-p5-evidence-contract.md` for the canonical manifest,
-ten evidence kinds, external Ed25519 trust policy, five independent approvals,
+eleven evidence kinds, external Ed25519 trust policy, five independent approvals,
 and reader-first order. Archive the collector output exactly as
 `evidence/foundation-capture.json`; the signed manifest binds its complete
 bytes and the verifier compares its emitted facts. The local self-test is not staging evidence. A real

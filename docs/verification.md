@@ -8164,11 +8164,11 @@ financial, provenance, load, rollback, security, or approval facts.
 
 ```powershell
 bun run plan:relay-container:p5-evidence
-# PASS: reports ten evidence kinds, five approval roles, no network/credentials,
+# PASS: reports eleven evidence kinds, five approval roles, no network/credentials,
 # and false remote/customer/production authority.
 
 bun run check:relay-container:p5-evidence
-# PASS: 38/38 contract and adversarial tests.
+# PASS: 66/66 contract, collector, and adversarial tests plus collector self-test.
 
 bun test tests/container-controller-config.test.mjs
 # PASS: 12/12, including exact edge/Controller D1/KV/R2/service identities.
@@ -12014,7 +12014,7 @@ required tables, 1365 checked incremental columns, and 129 key indexes. Its
 - a fence that is not the exact current scope head cannot close;
 - a fence cannot close over an open operation missing from the commit ledger;
 - close and campaign insert share one deferred-foreign-key transaction and
-  remain valid when the D1 clock advances one second between statements;
+  are accepted only when both statements observe the same D1 second;
 - new admission is rejected after close without partial state;
 - commit, accepted-source and scope-head identities are immutable;
 - `recovery_required` cannot reopen admission under 0068; and
@@ -12033,9 +12033,17 @@ writer, arbitrary future operation kind/protocol, stale fence, authority race,
 partial-batch rollback, immutable replay and response-artifact writer
 negatives against actual D1 migrations.
 
+The P5 manifest-v3 gate now runs 66 focused tests and includes the offline
+admission-fence assembler self-test. It rejects a missing eleventh item,
+manifest-v2 downgrade, foundation drift, supporting-file tamper/symlink/path
+escape, backfill inconsistency or duration overrun, collapsed N/N-1 inventory,
+enabled drain gates, cross-second close, uncommitted open work, side effects on
+rejection, reopen acceptance, duplicate replay durability, rollback drift, and
+approval at the latest evidence timestamp.
+
 These results are local evidence. No authenticated fence lifecycle writer,
 remote D1 application/readback, source-manifest recomputation, remote
 old-Worker race, billing-vector replay, reverse sync, stable observation pair,
-operation-14 execution, one-shot backfill capacity proof, independent P5
-admission-fence item, 0069 evidence or traffic-return review is claimed.
+operation-14 execution, one-shot backfill capacity proof, authenticated P5
+admission-fence capture, 0069 evidence or traffic-return review is claimed.
 Go/VPS remains authoritative and production remains **NO-GO**.

@@ -200,10 +200,13 @@ P5 pass by elapsed time. The complete contracts and live SOP are in
 
 ## Manifest Identity
 
-The operative manifest is schema version 2 with contract
-`cinatoken-relay-container-p5-promotion-manifest-v2`. Version 2 adds the
-required canonical foundation capture artifact record; a version-1 manifest
-cannot be upgraded by inserting an optional field and is rejected.
+The operative manifest is schema version 3 with contract
+`cinatoken-relay-container-p5-promotion-manifest-v3`. Version 3 adds the
+required `admission-fence` evidence item and requires every evidence envelope
+to bind the same canonical foundation capture digest. Version 1 and version 2
+manifests cannot be upgraded by inserting optional fields and are rejected.
+Evidence envelopes use
+`cinatoken-relay-container-p5-evidence-v2`.
 
 Every input is canonical JSON: object keys are sorted, numbers are safe
 integers, and the file ends with exactly one newline. This rejects duplicate
@@ -218,7 +221,8 @@ The signed subject binds:
 - Container SBOM digest and image signature result;
 - exact D1 name/UUID, R2 bucket, KV namespace digest, Controller/egress service,
   DO namespace digest, binding, class, shard count, and ring generation;
-- D1 head 0054 and count 54;
+- D1 head 0068 and count 68, with exact 88-table, 1365-column, and
+  129-index readback totals;
 - response protocol 3, status contract 4, financial terminal contract 2, and
   terminal ACK contract 3;
 - a bounded, non-streaming, synthetic `/v1/chat/completions` cohort with no
@@ -226,27 +230,31 @@ The signed subject binds:
 - the fixed `evidence/foundation-capture.json` path, byte length, and complete
   file SHA-256 digest; and
 - the path, byte length, SHA-256 digest, capture time, and expiry of every
-  evidence file.
+  evidence file, plus the fixed 11-file admission-fence supporting-artifact
+  inventory.
 
-The subject digest is SHA-256 over canonical subject JSON. Evidence files bind
-the same candidate digest. A packet cannot mix schema evidence from one commit,
-lifecycle evidence from another image, and approval from a third deployment.
+The subject digest is SHA-256 over canonical subject JSON. Every evidence file
+binds the same candidate and foundation-capture digests. A packet cannot mix
+schema evidence from one commit, lifecycle evidence from another image,
+admission evidence from another D1 capture, and approval from a third
+deployment.
 
 ## Required Evidence
 
-All ten kinds are required exactly once and in contract order:
+All eleven kinds are required exactly once and in contract order:
 
 | Kind | Required proof |
 | --- | --- |
 | `candidate-freeze` | Exact commit/version/image/runtime-build/provenance/SBOM inventory, image signature and runtime-to-image provenance verified, zero unapproved critical/high vulnerabilities, every action gate false |
 | `remote-inventory` | Account digest, exact shared D1/KV/R2 identities, Controller/egress services, DO namespace/binding/class, candidate runtime build and image provenance, all shards accounted for, zero unknown writers/objects/customer traffic |
 | `reader-first-rollout` | Egress before Controller, Controller before edge, readers before writers, every shard on a compatible reader, no new response write, public `/internal` 404, N/N-1 or blue/green skew proof |
-| `schema-readback` | Remote 0058/58 and exact 66-table/848-column/97-index baseline, normalized schema digest, exact client-abort catalog, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
+| `schema-readback` | Remote 0068/68 and exact 88-table/1365-column/129-index baseline, normalized schema digest, unchanged business fingerprint, old-writer and direct-negative probes with zero provider/financial delta |
+| `admission-fence` | Exact staging D1/account/scope binding, 0068 SQL and schema inventory, bounded historical backfill, N/N-1 writer drain, five false write gates, one successful fenced admission, one-step close/campaign readback, close races, rejection/replay outcomes, and 11 canonical supporting-artifact digests |
 | `lifecycle-fault-campaign` | Cold/warm start, DO eviction, Container sleep/restart/OOM, duplicate alarm, callback failure, malformed/future payload, N-1, and response loss; zero duplicate provider/financial effects |
 | `response-financial-fault-campaign` | Success, typed error, HTTP error, invalid body, and recovery; every D1 statement fault; response-class totals equal provider operations, one provider operation per send, settled plus refunded terminal conservation, zero request accounting on refund, exact client replay and classified R2 orphans |
 | `cross-layer-provenance` | Complete redacted edge/Controller/DO/Container/broker/provider/D1/R2/financial/audit/client tuple with no identity gap or payload/credential leak |
 | `load-cost-slo` | At least one hour and 1,000 requests, Rust 5xx delta at most 50 basis points, non-stream p95 overhead at most 300 ms, zero D1/resource errors, delivered alert drills, approved 1x/2x/5x cost |
-| `rollback-rehearsal` | Gates disabled first and read back false, all in-flight work classified, zero new Rust admission/resend/duplicate finance, Go authority restored, P3 readers/0054/evidence retained, rollback within 15 minutes |
+| `rollback-rehearsal` | Exact admission capture/fence/generation/campaign/accepted-set binding, gates disabled first and read back false, immutable scope head/closed fence/commit count, rejected reopen, all in-flight work classified, zero new Rust admission/resend/duplicate finance, Go authority restored, P3 readers/0054/0068/evidence retained, rollback within 15 minutes |
 | `security-privacy-review` | Replacement least-privilege credential readback, zero secret/unredacted payload/critical/unapproved-high findings, approved retention/privacy, named incident owner |
 
 An evidence envelope that merely says `status=pass` is insufficient. Each kind
@@ -827,7 +835,7 @@ head `0068_relay_container_drain_admission_enforce.sql`, 68 migrations, 88
 required tables, 1365 checked incremental columns, and 129 key indexes.
 Placement-mutation authorization storage provenance remains exactly 0063.
 
-A future remote P5 admission-fence item must bind:
+The operative P5 `admission-fence` item must bind:
 
 1. environment-specific D1 identity and proof that no other environment shares
    the admission fence database;
@@ -846,17 +854,49 @@ A future remote P5 admission-fence item must bind:
    independently recomputed bookmark/member/page/complete manifests, and
    retained source schema/readback digests;
 8. proof that no open operation is outside the commit ledger;
-9. exact-current-head close+campaign atomic readback, including a transaction
-   whose statements cross a D1 clock-second boundary;
+9. exact-current-head close+campaign atomic readback proving both mutations
+   came from one SQLite command step and share the same D1 time;
 10. N/N-1, process-loss and D1 response-loss results, plus proof that
     `recovery_required` and `aborted` cannot reopen admission under 0068; and
 11. all five drain write gates false before any separately approved writer
     campaign.
 
-Locally seeded fence/head rows are test fixtures, not promotion evidence.
-Caller-supplied valid SHA-256 values are not accepted-set completeness proof.
-The current P5 implementation binds only the 0068 schema head and inventory;
-the independent admission-fence evidence item described above is not yet
-implemented and remains a production blocker.
+Backfill evidence is accepted only when at least two rehearsals of the exact
+row count complete in at most 25 seconds with a declared margin of at least
+5 seconds under Cloudflare's current
+[30-second D1 query and API batch ceiling](https://developers.cloudflare.com/d1/platform/limits/).
+
+The offline assembler
+`tools/collect_relay_container_p5_admission_fence.mjs` accepts one canonical
+staging capture, recomputes the candidate digest, verifies the strict facts
+shape, reads all 11 fixed supporting files without following symlinks or
+allowing path escape, and emits evidence-v2 to standard output. The manifest-v3
+verifier then binds admission facts to remote inventory, schema readback,
+rollback evidence, and the common foundation capture. It rejects a close and
+campaign whose D1 times differ and rejects approvals signed at or before the
+latest evidence timestamp.
+
+This assembler is deliberately offline: it reads no credentials, makes no
+network request, mutates no remote state, and writes no file. It is not an
+authenticated D1 collector or lifecycle writer. Locally seeded fence/head rows
+and digest-only supporting projections are test fixtures, not promotion
+evidence. Caller-supplied valid SHA-256 values are not accepted-set
+completeness proof. A remote capture still requires independent source
+recomputation, retained provider readback, and the not-yet-implemented
+one-SQL-step close command. These remain production blockers.
 No P5 item may infer traffic-return authorization from 0068, a drain campaign,
 operation 14, or an eligibility receipt.
+
+```powershell
+bun tools/collect_relay_container_p5_admission_fence.mjs --describe
+bun tools/collect_relay_container_p5_admission_fence.mjs `
+  --capture .\evidence\admission-fence-capture.json `
+  --bundle-root .
+bun run check:relay-container:p5-evidence
+bun run plan:relay-container:p5-evidence
+```
+
+The collect command emits canonical evidence JSON to standard output. The
+operator must redirect it only into a create-new evidence location governed by
+the external evidence-retention ceremony; the collector itself never chooses
+or overwrites a destination.

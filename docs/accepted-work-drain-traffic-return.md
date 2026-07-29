@@ -808,8 +808,8 @@ D1-linearized admission boundary:
 - application readback that recomputes current fence-bound commit digests;
 - a close guard that derives count/high-watermark/first/last identities and
   rejects any open operation missing from the commit ledger;
-- exact-current-head enforcement for close, including a cross-second
-  close/campaign transaction; and
+- exact-current-head enforcement for close, with fence close and campaign
+  creation required to share one SQLite statement time; and
 - an immutable 0068 scope head that rejects every recovery or aborted-campaign
   attempt to reopen admission.
 
@@ -829,7 +829,8 @@ The following remain production blockers:
 - canonical billing snapshot/vector replay against the existing expression
   authority;
 - remote old-writer inventory, D1 readback and N/N-1 race evidence;
-- an independent P5 admission-fence evidence type and verifier;
+- an authenticated remote P5 admission-fence capture satisfying the local
+  manifest-v3 evidence type and verifier;
 - campaign-bound DO/R2/Queue/outbox/reconciliation evidence;
 - operation-14 runtime integration; and
 - 0069 typed approval/WORM evidence and independent traffic-return review.

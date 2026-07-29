@@ -21789,7 +21789,7 @@ def verify_relay_container_drain_admission_enforce_rollout(
         "admission fence close requires current scope head",
         "admission scope head is immutable under 0068",
         "CHECK (fence_kind = 'admission')",
-        "fence.closed_at <= NEW.created_at",
+        "fence.closed_at = NEW.created_at",
         "operation.status IN (",
         "commit_row.accepted_sequence IS NULL",
         "drain campaign does not match the closed admission fence",
@@ -22196,8 +22196,6 @@ def verify_relay_container_drain_admission_enforce_rollout(
     try:
         conn.execute("PRAGMA defer_foreign_keys = ON")
         conn.execute(fence_close_sql, close_values)
-        clock[0] += 1
-        campaign_values["created_at"] = clock[0]
         conn.execute(campaign_insert_sql, campaign_values)
         conn.commit()
     except sqlite3.Error:

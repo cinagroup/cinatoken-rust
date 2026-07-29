@@ -16905,10 +16905,11 @@ shared D1/KV/R2/Service Binding/DO identities, shard/ring, protocol versions,
 artifact, and every evidence file's path,
 size, digest, capture time, and expiry.
 
-Ten evidence kinds are conjunctive: candidate freeze, remote inventory,
-reader-first rollout, schema readback, lifecycle faults, response/financial
-faults, cross-layer provenance, load/cost/SLO, rollback rehearsal, and
-security/privacy review. Exact fact schemas reject a generic `pass` claim.
+Eleven evidence kinds are conjunctive: candidate freeze, remote inventory,
+reader-first rollout, schema readback, admission fence, lifecycle faults,
+response/financial faults, cross-layer provenance, load/cost/SLO, rollback
+rehearsal, and security/privacy review. Exact fact schemas reject a generic
+`pass` claim.
 Thresholds include all eight shards, 0054/54 with the current schema baseline,
 twelve lifecycle scenarios, all P4 outcomes, zero duplicate provider/financial
 effects, exact response-class and settled-plus-refunded operation conservation,
@@ -17117,7 +17118,7 @@ individually valid implementations from silently signing different bytes.
 | S2 runtime rollout | Deploy the Container image in `[10,100]` stages while activation recording remains false | Control-plane image digest, runtime build readback, N/N-1 compatibility, no provider/financial delta | Unknown image/build, incompatible readiness, or unexplained wake |
 | S3 candidate recording | Deploy the staging Controller candidate with only the expected-build-bound activation recorder enabled; explicitly probe each logical shard | Exactly one candidate row for every index `0..N-1`, zero old/unknown build rows | Missing, duplicate, wrong-build, wrong-ring, or execution-ready row |
 | S4 stability capture | Run the root-authenticated shard collector and all other P5 source collectors during the same bounded window | Frozen high watermark, complete keyset traversal, identical entries digest, source v2 artifact digest | Cursor gap/repeat, snapshot drift, source timestamp miss |
-| S5 P5 campaigns | Run lifecycle/response/financial faults, provenance, load/cost/SLO, rollback, privacy, and owner signatures | Ten evidence kinds and five independent signatures over one subject | Customer traffic, duplicate effect, stale evidence, or failed rollback |
+| S5 P5 campaigns | Run admission-fence, lifecycle/response/financial faults, provenance, load/cost/SLO, rollback, privacy, and owner signatures | Eleven evidence kinds and five independent signatures over one subject | Customer traffic, duplicate effect, stale evidence, mixed fence identity, or failed rollback |
 
 Wrangler's current list output does not expose enough cursor information for the
 existing collector to prove complete traversal. Those list commands now fail
@@ -17263,7 +17264,7 @@ verification. The legacy 0054 static activation writer remains disabled.
    receipt digest valid and one-to-one with 0054. Then run the campaign-aware
    shard collector before and after the bounded S4 window.
 8. Continue to P5 only after authoritative all-page Cloudflare inventory,
-   sources-v3, ten evidence categories, and five independent approvals pass.
+   sources-v3, eleven evidence categories, and five independent approvals pass.
 
 ### Audit verdict
 
@@ -24977,9 +24978,12 @@ accepted keys from the insertion-ordered commit ledger. It also rejects
 closure while any `prepared`, `dispatched`, or `recovery_required` Container
 operation lacks a commit. Therefore a stale/non-head close or a pre-0068
 bypass row cannot be silently omitted from the frozen open-work boundary.
-The fence close time may precede the matching campaign creation time when two
-D1 statements cross a second boundary; ordered `closed_at <= created_at`
-replaces fragile timestamp equality while the transaction remains atomic.
+0067 requires `campaign.cutoff_at = campaign.created_at`, while 0068 requires
+the fence cutoff to equal `closed_at`. Therefore a production close cannot be
+implemented as two independently stepped D1 statements: crossing a D1 clock
+second must fail closed. The next migration must provide one command insert
+whose trigger performs fence close and campaign creation inside one SQLite
+step, so both trigger families observe the same D1 time.
 
 The database intentionally does not claim to recompute
 `accepted_bookmark_sha256`, `accepted_set_manifest_sha256`,
@@ -25037,18 +25041,21 @@ Current local evidence proves deterministic historical backfill,
 single-environment locking, old/future-writer rejection, stale-generation
 rollback, same-batch commit/receipt/reservation/financial/operation admission,
 commit readback digest verification, open-campaign rejection, close/campaign
-atomicity across a D1 clock-second boundary, current-head enforcement,
+same-time atomicity, current-head enforcement,
 uncommitted-open-operation blocking, late-admission rejection, immutable
 source/commit/head identity, recovery-reopen rejection, append preservation,
-and duplicate-DDL failure.
+and duplicate-DDL failure. It does not yet prove the required one-SQL-step
+production close command.
 
 It does not prove remote D1 state, complete source-manifest recomputation,
 authenticated fence lifecycle writers, 0067 drain member/observation writers,
 canonical billing-vector replay, deployed Queue/R2/outbox/reconciliation
 convergence, Go reverse sync, two stable global observations, operation-14
 integration, one-shot historical-backfill capacity, an independent P5
-admission-fence evidence item, or 0069 typed approval/WORM evidence. All five
-0067 write gates remain false, 0069 is absent, and
+admission-fence remote capture, or 0069 typed approval/WORM evidence. The
+manifest-v3 admission-fence type and offline assembler exist locally, but no
+authenticated remote capture satisfies them. All five 0067 write gates remain
+false, 0069 is absent, and
 `container_traffic_return_authorization_compiled=false`.
 
 No Cloudflare API, credential, remote database, deployment, route, DNS or

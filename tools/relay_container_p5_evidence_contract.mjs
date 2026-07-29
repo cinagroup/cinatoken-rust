@@ -7,13 +7,17 @@ import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 
 export const MANIFEST_CONTRACT =
-  "cinatoken-relay-container-p5-promotion-manifest-v2";
+  "cinatoken-relay-container-p5-promotion-manifest-v3";
 export const TRUST_POLICY_CONTRACT =
   "cinatoken-relay-container-p5-trust-policy-v1";
 export const EVIDENCE_CONTRACT =
-  "cinatoken-relay-container-p5-evidence-v1";
+  "cinatoken-relay-container-p5-evidence-v2";
 export const APPROVAL_DOMAIN =
-  "cinatoken-relay-container-p5-approval-v1";
+  "cinatoken-relay-container-p5-approval-v2";
+export const ADMISSION_FENCE_RAW_ARTIFACT_CONTRACT =
+  "cinatoken-relay-container-p5-admission-fence-readback-v1";
+export const ADMISSION_FENCE_CAPTURE_CONTRACT =
+  "cinatoken-relay-container-p5-admission-fence-capture-v1";
 export const FOUNDATION_CAPTURE_CONTRACT =
   "cinatoken-relay-container-p5-foundation-capture-v1";
 export const FOUNDATION_COLLECTOR_VERSION = 6;
@@ -47,6 +51,7 @@ export const REQUIRED_EVIDENCE_KINDS = Object.freeze([
   "remote-inventory",
   "reader-first-rollout",
   "schema-readback",
+  "admission-fence",
   "lifecycle-fault-campaign",
   "response-financial-fault-campaign",
   "cross-layer-provenance",
@@ -84,11 +89,73 @@ export const REQUIRED_PROVENANCE_SEGMENTS = Object.freeze([
   "r2",
 ]);
 
+export const REQUIRED_ADMISSION_FENCE_ARTIFACT_PURPOSES = Object.freeze([
+  "environment-binding",
+  "schema-catalog",
+  "migration-receipt",
+  "backfill-rows",
+  "writer-inventory",
+  "initial-open-batch",
+  "successful-admission-batch",
+  "close-campaign-batch",
+  "fault-campaign",
+  "gate-readback",
+  "rollback-readback",
+]);
+
+export const REQUIRED_DRAIN_WRITE_GATES = Object.freeze([
+  "CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED",
+  "CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED",
+  "CONTAINER_AMBIGUITY_QUARANTINE_WRITE_ENABLED",
+  "CONTAINER_REVERSE_SYNC_MANIFEST_WRITE_ENABLED",
+  "CONTAINER_TRAFFIC_RETURN_RECEIPT_WRITE_ENABLED",
+]);
+
+const REQUIRED_ADMISSION_FENCE_TABLES = Object.freeze([
+  "relay_container_admission_fences",
+  "relay_container_admission_scope_heads",
+  "relay_container_admission_commits",
+]);
+const REQUIRED_ADMISSION_FENCE_INDEXES = Object.freeze([
+  "idx_relay_container_admission_open_scope",
+  "idx_relay_container_admission_fence_generation",
+  "idx_relay_container_admission_commits_scope",
+]);
+const REQUIRED_ADMISSION_FENCE_TRIGGERS = Object.freeze([
+  "relay_container_admission_fence_insert_guard",
+  "relay_container_admission_fence_update_guard",
+  "relay_container_admission_fence_delete_guard",
+  "relay_container_admission_scope_head_insert_guard",
+  "relay_container_admission_scope_head_update_guard",
+  "relay_container_admission_scope_head_delete_guard",
+  "relay_container_admission_commit_insert_guard",
+  "relay_container_admission_commit_update_guard",
+  "relay_container_admission_commit_delete_guard",
+  "relay_container_atomic_admission_fence_guard",
+  "relay_container_operation_admission_fence_guard",
+  "relay_container_drain_campaign_admission_fence_guard",
+  "relay_container_drain_campaign_source_identity_update_guard",
+]);
+const REQUIRED_ADMISSION_REJECTION_CASES = Object.freeze([
+  "old-writer",
+  "stale-generation",
+  "late-admission",
+  "recovery-required-reopen",
+  "aborted-reopen",
+]);
+const REQUIRED_ADMISSION_REPLAY_CASES = Object.freeze([
+  "process-loss",
+  "d1-response-loss",
+]);
+
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_POLICY_BYTES = 256 * 1024;
 const MAX_EVIDENCE_BYTES = 1024 * 1024;
 const MAX_FOUNDATION_CAPTURE_BYTES = 4 * 1024 * 1024;
 const MAX_TOTAL_EVIDENCE_BYTES = 16 * 1024 * 1024;
+const MAX_ADMISSION_FENCE_BACKFILL_DURATION_MS = 25_000;
+const MAX_ADMISSION_FENCE_SUPPORTING_LAG_SECONDS = 2 * 60 * 60;
+const D1_STATEMENT_LIMIT_MS = 30_000;
 const MAX_CLOCK_SKEW_SECONDS = 300;
 const MAX_DECISION_LIFETIME_SECONDS = 24 * 60 * 60;
 const MAX_EVIDENCE_AGE_SECONDS = 7 * 24 * 60 * 60;
@@ -104,8 +171,12 @@ const PINNED_VIBE_SOURCE_COMMIT =
   "918e97480ee44e357abe99bf33c27259d6ac7ebd";
 const EXPECTED_MIGRATION_HEAD =
   "0068_relay_container_drain_admission_enforce.sql";
+const EXPECTED_MIGRATION_SQL_SHA256 =
+  "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50";
 const EXPECTED_PLACEMENT_STORAGE_MIGRATION =
   "0063_relay_container_shard_placement_mutation_authorizations.sql";
+const GLOBAL_ADMISSION_SCOPE_ID_SHA256 =
+  "53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251";
 
 const sha256Pattern = /^[0-9a-f]{64}$/;
 const gitCommitPattern = /^[0-9a-f]{40}$/;
@@ -120,6 +191,8 @@ const keyIdPattern = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const relativeEvidencePathPattern = /^evidence\/[a-z0-9][a-z0-9-]{0,63}\.json$/;
 const relativeFoundationCapturePathPattern =
   /^evidence\/foundation-capture\.json$/;
+const relativeAdmissionFenceArtifactPathPattern =
+  /^evidence\/admission-fence\/[a-z0-9][a-z0-9-]{0,63}\.json$/;
 const base64UrlPattern = /^[A-Za-z0-9_-]+$/;
 
 export async function verifyP5Bundle({
@@ -179,6 +252,7 @@ export async function verifyP5Bundle({
     manifestRoot,
     candidate,
     candidateDigestSha256,
+    foundationCaptureSha256: foundation.binding.foundationCaptureSha256,
     subject: manifest.subject,
     policy,
     now,
@@ -202,7 +276,7 @@ export async function verifyP5Bundle({
 
   return {
     ok: true,
-    schemaVersion: 2,
+    schemaVersion: 3,
     contract: MANIFEST_CONTRACT,
     decision: "eligible-for-isolated-staging-synthetic-canary-review",
     isolatedStagingSyntheticCanaryEligible: true,
@@ -219,6 +293,9 @@ export async function verifyP5Bundle({
     latestEvidenceAt: evidence.latestEvidenceAt,
     foundationCaptureSha256: evidence.foundationCaptureSha256,
     foundationArtifactSha256: foundationRecord.sha256,
+    admissionFenceCaptureIdSha256: evidence.admissionFenceCaptureIdSha256,
+    admissionFenceIdSha256: evidence.admissionFenceIdSha256,
+    drainCampaignIdSha256: evidence.drainCampaignIdSha256,
     approvalRoles,
     cohort: {
       kind: cohort.kind,
@@ -278,6 +355,82 @@ export function p5CandidateDigestSha256(value) {
   return sha256Hex(
     Buffer.from(canonicalJson(validateP5Candidate(value)), "utf8"),
   );
+}
+
+export async function buildAdmissionFenceEvidence({
+  bundleRoot,
+  candidate,
+  candidateDigestSha256,
+  foundationCaptureSha256,
+  capturedAt,
+  expiresAt,
+  facts,
+}) {
+  if (typeof bundleRoot !== "string" || bundleRoot.length === 0) {
+    throw new Error("[admission-fence] bundle root is required");
+  }
+  const requestedRoot = path.resolve(bundleRoot);
+  const rootStats = await lstat(requestedRoot).catch(() => null);
+  if (
+    !rootStats ||
+    !rootStats.isDirectory() ||
+    rootStats.isSymbolicLink()
+  ) {
+    throw new Error(
+      "[admission-fence] bundle root must be a regular non-symlink directory",
+    );
+  }
+  const manifestRoot = await realpath(requestedRoot);
+  const validatedCandidate = validateP5Candidate(candidate);
+  requireExact(
+    candidateDigestSha256,
+    p5CandidateDigestSha256(validatedCandidate),
+    "[admission-fence] candidate digest",
+  );
+  requireSha256(
+    foundationCaptureSha256,
+    "[admission-fence] foundation capture digest",
+  );
+  const captured = requireTimestamp(
+    capturedAt,
+    "[admission-fence] capturedAt",
+  );
+  const expires = requireTimestamp(
+    expiresAt,
+    "[admission-fence] expiresAt",
+  );
+  if (captured.getTime() >= expires.getTime()) {
+    throw new Error("[admission-fence] evidence validity window is empty");
+  }
+  const evidence = {
+    schemaVersion: 2,
+    contract: EVIDENCE_CONTRACT,
+    kind: "admission-fence",
+    environment: "staging",
+    candidateDigestSha256,
+    foundationCaptureSha256,
+    capturedAt,
+    expiresAt,
+    status: "pass",
+    facts,
+  };
+  const validation = validateAdmissionFence(
+    facts,
+    validatedCandidate,
+    evidence,
+  );
+  const totalBytes =
+    await readAndValidateAdmissionFenceSupportingArtifacts({
+      records: validation.supportingArtifacts,
+      manifestRoot,
+      evidence,
+      candidateDigestSha256,
+      captureIdSha256: validation.captureIdSha256,
+    });
+  if (totalBytes > MAX_TOTAL_EVIDENCE_BYTES) {
+    throw new Error("[admission-fence] supporting evidence exceeds its byte bound");
+  }
+  return evidence;
 }
 
 export function base64UrlEncode(bytes) {
@@ -484,7 +637,7 @@ function validateManifestEnvelope(value) {
     ["schemaVersion", "contract", "subject", "subjectDigestSha256", "approvals"],
     "[manifest] manifest",
   );
-  requireExact(manifest.schemaVersion, 2, "[manifest] schemaVersion");
+  requireExact(manifest.schemaVersion, 3, "[manifest] schemaVersion");
   requireExact(manifest.contract, MANIFEST_CONTRACT, "[manifest] contract");
   requireSha256(manifest.subjectDigestSha256, "[manifest] subjectDigestSha256");
   const subject = requireObject(manifest.subject, "[manifest] subject");
@@ -664,7 +817,9 @@ function validateCohort(value, subject, policy, now) {
 
 function validateArtifactRecords(value) {
   if (!Array.isArray(value) || value.length !== REQUIRED_EVIDENCE_KINDS.length) {
-    throw new Error("[artifact] exactly ten evidence records are required");
+    throw new Error(
+      `[artifact] exactly ${REQUIRED_EVIDENCE_KINDS.length} evidence records are required`,
+    );
   }
   const seenPaths = new Set();
   const records = value.map((raw, index) => {
@@ -1137,6 +1292,7 @@ async function readAndValidateEvidence({
   manifestRoot,
   candidate,
   candidateDigestSha256,
+  foundationCaptureSha256,
   subject,
   policy,
   now,
@@ -1146,6 +1302,7 @@ async function readAndValidateEvidence({
   const items = [];
   const foundationBindings = new Map();
   const foundationFacts = new Map();
+  const factsByKind = new Map();
   for (const record of artifactRecords) {
     const requested = path.resolve(manifestRoot, ...record.path.split("/"));
     const requestedStats = await lstat(requested).catch(() => null);
@@ -1177,6 +1334,11 @@ async function readAndValidateEvidence({
       candidateDigestSha256,
       `[${record.kind}] candidate digest`,
     );
+    requireExact(
+      evidence.foundationCaptureSha256,
+      foundationCaptureSha256,
+      `[${record.kind}] foundation capture digest`,
+    );
     requireExact(evidence.capturedAt, record.capturedAt, `[${record.kind}] capturedAt`);
     requireExact(evidence.expiresAt, record.expiresAt, `[${record.kind}] expiresAt`);
     const capturedAt = requireTimestamp(evidence.capturedAt, `[${record.kind}] capturedAt`);
@@ -1203,10 +1365,23 @@ async function readAndValidateEvidence({
       candidate,
       evidence,
     );
+    if (validation?.supportingArtifacts) {
+      totalBytes += await readAndValidateAdmissionFenceSupportingArtifacts({
+        records: validation.supportingArtifacts,
+        manifestRoot,
+        evidence,
+        candidateDigestSha256,
+        captureIdSha256: validation.captureIdSha256,
+      });
+      if (totalBytes > MAX_TOTAL_EVIDENCE_BYTES) {
+        throw new Error("[artifact] total evidence exceeds its byte bound");
+      }
+    }
     if (validation?.foundationBinding) {
       foundationBindings.set(record.kind, validation.foundationBinding);
       foundationFacts.set(record.kind, evidence.facts);
     }
+    factsByKind.set(record.kind, evidence.facts);
     latestEvidenceAt = Math.max(latestEvidenceAt, capturedAt.getTime());
     items.push({ kind: record.kind, capturedAt: evidence.capturedAt });
   }
@@ -1221,6 +1396,13 @@ async function readAndValidateEvidence({
       "[foundation] candidate-freeze and remote-inventory must bind the same capture",
     );
   }
+  const admissionBinding = validateAdmissionFenceCrossEvidence({
+    admission: factsByKind.get("admission-fence"),
+    rollback: factsByKind.get("rollback-rehearsal"),
+    schema: factsByKind.get("schema-readback"),
+    remoteInventory: factsByKind.get("remote-inventory"),
+    candidate,
+  });
   return {
     items,
     latestEvidenceAt: new Date(latestEvidenceAt).toISOString(),
@@ -1228,6 +1410,9 @@ async function readAndValidateEvidence({
     foundationBinding: candidateFreezeFoundation,
     candidateFreezeFacts: foundationFacts.get("candidate-freeze"),
     remoteInventoryFacts: foundationFacts.get("remote-inventory"),
+    admissionFenceCaptureIdSha256: admissionBinding.captureIdSha256,
+    admissionFenceIdSha256: admissionBinding.fenceIdSha256,
+    drainCampaignIdSha256: admissionBinding.campaignIdSha256,
   };
 }
 
@@ -1277,6 +1462,7 @@ function validateEvidenceEnvelope(value, expectedKind) {
       "kind",
       "environment",
       "candidateDigestSha256",
+      "foundationCaptureSha256",
       "capturedAt",
       "expiresAt",
       "status",
@@ -1284,9 +1470,13 @@ function validateEvidenceEnvelope(value, expectedKind) {
     ],
     `[${expectedKind}] evidence`,
   );
-  requireExact(evidence.schemaVersion, 1, `[${expectedKind}] schemaVersion`);
+  requireExact(evidence.schemaVersion, 2, `[${expectedKind}] schemaVersion`);
   requireExact(evidence.contract, EVIDENCE_CONTRACT, `[${expectedKind}] contract`);
   requireExact(evidence.kind, expectedKind, `[${expectedKind}] kind`);
+  requireSha256(
+    evidence.foundationCaptureSha256,
+    `[${expectedKind}] foundation capture digest`,
+  );
   requireExact(evidence.status, "pass", `[${expectedKind}] status`);
   requireObject(evidence.facts, `[${expectedKind}] facts`);
   return evidence;
@@ -1302,6 +1492,8 @@ function validateEvidenceFacts(kind, facts, candidate, evidence) {
       return validateReaderFirst(facts, candidate);
     case "schema-readback":
       return validateSchemaReadback(facts);
+    case "admission-fence":
+      return validateAdmissionFence(facts, candidate, evidence);
     case "lifecycle-fault-campaign":
       return validateLifecycleFaults(facts);
     case "response-financial-fault-campaign":
@@ -1928,6 +2120,1277 @@ function validateSchemaReadback(facts) {
   requireExact(facts.financialMutationDelta, 0, "[schema-readback] financial delta");
 }
 
+export function validateAdmissionFence(facts, candidate, evidence) {
+  exactKeys(
+    facts,
+    [
+      "captureIdSha256",
+      "accountIdSha256",
+      "d1DatabaseName",
+      "d1DatabaseId",
+      "scopeKind",
+      "scopeIdSha256",
+      "migration",
+      "environmentIsolation",
+      "backfill",
+      "writerDrain",
+      "initialOpen",
+      "successfulAdmission",
+      "close",
+      "closeRace",
+      "rejectionCases",
+      "replayCases",
+      "supportingArtifacts",
+    ],
+    "[admission-fence] facts",
+  );
+  const captureIdSha256 = requireSha256(
+    facts.captureIdSha256,
+    "[admission-fence] capture id",
+  );
+  requireSha256(facts.accountIdSha256, "[admission-fence] account digest");
+  requireExact(
+    facts.d1DatabaseName,
+    candidate.d1DatabaseName,
+    "[admission-fence] D1 name",
+  );
+  requireExact(
+    facts.d1DatabaseId,
+    candidate.d1DatabaseId,
+    "[admission-fence] D1 id",
+  );
+  requireExact(facts.scopeKind, "global", "[admission-fence] scope kind");
+  requireExact(
+    facts.scopeIdSha256,
+    GLOBAL_ADMISSION_SCOPE_ID_SHA256,
+    "[admission-fence] scope digest",
+  );
+
+  const migration = validateAdmissionFenceMigration(facts.migration);
+  validateAdmissionFenceEnvironmentIsolation(facts.environmentIsolation);
+  const backfill = validateAdmissionFenceBackfill(facts.backfill);
+  const writerDrain = validateAdmissionFenceWriterDrain(
+    facts.writerDrain,
+    candidate,
+    evidence,
+  );
+  const initialOpen = validateAdmissionFenceInitialOpen(facts.initialOpen);
+  const successfulAdmission = validateAdmissionFenceSuccessfulAdmission(
+    facts.successfulAdmission,
+    backfill,
+  );
+  const close = validateAdmissionFenceClose(
+    facts.close,
+    migration,
+    backfill,
+    initialOpen,
+    successfulAdmission,
+  );
+  validateAdmissionFenceCloseRace(facts.closeRace);
+  validateAdmissionFenceRejectionCases(
+    facts.rejectionCases,
+    writerDrain,
+  );
+  validateAdmissionFenceReplayCases(facts.replayCases, writerDrain);
+  const supportingArtifacts = validateAdmissionFenceSupportingArtifactRecords(
+    facts.supportingArtifacts,
+    evidence,
+  );
+  return {
+    captureIdSha256,
+    supportingArtifacts,
+    fenceIdSha256: initialOpen.fenceIdSha256,
+    campaignIdSha256: close.campaignIdSha256,
+  };
+}
+
+function validateAdmissionFenceMigration(value) {
+  const migration = requireObject(value, "[admission-fence] migration");
+  exactKeys(
+    migration,
+    [
+      "name",
+      "sqlSha256",
+      "markerCount",
+      "tables",
+      "indexes",
+      "triggers",
+      "schemaFingerprintSha256",
+      "businessFingerprintBeforeSha256",
+      "businessFingerprintAfterSha256",
+    ],
+    "[admission-fence] migration",
+  );
+  requireExact(
+    migration.name,
+    EXPECTED_MIGRATION_HEAD,
+    "[admission-fence] migration name",
+  );
+  requireExact(
+    migration.sqlSha256,
+    EXPECTED_MIGRATION_SQL_SHA256,
+    "[admission-fence] migration SQL digest",
+  );
+  requireExact(migration.markerCount, 1, "[admission-fence] migration marker");
+  requireExactStringArray(
+    migration.tables,
+    REQUIRED_ADMISSION_FENCE_TABLES,
+    "[admission-fence] migration tables",
+  );
+  requireExactStringArray(
+    migration.indexes,
+    REQUIRED_ADMISSION_FENCE_INDEXES,
+    "[admission-fence] migration indexes",
+  );
+  requireExactStringArray(
+    migration.triggers,
+    REQUIRED_ADMISSION_FENCE_TRIGGERS,
+    "[admission-fence] migration triggers",
+  );
+  requireSha256(
+    migration.schemaFingerprintSha256,
+    "[admission-fence] schema fingerprint",
+  );
+  requireSha256(
+    migration.businessFingerprintBeforeSha256,
+    "[admission-fence] business fingerprint before",
+  );
+  requireExact(
+    migration.businessFingerprintAfterSha256,
+    migration.businessFingerprintBeforeSha256,
+    "[admission-fence] unchanged business fingerprint",
+  );
+  return migration;
+}
+
+function validateAdmissionFenceEnvironmentIsolation(value) {
+  const isolation = requireObject(
+    value,
+    "[admission-fence] environment isolation",
+  );
+  exactKeys(
+    isolation,
+    [
+      "fenceEnvironment",
+      "distinctFenceEnvironmentCount",
+      "foreignEnvironmentFenceCount",
+      "databaseBindingInventorySha256",
+    ],
+    "[admission-fence] environment isolation",
+  );
+  requireExact(
+    isolation.fenceEnvironment,
+    "staging",
+    "[admission-fence] fence environment",
+  );
+  requireExact(
+    isolation.distinctFenceEnvironmentCount,
+    1,
+    "[admission-fence] distinct fence environments",
+  );
+  requireExact(
+    isolation.foreignEnvironmentFenceCount,
+    0,
+    "[admission-fence] foreign environment fences",
+  );
+  requireSha256(
+    isolation.databaseBindingInventorySha256,
+    "[admission-fence] database binding inventory",
+  );
+}
+
+function validateAdmissionFenceBackfill(value) {
+  const backfill = requireObject(value, "[admission-fence] backfill");
+  exactKeys(
+    backfill,
+    [
+      "preApplyAtomicAdmissionCount",
+      "historicalCommitCount",
+      "pre0068SourceContractCount",
+      "firstAcceptedSequence",
+      "lastAcceptedSequence",
+      "firstOperationId",
+      "lastOperationId",
+      "pageCount",
+      "paginationComplete",
+      "rowManifestSha256",
+      "sourceReadbackSha256",
+      "rehearsalRowCount",
+      "rehearsalRuns",
+      "maximumDurationMs",
+      "statementLimitMs",
+      "safetyMarginMs",
+    ],
+    "[admission-fence] backfill",
+  );
+  const count = requireInteger(
+    backfill.preApplyAtomicAdmissionCount,
+    0,
+    1_000_000_000,
+    "[admission-fence] pre-apply admission count",
+  );
+  requireExact(
+    backfill.historicalCommitCount,
+    count,
+    "[admission-fence] historical commit conservation",
+  );
+  requireExact(
+    backfill.pre0068SourceContractCount,
+    count,
+    "[admission-fence] historical source contract conservation",
+  );
+  requireExact(
+    backfill.firstAcceptedSequence,
+    count === 0 ? 0 : 1,
+    "[admission-fence] first historical sequence",
+  );
+  requireExact(
+    backfill.lastAcceptedSequence,
+    count,
+    "[admission-fence] last historical sequence",
+  );
+  if (count === 0) {
+    requireExact(
+      backfill.firstOperationId,
+      null,
+      "[admission-fence] empty first operation",
+    );
+    requireExact(
+      backfill.lastOperationId,
+      null,
+      "[admission-fence] empty last operation",
+    );
+    requireExact(backfill.pageCount, 0, "[admission-fence] empty page count");
+  } else {
+    requireToken(
+      backfill.firstOperationId,
+      opaqueIdPattern,
+      "[admission-fence] first historical operation",
+    );
+    requireToken(
+      backfill.lastOperationId,
+      opaqueIdPattern,
+      "[admission-fence] last historical operation",
+    );
+    requireInteger(
+      backfill.pageCount,
+      1,
+      1_000_000,
+      "[admission-fence] backfill pages",
+    );
+  }
+  requireExact(
+    backfill.paginationComplete,
+    true,
+    "[admission-fence] backfill pagination",
+  );
+  requireSha256(
+    backfill.rowManifestSha256,
+    "[admission-fence] backfill row manifest",
+  );
+  requireSha256(
+    backfill.sourceReadbackSha256,
+    "[admission-fence] backfill source readback",
+  );
+  requireExact(
+    backfill.rehearsalRowCount,
+    count,
+    "[admission-fence] rehearsal row count",
+  );
+  requireInteger(
+    backfill.rehearsalRuns,
+    2,
+    100,
+    "[admission-fence] rehearsal runs",
+  );
+  const maximumDurationMs = requireInteger(
+    backfill.maximumDurationMs,
+    1,
+    MAX_ADMISSION_FENCE_BACKFILL_DURATION_MS,
+    "[admission-fence] backfill duration",
+  );
+  requireExact(
+    backfill.statementLimitMs,
+    D1_STATEMENT_LIMIT_MS,
+    "[admission-fence] D1 statement limit",
+  );
+  const safetyMarginMs = requireInteger(
+    backfill.safetyMarginMs,
+    D1_STATEMENT_LIMIT_MS - MAX_ADMISSION_FENCE_BACKFILL_DURATION_MS,
+    D1_STATEMENT_LIMIT_MS - 1,
+    "[admission-fence] backfill safety margin",
+  );
+  if (maximumDurationMs + safetyMarginMs > D1_STATEMENT_LIMIT_MS) {
+    throw new Error("[admission-fence] backfill exceeds the D1 duration budget");
+  }
+  return backfill;
+}
+
+function validateAdmissionFenceWriterDrain(value, candidate, evidence) {
+  const writerDrain = requireObject(value, "[admission-fence] writer drain");
+  exactKeys(
+    writerDrain,
+    [
+      "inventorySha256",
+      "currentWriterVersionId",
+      "nMinusOneWriterVersionId",
+      "overlapStartedAt",
+      "overlapEndedAt",
+      "writers",
+      "unknownWriterCount",
+      "drainGates",
+      "configReadbackSha256",
+      "capabilityReadbackSha256",
+    ],
+    "[admission-fence] writer drain",
+  );
+  requireSha256(
+    writerDrain.inventorySha256,
+    "[admission-fence] writer inventory",
+  );
+  requireExact(
+    writerDrain.currentWriterVersionId,
+    candidate.edgeWorkerVersionId,
+    "[admission-fence] current writer version",
+  );
+  requireToken(
+    writerDrain.nMinusOneWriterVersionId,
+    opaqueIdPattern,
+    "[admission-fence] N-1 writer version",
+  );
+  if (
+    writerDrain.nMinusOneWriterVersionId ===
+    writerDrain.currentWriterVersionId
+  ) {
+    throw new Error("[admission-fence] N and N-1 writer versions must differ");
+  }
+  const overlapStartedAt = requireTimestamp(
+    writerDrain.overlapStartedAt,
+    "[admission-fence] writer overlap start",
+  );
+  const overlapEndedAt = requireTimestamp(
+    writerDrain.overlapEndedAt,
+    "[admission-fence] writer overlap end",
+  );
+  if (
+    overlapStartedAt.getTime() >= overlapEndedAt.getTime() ||
+    overlapEndedAt.getTime() > new Date(evidence.capturedAt).getTime()
+  ) {
+    throw new Error("[admission-fence] writer overlap window is invalid");
+  }
+  if (!Array.isArray(writerDrain.writers) || writerDrain.writers.length !== 2) {
+    throw new Error("[admission-fence] exactly two writer generations are required");
+  }
+  const expectedWriters = [
+    {
+      versionId: writerDrain.nMinusOneWriterVersionId,
+      writerContract: "pre-0068-atomic-admission-v1",
+      state: "drained",
+    },
+    {
+      versionId: writerDrain.currentWriterVersionId,
+      writerContract: "fenced-atomic-admission-v1",
+      state: "current",
+    },
+  ];
+  const writerIds = new Set();
+  for (let index = 0; index < expectedWriters.length; index += 1) {
+    const writer = requireObject(
+      writerDrain.writers[index],
+      "[admission-fence] writer",
+    );
+    exactKeys(
+      writer,
+      ["writerId", "versionId", "writerContract", "state"],
+      "[admission-fence] writer",
+    );
+    const writerId = requireToken(
+      writer.writerId,
+      opaqueIdPattern,
+      "[admission-fence] writer id",
+    );
+    if (writerIds.has(writerId)) {
+      throw new Error("[admission-fence] writer ids must be distinct");
+    }
+    writerIds.add(writerId);
+    for (const field of ["versionId", "writerContract", "state"]) {
+      requireExact(
+        writer[field],
+        expectedWriters[index][field],
+        `[admission-fence] writer ${field}`,
+      );
+    }
+  }
+  requireExact(
+    writerDrain.unknownWriterCount,
+    0,
+    "[admission-fence] unknown writers",
+  );
+  const drainGates = requireObject(
+    writerDrain.drainGates,
+    "[admission-fence] drain gates",
+  );
+  exactKeys(
+    drainGates,
+    REQUIRED_DRAIN_WRITE_GATES,
+    "[admission-fence] drain gates",
+  );
+  for (const gate of REQUIRED_DRAIN_WRITE_GATES) {
+    requireExact(
+      drainGates[gate],
+      false,
+      `[admission-fence] ${gate}`,
+    );
+  }
+  requireSha256(
+    writerDrain.configReadbackSha256,
+    "[admission-fence] gate config readback",
+  );
+  requireSha256(
+    writerDrain.capabilityReadbackSha256,
+    "[admission-fence] gate capability readback",
+  );
+  return writerDrain;
+}
+
+function validateAdmissionFenceInitialOpen(value) {
+  const initialOpen = requireObject(value, "[admission-fence] initial open");
+  exactKeys(
+    initialOpen,
+    [
+      "fenceIdSha256",
+      "fenceGeneration",
+      "headVersion",
+      "adminIdentitySha256",
+      "requestSha256",
+      "batchSha256",
+      "readbackSha256",
+      "fenceInsertChanges",
+      "headInsertChanges",
+      "admissionOpen",
+      "createdAt",
+    ],
+    "[admission-fence] initial open",
+  );
+  requireSha256(
+    initialOpen.fenceIdSha256,
+    "[admission-fence] initial fence id",
+  );
+  requireExact(
+    initialOpen.fenceGeneration,
+    1,
+    "[admission-fence] initial fence generation",
+  );
+  requireExact(
+    initialOpen.headVersion,
+    1,
+    "[admission-fence] initial head version",
+  );
+  for (const field of [
+    "adminIdentitySha256",
+    "requestSha256",
+    "batchSha256",
+    "readbackSha256",
+  ]) {
+    requireSha256(initialOpen[field], `[admission-fence] initial ${field}`);
+  }
+  requireExact(
+    initialOpen.fenceInsertChanges,
+    1,
+    "[admission-fence] fence insert changes",
+  );
+  requireExact(
+    initialOpen.headInsertChanges,
+    1,
+    "[admission-fence] head insert changes",
+  );
+  requireExact(
+    initialOpen.admissionOpen,
+    true,
+    "[admission-fence] initial admission state",
+  );
+  requireInteger(
+    initialOpen.createdAt,
+    1,
+    Number.MAX_SAFE_INTEGER,
+    "[admission-fence] initial creation time",
+  );
+  return initialOpen;
+}
+
+function validateAdmissionFenceSuccessfulAdmission(value, backfill) {
+  const admission = requireObject(
+    value,
+    "[admission-fence] successful admission",
+  );
+  exactKeys(
+    admission,
+    [
+      "acceptedSequence",
+      "operationId",
+      "reservationKey",
+      "atomicAdmissionSha256",
+      "admissionCommitSha256",
+      "receiptRowSha256",
+      "reservationRowSha256",
+      "financialBeforeSha256",
+      "financialAfterSha256",
+      "operationRowSha256",
+      "batchSha256",
+      "readbackSha256",
+      "providerCallDelta",
+      "queueDelta",
+    ],
+    "[admission-fence] successful admission",
+  );
+  requireExact(
+    admission.acceptedSequence,
+    backfill.historicalCommitCount + 1,
+    "[admission-fence] current accepted sequence",
+  );
+  requireToken(
+    admission.operationId,
+    opaqueIdPattern,
+    "[admission-fence] admitted operation",
+  );
+  requireToken(
+    admission.reservationKey,
+    opaqueIdPattern,
+    "[admission-fence] admitted reservation",
+  );
+  requireExact(
+    admission.reservationKey,
+    admission.operationId,
+    "[admission-fence] operation and reservation identity",
+  );
+  for (const field of [
+    "atomicAdmissionSha256",
+    "admissionCommitSha256",
+    "receiptRowSha256",
+    "reservationRowSha256",
+    "financialBeforeSha256",
+    "financialAfterSha256",
+    "operationRowSha256",
+    "batchSha256",
+    "readbackSha256",
+  ]) {
+    requireSha256(admission[field], `[admission-fence] admission ${field}`);
+  }
+  if (admission.financialBeforeSha256 === admission.financialAfterSha256) {
+    throw new Error("[admission-fence] successful admission did not change finance");
+  }
+  requireExact(
+    admission.providerCallDelta,
+    0,
+    "[admission-fence] provider calls before dispatch",
+  );
+  requireExact(
+    admission.queueDelta,
+    0,
+    "[admission-fence] queue writes before dispatch",
+  );
+  return admission;
+}
+
+function validateAdmissionFenceClose(
+  value,
+  migration,
+  backfill,
+  initialOpen,
+  admission,
+) {
+  const close = requireObject(value, "[admission-fence] close");
+  exactKeys(
+    close,
+    [
+      "campaignIdSha256",
+      "fenceIdSha256",
+      "fenceGeneration",
+      "headVersion",
+      "headFenceIdSha256",
+      "headGeneration",
+      "admissionOpen",
+      "cutoffAt",
+      "closedAt",
+      "campaignCreatedAt",
+      "acceptedHighWatermark",
+      "acceptedMemberCount",
+      "acceptedFirstSequence",
+      "acceptedFirstOperationId",
+      "acceptedLastSequence",
+      "acceptedLastOperationId",
+      "acceptedBookmarkSha256",
+      "acceptedSetManifestSha256",
+      "acceptedSourceSchemaSha256",
+      "acceptedSourceReadbackSha256",
+      "openOperationWithoutCommitCount",
+      "commitCountAtOrBelowHighWatermark",
+      "fenceUpdateChanges",
+      "campaignInsertChanges",
+      "batchSha256",
+      "readbackSha256",
+    ],
+    "[admission-fence] close",
+  );
+  requireSha256(close.campaignIdSha256, "[admission-fence] campaign id");
+  for (const field of ["fenceIdSha256", "headFenceIdSha256"]) {
+    requireExact(
+      close[field],
+      initialOpen.fenceIdSha256,
+      `[admission-fence] close ${field}`,
+    );
+  }
+  for (const field of ["fenceGeneration", "headGeneration"]) {
+    requireExact(close[field], 1, `[admission-fence] close ${field}`);
+  }
+  requireExact(
+    close.headVersion,
+    initialOpen.headVersion,
+    "[admission-fence] immutable head version",
+  );
+  requireExact(
+    close.admissionOpen,
+    false,
+    "[admission-fence] closed admission state",
+  );
+  const closedAt = requireInteger(
+    close.closedAt,
+    initialOpen.createdAt,
+    Number.MAX_SAFE_INTEGER,
+    "[admission-fence] close time",
+  );
+  requireExact(close.cutoffAt, closedAt, "[admission-fence] cutoff time");
+  const campaignCreatedAt = requireInteger(
+    close.campaignCreatedAt,
+    initialOpen.createdAt,
+    Number.MAX_SAFE_INTEGER,
+    "[admission-fence] campaign creation time",
+  );
+  requireExact(
+    campaignCreatedAt,
+    closedAt,
+    "[admission-fence] one-step campaign time",
+  );
+  requireExact(
+    close.acceptedHighWatermark,
+    admission.acceptedSequence,
+    "[admission-fence] accepted high watermark",
+  );
+  requireExact(
+    close.acceptedMemberCount,
+    close.acceptedHighWatermark,
+    "[admission-fence] accepted member count",
+  );
+  requireExact(
+    close.acceptedFirstSequence,
+    1,
+    "[admission-fence] accepted first sequence",
+  );
+  requireExact(
+    close.acceptedLastSequence,
+    close.acceptedHighWatermark,
+    "[admission-fence] accepted last sequence",
+  );
+  const expectedFirstOperationId =
+    backfill.historicalCommitCount === 0
+      ? admission.operationId
+      : backfill.firstOperationId;
+  requireExact(
+    close.acceptedFirstOperationId,
+    expectedFirstOperationId,
+    "[admission-fence] accepted first operation",
+  );
+  requireExact(
+    close.acceptedLastOperationId,
+    admission.operationId,
+    "[admission-fence] accepted last operation",
+  );
+  for (const field of [
+    "acceptedBookmarkSha256",
+    "acceptedSetManifestSha256",
+    "acceptedSourceSchemaSha256",
+    "acceptedSourceReadbackSha256",
+    "batchSha256",
+    "readbackSha256",
+  ]) {
+    requireSha256(close[field], `[admission-fence] close ${field}`);
+  }
+  requireExact(
+    close.acceptedSourceSchemaSha256,
+    migration.schemaFingerprintSha256,
+    "[admission-fence] accepted source schema",
+  );
+  requireExact(
+    close.openOperationWithoutCommitCount,
+    0,
+    "[admission-fence] open operations outside commit ledger",
+  );
+  requireExact(
+    close.commitCountAtOrBelowHighWatermark,
+    close.acceptedMemberCount,
+    "[admission-fence] accepted commit conservation",
+  );
+  requireExact(
+    close.fenceUpdateChanges,
+    1,
+    "[admission-fence] fence close changes",
+  );
+  requireExact(
+    close.campaignInsertChanges,
+    1,
+    "[admission-fence] campaign insert changes",
+  );
+  return close;
+}
+
+function validateAdmissionFenceCloseRace(value) {
+  const races = requireObject(value, "[admission-fence] close race");
+  exactKeys(
+    races,
+    ["admissionWins", "closeWins"],
+    "[admission-fence] close race",
+  );
+  for (const [field, outcome, acceptedCommitDelta, rejectedAdmissionCount] of [
+    ["admissionWins", "admission-wins", 1, 0],
+    ["closeWins", "close-wins", 0, 1],
+  ]) {
+    const race = requireObject(
+      races[field],
+      `[admission-fence] ${field} race`,
+    );
+    exactKeys(
+      race,
+      [
+        "outcome",
+        "acceptedCommitDelta",
+        "rejectedAdmissionCount",
+        "batchSha256",
+        "readbackSha256",
+      ],
+      `[admission-fence] ${field} race`,
+    );
+    requireExact(
+      race.outcome,
+      outcome,
+      `[admission-fence] ${field} outcome`,
+    );
+    requireExact(
+      race.acceptedCommitDelta,
+      acceptedCommitDelta,
+      `[admission-fence] ${field} accepted delta`,
+    );
+    requireExact(
+      race.rejectedAdmissionCount,
+      rejectedAdmissionCount,
+      `[admission-fence] ${field} rejected count`,
+    );
+    requireSha256(
+      race.batchSha256,
+      `[admission-fence] ${field} batch`,
+    );
+    requireSha256(
+      race.readbackSha256,
+      `[admission-fence] ${field} readback`,
+    );
+  }
+}
+
+function validateAdmissionFenceRejectionCases(value, writerDrain) {
+  const cases = requireObject(value, "[admission-fence] rejection cases");
+  exactKeys(
+    cases,
+    REQUIRED_ADMISSION_REJECTION_CASES,
+    "[admission-fence] rejection cases",
+  );
+  const expected = new Map([
+    [
+      "old-writer",
+      [writerDrain.nMinusOneWriterVersionId, "missing-fenced-commit", false],
+    ],
+    [
+      "stale-generation",
+      [writerDrain.currentWriterVersionId, "stale-fence-generation", true],
+    ],
+    [
+      "late-admission",
+      [writerDrain.currentWriterVersionId, "closed-fence", true],
+    ],
+    [
+      "recovery-required-reopen",
+      [
+        writerDrain.currentWriterVersionId,
+        "admission-reopen-prohibited",
+        false,
+      ],
+    ],
+    [
+      "aborted-reopen",
+      [
+        writerDrain.currentWriterVersionId,
+        "admission-reopen-prohibited",
+        false,
+      ],
+    ],
+  ]);
+  for (const name of REQUIRED_ADMISSION_REJECTION_CASES) {
+    const rejection = requireObject(
+      cases[name],
+      `[admission-fence] ${name}`,
+    );
+    exactKeys(
+      rejection,
+      [
+        "attemptSha256",
+        "writerVersionId",
+        "outcome",
+        "errorClass",
+        "businessBeforeSha256",
+        "businessAfterSha256",
+        "providerCallDelta",
+        "queueDelta",
+        "billingMutationDelta",
+        "r2InputObjectDelta",
+        "r2OrphanObservedCount",
+        "r2OrphanMutationCount",
+        "commitDelta",
+        "atomicAdmissionDelta",
+        "reservationDelta",
+        "operationDelta",
+        "fenceDelta",
+        "headDelta",
+      ],
+      `[admission-fence] ${name}`,
+    );
+    const [writerVersionId, errorClass, permitsOrphanInput] =
+      expected.get(name);
+    requireSha256(
+      rejection.attemptSha256,
+      `[admission-fence] ${name} attempt`,
+    );
+    requireExact(
+      rejection.writerVersionId,
+      writerVersionId,
+      `[admission-fence] ${name} writer version`,
+    );
+    requireExact(
+      rejection.outcome,
+      "rejected-before-provider",
+      `[admission-fence] ${name} outcome`,
+    );
+    requireExact(
+      rejection.errorClass,
+      errorClass,
+      `[admission-fence] ${name} error class`,
+    );
+    requireSha256(
+      rejection.businessBeforeSha256,
+      `[admission-fence] ${name} before snapshot`,
+    );
+    requireExact(
+      rejection.businessAfterSha256,
+      rejection.businessBeforeSha256,
+      `[admission-fence] ${name} unchanged business snapshot`,
+    );
+    for (const field of [
+      "providerCallDelta",
+      "queueDelta",
+      "billingMutationDelta",
+      "commitDelta",
+      "atomicAdmissionDelta",
+      "reservationDelta",
+      "operationDelta",
+      "fenceDelta",
+      "headDelta",
+      "r2OrphanMutationCount",
+    ]) {
+      requireExact(
+        rejection[field],
+        0,
+        `[admission-fence] ${name} ${field}`,
+      );
+    }
+    const r2InputObjectDelta = requireInteger(
+      rejection.r2InputObjectDelta,
+      0,
+      permitsOrphanInput ? 1 : 0,
+      `[admission-fence] ${name} R2 input delta`,
+    );
+    requireExact(
+      rejection.r2OrphanObservedCount,
+      r2InputObjectDelta,
+      `[admission-fence] ${name} orphan observation`,
+    );
+  }
+}
+
+function validateAdmissionFenceReplayCases(value, writerDrain) {
+  const cases = requireObject(value, "[admission-fence] replay cases");
+  exactKeys(
+    cases,
+    REQUIRED_ADMISSION_REPLAY_CASES,
+    "[admission-fence] replay cases",
+  );
+  for (const name of REQUIRED_ADMISSION_REPLAY_CASES) {
+    const replay = requireObject(cases[name], `[admission-fence] ${name}`);
+    exactKeys(
+      replay,
+      [
+        "attemptSha256",
+        "writerVersionId",
+        "outcome",
+        "durableCommitCount",
+        "durableReceiptCount",
+        "durableReservationCount",
+        "durableOperationCount",
+        "duplicateFinancialMutations",
+        "providerCallDelta",
+        "readbackSha256",
+      ],
+      `[admission-fence] ${name}`,
+    );
+    requireSha256(
+      replay.attemptSha256,
+      `[admission-fence] ${name} attempt`,
+    );
+    requireExact(
+      replay.writerVersionId,
+      writerDrain.currentWriterVersionId,
+      `[admission-fence] ${name} writer version`,
+    );
+    requireExact(
+      replay.outcome,
+      "matching-immutable-readback",
+      `[admission-fence] ${name} outcome`,
+    );
+    for (const field of [
+      "durableCommitCount",
+      "durableReceiptCount",
+      "durableReservationCount",
+      "durableOperationCount",
+    ]) {
+      requireExact(
+        replay[field],
+        1,
+        `[admission-fence] ${name} ${field}`,
+      );
+    }
+    requireExact(
+      replay.duplicateFinancialMutations,
+      0,
+      `[admission-fence] ${name} financial duplicates`,
+    );
+    requireExact(
+      replay.providerCallDelta,
+      0,
+      `[admission-fence] ${name} provider calls`,
+    );
+    requireSha256(
+      replay.readbackSha256,
+      `[admission-fence] ${name} readback`,
+    );
+  }
+}
+
+function validateAdmissionFenceSupportingArtifactRecords(value, evidence) {
+  if (
+    !Array.isArray(value) ||
+    value.length !== REQUIRED_ADMISSION_FENCE_ARTIFACT_PURPOSES.length
+  ) {
+    throw new Error(
+      "[admission-fence] complete supporting artifact inventory is required",
+    );
+  }
+  const outerCapturedAt = new Date(evidence.capturedAt).getTime();
+  let previousCapturedAt = Number.NEGATIVE_INFINITY;
+  return value.map((raw, index) => {
+    const record = requireObject(
+      raw,
+      "[admission-fence] supporting artifact",
+    );
+    exactKeys(
+      record,
+      ["purpose", "path", "sha256", "bytes", "capturedAt"],
+      "[admission-fence] supporting artifact",
+    );
+    const purpose = REQUIRED_ADMISSION_FENCE_ARTIFACT_PURPOSES[index];
+    requireExact(
+      record.purpose,
+      purpose,
+      "[admission-fence] supporting artifact purpose",
+    );
+    requireExact(
+      requireToken(
+        record.path,
+        relativeAdmissionFenceArtifactPathPattern,
+        "[admission-fence] supporting artifact path",
+      ),
+      `evidence/admission-fence/${purpose}.json`,
+      "[admission-fence] supporting artifact canonical path",
+    );
+    requireSha256(
+      record.sha256,
+      "[admission-fence] supporting artifact digest",
+    );
+    requireInteger(
+      record.bytes,
+      2,
+      MAX_EVIDENCE_BYTES,
+      "[admission-fence] supporting artifact bytes",
+    );
+    const capturedAt = requireTimestamp(
+      record.capturedAt,
+      "[admission-fence] supporting artifact capturedAt",
+    );
+    if (capturedAt.getTime() > outerCapturedAt) {
+      throw new Error(
+        "[admission-fence] supporting artifact postdates its evidence",
+      );
+    }
+    if (capturedAt.getTime() < previousCapturedAt) {
+      throw new Error(
+        "[admission-fence] supporting artifact chronology is not monotonic",
+      );
+    }
+    if (
+      outerCapturedAt - capturedAt.getTime() >
+      MAX_ADMISSION_FENCE_SUPPORTING_LAG_SECONDS * 1000
+    ) {
+      throw new Error(
+        "[admission-fence] supporting artifact is outside the capture window",
+      );
+    }
+    previousCapturedAt = capturedAt.getTime();
+    return record;
+  });
+}
+
+async function readAndValidateAdmissionFenceSupportingArtifacts({
+  records,
+  manifestRoot,
+  evidence,
+  candidateDigestSha256,
+  captureIdSha256,
+}) {
+  let totalBytes = 0;
+  const outerCapturedAt = new Date(evidence.capturedAt).getTime();
+  for (const record of records) {
+    const requested = path.resolve(manifestRoot, ...record.path.split("/"));
+    const requestedStats = await lstat(requested).catch(() => null);
+    if (
+      !requestedStats ||
+      !requestedStats.isFile() ||
+      requestedStats.isSymbolicLink()
+    ) {
+      throw new Error(
+        `[admission-fence] ${record.purpose} must be a regular non-symlink file`,
+      );
+    }
+    const resolved = await realpath(requested).catch(() => null);
+    if (!resolved || !isWithin(manifestRoot, resolved)) {
+      throw new Error(
+        `[admission-fence] ${record.purpose} path escaped the bundle root`,
+      );
+    }
+    const file = await readCanonicalJson(
+      resolved,
+      `admission-fence ${record.purpose} artifact`,
+      MAX_EVIDENCE_BYTES,
+    );
+    if (file.realPath !== resolved) {
+      throw new Error(
+        `[admission-fence] ${record.purpose} artifact path is not stable`,
+      );
+    }
+    if (file.bytes.length !== record.bytes) {
+      throw new Error(
+        `[admission-fence] ${record.purpose} artifact byte count mismatch`,
+      );
+    }
+    if (sha256Hex(file.bytes) !== record.sha256) {
+      throw new Error(
+        `[admission-fence] ${record.purpose} artifact digest mismatch`,
+      );
+    }
+    const artifact = requireObject(
+      file.value,
+      `[admission-fence] ${record.purpose} artifact`,
+    );
+    exactKeys(
+      artifact,
+      [
+        "schemaVersion",
+        "contract",
+        "purpose",
+        "environment",
+        "candidateDigestSha256",
+        "captureIdSha256",
+        "capturedAt",
+        "payload",
+      ],
+      `[admission-fence] ${record.purpose} artifact`,
+    );
+    requireExact(
+      artifact.schemaVersion,
+      1,
+      `[admission-fence] ${record.purpose} artifact schemaVersion`,
+    );
+    requireExact(
+      artifact.contract,
+      ADMISSION_FENCE_RAW_ARTIFACT_CONTRACT,
+      `[admission-fence] ${record.purpose} artifact contract`,
+    );
+    requireExact(
+      artifact.purpose,
+      record.purpose,
+      `[admission-fence] ${record.purpose} artifact purpose`,
+    );
+    requireExact(
+      artifact.environment,
+      "staging",
+      `[admission-fence] ${record.purpose} artifact environment`,
+    );
+    requireExact(
+      artifact.candidateDigestSha256,
+      candidateDigestSha256,
+      `[admission-fence] ${record.purpose} artifact candidate digest`,
+    );
+    requireExact(
+      artifact.captureIdSha256,
+      captureIdSha256,
+      `[admission-fence] ${record.purpose} artifact capture id`,
+    );
+    requireExact(
+      artifact.capturedAt,
+      record.capturedAt,
+      `[admission-fence] ${record.purpose} artifact capturedAt`,
+    );
+    const capturedAt = requireTimestamp(
+      artifact.capturedAt,
+      `[admission-fence] ${record.purpose} artifact capturedAt`,
+    );
+    if (capturedAt.getTime() > outerCapturedAt) {
+      throw new Error(
+        `[admission-fence] ${record.purpose} artifact postdates its evidence`,
+      );
+    }
+    const payload = requireObject(
+      artifact.payload,
+      `[admission-fence] ${record.purpose} artifact payload`,
+    );
+    exactKeys(
+      payload,
+      ["payloadSha256"],
+      `[admission-fence] ${record.purpose} artifact payload`,
+    );
+    requireSha256(
+      payload.payloadSha256,
+      `[admission-fence] ${record.purpose} artifact payload digest`,
+    );
+    totalBytes += file.bytes.length;
+  }
+  return totalBytes;
+}
+
+function validateAdmissionFenceCrossEvidence({
+  admission,
+  rollback,
+  schema,
+  remoteInventory,
+  candidate,
+}) {
+  const admissionFacts = requireObject(
+    admission,
+    "[admission-fence] cross-evidence facts",
+  );
+  const rollbackFacts = requireObject(
+    rollback,
+    "[rollback-rehearsal] cross-evidence facts",
+  );
+  const schemaFacts = requireObject(
+    schema,
+    "[schema-readback] cross-evidence facts",
+  );
+  const inventoryFacts = requireObject(
+    remoteInventory,
+    "[remote-inventory] cross-evidence facts",
+  );
+  requireExact(
+    admissionFacts.accountIdSha256,
+    inventoryFacts.accountIdSha256,
+    "[admission-fence] remote account binding",
+  );
+  requireExact(
+    admissionFacts.d1DatabaseName,
+    candidate.d1DatabaseName,
+    "[admission-fence] candidate D1 name binding",
+  );
+  requireExact(
+    admissionFacts.d1DatabaseId,
+    candidate.d1DatabaseId,
+    "[admission-fence] candidate D1 id binding",
+  );
+  requireExact(
+    admissionFacts.migration.schemaFingerprintSha256,
+    schemaFacts.schemaFingerprintSha256,
+    "[admission-fence] schema fingerprint binding",
+  );
+  requireExact(
+    admissionFacts.migration.businessFingerprintBeforeSha256,
+    schemaFacts.businessFingerprintBeforeSha256,
+    "[admission-fence] pre-migration business fingerprint binding",
+  );
+  requireExact(
+    admissionFacts.migration.businessFingerprintAfterSha256,
+    schemaFacts.businessFingerprintAfterSha256,
+    "[admission-fence] post-migration business fingerprint binding",
+  );
+  requireExact(
+    rollbackFacts.admissionCaptureIdSha256,
+    admissionFacts.captureIdSha256,
+    "[rollback-rehearsal] admission capture binding",
+  );
+  requireExact(
+    rollbackFacts.admissionFenceIdSha256,
+    admissionFacts.initialOpen.fenceIdSha256,
+    "[rollback-rehearsal] admission fence binding",
+  );
+  requireExact(
+    rollbackFacts.admissionFenceGeneration,
+    admissionFacts.initialOpen.fenceGeneration,
+    "[rollback-rehearsal] admission generation binding",
+  );
+  requireExact(
+    rollbackFacts.closedCampaignIdSha256,
+    admissionFacts.close.campaignIdSha256,
+    "[rollback-rehearsal] drain campaign binding",
+  );
+  requireExact(
+    rollbackFacts.acceptedHighWatermark,
+    admissionFacts.close.acceptedHighWatermark,
+    "[rollback-rehearsal] accepted high-watermark binding",
+  );
+  requireExact(
+    rollbackFacts.acceptedSetManifestSha256,
+    admissionFacts.close.acceptedSetManifestSha256,
+    "[rollback-rehearsal] accepted-set manifest binding",
+  );
+  requireExact(
+    rollbackFacts.commitCountBefore,
+    admissionFacts.close.acceptedMemberCount,
+    "[rollback-rehearsal] accepted commit-count binding",
+  );
+  requireExact(
+    rollbackFacts.gateReadbackSha256,
+    admissionFacts.writerDrain.configReadbackSha256,
+    "[rollback-rehearsal] gate readback binding",
+  );
+  return {
+    captureIdSha256: admissionFacts.captureIdSha256,
+    fenceIdSha256: admissionFacts.initialOpen.fenceIdSha256,
+    campaignIdSha256: admissionFacts.close.campaignIdSha256,
+  };
+}
+
 function validateLifecycleFaults(facts) {
   exactKeys(
     facts,
@@ -2098,6 +3561,12 @@ function validateRollbackRehearsal(facts) {
   exactKeys(
     facts,
     [
+      "admissionCaptureIdSha256",
+      "admissionFenceIdSha256",
+      "admissionFenceGeneration",
+      "closedCampaignIdSha256",
+      "acceptedHighWatermark",
+      "acceptedSetManifestSha256",
       "disableFirst",
       "allActionGatesFalseReadback",
       "newRustAdmissionsAfterDisable",
@@ -2108,6 +3577,13 @@ function validateRollbackRehearsal(facts) {
       "goVpsAuthorityRestored",
       "p3ReadersRetained",
       "migration0054Retained",
+      "migration0068Retained",
+      "scopeHeadUnchanged",
+      "fenceRemainedClosed",
+      "reopenRejected",
+      "commitCountBefore",
+      "commitCountAfter",
+      "gateReadbackSha256",
       "evidenceRetained",
       "rollbackDurationSeconds",
     ],
@@ -2119,10 +3595,34 @@ function validateRollbackRehearsal(facts) {
     "goVpsAuthorityRestored",
     "p3ReadersRetained",
     "migration0054Retained",
+    "migration0068Retained",
+    "scopeHeadUnchanged",
+    "fenceRemainedClosed",
+    "reopenRejected",
     "evidenceRetained",
   ]) {
     requireExact(facts[field], true, `[rollback-rehearsal] ${field}`);
   }
+  for (const field of [
+    "admissionCaptureIdSha256",
+    "admissionFenceIdSha256",
+    "closedCampaignIdSha256",
+    "acceptedSetManifestSha256",
+    "gateReadbackSha256",
+  ]) {
+    requireSha256(facts[field], `[rollback-rehearsal] ${field}`);
+  }
+  requireExact(
+    facts.admissionFenceGeneration,
+    1,
+    "[rollback-rehearsal] admission fence generation",
+  );
+  requireInteger(
+    facts.acceptedHighWatermark,
+    1,
+    1_000_000_000,
+    "[rollback-rehearsal] accepted high watermark",
+  );
   requireExact(facts.newRustAdmissionsAfterDisable, 0, "[rollback-rehearsal] new admissions");
   requireInteger(facts.inflightOperations, 0, 1_000_000, "[rollback-rehearsal] in-flight operations");
   requireExact(
@@ -2132,6 +3632,17 @@ function validateRollbackRehearsal(facts) {
   );
   requireExact(facts.providerResends, 0, "[rollback-rehearsal] provider resends");
   requireExact(facts.duplicateFinancialMutations, 0, "[rollback-rehearsal] financial duplicates");
+  requireInteger(
+    facts.commitCountBefore,
+    1,
+    1_000_000_000,
+    "[rollback-rehearsal] commit count before",
+  );
+  requireExact(
+    facts.commitCountAfter,
+    facts.commitCountBefore,
+    "[rollback-rehearsal] immutable commit count",
+  );
   requireInteger(facts.rollbackDurationSeconds, 1, MAX_ROLLBACK_DURATION_SECONDS, "[rollback-rehearsal] duration");
 }
 
@@ -2225,7 +3736,7 @@ function validateApprovals({
     }
     const skewMs = policy.maxClockSkewSeconds * 1000;
     if (
-      signedAt.getTime() < latestEvidenceMs ||
+      signedAt.getTime() <= latestEvidenceMs ||
       signedAt.getTime() < new Date(subject.generatedAt).getTime()
     ) {
       throw new Error(`[approval] ${role} predates the complete evidence bundle`);

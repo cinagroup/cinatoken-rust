@@ -4633,8 +4633,9 @@ channel recheck and prepared operation.
 The local close contract is also fail-closed: it derives accepted
 high-watermark/count/first/last keys from D1, rejects any open operation absent
 from the commit ledger, requires the exact current scope head, and must create
-the matching 0067 campaign in the same transaction. The ordered timestamp
-predicate remains valid if the two statements cross a clock-second boundary.
+the matching 0067 campaign at the same D1 time. Because 0067 binds cutoff to
+campaign creation time, the production control plane still needs a one-step
+command trigger; two D1 statements that cross a second must fail closed.
 Replay and settlement first inspect the migration marker: the compatible
 Worker preserves 0050-only reads before 0068, while an installed 0068 requires
 and verifies the commit sidecar and current writer's canonical digest.
@@ -4652,7 +4653,17 @@ tests, and 19 real-workerd atomic-admission tests pass for this checkpoint.
 This is still default-closed infrastructure. No authenticated initial-fence
 or close writer/route exists, the one-shot historical backfill still needs
 cardinality and D1-duration proof, manifest/source digests remain
-caller-attested, no independent P5 admission-fence evidence type exists,
-every 0067 write gate remains false, 0069 is absent, and traffic-return
-authorization is not compiled. No Cloudflare credential or remote state was
-used. Go/VPS remains authoritative and production remains **NO-GO**.
+caller-attested, every 0067 write gate remains false, 0069 is absent, and
+traffic-return authorization is not compiled.
+
+P5 manifest v3 now requires eleven evidence kinds, including a strict
+`admission-fence` item. Its offline assembler verifies canonical capture input,
+all eleven fixed digest-only supporting projections, candidate/foundation
+binding, N/N-1 writer drain, false gates, same-time close/campaign evidence,
+rejection/replay outcomes, and rollback identity. This is contract tooling,
+not authenticated remote evidence. The collector performs no network request,
+reads no credential, writes no file, and cannot make a production close
+possible without the one-SQL-step command migration.
+
+No Cloudflare credential or remote state was used. Go/VPS remains
+authoritative and production remains **NO-GO**.

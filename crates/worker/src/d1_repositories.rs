@@ -33001,7 +33001,7 @@ mod tests {
             "CHECK (fence_kind = 'admission')",
             "admission fence close requires current scope head",
             "admission scope head is immutable under 0068",
-            "fence.closed_at <= NEW.created_at",
+            "fence.closed_at = NEW.created_at",
             "relay container operation lacks an open D1 fence",
         ] {
             assert!(

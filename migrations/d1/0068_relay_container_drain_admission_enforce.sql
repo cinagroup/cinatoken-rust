@@ -704,7 +704,7 @@ WHEN NOT EXISTS (
     AND fence.admission_open = 0
     AND fence.closed_campaign_id = NEW.campaign_id
     AND fence.closed_by_admin_id = NEW.created_by_admin_id
-    AND fence.closed_at <= NEW.created_at
+    AND fence.closed_at = NEW.created_at
     AND fence.cutoff_at = NEW.cutoff_at
     AND fence.accepted_high_watermark = NEW.accepted_high_watermark
     AND fence.accepted_bookmark_sha256 = NEW.accepted_bookmark_sha256

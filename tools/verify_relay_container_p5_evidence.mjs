@@ -1,9 +1,12 @@
 #!/usr/bin/env bun
 
 import {
+  ADMISSION_FENCE_RAW_ARTIFACT_CONTRACT,
+  EVIDENCE_CONTRACT,
   FOUNDATION_CAPTURE_CONTRACT,
   MANIFEST_CONTRACT,
   REQUIRED_APPROVAL_ROLES,
+  REQUIRED_ADMISSION_FENCE_ARTIFACT_PURPOSES,
   REQUIRED_EVIDENCE_KINDS,
   TRUST_POLICY_CONTRACT,
   verifyP5Bundle,
@@ -79,14 +82,19 @@ function usage(exitCode, error) {
 function describeContract() {
   return {
     ok: true,
-    schemaVersion: 2,
+    schemaVersion: 3,
     describe: true,
     manifestContract: MANIFEST_CONTRACT,
+    evidenceContract: EVIDENCE_CONTRACT,
     foundationCaptureContract: FOUNDATION_CAPTURE_CONTRACT,
+    admissionFenceRawArtifactContract:
+      ADMISSION_FENCE_RAW_ARTIFACT_CONTRACT,
     trustPolicyContract: TRUST_POLICY_CONTRACT,
     environment: "staging",
     decision: "isolated-staging-synthetic-canary",
     evidenceKinds: REQUIRED_EVIDENCE_KINDS,
+    admissionFenceSupportingArtifactPurposes:
+      REQUIRED_ADMISSION_FENCE_ARTIFACT_PURPOSES,
     approvalRoles: REQUIRED_APPROVAL_ROLES,
     constraints: {
       canonicalJsonRequired: true,
@@ -100,6 +108,11 @@ function describeContract() {
       completeFoundationPaginationRequired: true,
       boundedFoundationObservationRequired: true,
       freshFoundationEvidenceBindingRequired: true,
+      everyEvidenceBindsFoundationCapture: true,
+      admissionFenceCrossEvidenceBindingRequired: true,
+      admissionFenceSupportingArtifactsRequired:
+        REQUIRED_ADMISSION_FENCE_ARTIFACT_PURPOSES.length,
+      oneSqlStepCloseCampaignTimeRequired: true,
       credentialsRead: false,
       networkRequests: false,
       writesFiles: false,

@@ -510,3 +510,23 @@ an immediate callback, and the current candidate has no total stream deadline.
 Do not approve cutover until both behaviors and the provider-dispatch-to-
 handoff crash window have accepted production evidence. See
 `docs/relay-http-stream-durable-handoff.md`.
+
+## Operation 14 Before Traffic Return
+
+When an execution authorization has observed enable intent, Controller disable
+must be proven before any traffic return decision:
+
+1. disable new Rust admission independently;
+2. execute or recover operation 14 using the frozen baseline version;
+3. require one mutation authority and status-only behavior after ambiguity;
+4. require two stable exact-baseline Gateway observations;
+5. require the independent all-action-gates-false Controller attestation;
+6. retain all DO, Container, D1, R2, receipt, billing, and audit evidence;
+7. reverse-sync accepted Rust writes and quarantine ambiguous provider work;
+8. reconcile billing and task terminal ownership;
+9. drain process-local and streaming work; and
+10. only then evaluate Go/VPS RTO/RPO, traffic, and DNS rollback gates.
+
+Operation 14 does not resend providers, refund usage, delete shard state, or
+prove that in-flight work has drained. A failed or unresolved disable remains
+`recovery_required` and blocks new authorization in the same active scope.

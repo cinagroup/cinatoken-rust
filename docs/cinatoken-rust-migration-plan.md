@@ -24447,3 +24447,95 @@ traffic and billing conservation, SLO/cost evidence, and signed approvals.
 
 No Cloudflare remote read or mutation was performed. All gates remain false,
 Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 22.332 Operation 14 Disable/Recovery Contract (2026-07-29)
+
+This checkpoint closes the design gap after operation 6-13 and completes the
+local dedicated operation-14 implementation. It does not deploy a Worker,
+apply a remote migration, enable a gate, use a credential, or alter Go/VPS
+authority.
+
+### Source-aligned disable meaning
+
+cinaVibeSDK treats Durable Objects as stable state owners and Containers as
+replaceable execution resources. Its shutdown path is best-effort lifecycle
+cleanup, so process termination is not accepted as durable disable evidence.
+cinatoken-go persists disabled identities and keeps settlement, refund, task
+terminal ownership, and audit as separate authoritative transitions.
+
+Operation 14 therefore proves a control-plane deployment rollback only. It
+does not delete shard state, stop in-flight work, retry a provider operation,
+refund a charge, complete reverse synchronization, or authorize Go/VPS
+traffic.
+
+### Exact target and mutation authority
+
+The target is the frozen operation-5
+`controller_baseline_version_id`, already bound through Application and
+Authority evidence. It cannot be caller-selected or inferred from live
+Cloudflare state. The Deployment Gateway receives a dedicated disable command
+and deploys that baseline version at 100 percent with an operation-14
+annotation.
+
+Authority persists the attempt, dynamic operation-start receipt, and
+`disable_dispatched` event before external I/O. Gateway persists its unique
+mutation authority before its one possible POST. Any existing attempt,
+timeout, response loss, replay, takeover, or unknown outcome permanently
+reduces later calls to status-only.
+
+### Dynamic ledger capacity
+
+Operation 14 does not have a fixed start sequence. If the pre-disable ledger
+is `L0`, start is `L0+1`; terminal is the then-current ledger plus one. The
+normal full-readiness case is 22/23, while an earlier shard failure enters
+operation 14 from an earlier head. A twelve-receipt reserve requires `L0<=52`
+before mutation authority is created.
+
+### Success evidence
+
+Success requires two stable Gateway observations of one exact baseline
+version at 100 percent with the exact disable annotation, plus an independent
+Controller attestation proving the baseline Worker version and every action
+gate false. A mutation HTTP 2xx, one observation, Container shutdown, or
+healthy process is insufficient.
+
+Dedicated D1 sidecars bind attempt, Gateway event chain, and terminal.
+Successful terminal insertion atomically projects `completed`,
+`last_completed_ordinal=14`, and `disable_confirmed=1`. Rejected or unresolved
+evidence projects `recovery_required` and retains the active scope.
+
+The generic receipt route is closed for every dedicated ordinal 4 through 14.
+The operation-14 migration additionally requires a matching dedicated sidecar
+before a generic ordinal-14 start or terminal receipt can exist.
+
+The detailed contract and failure matrix are in
+[`operation-fourteen-disable-recovery.md`](operation-fourteen-disable-recovery.md).
+
+### Local verification and remaining production gates
+
+The local implementation now includes the dedicated Authority fresh/recovery
+routes, strict caller command, frozen operation-5 baseline reconstruction,
+one-mutation/status-only orchestration, Gateway disable D1 catalog and
+Cloudflare client, Authority operation-14 D1 sidecars, stable state readback,
+and the independent Controller all-action-gates-false attestation.
+
+Local aggregates pass:
+
+```text
+Authority:  118 unit + 7 service runtime + 6 Workerd
+            + 31 configuration/migration tests
+Gateway:    30 unit + 4 Workerd + 11 configuration/migration tests
+Controller: 179 unit/config + 46 portable protocol + 473 Workerd tests
+```
+
+The Gateway Workerd test proves six concurrent disable creates produce one
+mutation sender and five exact non-mutating replays. The Authority stateful
+test proves response loss becomes status-only, no recovery call resends, the
+first exact target observation is non-terminal, and only a later stable
+observation plus Controller attestation writes the successful terminal.
+
+Production remains **NO-GO**. Remote schema and trigger readback,
+least-privilege deploy/read tokens, HMAC rotation, remote mutation-count,
+commit-response-loss and rollout campaigns, reverse sync, accepted-work drain,
+billing reconciliation, Go/VPS RTO/RPO, traffic and DNS rehearsals, and
+security/SRE approvals remain independent requirements.

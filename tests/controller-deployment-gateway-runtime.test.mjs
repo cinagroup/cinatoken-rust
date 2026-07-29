@@ -10,12 +10,23 @@ import {
 import {
   createRequestFixture,
 } from "../services/controller-deployment-gateway/tests/fixtures.ts";
+import {
+  createDisableHmacTokenForTest,
+} from "../services/controller-deployment-gateway/src/disable_protocol.ts";
+import {
+  disableCreateRequestFixture,
+} from "../services/controller-deployment-gateway/tests/disable_fixtures.ts";
 
 const origin = "https://controller-deployment-gateway-runtime.test";
 const createSecret =
   "create-runtime-secret-00000000000000000000000000000000";
 const statusSecret =
   "status-runtime-secret-00000000000000000000000000000000";
+const disableCreateSecret =
+  "disable-create-runtime-secret-000000000000000000000000";
+const disableStatusSecret =
+  "disable-status-runtime-secret-000000000000000000000000";
+const stabilityProofWaitMs = 10_100;
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
@@ -128,7 +139,7 @@ describe("controller deployment gateway Workerd runtime", () => {
       remoteMutationSent: false,
       observation: { classification: "target_observed" },
     });
-    await new Promise((resolve) => setTimeout(resolve, 5_100));
+    await new Promise((resolve) => setTimeout(resolve, stabilityProofWaitMs));
     const stable = await gatewayFetch("POST", statusPath, {
       role: "status",
       requestId: "status-runtime-2",
@@ -162,6 +173,99 @@ describe("controller deployment gateway Workerd runtime", () => {
        FROM controller_deployment_gateway_observations`,
     ).first();
     expect(observationCount).toEqual({ count: 2 });
+  });
+
+  it("linearizes operation-14 disable and proves stable baseline readback", async () => {
+    const create = await disableCreateRequestFixture();
+    const body = canonicalJson(create);
+    const path =
+      `/internal/v1/controller-deployment-disables/`
+      + `${create.gatewayDisableIdempotencyKeySha256}/create-once`;
+    const concurrent = await Promise.all(
+      Array.from({ length: 6 }, (_, index) =>
+        disableGatewayFetch("POST", path, {
+          role: "disable_create",
+          body,
+          requestId: `disable-create-runtime-${index + 1}`,
+        })),
+    );
+    expect(concurrent.map((response) => response.status).sort()).toEqual([
+      200, 200, 200, 200, 200, 201,
+    ]);
+    const payloads = await Promise.all(
+      concurrent.map((response) => response.json()),
+    );
+    expect(
+      payloads.filter((payload) => payload.networkRequestSent),
+    ).toHaveLength(1);
+    expect(payloads.find((payload) => payload.networkRequestSent))
+      .toMatchObject({
+        result: "disable_mutation_attempt_recorded",
+        recoveryAction: "status_only",
+        outcome: { classification: "accepted", httpStatus: 200 },
+      });
+    expect(payloads.filter((payload) => !payload.networkRequestSent))
+      .toHaveLength(5);
+
+    const statusPath =
+      `/internal/v1/controller-deployment-disables/`
+      + `${create.gatewayDisableIdempotencyKeySha256}/status-readback`
+      + `?commandDigestSha256=`
+      + create.controllerDisableCommandDigestSha256;
+    const first = await disableGatewayFetch("POST", statusPath, {
+      role: "disable_status",
+      requestId: "disable-status-runtime-1",
+    });
+    expect(first.status).toBe(201);
+    const firstPayload = await first.json();
+    expect(firstPayload).toMatchObject({
+      result: "disable_status_observation_recorded",
+      remoteMutationSent: false,
+      remoteReadSent: true,
+      targetStable: false,
+      observation: { classification: "exact_disable_observed" },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, stabilityProofWaitMs));
+    const stable = await disableGatewayFetch("POST", statusPath, {
+      role: "disable_status",
+      requestId: "disable-status-runtime-2",
+    });
+    expect(stable.status).toBe(201);
+    const stablePayload = await stable.json();
+    expect(stablePayload).toMatchObject({
+      result: "disable_status_observation_recorded",
+      remoteMutationSent: false,
+      remoteReadSent: true,
+      targetStable: true,
+      observation: { classification: "exact_disable_observed" },
+    });
+    expect(stablePayload.observation.stateDigestSha256)
+      .toBe(firstPayload.observation.stateDigestSha256);
+    expect(stablePayload.observation.observationDigestSha256)
+      .not.toBe(firstPayload.observation.observationDigestSha256);
+
+    const counts = await env.DB.prepare(
+      `SELECT
+        (SELECT COUNT(*)
+         FROM controller_deployment_gateway_disable_operations)
+          AS operations,
+        (SELECT COUNT(*)
+         FROM controller_deployment_gateway_disable_dispatches)
+          AS dispatches,
+        (SELECT COUNT(*)
+         FROM controller_deployment_gateway_disable_outcomes)
+          AS outcomes,
+        (SELECT COUNT(*)
+         FROM controller_deployment_gateway_disable_observations)
+          AS observations`,
+    ).first();
+    expect(counts).toEqual({
+      operations: 1,
+      dispatches: 1,
+      outcomes: 1,
+      observations: 2,
+    });
   });
 
   it("fails closed before D1 or network when gates or roles are wrong", async () => {
@@ -220,6 +324,45 @@ async function gatewayFetch(method, pathAndQuery, options) {
   });
   const headers = {
     "x-cinatoken-controller-deployment-gateway": token,
+  };
+  if (body.length > 0) headers["content-type"] = "application/json";
+  return SELF.fetch(`${origin}${pathAndQuery}`, {
+    method,
+    headers,
+    body: body.length > 0 ? body : undefined,
+  });
+}
+
+async function disableGatewayFetch(method, pathAndQuery, options) {
+  const body = options.body ?? "";
+  const bytes = new TextEncoder().encode(body);
+  const now = Math.floor(Date.now() / 1000);
+  const create = options.role === "disable_create";
+  const credentialIdSha256 =
+    create ? "c".repeat(64) : "d".repeat(64);
+  const secret = create ? disableCreateSecret : disableStatusSecret;
+  const keyId = create
+    ? "disable-create-runtime-v1"
+    : "disable-status-runtime-v1";
+  const token = await createDisableHmacTokenForTest(
+    secret,
+    keyId,
+    {
+      issuer: "cinatoken-shard-placement-authority-runtime-test",
+      audience:
+        "cinatoken-controller-deployment-gateway-runtime-test",
+      role: options.role,
+      credential_id_sha256: credentialIdSha256,
+      request_id: options.requestId,
+      method,
+      path_and_query: pathAndQuery,
+      body_sha256: await sha256Hex(bytes),
+      issued_at: now - 1,
+      expires_at: now + 30,
+    },
+  );
+  const headers = {
+    "x-cinatoken-controller-deployment-gateway-disable": token,
   };
   if (body.length > 0) headers["content-type"] = "application/json";
   return SELF.fetch(`${origin}${pathAndQuery}`, {

@@ -55,6 +55,12 @@ import {
   type ControllerDeploymentGatewayClientEnv,
 } from "./controller_deployment_gateway_client";
 import {
+  validateControllerDeploymentDisableGatewayClientConfig,
+} from "./controller_deployment_disable_gateway_client";
+import {
+  validateControllerDisableAttestationClientConfig,
+} from "./controller_disable_attestation_client";
+import {
   validateContainerControllerReadinessClientConfig,
   type ContainerControllerReadinessClientEnv,
 } from "./container_controller_readiness_client";
@@ -62,6 +68,11 @@ import {
   executeOperationReadiness,
   parseOperationReadinessCommand,
 } from "./operation_readiness";
+import {
+  executeOperationFourteenDisable,
+  parseOperationFourteenDisableCommand,
+  type OperationFourteenDisableEnv,
+} from "./operation_fourteen_disable";
 import {
   beginControllerEnable,
   parseBeginEnableCommand,
@@ -115,7 +126,8 @@ export interface AuthorityEnv
     ApplicationDispatchConsumptionClientEnv,
     ApplicationDispatchConsumptionHistoryClientEnv,
     ControllerDeploymentGatewayClientEnv,
-    ContainerControllerReadinessClientEnv {
+    ContainerControllerReadinessClientEnv,
+    OperationFourteenDisableEnv {
   DB: D1Database;
   CF_VERSION_METADATA: WorkerVersionMetadata;
   ENVIRONMENT: string;
@@ -154,6 +166,10 @@ export interface AuthorityEnv
   SHARD_PLACEMENT_AUTHORITY_READINESS_READBACK_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_READINESS_ATTEMPT_WRITE_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_READINESS_TERMINAL_WRITE_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_DISABLE_ENABLED:
+    string;
+  SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_READBACK_ENABLED:
+    string;
   SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: string;
@@ -197,6 +213,10 @@ const EXECUTION_PROBE_SHARD_READINESS_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/probe-shard-readiness$/;
 const EXECUTION_RECOVER_SHARD_READINESS_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/recover-shard-readiness$/;
+const EXECUTION_DISABLE_CONTROLLER_DEPLOYMENT_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/disable-controller-deployment$/;
+const EXECUTION_RECOVER_DISABLE_CONTROLLER_DEPLOYMENT_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/recover-disable-controller-deployment$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -622,20 +642,42 @@ export default {
         );
       }
 
+      if (
+        route.kind === "execution_disable_controller_deployment"
+        || route.kind
+          === "execution_recover_disable_controller_deployment"
+      ) {
+        const command = parseOperationFourteenDisableCommand(body);
+        if (
+          command.authorizationIdSha256
+            !== route.authorizationIdSha256
+        ) {
+          throw new ProtocolError(
+            "operation_fourteen_path_mismatch",
+            400,
+          );
+        }
+        const result = await executeOperationFourteenDisable(
+          env,
+          command,
+          authentication,
+          route.kind === "execution_disable_controller_deployment"
+            ? "fresh"
+            : "readback",
+        );
+        return jsonResponse(
+          result.result === "terminal_recorded" ? 201 : 200,
+          result,
+        );
+      }
+
       if (route.kind === "execution_receipt_append") {
         const receipt = await parseExecutionReceipt(
           body,
           authentication,
           new Set(["operation_started", "operation_terminal"]),
         );
-        if (
-          receipt.operationOrdinal === 4
-          || receipt.operationOrdinal === 5
-          || (
-            receipt.operationOrdinal >= 6
-            && receipt.operationOrdinal <= 13
-          )
-        ) {
+        if (requiresDedicatedOperationRoute(receipt.operationOrdinal)) {
           throw new ProtocolError(
             "dedicated_operation_route_required",
             409,
@@ -831,6 +873,12 @@ type Route =
       kind:
         | "execution_probe_shard_readiness"
         | "execution_recover_shard_readiness";
+      authorizationIdSha256: string;
+    }
+  | {
+      kind:
+        | "execution_disable_controller_deployment"
+        | "execution_recover_disable_controller_deployment";
       authorizationIdSha256: string;
     };
 
@@ -1090,6 +1138,38 @@ function matchRoute(request: Request): Route {
         executionRecoverShardReadinessMatch[1]!,
     };
   }
+  const executionDisableControllerDeploymentMatch =
+    EXECUTION_DISABLE_CONTROLLER_DEPLOYMENT_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionDisableControllerDeploymentMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_disable_controller_deployment",
+      authorizationIdSha256:
+        executionDisableControllerDeploymentMatch[1]!,
+    };
+  }
+  const executionRecoverDisableControllerDeploymentMatch =
+    EXECUTION_RECOVER_DISABLE_CONTROLLER_DEPLOYMENT_PATH.exec(
+      url.pathname,
+    );
+  if (
+    request.method === "POST"
+    && executionRecoverDisableControllerDeploymentMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_recover_disable_controller_deployment",
+      authorizationIdSha256:
+        executionRecoverDisableControllerDeploymentMatch[1]!,
+    };
+  }
   const authorizationMatch = AUTHORIZATION_ID_PATH.exec(url.pathname);
   if (request.method === "GET" && authorizationMatch !== null) {
     return {
@@ -1134,6 +1214,12 @@ function routeRole(kind: Route["kind"]): HmacRole {
   }
   if (kind === "execution_probe_shard_readiness") return "send";
   if (kind === "execution_recover_shard_readiness") {
+    return "recovery";
+  }
+  if (kind === "execution_disable_controller_deployment") {
+    return "send";
+  }
+  if (kind === "execution_recover_disable_controller_deployment") {
     return "recovery";
   }
   if (kind === "execution_recover_enable_dispatch_consumption") {
@@ -1363,6 +1449,47 @@ function requireRouteGate(
     );
   }
   if (
+    kind === "execution_disable_controller_deployment"
+    && (
+      env
+        .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_DISABLE_ENABLED
+        !== "true"
+      || env
+        .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_ATTEMPT_WRITE_ENABLED
+        !== "true"
+      || env
+        .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_EVENT_WRITE_ENABLED
+        !== "true"
+      || env
+        .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_TERMINAL_WRITE_ENABLED
+        !== "true"
+    )
+  ) {
+    throw new ProtocolError(
+      "authority_operation_fourteen_disable_disabled",
+      503,
+    );
+  }
+  if (
+    kind === "execution_recover_disable_controller_deployment"
+    && (
+      env
+        .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_READBACK_ENABLED
+        !== "true"
+      || env
+        .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_EVENT_WRITE_ENABLED
+        !== "true"
+      || env
+        .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_TERMINAL_WRITE_ENABLED
+        !== "true"
+    )
+  ) {
+    throw new ProtocolError(
+      "authority_operation_fourteen_readback_disabled",
+      503,
+    );
+  }
+  if (
     kind === "execution_recover_enable_dispatch_consumption"
     && env
       .SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_RECEIPT_WRITE_ENABLED
@@ -1514,6 +1641,17 @@ export function validateRuntimeTrustConfiguration(
       === "true"
   ) {
     validateContainerControllerReadinessClientConfig(env);
+  }
+  if (
+    env
+      .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_DISABLE_ENABLED
+      === "true"
+    || env
+      .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_READBACK_ENABLED
+      === "true"
+  ) {
+    validateControllerDeploymentDisableGatewayClientConfig(env);
+    validateControllerDisableAttestationClientConfig(env);
   }
   requireApplicationHmacCredentialIsolation(env);
 }
@@ -1685,6 +1823,27 @@ function requireApplicationHmacCredentialIsolation(
       "CONTAINER_CONTROLLER_READINESS_READBACK_HMAC",
     );
   }
+  if (
+    env
+      .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_DISABLE_ENABLED
+      === "true"
+  ) {
+    prefixes.push(
+      "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC",
+    );
+  }
+  if (
+    env
+      .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_DISABLE_ENABLED
+      === "true"
+    || env
+      .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_READBACK_ENABLED
+      === "true"
+  ) {
+    prefixes.push(
+      "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC",
+    );
+  }
   const active = prefixes.map((prefix) => ({
     kid: values[`${prefix}_CURRENT_KID`] ?? "",
     credentialIdSha256:
@@ -1732,6 +1891,36 @@ function requireApplicationHmacCredentialIsolation(
     };
     if (Object.values(previous).some((value) => value.length > 0)) {
       active.push(previous);
+    }
+  }
+  if (
+    env
+      .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_DISABLE_ENABLED
+      === "true"
+    || env
+      .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_READBACK_ENABLED
+      === "true"
+  ) {
+    const currentKid =
+      values.CONTROLLER_DISABLE_ATTESTATION_CURRENT_KID ?? "";
+    active.push({
+      kid: currentKid,
+      credentialIdSha256:
+        `controller-disable-attestation:${currentKid}`,
+      secret:
+        values.CONTROLLER_DISABLE_ATTESTATION_CURRENT_SECRET ?? "",
+    });
+    const previousKid =
+      values.CONTROLLER_DISABLE_ATTESTATION_PREVIOUS_KID ?? "";
+    const previousSecret =
+      values.CONTROLLER_DISABLE_ATTESTATION_PREVIOUS_SECRET ?? "";
+    if (previousKid.length > 0 || previousSecret.length > 0) {
+      active.push({
+        kid: previousKid,
+        credentialIdSha256:
+          `controller-disable-attestation:${previousKid}`,
+        secret: previousSecret,
+      });
     }
   }
   if (
@@ -1983,6 +2172,10 @@ function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+function requiresDedicatedOperationRoute(operationOrdinal: number): boolean {
+  return operationOrdinal >= 4 && operationOrdinal <= 14;
+}
+
 export const authorityRoutingForTest = {
   match(request: Request): {
     kind: Route["kind"];
@@ -1997,4 +2190,5 @@ export const authorityRoutingForTest = {
   requireGate(kind: Route["kind"], env: AuthorityEnv): void {
     requireRouteGate(kind, env);
   },
+  requiresDedicatedOperationRoute,
 };

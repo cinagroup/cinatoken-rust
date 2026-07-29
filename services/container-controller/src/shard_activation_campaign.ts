@@ -54,8 +54,11 @@ export const SHARD_ACTIVATION_CAMPAIGN_ACTION_GATES = [
   "CONTAINER_SHARD_ACTIVATION_WRITE_ENABLED",
 ] as const;
 
-type CampaignActionGateName = (typeof SHARD_ACTIVATION_CAMPAIGN_ACTION_GATES)[number];
-type CampaignActionGateEnvironment = { [K in CampaignActionGateName]: string };
+export type CampaignActionGateName =
+  (typeof SHARD_ACTIVATION_CAMPAIGN_ACTION_GATES)[number];
+export type CampaignActionGateEnvironment = {
+  [K in CampaignActionGateName]: string;
+};
 type CampaignDatabase = Pick<D1Database, "withSession">;
 type CampaignSession = ReturnType<CampaignDatabase["withSession"]>;
 
@@ -63,6 +66,10 @@ export interface CampaignActionGateInventory {
   allActionGatesFalse: boolean;
   count: number;
   digestSha256: string;
+  gates: readonly {
+    enabled: boolean;
+    name: CampaignActionGateName;
+  }[];
 }
 
 export interface ShardActivationCampaignClaimInput {
@@ -450,16 +457,22 @@ export async function campaignActionGateInventory(
   env: CampaignActionGateEnvironment,
 ): Promise<CampaignActionGateInventory> {
   const parts: string[] = [];
+  const gates: {
+    enabled: boolean;
+    name: CampaignActionGateName;
+  }[] = [];
   let allActionGatesFalse = true;
   for (const name of SHARD_ACTIVATION_CAMPAIGN_ACTION_GATES) {
     const value = env[name];
     parts.push(name, value);
+    gates.push({ enabled: value === "true", name });
     allActionGatesFalse &&= value === "false";
   }
   return {
     allActionGatesFalse,
     count: SHARD_ACTIVATION_CAMPAIGN_ACTION_GATES.length,
     digestSha256: await digestParts(ACTION_GATE_INVENTORY_DIGEST_DOMAIN, parts),
+    gates,
   };
 }
 

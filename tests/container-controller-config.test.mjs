@@ -55,6 +55,12 @@ const placementReadinessSource = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const disableAttestationSource = await Bun.file(
+  new URL(
+    "../services/container-controller/src/controller_disable_attestation.ts",
+    import.meta.url,
+  ),
+).text();
 const providerAttemptGatewaySource = await Bun.file(
   new URL("../services/container-controller/src/provider_attempt_gateway.ts", import.meta.url),
 ).text();
@@ -174,6 +180,36 @@ describe("isolated container controller configuration", () => {
       expect(
         config.vars.SHARD_PLACEMENT_READINESS_READBACK_CURRENT_SECRET,
       ).toBeUndefined();
+      expect(
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_AUTHORITY_ISSUER,
+      ).toBe(
+        `cinatoken-shard-placement-authority-${controllerEnvironments[file]}`,
+      );
+      expect(
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_AUTHORITY_AUDIENCE,
+      ).toBe(config.name);
+      expect(
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_CURRENT_KID,
+      ).not.toBe(config.vars.CONTAINER_AUTHORITY_CURRENT_KID);
+      expect(
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_CURRENT_KID,
+      ).not.toBe(
+        config.vars.SHARD_PLACEMENT_READINESS_PROBE_CURRENT_KID,
+      );
+      expect(
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_CURRENT_KID,
+      ).not.toBe(
+        config.vars.SHARD_PLACEMENT_READINESS_READBACK_CURRENT_KID,
+      );
+      expect(
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_PREVIOUS_KID,
+      ).toBe("");
+      expect(
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_CURRENT_SECRET,
+      ).toBeUndefined();
+      expect(
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_PREVIOUS_SECRET,
+      ).toBeUndefined();
       expect(config.d1_databases).toHaveLength(1);
       expect(config.d1_databases[0].binding).toBe("DB");
       expect(config.kv_namespaces).toHaveLength(1);
@@ -231,6 +267,9 @@ describe("isolated container controller configuration", () => {
     expect(packageJson.scripts["test:container-controller"]).toContain(
       "shard_placement_readiness.test.ts",
     );
+    expect(packageJson.scripts["test:container-controller"]).toContain(
+      "controller_disable_attestation.test.ts",
+    );
   });
 
   test("shard placement readiness has isolated probe and existing-only readback authority", () => {
@@ -249,6 +288,30 @@ describe("isolated container controller configuration", () => {
       'role === "readiness_readback" ||',
     );
     expect(placementReadinessSource).not.toMatch(
+      /console\.(?:log|error)|fetch\("https?:\/\//,
+    );
+  });
+
+  test("operation-14 disable attestation is private, read-only, and independently authenticated", () => {
+    expect(disableAttestationSource).toContain(
+      '"/internal/v1/shard-placement/disable-attestation"',
+    );
+    expect(disableAttestationSource).toContain(
+      '"x-cinatoken-controller-disable-attestation-authority"',
+    );
+    expect(disableAttestationSource).toContain(
+      '"cinatoken:container-controller:disable-attestation-authority:v1\\0"',
+    );
+    expect(disableAttestationSource).toContain(
+      'CONTROLLER_DISABLE_ATTESTATION_ROLE = "disable_attestation"',
+    );
+    expect(controllerSource).toContain(
+      "handleControllerDisableAttestationRequest(request, env)",
+    );
+    expect(disableAttestationSource).not.toMatch(
+      /\b(?:DB|D1Database|RELAY_SHARDS|DurableObject|ContainerProxy|CONFIG_KV|FILE_BUCKET|PROVIDER_EGRESS)\b/,
+    );
+    expect(disableAttestationSource).not.toMatch(
       /console\.(?:log|error)|fetch\("https?:\/\//,
     );
   });

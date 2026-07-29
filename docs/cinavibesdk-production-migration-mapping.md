@@ -1997,3 +1997,49 @@ private Edge-to-Controller Service Binding or signed deployment-claim ledger.
 Those are cinatoken-specific controls and must be proved independently. This
 source mapping grants no remote deployment, traffic, financial or production
 authority; Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Operation 14 Disable Re-audit (2026-07-29)
+
+cinaVibeSDK supplies useful lifecycle patterns but no production disable
+receipt protocol that can be copied directly.
+
+- Stable Durable Object names and local SQLite/KV state support shard-local
+  ownership. They do not establish a global financial or deployment truth.
+- Existing Containers are reused only after process health checks. Replacement
+  of an unhealthy Container is a lifecycle action, not disabled-state proof.
+- Sandbox shutdown kills processes, removes exposure, and deletes a work
+  directory, but some failures are warning-only. Operation 14 must not accept
+  shutdown completion as authoritative rollback evidence.
+- The source `many_to_one` strategy hashes and then takes a modulus over a
+  mutable instance count. Paid routing in cinatoken-rust remains bound to a
+  versioned ring and explicit shard fence instead.
+
+The Rust mapping is therefore stricter:
+
+| Source pattern | Rust production rule |
+|---|---|
+| stable named DO | stable shard identity plus ring generation and lease fence |
+| process health before reuse | readiness evidence only; no billing or routing authority |
+| best-effort shutdown | never a successful operation-14 terminal |
+| Worker/DO/Container/storage split | preserve four authority layers |
+| mutable-instance modulus | prohibited for paid traffic routing |
+
+cinatoken-go adds the business constraints. Disabled users, tokens, and
+channels fail closed; automatic recovery cannot override manual disable;
+settlement and refund are mutually exclusive; task terminal ownership has one
+CAS winner; and audit types remain distinct. Operation 14 consequently:
+
+1. deploys the frozen disabled baseline rather than toggling an in-memory
+   flag;
+2. sends at most one mutation and uses only readback after ambiguity;
+3. preserves all D1, R2, DO, Container, receipt, billing, and audit evidence;
+4. never retries providers, reprices usage, settles, or refunds; and
+5. does not authorize Go/VPS traffic until reverse sync, drain, reconciliation,
+   and RTO/RPO pass independently.
+
+The executable contract is maintained in
+[`operation-fourteen-disable-recovery.md`](operation-fourteen-disable-recovery.md).
+The local private Authority/Gateway/Controller implementation and D1 evidence
+chain now pass their aggregate gates. This closes the local mapping only;
+managed Cloudflare deployment identity, remote fault evidence, reverse sync,
+drain, billing conservation, traffic rollback, and approvals remain open.

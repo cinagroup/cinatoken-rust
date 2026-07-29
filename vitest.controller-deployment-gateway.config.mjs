@@ -9,6 +9,7 @@ const d1Migrations = await readD1Migrations(
 );
 
 let mutationAnnotation = "";
+let activeVersion = "";
 
 export default defineConfig({
   plugins: [
@@ -30,8 +31,17 @@ export default defineConfig({
           CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_READ_ENABLED: "true",
           CONTROLLER_DEPLOYMENT_GATEWAY_REMOTE_MUTATION_ENABLED: "true",
           CONTROLLER_DEPLOYMENT_GATEWAY_REMOTE_READ_ENABLED: "true",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_ENABLED: "true",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_READ_ENABLED:
+            "true",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_REMOTE_MUTATION_ENABLED:
+            "true",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_REMOTE_READ_ENABLED:
+            "true",
           CONTROLLER_DEPLOYMENT_GATEWAY_PROFILE_VERSION: "1",
           CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_STABILITY_MIN_SECONDS: "5",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_STABILITY_MIN_SECONDS:
+            "5",
           CONTROLLER_DEPLOYMENT_GATEWAY_CONTROLLER_SERVICE_NAME:
             "cinatoken-container-controller-staging",
           CONTROLLER_DEPLOYMENT_GATEWAY_ISSUER:
@@ -56,6 +66,26 @@ export default defineConfig({
           CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_KID: "",
           CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
             "",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_KID:
+            "disable-create-runtime-v1",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+            "c".repeat(64),
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_SECRET:
+            "disable-create-runtime-secret-000000000000000000000000",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_PREVIOUS_KID:
+            "",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
+            "",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_KID:
+            "disable-status-runtime-v1",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+            "d".repeat(64),
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_SECRET:
+            "disable-status-runtime-secret-000000000000000000000000",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_PREVIOUS_KID:
+            "",
+          CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
+            "",
           CLOUDFLARE_ACCOUNT_ID: "runtime-account",
           CLOUDFLARE_ACCOUNT_ID_SHA256:
             "a08a18f7b04242b55832d7f670379665138e201233b168650f0c3cbefbec1ebe",
@@ -75,6 +105,7 @@ export default defineConfig({
             ) {
               const body = await request.json();
               mutationAnnotation = body.annotations["workers/message"];
+              activeVersion = body.versions[0].version_id;
               return Response.json(
                 {
                   success: true,
@@ -86,7 +117,7 @@ export default defineConfig({
                     },
                     versions: [
                       {
-                        version_id: "controller-enabled-version",
+                        version_id: activeVersion,
                         percentage: 100,
                       },
                     ],
@@ -114,7 +145,7 @@ export default defineConfig({
                         },
                         versions: [
                           {
-                            version_id: "controller-enabled-version",
+                            version_id: activeVersion,
                             percentage: 100,
                           },
                         ],
@@ -130,12 +161,13 @@ export default defineConfig({
             }
             if (
               request.method === "GET"
-              && url.pathname.endsWith("/versions/controller-enabled-version")
+              && url.pathname.includes("/versions/")
             ) {
+              const versionId = url.pathname.split("/").at(-1);
               return Response.json(
                 {
                   success: true,
-                  result: { id: "controller-enabled-version" },
+                  result: { id: versionId },
                 },
                 {
                   status: 200,

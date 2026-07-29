@@ -26,14 +26,32 @@ export const GATEWAY_REQUIRED_DISABLED_GATES = Object.freeze([
   "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_READ_ENABLED",
   "CONTROLLER_DEPLOYMENT_GATEWAY_REMOTE_MUTATION_ENABLED",
   "CONTROLLER_DEPLOYMENT_GATEWAY_REMOTE_READ_ENABLED",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_ENABLED",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_READ_ENABLED",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_REMOTE_MUTATION_ENABLED",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_REMOTE_READ_ENABLED",
 ]);
 export const GATEWAY_REQUIRED_SECRET_BINDINGS = Object.freeze([
   "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_CURRENT_SECRET",
   "CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_PREVIOUS_SECRET",
   "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_CURRENT_SECRET",
   "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_SECRET",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_SECRET",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_PREVIOUS_SECRET",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_SECRET",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_PREVIOUS_SECRET",
   "CLOUDFLARE_DEPLOY_API_TOKEN",
   "CLOUDFLARE_READ_API_TOKEN",
+]);
+export const GATEWAY_REQUIRED_EMPTY_DISABLE_IDENTITIES = Object.freeze([
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_KID",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_CREDENTIAL_ID_SHA256",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_PREVIOUS_KID",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_KID",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_CREDENTIAL_ID_SHA256",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_PREVIOUS_KID",
+  "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256",
 ]);
 
 const EXPECTED_NAMES = Object.freeze({
@@ -156,6 +174,12 @@ export function auditGatewayConfig(config, environment) {
     "status stability minimum",
   );
   requireEqual(
+    config.vars
+      .CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_STABILITY_MIN_SECONDS,
+    "5",
+    "disable status stability minimum",
+  );
+  requireEqual(
     config.vars.CONTROLLER_DEPLOYMENT_GATEWAY_CONTROLLER_SERVICE_NAME,
     EXPECTED_SERVICE_NAMES[environment],
     "Controller service name",
@@ -191,6 +215,9 @@ export function auditGatewayConfig(config, environment) {
     );
   }
   rejectCredentialCollisions(config.vars);
+  for (const identity of GATEWAY_REQUIRED_EMPTY_DISABLE_IDENTITIES) {
+    requireEqual(config.vars[identity], "", identity);
+  }
 
   if (!Array.isArray(config.d1_databases) || config.d1_databases.length !== 1) {
     throw new GatewayConfigAuditError("exactly one D1 binding is required");
@@ -263,11 +290,13 @@ export async function auditTrackedGatewayConfigs({
   const migrationNames =
     (await readdir(path.join(serviceDir, "migrations"))).sort();
   if (
-    migrationNames.length !== 1
+    migrationNames.length !== 2
     || migrationNames[0] !== "0001_controller_deployment_gateway.sql"
+    || migrationNames[1]
+      !== "0002_controller_deployment_gateway_disable.sql"
   ) {
     throw new GatewayConfigAuditError(
-      "Gateway migration inventory must contain only 0001_controller_deployment_gateway.sql",
+      "Gateway migration inventory must contain the ordered 0001 and 0002 migrations",
     );
   }
   return Object.freeze({
@@ -295,21 +324,55 @@ function rejectCredentialCollisions(vars) {
     "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_CURRENT_CREDENTIAL_ID_SHA256",
     "CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256",
   ]);
+  const disableCreateKids = configuredValues(vars, [
+    "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_KID",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_PREVIOUS_KID",
+  ]);
+  const disableStatusKids = configuredValues(vars, [
+    "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_KID",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_PREVIOUS_KID",
+  ]);
+  const disableCreateCredentials = configuredValues(vars, [
+    "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_CREDENTIAL_ID_SHA256",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256",
+  ]);
+  const disableStatusCredentials = configuredValues(vars, [
+    "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_CREDENTIAL_ID_SHA256",
+    "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256",
+  ]);
+  const kidGroups = [
+    createKids,
+    statusKids,
+    disableCreateKids,
+    disableStatusKids,
+  ];
+  const credentialGroups = [
+    createCredentials,
+    statusCredentials,
+    disableCreateCredentials,
+    disableStatusCredentials,
+  ];
   if (
-    intersects(createKids, statusKids)
-    || intersects(createCredentials, statusCredentials)
+    groupsIntersect(kidGroups)
+    || groupsIntersect(credentialGroups)
   ) {
     throw new GatewayConfigAuditError(
-      "create and status HMAC identities must be isolated",
+      "HMAC identities must be isolated across enable and disable roles",
     );
   }
-  for (const value of [...createCredentials, ...statusCredentials]) {
+  for (const value of credentialGroups.flat()) {
     if (!SHA256.test(value)) {
       throw new GatewayConfigAuditError(
         "configured HMAC credential identity must be lowercase SHA-256",
       );
     }
   }
+}
+
+function groupsIntersect(groups) {
+  return groups.some((group, index) =>
+    groups.slice(index + 1).some((candidate) => intersects(group, candidate))
+  );
 }
 
 function configuredValues(vars, names) {

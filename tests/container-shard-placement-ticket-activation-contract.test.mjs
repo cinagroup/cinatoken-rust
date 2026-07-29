@@ -407,6 +407,7 @@ describe("application placement execution ticket activation contract", () => {
       expect(config.services.map(({ binding }) => binding)).toEqual([
         "SHARD_PLACEMENT_APPLICATION",
         "CONTROLLER_DEPLOYMENT_GATEWAY",
+        "CONTAINER_CONTROLLER",
       ]);
       expect(
         config.vars.SHARD_PLACEMENT_AUTHORITY_ACTIVATION_READ_ENABLED,
@@ -439,6 +440,21 @@ describe("application placement execution ticket activation contract", () => {
       expect(
         config.vars.SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED,
       ).toBe("false");
+      expect(
+        config.vars
+          .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_DISABLE_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars
+          .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_READBACK_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars
+          .SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_TERMINAL_WRITE_ENABLED,
+      ).toBe("false");
+      expect(
+        config.vars.CONTROLLER_DISABLE_ATTESTATION_CURRENT_SECRET,
+      ).toBeUndefined();
       expect(
         config.vars
           .SHARD_PLACEMENT_APPLICATION_PRE_ENABLE_GRANT_HMAC_CURRENT_SECRET,

@@ -70,6 +70,7 @@ describe("shard placement Authority migration", () => {
       "0006_operation_five_gateway_events.sql",
       "0007_operation_five_terminal_receipts.sql",
       "0008_operation_readiness_receipts.sql",
+      "0009_operation_fourteen_disable_receipts.sql",
     ]);
   });
 
@@ -138,6 +139,229 @@ describe("shard placement Authority migration", () => {
       "controller_execution_enabled",
       "generic_terminal_receipt_digest_sha256",
     ]));
+  });
+
+  test("installs and enforces operation-14 append-only sidecars", () => {
+    using database = new Database(":memory:");
+    installAllAuthorityMigrations(database);
+
+    expect(database.query("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect(database.query(`
+      SELECT type || ':' || name AS identity
+      FROM sqlite_master
+      WHERE name LIKE
+        'shard_placement_authority_operation_fourteen_%'
+      ORDER BY identity
+    `).all().map((row) => row.identity)).toEqual([
+      "table:shard_placement_authority_operation_fourteen_attempts",
+      "table:shard_placement_authority_operation_fourteen_gateway_events",
+      "table:shard_placement_authority_operation_fourteen_terminals",
+      "trigger:shard_placement_authority_operation_fourteen_attempt_delete_guard",
+      "trigger:shard_placement_authority_operation_fourteen_attempt_insert_guard",
+      "trigger:shard_placement_authority_operation_fourteen_attempt_update_guard",
+      "trigger:shard_placement_authority_operation_fourteen_gateway_event_delete_guard",
+      "trigger:shard_placement_authority_operation_fourteen_gateway_event_insert_guard",
+      "trigger:shard_placement_authority_operation_fourteen_gateway_event_update_guard",
+      "trigger:shard_placement_authority_operation_fourteen_receipt_sidecar_guard",
+      "trigger:shard_placement_authority_operation_fourteen_terminal_delete_guard",
+      "trigger:shard_placement_authority_operation_fourteen_terminal_insert_guard",
+      "trigger:shard_placement_authority_operation_fourteen_terminal_update_guard",
+    ]);
+
+    expect(tableColumns(
+      database,
+      "shard_placement_authority_operation_fourteen_attempts",
+    )).toEqual(expect.arrayContaining([
+      "ledger_version_before",
+      "operation_start_sequence",
+      "operation_five_terminal_receipt_sha256",
+      "operation_five_send_attempt_digest_sha256",
+      "controller_enabled_source_version_id",
+      "controller_baseline_target_version_id",
+      "authority_command_digest_sha256",
+      "gateway_command_digest_sha256",
+      "gateway_idempotency_key_sha256",
+      "gateway_create_credential_id_sha256",
+      "gateway_status_credential_id_sha256",
+      "expected_gateway_version_id",
+      "disable_deadline_at",
+      "mutation_attempt_limit",
+      "retry_limit",
+      "missing_readback_allows_resend",
+      "operation_start_receipt_digest_sha256",
+      "disable_dispatched_event_digest_sha256",
+    ]));
+    expect(tableColumns(
+      database,
+      "shard_placement_authority_operation_fourteen_gateway_events",
+    )).toEqual(expect.arrayContaining([
+      "event_sequence",
+      "event_kind",
+      "dispatch_semantics",
+      "credential_role",
+      "predecessor_event_digest_sha256",
+      "event_digest_sha256",
+      "deployment_set_sha256",
+      "observation_digest_sha256",
+    ]));
+    expect(tableColumns(
+      database,
+      "shard_placement_authority_operation_fourteen_terminals",
+    )).toEqual(expect.arrayContaining([
+      "terminal_event_sequence",
+      "terminal_event_digest_sha256",
+      "terminal_event_kind",
+      "attempt_lease_owner_sha256",
+      "attempt_lease_token_sha256",
+      "attempt_lease_generation",
+      "result_outcome",
+      "recovery_mode",
+      "ledger_version_before",
+      "generic_receipt_sequence",
+      "generic_terminal_receipt_digest_sha256",
+    ]));
+
+    const attemptForeignKeys = database.query(`
+      SELECT "table" AS parent_table, "from" AS child_column,
+             "to" AS parent_column
+      FROM pragma_foreign_key_list(
+        'shard_placement_authority_operation_fourteen_attempts'
+      )
+    `).all();
+    expect(attemptForeignKeys).toEqual(expect.arrayContaining([
+      {
+        parent_table:
+          "shard_placement_authority_operation_five_terminals",
+        child_column: "operation_five_terminal_receipt_sha256",
+        parent_column: "generic_terminal_receipt_digest_sha256",
+      },
+      {
+        parent_table:
+          "shard_placement_authority_operation_five_send_attempts",
+        child_column: "operation_five_send_attempt_digest_sha256",
+        parent_column: "attempt_digest_sha256",
+      },
+      {
+        parent_table: "shard_placement_authority_execution_receipts",
+        child_column: "operation_start_receipt_digest_sha256",
+        parent_column: "receipt_digest_sha256",
+      },
+      {
+        parent_table:
+          "shard_placement_authority_operation_fourteen_gateway_events",
+        child_column: "disable_dispatched_event_digest_sha256",
+        parent_column: "event_digest_sha256",
+      },
+    ]));
+
+    const attemptGuard = triggerSql(
+      database,
+      "shard_placement_authority_operation_fourteen_attempt_insert_guard",
+    );
+    expect(attemptGuard).toContain("claim.ledger_version <= 52");
+    expect(attemptGuard).toContain(
+      "NEW.operation_start_sequence =\n              claim.ledger_version + 1",
+    );
+    const receiptGuard = triggerSql(
+      database,
+      "shard_placement_authority_operation_fourteen_receipt_sidecar_guard",
+    );
+    expect(receiptGuard).toContain(
+      "operation_fourteen_started_receipt_sidecar_mismatch",
+    );
+    expect(receiptGuard).toContain(
+      "operation_fourteen_terminal_receipt_sidecar_mismatch",
+    );
+    expect(receiptGuard).toContain(
+      "NEW.event_kind IN ('operation_started', 'operation_terminal')",
+    );
+  });
+
+  test("projects dynamic operation-14 receipts and blocks generic bypass", () => {
+    using database = new Database(":memory:");
+    installAllAuthorityMigrations(database);
+    const issuance = validIssuance();
+    insertIssuance(database, issuance);
+    insertExecutionClaim(database, issuance);
+    insertExecutionOperations(database, issuance.authorization_id_sha256);
+    forceOperationFourteenClaim(database, issuance.authorization_id_sha256);
+    const claim = readExecutionClaim(database);
+
+    expect(() => insertExecutionReceipt(database, {
+      authorizationIdSha256: issuance.authorization_id_sha256,
+      sequence: 6,
+      eventKind: "operation_started",
+      operationOrdinal: 14,
+      operationIdSha256: "e".repeat(64),
+      operationKind: "disable_controller_deployment",
+      predecessorReceiptSha256: claim.ledger_head_sha256,
+      requestSha256: "1".repeat(64),
+      responseSha256: null,
+      evidenceSha256: "2".repeat(64),
+      outcome: "pending",
+      leaseOwnerSha256: claim.lease_owner_sha256,
+      leaseTokenSha256: claim.lease_token_sha256,
+      leaseGeneration: claim.lease_generation,
+      leaseExpiresAt: claim.lease_expires_at,
+      receiptCredentialIdSha256: "3".repeat(64),
+      requestIdSha256: "4".repeat(64),
+      receiptDigestSha256: "5".repeat(64),
+    })).toThrow(
+      "operation_fourteen_started_receipt_sidecar_mismatch",
+    );
+
+    const fixture = operationFourteenSqliteFixture(database, issuance);
+    expect(readExecutionClaim(database)).toMatchObject({
+      status: "disable_required",
+      ledger_version: 6,
+      ledger_head_sha256:
+        fixture.attempt.operation_start_receipt_digest_sha256,
+      inflight_operation_ordinal: 14,
+      inflight_operation_id_sha256:
+        fixture.attempt.operation_id_sha256,
+      inflight_request_sha256:
+        fixture.attempt.operation_request_sha256,
+    });
+    expect(fixture.attempt.operation_start_sequence).toBe(6);
+
+    appendOperationFourteenRejectedEvent(database, fixture);
+    completeOperationFourteenRejected(database, fixture);
+    expect(readExecutionClaim(database)).toMatchObject({
+      status: "recovery_required",
+      ledger_version: 7,
+      ledger_head_sha256:
+        fixture.terminal.generic_terminal_receipt_digest_sha256,
+      last_completed_ordinal: 5,
+      inflight_operation_ordinal: null,
+      disable_confirmed: 0,
+    });
+    expect(fixture.terminal.generic_receipt_sequence).toBe(7);
+
+    expect(() => database.query(`
+      UPDATE shard_placement_authority_operation_fourteen_attempts
+      SET authority_version_id = 'changed'
+    `).run()).toThrow("immutable_operation_fourteen_attempt");
+    expect(() => database.query(`
+      DELETE FROM shard_placement_authority_operation_fourteen_attempts
+    `).run()).toThrow("append_preserved_operation_fourteen_attempt");
+    expect(() => database.query(`
+      UPDATE shard_placement_authority_operation_fourteen_gateway_events
+      SET event_kind = 'mutation_unknown'
+    `).run()).toThrow("immutable_operation_fourteen_gateway_event");
+    expect(() => database.query(`
+      DELETE FROM shard_placement_authority_operation_fourteen_gateway_events
+    `).run()).toThrow(
+      "append_preserved_operation_fourteen_gateway_event",
+    );
+    expect(() => database.query(`
+      UPDATE shard_placement_authority_operation_fourteen_terminals
+      SET recovery_mode = 'readback_only'
+    `).run()).toThrow("immutable_operation_fourteen_terminal");
+    expect(() => database.query(`
+      DELETE FROM shard_placement_authority_operation_fourteen_terminals
+    `).run()).toThrow(
+      "append_preserved_operation_fourteen_terminal",
+    );
   });
 
   test("installs the exact isolated append-only catalog", () => {
@@ -2360,4 +2584,397 @@ function readExecutionClaim(database) {
     FROM shard_placement_authority_execution_claims
     LIMIT 1
   `).get();
+}
+
+function installAllAuthorityMigrations(database) {
+  database.exec("PRAGMA foreign_keys = ON");
+  const migrationsDirectory = join(
+    import.meta.dir,
+    "..",
+    "services",
+    "shard-placement-authority",
+    "migrations",
+  );
+  for (const name of readdirSync(migrationsDirectory)
+    .filter((candidate) => candidate.endsWith(".sql"))
+    .sort()) {
+    database.exec(readFileSync(join(
+      migrationsDirectory,
+      name,
+    ), "utf8"));
+  }
+}
+
+function tableColumns(database, table) {
+  return database.query(`
+    SELECT name
+    FROM pragma_table_info(?)
+    ORDER BY cid
+  `).all(table).map((row) => row.name);
+}
+
+function triggerSql(database, name) {
+  const row = database.query(`
+    SELECT sql
+    FROM sqlite_schema
+    WHERE type = 'trigger' AND name = ?
+  `).get(name);
+  if (row === null) {
+    throw new Error(`missing trigger: ${name}`);
+  }
+  return row.sql;
+}
+
+function forceOperationFourteenClaim(
+  database,
+  authorizationIdSha256,
+) {
+  const triggerNames = [
+    "shard_placement_authority_execution_claim_identity_update_guard",
+    "shard_placement_authority_execution_claim_projection_update_guard",
+  ];
+  const guards = triggerNames.map((name) => triggerSql(database, name));
+  for (const name of triggerNames) {
+    database.exec(`DROP TRIGGER ${name}`);
+  }
+  try {
+    database.query(`
+      UPDATE shard_placement_authority_execution_claims
+      SET status = 'disable_required',
+          ledger_version = 5,
+          ledger_head_sha256 = ?,
+          last_completed_ordinal = 5,
+          inflight_operation_ordinal = NULL,
+          inflight_operation_id_sha256 = NULL,
+          inflight_request_sha256 = NULL,
+          inflight_cloudflare_request_id_sha256 = NULL,
+          inflight_started_generation = NULL,
+          inflight_started_owner_sha256 = NULL,
+          inflight_started_lease_token_sha256 = NULL,
+          inflight_readback_only = 0,
+          enable_intent_seen = 1,
+          disable_confirmed = 0,
+          ticket_activation_confirmed = 1,
+          application_activation_digest_sha256 = ?,
+          lease_expires_at = unixepoch() + 300,
+          permit_expires_at = unixepoch() + 300,
+          normal_deadline_at = unixepoch() + 300,
+          recovery_deadline_at = unixepoch() + 900,
+          updated_at = unixepoch()
+      WHERE authorization_id_sha256 = ?
+    `).run(
+      "c".repeat(64),
+      "d".repeat(64),
+      authorizationIdSha256,
+    );
+  } finally {
+    for (const guard of guards) {
+      database.exec(guard);
+    }
+  }
+}
+
+function operationFourteenSqliteFixture(database, issuance) {
+  database.exec("PRAGMA foreign_keys = OFF");
+  const claim = readExecutionClaim(database);
+  const attempt = {
+    authorization_id_sha256: issuance.authorization_id_sha256,
+    operation_ordinal: 14,
+    contract_version: 1,
+    attempt_contract:
+      "cinatoken-shard-placement-authority-operation-fourteen-attempt-v1",
+    claim_digest_sha256: claim.claim_digest_sha256,
+    claim_owner_sha256: claim.claim_owner_sha256,
+    lease_owner_sha256: claim.lease_owner_sha256,
+    lease_token_sha256: claim.lease_token_sha256,
+    lease_generation: claim.lease_generation,
+    execution_plan_sha256: claim.execution_plan_sha256,
+    operation_schedule_sha256: claim.operation_schedule_sha256,
+    authority_database_identity_sha256:
+      claim.authority_database_identity_sha256,
+    authority_ledger_identity_sha256: claim.ledger_identity_sha256,
+    ledger_version_before: claim.ledger_version,
+    ledger_head_before_sha256: claim.ledger_head_sha256,
+    operation_start_sequence: claim.ledger_version + 1,
+    operation_five_terminal_receipt_sha256: "a".repeat(64),
+    operation_five_send_attempt_digest_sha256: "b".repeat(64),
+    operation_id_sha256: "e".repeat(64),
+    operation_request_sha256: "0".repeat(64),
+    controller_service_name: issuance.controller_service_name,
+    controller_enabled_source_version_id:
+      issuance.controller_version_id,
+    controller_baseline_target_version_id:
+      "controller-baseline-test-v1",
+    authority_command_contract:
+      "cinatoken-shard-placement-authority-disable-command-v1",
+    authority_command_digest_sha256: "1".repeat(64),
+    gateway_command_contract:
+      "cinatoken-controller-deployment-gateway-disable-command-v1",
+    gateway_command_digest_sha256: "2".repeat(64),
+    gateway_idempotency_contract:
+      "cinatoken-controller-deployment-gateway-disable-idempotency-v1",
+    gateway_idempotency_key_sha256: "3".repeat(64),
+    gateway_create_credential_id_sha256: "4".repeat(64),
+    gateway_create_request_id_sha256: "5".repeat(64),
+    gateway_status_credential_id_sha256: "6".repeat(64),
+    gateway_status_request_id_sha256: "7".repeat(64),
+    authority_version_id: "authority-test-v1",
+    expected_gateway_version_id: "gateway-test-v1",
+    disable_deadline_at: database.query(`
+      SELECT unixepoch() + 120 AS deadline
+    `).get().deadline,
+    mutation_attempt_limit: 1,
+    retry_limit: 0,
+    missing_readback_allows_resend: 0,
+    attempt_digest_sha256: "8".repeat(64),
+    operation_start_receipt_digest_sha256: "9".repeat(64),
+    disable_dispatched_event_digest_sha256: "d".repeat(64),
+  };
+  const dispatched = {
+    authorization_id_sha256: attempt.authorization_id_sha256,
+    attempt_digest_sha256: attempt.attempt_digest_sha256,
+    event_sequence: 1,
+    contract_version: 1,
+    event_contract:
+      "cinatoken-shard-placement-authority-operation-fourteen-gateway-event-v1",
+    event_kind: "disable_dispatched",
+    dispatch_semantics:
+      "authority_persisted_network_may_not_have_occurred",
+    credential_role: "disable_create",
+    credential_id_sha256:
+      attempt.gateway_create_credential_id_sha256,
+    request_id_sha256: attempt.gateway_create_request_id_sha256,
+    authority_command_digest_sha256:
+      attempt.authority_command_digest_sha256,
+    gateway_command_digest_sha256:
+      attempt.gateway_command_digest_sha256,
+    gateway_idempotency_key_sha256:
+      attempt.gateway_idempotency_key_sha256,
+    controller_service_name: attempt.controller_service_name,
+    controller_baseline_target_version_id:
+      attempt.controller_baseline_target_version_id,
+    expected_gateway_version_id:
+      attempt.expected_gateway_version_id,
+    observed_gateway_version_id: null,
+    observed_controller_version_id: null,
+    status_classification: null,
+    gateway_http_status: null,
+    gateway_response_sha256: null,
+    gateway_response_bytes: null,
+    cloudflare_request_id_sha256: null,
+    deployment_set_sha256: null,
+    observation_digest_sha256: null,
+    stability_minimum_seconds: null,
+    predecessor_event_digest_sha256:
+      attempt.attempt_digest_sha256,
+    event_digest_sha256: "d".repeat(64),
+  };
+
+  const sourceGuardName =
+    "shard_placement_authority_operation_fourteen_attempt_insert_guard";
+  const sourceGuard = triggerSql(database, sourceGuardName);
+  database.exec(`DROP TRIGGER ${sourceGuardName}`);
+  try {
+    database.transaction(() => {
+      insertObject(
+        database,
+        "shard_placement_authority_operation_fourteen_attempts",
+        attempt,
+      );
+      insertExecutionReceipt(database, {
+        authorizationIdSha256: attempt.authorization_id_sha256,
+        sequence: attempt.operation_start_sequence,
+        eventKind: "operation_started",
+        operationOrdinal: 14,
+        operationIdSha256: attempt.operation_id_sha256,
+        operationKind: "disable_controller_deployment",
+        predecessorReceiptSha256:
+          attempt.ledger_head_before_sha256,
+        requestSha256: attempt.operation_request_sha256,
+        responseSha256: null,
+        evidenceSha256: attempt.attempt_digest_sha256,
+        outcome: "pending",
+        leaseOwnerSha256: attempt.lease_owner_sha256,
+        leaseTokenSha256: attempt.lease_token_sha256,
+        leaseGeneration: attempt.lease_generation,
+        leaseExpiresAt: claim.lease_expires_at,
+        receiptCredentialIdSha256:
+          attempt.gateway_create_credential_id_sha256,
+        requestIdSha256: attempt.gateway_create_request_id_sha256,
+        receiptDigestSha256:
+          attempt.operation_start_receipt_digest_sha256,
+      });
+      insertObject(
+        database,
+        "shard_placement_authority_operation_fourteen_gateway_events",
+        dispatched,
+      );
+    })();
+  } finally {
+    database.exec(sourceGuard);
+  }
+  return { attempt, dispatched, terminal: null };
+}
+
+function appendOperationFourteenRejectedEvent(database, fixture) {
+  const rejected = {
+    authorization_id_sha256:
+      fixture.attempt.authorization_id_sha256,
+    attempt_digest_sha256:
+      fixture.attempt.attempt_digest_sha256,
+    event_sequence: 2,
+    contract_version: 1,
+    event_contract:
+      "cinatoken-shard-placement-authority-operation-fourteen-gateway-event-v1",
+    event_kind: "mutation_rejected",
+    dispatch_semantics:
+      "authority_persisted_network_may_not_have_occurred",
+    credential_role: "disable_create",
+    credential_id_sha256:
+      fixture.attempt.gateway_create_credential_id_sha256,
+    request_id_sha256: "e".repeat(64),
+    authority_command_digest_sha256:
+      fixture.attempt.authority_command_digest_sha256,
+    gateway_command_digest_sha256:
+      fixture.attempt.gateway_command_digest_sha256,
+    gateway_idempotency_key_sha256:
+      fixture.attempt.gateway_idempotency_key_sha256,
+    controller_service_name:
+      fixture.attempt.controller_service_name,
+    controller_baseline_target_version_id:
+      fixture.attempt.controller_baseline_target_version_id,
+    expected_gateway_version_id:
+      fixture.attempt.expected_gateway_version_id,
+    observed_gateway_version_id: null,
+    observed_controller_version_id: null,
+    status_classification: null,
+    gateway_http_status: 409,
+    gateway_response_sha256: "f".repeat(64),
+    gateway_response_bytes: 128,
+    cloudflare_request_id_sha256: null,
+    deployment_set_sha256: null,
+    observation_digest_sha256: null,
+    stability_minimum_seconds: null,
+    predecessor_event_digest_sha256:
+      fixture.dispatched.event_digest_sha256,
+    event_digest_sha256: "1".repeat(64),
+  };
+  insertObject(
+    database,
+    "shard_placement_authority_operation_fourteen_gateway_events",
+    rejected,
+  );
+  fixture.rejected = rejected;
+}
+
+function completeOperationFourteenRejected(database, fixture) {
+  const claim = readExecutionClaim(database);
+  const terminal = {
+    authorization_id_sha256:
+      fixture.attempt.authorization_id_sha256,
+    operation_ordinal: 14,
+    contract_version: 1,
+    terminal_contract:
+      "cinatoken-shard-placement-authority-operation-fourteen-terminal-v1",
+    claim_digest_sha256: fixture.attempt.claim_digest_sha256,
+    claim_owner_sha256: fixture.attempt.claim_owner_sha256,
+    attempt_lease_owner_sha256:
+      fixture.attempt.lease_owner_sha256,
+    attempt_lease_token_sha256:
+      fixture.attempt.lease_token_sha256,
+    attempt_lease_generation:
+      fixture.attempt.lease_generation,
+    lease_owner_sha256: fixture.attempt.lease_owner_sha256,
+    lease_token_sha256: fixture.attempt.lease_token_sha256,
+    lease_generation: fixture.attempt.lease_generation,
+    execution_plan_sha256: fixture.attempt.execution_plan_sha256,
+    operation_schedule_sha256:
+      fixture.attempt.operation_schedule_sha256,
+    authority_database_identity_sha256:
+      fixture.attempt.authority_database_identity_sha256,
+    authority_ledger_identity_sha256:
+      fixture.attempt.authority_ledger_identity_sha256,
+    attempt_digest_sha256: fixture.attempt.attempt_digest_sha256,
+    operation_id_sha256: fixture.attempt.operation_id_sha256,
+    operation_request_sha256:
+      fixture.attempt.operation_request_sha256,
+    operation_start_receipt_digest_sha256:
+      fixture.attempt.operation_start_receipt_digest_sha256,
+    controller_service_name:
+      fixture.attempt.controller_service_name,
+    controller_enabled_source_version_id:
+      fixture.attempt.controller_enabled_source_version_id,
+    controller_baseline_target_version_id:
+      fixture.attempt.controller_baseline_target_version_id,
+    authority_command_digest_sha256:
+      fixture.attempt.authority_command_digest_sha256,
+    gateway_command_digest_sha256:
+      fixture.attempt.gateway_command_digest_sha256,
+    gateway_idempotency_key_sha256:
+      fixture.attempt.gateway_idempotency_key_sha256,
+    terminal_event_sequence: fixture.rejected.event_sequence,
+    terminal_event_digest_sha256:
+      fixture.rejected.event_digest_sha256,
+    terminal_event_kind: fixture.rejected.event_kind,
+    terminal_event_response_sha256:
+      fixture.rejected.gateway_response_sha256,
+    terminal_event_request_id_sha256:
+      fixture.rejected.request_id_sha256,
+    terminal_event_cloudflare_request_id_sha256:
+      fixture.rejected.cloudflare_request_id_sha256,
+    terminal_event_observation_digest_sha256: null,
+    terminal_event_deployment_set_sha256: null,
+    result_outcome: "rejected",
+    recovery_mode: "fresh",
+    terminal_response_sha256: "2".repeat(64),
+    terminal_evidence_sha256: "3".repeat(64),
+    authority_terminal_version_id: "authority-test-v1",
+    terminal_writer_credential_id_sha256: "4".repeat(64),
+    terminal_writer_request_id_sha256: "6".repeat(64),
+    ledger_version_before: claim.ledger_version,
+    ledger_head_before_sha256: claim.ledger_head_sha256,
+    generic_receipt_sequence: claim.ledger_version + 1,
+    generic_terminal_receipt_digest_sha256: "7".repeat(64),
+  };
+  database.transaction(() => {
+    insertObject(
+      database,
+      "shard_placement_authority_operation_fourteen_terminals",
+      terminal,
+    );
+    insertExecutionReceipt(database, {
+      authorizationIdSha256: terminal.authorization_id_sha256,
+      sequence: terminal.generic_receipt_sequence,
+      eventKind: "operation_terminal",
+      operationOrdinal: 14,
+      operationIdSha256: terminal.operation_id_sha256,
+      operationKind: "disable_controller_deployment",
+      predecessorReceiptSha256:
+        terminal.ledger_head_before_sha256,
+      requestSha256: terminal.operation_request_sha256,
+      responseSha256: terminal.terminal_response_sha256,
+      evidenceSha256: terminal.terminal_evidence_sha256,
+      outcome: terminal.result_outcome,
+      leaseOwnerSha256: terminal.lease_owner_sha256,
+      leaseTokenSha256: terminal.lease_token_sha256,
+      leaseGeneration: terminal.lease_generation,
+      leaseExpiresAt: claim.lease_expires_at,
+      receiptCredentialIdSha256:
+        terminal.terminal_writer_credential_id_sha256,
+      requestIdSha256:
+        terminal.terminal_writer_request_id_sha256,
+      receiptDigestSha256:
+        terminal.generic_terminal_receipt_digest_sha256,
+    });
+  })();
+  fixture.terminal = terminal;
+}
+
+function insertObject(database, table, row) {
+  const columns = Object.keys(row);
+  database.query(`
+    INSERT INTO ${table} (
+      ${columns.join(", ")}
+    ) VALUES (${columns.map(() => "?").join(", ")})
+  `).run(...columns.map((column) => row[column]));
 }

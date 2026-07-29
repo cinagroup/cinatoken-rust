@@ -26,6 +26,7 @@ describe("shard placement Authority configuration", () => {
       "0006_operation_five_gateway_events.sql",
       "0007_operation_five_terminal_receipts.sql",
       "0008_operation_readiness_receipts.sql",
+      "0009_operation_fourteen_disable_receipts.sql",
     ]);
     for (const environment of ["local", "staging"]) {
       expect(report.environments[environment]).toMatchObject({
@@ -106,6 +107,18 @@ describe("shard placement Authority configuration", () => {
           "false",
         SHARD_PLACEMENT_AUTHORITY_READINESS_TERMINAL_WRITE_ENABLED:
           "false",
+        SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_DISABLE_ENABLED:
+          "false",
+        SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_READBACK_ENABLED:
+          "false",
+        SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_ATTEMPT_WRITE_ENABLED:
+          "false",
+        SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_EVENT_WRITE_ENABLED:
+          "false",
+        SHARD_PLACEMENT_AUTHORITY_OPERATION_FOURTEEN_TERMINAL_WRITE_ENABLED:
+          "false",
+        SHARD_PLACEMENT_AUTHORITY_EXPECTED_CONTROLLER_DEPLOYMENT_GATEWAY_VERSION_ID:
+          "",
         SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED: "false",
         CONTROLLER_DEPLOYMENT_GATEWAY_ISSUER:
@@ -124,6 +137,28 @@ describe("shard placement Authority configuration", () => {
         CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_KID: "",
         CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
           "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_KID:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_PREVIOUS_KID:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_KID:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_PREVIOUS_KID:
+          "",
+        CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
+          "",
+        CONTROLLER_DISABLE_ATTESTATION_AUTHORITY_ISSUER:
+          "cinatoken-shard-placement-authority-local",
+        CONTROLLER_DISABLE_ATTESTATION_AUTHORITY_AUDIENCE:
+          "cinatoken-container-controller-local",
+        CONTROLLER_DISABLE_ATTESTATION_CURRENT_KID: "",
+        CONTROLLER_DISABLE_ATTESTATION_PREVIOUS_KID: "",
         CONTAINER_CONTROLLER_READINESS_ISSUER:
           "cinatoken-shard-placement-authority-local",
         CONTAINER_CONTROLLER_READINESS_AUDIENCE:

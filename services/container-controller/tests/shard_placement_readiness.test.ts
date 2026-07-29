@@ -397,6 +397,10 @@ async function responseFixture(replay: "fresh" | "exact_replay") {
     allActionGatesFalse: true,
     count: SHARD_ACTIVATION_CAMPAIGN_ACTION_GATES.length,
     digestSha256: ACTION_GATE_DIGEST,
+    gates: SHARD_ACTIVATION_CAMPAIGN_ACTION_GATES.map((name) => ({
+      enabled: false,
+      name,
+    })),
   };
   const startedAtMs = NOW * 1_000;
   const deadlineAtMs = startedAtMs + 10_000;

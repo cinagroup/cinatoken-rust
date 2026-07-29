@@ -1404,3 +1404,38 @@ mutate. Go/VPS remains authoritative.
 | Atomic verification | JS preflight is private; Rust and JS expose no usable partial proof; any revalidation failure clears all roles | Crash after each proof and restart from activation with zero persisted proof state | Local negative pass; fault campaign open |
 | Clock rollback | Rust mutation capability carries `generated_at` and `expires_at`; final bind rejects before-generation and expired clocks | Trusted-clock policy and pre-socket recheck in sole POST client | Local capability pass; transport open |
 | Promotion | Credential trust remains disabled/null, no secret/network/remote action occurred | Revocation, scope, Access, signed generation, coherent client, one-POST history, receipts and P5-B | **NO-GO** |
+
+## Operation 6-14 and Rollback Authority Update (2026-07-29)
+
+| Area | Local contract | Production proof still required | Status |
+|---|---|---|---|
+| Operations 6-13 | ordered shard readiness, one wake, zero resend, existing-only readback, immutable receipts | remote schema, private binding, fault and mutation-count evidence | Local only |
+| Operation 14 target | frozen baseline version from the operation-5 evidence chain | released disabled manifest and remote version readback | Local complete; remote blocked |
+| Disable mutation | persist-first, one mutation authority, status-only after unknown; concurrent Workerd proof | least-privilege token and remote at-most-one campaign | Local complete; remote blocked |
+| Disable state | two stable exact baseline observations plus all-gates-false Controller attestation | remote N/N-1 observations and independent attestation | Local complete; remote blocked |
+| Generic receipt bypass | dedicated ordinals 4-14 rejected by the generic route and D1 sidecar guard | applied trigger readback | Local only |
+| Failed disable | `recovery_required`, active scope retained, no schedule reopen | operator recovery drill | Local complete; remote blocked |
+
+### Four-layer authority
+
+| Layer | Owns | Must not own |
+|---|---|---|
+| Edge Worker | auth, limits, routing identity, billing reservation | Container lifecycle truth |
+| Shard DO | shard fence, lease, attempt journal, capacity | balance, settlement, refund, provider reselection |
+| Rust Container | frozen execution and bounded result evidence | routing, retry, task terminal, billing, audit |
+| D1/R2/KV | durable business/audit/financial truth and immutable artifacts | KV or Container disk as terminal truth |
+
+### Go/VPS return gate
+
+| Evidence | Required before traffic return |
+|---|---|
+| operation-14 disable | exact baseline deployment and Controller attestation |
+| reverse sync | every accepted Rust write reconciled |
+| provider ambiguity | quarantined, never resent through Go |
+| billing | reservation, settlement, refund, and task terminal ownership conserved |
+| drain | SSE, WebSocket, pollers, batches, and in-process work bounded to zero |
+| audit | D1 and WORM history retained |
+| operations | Go/VPS RTO/RPO, traffic and DNS rollback rehearsal accepted |
+
+Operation-14 success alone cannot satisfy this matrix. Production remains
+**NO-GO**.

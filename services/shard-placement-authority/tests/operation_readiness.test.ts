@@ -96,6 +96,17 @@ describe("Authority operation 6-13 readiness orchestration", () => {
         status: 503,
       }),
     );
+    expect(
+      Array.from(
+        { length: 11 },
+        (_, index) => index + 4,
+      ).every(
+        authorityRoutingForTest.requiresDedicatedOperationRoute,
+      ),
+    ).toBe(true);
+    expect(
+      authorityRoutingForTest.requiresDedicatedOperationRoute(3),
+    ).toBe(false);
   });
 
   it("persists the start before the only wake and records disabled readiness", async () => {

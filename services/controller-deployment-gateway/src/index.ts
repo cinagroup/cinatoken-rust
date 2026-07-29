@@ -31,8 +31,21 @@ import {
   reserveOperationAndDispatch,
   type OperationSnapshot,
 } from "./repository";
+import {
+  handleDisableRoute,
+  matchDisableRoute,
+} from "./disable_routes";
+import type {
+  DisableGatewaySecurityEnv,
+} from "./disable_protocol";
+import {
+  DisableRepositoryConflictError,
+  DisableRepositoryNotFoundError,
+  DisableRepositoryUnavailableError,
+} from "./disable_repository";
 
-interface GatewayEnv extends GatewaySecurityEnv, CloudflareGatewayEnv {
+interface GatewayEnv
+  extends GatewaySecurityEnv, DisableGatewaySecurityEnv, CloudflareGatewayEnv {
   DB: D1Database;
   CF_VERSION_METADATA: WorkerVersionMetadata;
   ENVIRONMENT: string;
@@ -41,8 +54,13 @@ interface GatewayEnv extends GatewaySecurityEnv, CloudflareGatewayEnv {
   CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_READ_ENABLED: string;
   CONTROLLER_DEPLOYMENT_GATEWAY_REMOTE_MUTATION_ENABLED: string;
   CONTROLLER_DEPLOYMENT_GATEWAY_REMOTE_READ_ENABLED: string;
+  CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_ENABLED: string;
+  CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_READ_ENABLED: string;
+  CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_REMOTE_MUTATION_ENABLED: string;
+  CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_REMOTE_READ_ENABLED: string;
   CONTROLLER_DEPLOYMENT_GATEWAY_PROFILE_VERSION: string;
   CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_STABILITY_MIN_SECONDS: string;
+  CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_STATUS_STABILITY_MIN_SECONDS: string;
   CONTROLLER_DEPLOYMENT_GATEWAY_CONTROLLER_SERVICE_NAME: string;
   CLOUDFLARE_ACCOUNT_ID_SHA256: string;
 }
@@ -59,6 +77,12 @@ const ACCOUNT_ID = /^[A-Za-z0-9_-]{1,128}$/;
 export default {
   async fetch(request: Request, env: GatewayEnv): Promise<Response> {
     try {
+      const disableRoute = matchDisableRoute(request);
+      if (disableRoute !== null) {
+        rejectAmbientHeaders(request);
+        requireGatewayEnabled(env);
+        return await handleDisableRoute(request, env, disableRoute);
+      }
       const route = matchRoute(request);
       rejectAmbientHeaders(request);
       requireGatewayEnabled(env);
@@ -541,6 +565,20 @@ function errorResponse(error: unknown): Response {
         ? "repository_outcome_unknown"
         : "repository_unavailable",
       recoveryAction: error.outcomeUnknown ? "status_only" : "retry_status_only",
+    });
+  }
+  if (error instanceof DisableRepositoryNotFoundError) {
+    return jsonResponse(404, { error: "disable_operation_not_found" });
+  }
+  if (error instanceof DisableRepositoryConflictError) {
+    return jsonResponse(409, { error: error.code });
+  }
+  if (error instanceof DisableRepositoryUnavailableError) {
+    return jsonResponse(503, {
+      error: error.outcomeUnknown
+        ? "disable_repository_outcome_unknown"
+        : "disable_repository_unavailable",
+      recoveryAction: "status_only",
     });
   }
   return jsonResponse(500, { error: "internal_error" });

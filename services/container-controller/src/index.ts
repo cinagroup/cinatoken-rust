@@ -140,6 +140,11 @@ import {
   type ShardPlacementReadinessRole,
 } from "./shard_placement_readiness";
 import {
+  CONTROLLER_DISABLE_ATTESTATION_PATH,
+  handleControllerDisableAttestationRequest,
+  type ControllerDisableAttestationEnvironment,
+} from "./controller_disable_attestation";
+import {
   createShardPlacementAttestationV1,
   shardPlacementAttestationDigest,
   shardPlacementAttestationWriterPolicy,
@@ -159,7 +164,8 @@ interface ControllerRuntimeEnvironment
     AuthorityEnvironment,
     RelayShardJurisdictionEnvironment,
     ShardPlacementAttestationWriterEnvironment,
-    ShardPlacementReadinessEnvironment {
+    ShardPlacementReadinessEnvironment,
+    ControllerDisableAttestationEnvironment {
   ENVIRONMENT: string;
   CONTAINER_CONTROLLER_SERVICE_NAME: string;
   CONTAINER_CONTROLLER_ENABLED: string;
@@ -1947,6 +1953,9 @@ const handler: ExportedHandler<ControllerEnv> = {
   async fetch(request, env): Promise<Response> {
     try {
       const path = new URL(request.url).pathname;
+      if (path === CONTROLLER_DISABLE_ATTESTATION_PATH) {
+        return handleControllerDisableAttestationRequest(request, env);
+      }
       if (path === SHARD_PLACEMENT_READINESS_PROBE_PATH) {
         return handleShardPlacementReadinessRequest(
           request,

@@ -11828,3 +11828,56 @@ Go/VPS state was accessed or changed. Operation 14, remote fault campaigns,
 ordered staging shard 0-7 evidence, reverse sync, rollback, drain, SLO/cost,
 financial conservation, and approvals remain open. All gates remain false,
 Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 2026-07-29 Operation 14 Disable/Recovery Verification
+
+The local operation-14 control plane now passes:
+
+```text
+bun run check:shard-placement-authority
+  unit tests: 118 passed
+  service runtime tests: 7 passed
+  Workerd tests: 6 passed
+  root configuration/migration tests: 31 passed
+
+bun run check:controller-deployment-gateway
+  unit tests: 30 passed
+  Workerd tests: 4 passed
+  root configuration/migration tests: 11 passed
+
+bun run check:container-controller
+  unit/config tests: 179 passed
+  portable protocol tests: 46 passed
+  Workerd tests: 473 passed
+```
+
+All three type-generation, TypeScript, and Wrangler dry-run gates pass. The
+Authority configuration has no production file, only private Service
+Bindings, and default-false operation-14 attempt/event/terminal and
+fresh/readback gates. Disable HMAC secrets remain remote-only.
+
+The Authority orchestration test executes one stateful sequence: a fresh
+Gateway mutation loses its outcome, recovery performs status-only readback,
+the first exact baseline observation remains non-terminal, and a second stable
+read plus the Controller all-action-gates-false attestation writes
+`ambiguous_recovered`, `completed`, and `disable_confirmed=1`. Mutation send
+count remains one.
+
+The Gateway Workerd test applies both migrations and sends six concurrent
+disable creates. It observes one `201` mutation sender, five `200` exact
+replays, one operation/dispatch/outcome row, and two immutable status rows.
+The status rows have distinct request-bound observation digests but the same
+canonical state digest; stability becomes true only after the configured
+interval.
+
+The Controller attestation is path-, empty-body-, version-, service-,
+credential-, and 22-action-gate-bound. Its implementation does not access D1,
+DO, Container, KV, R2, or outbound fetch.
+
+This is local implementation evidence only. No Cloudflare remote read,
+mutation, deployment, migration, secret operation, route, DNS, traffic,
+billing, or Go/VPS state change occurred. Remote D1/trigger readback,
+least-privilege scope, credential rotation, retained mutation-count and
+commit-response-loss/rollout campaigns, reverse sync, drain, billing
+conservation, traffic/DNS rehearsal, and approvals remain open. Production is
+**NO-GO** and Go/VPS remains authoritative.

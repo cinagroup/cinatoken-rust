@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   GATEWAY_CONFIG_FILES,
   GATEWAY_REQUIRED_DISABLED_GATES,
+  GATEWAY_REQUIRED_EMPTY_DISABLE_IDENTITIES,
   GATEWAY_REQUIRED_SECRET_BINDINGS,
   GATEWAY_SERVICE_DIR,
   auditGatewayConfig,
@@ -19,7 +20,10 @@ describe("controller deployment Gateway config audit", () => {
     expect(report).toMatchObject({
       ok: true,
       productionConfigAbsent: true,
-      migrations: ["0001_controller_deployment_gateway.sql"],
+      migrations: [
+        "0001_controller_deployment_gateway.sql",
+        "0002_controller_deployment_gateway_disable.sql",
+      ],
       environments: {
         local: {
           publicIngressAbsent: true,
@@ -57,13 +61,29 @@ describe("controller deployment Gateway config audit", () => {
     }
   });
 
-  test("keeps all six credentials out of tracked vars", async () => {
+  test("keeps all remote-only credentials out of tracked vars", async () => {
     const config = await trackedConfig("staging");
     for (const binding of GATEWAY_REQUIRED_SECRET_BINDINGS) {
       const leaked = structuredClone(config);
       leaked.vars[binding] = "tracked-secret-material";
       expect(() => auditGatewayConfig(leaked, "staging")).toThrow(
         /untracked Worker secret|tracked secret-like var/,
+      );
+    }
+  });
+
+  test("keeps every local and staging disable identity empty", async () => {
+    for (const environment of ["local", "staging"]) {
+      const config = await trackedConfig(environment);
+      for (const identity of GATEWAY_REQUIRED_EMPTY_DISABLE_IDENTITIES) {
+        expect(config.vars[identity]).toBe("");
+      }
+      const configured = structuredClone(config);
+      configured.vars[
+        "CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_KID"
+      ] = "tracked-disable-create-v1";
+      expect(() => auditGatewayConfig(configured, environment)).toThrow(
+        /DISABLE_CREATE_HMAC_CURRENT_KID must be/,
       );
     }
   });
@@ -82,6 +102,16 @@ describe("controller deployment Gateway config audit", () => {
     collision.vars.CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_HMAC_CURRENT_KID =
       "shared-v1";
     expect(() => auditGatewayConfig(collision, "staging")).toThrow(
+      /HMAC identities must be isolated/,
+    );
+
+    const disableCollision = structuredClone(config);
+    disableCollision.vars.CONTROLLER_DEPLOYMENT_GATEWAY_CREATE_HMAC_CURRENT_KID =
+      "shared-disable-v1";
+    disableCollision.vars
+      .CONTROLLER_DEPLOYMENT_GATEWAY_DISABLE_CREATE_HMAC_CURRENT_KID =
+      "shared-disable-v1";
+    expect(() => auditGatewayConfig(disableCollision, "staging")).toThrow(
       /HMAC identities must be isolated/,
     );
 

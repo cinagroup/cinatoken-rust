@@ -2789,3 +2789,45 @@ This status does not claim a new full repository gate or remote deployment
 result. No secret was read and no remote state, migration, gate, Controller,
 Container, customer traffic, billing, DNS, or Go/VPS state was changed.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Historical Recovery And Send Attempt Status
+
+| Item | Current status |
+|---|---|
+| Application historical dispatch-consumption readback | **LOCALLY IMPLEMENTED AND VERIFIED** |
+| Historical retention | **30 DAYS, APPLICATION D1 TIME** |
+| Authority recovery evidence + exact receipt | **ATOMIC D1 BATCH, LOCALLY VERIFIED** |
+| Recovered receipt grants send authority | **FORBIDDEN** |
+| Authority send attempt + `send_started` event | **ATOMIC D1 BATCH, LOCALLY VERIFIED** |
+| Controller/gateway request sent | **NO** |
+| Deployment credential in Authority | **ABSENT** |
+| Authority migration inventory | **0001-0005** |
+| Checked-in local/staging gates | **ALL FALSE** |
+| Production placement configuration | **ABSENT** |
+| Remote evidence or mutation | **NOT PERFORMED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The former orphan-receipt blocker is closed locally: retained immutable
+Application consumption can reconstruct only its exact Authority receipt.
+That recovery is permanently non-live and cannot create a send attempt.
+
+The send-attempt boundary is also closed locally. One Authority transaction
+persists the unique attempt and initial event before any future external I/O.
+`send_started` explicitly means the authority was persisted and network I/O
+may not have occurred. No Controller or Cloudflare mutation has been added.
+
+The next P0 is the independent private deployment gateway with minimum
+credential scope, create-once idempotency, durable status, and status-only
+ambiguity recovery. Promotion remains blocked on that gateway, remote D1
+schema/trigger evidence, remote fault campaigns, identity and credential
+rotation evidence, operation-14 disable, operations 6-13, reverse sync, drain,
+traffic, DNS, security, SRE, and migration approvals.
+
+The full repository `bun run check` passed with exit code 0. Focused evidence
+also passed: Worker Rust 911, wasm check, scheduler/config 29, Application
+Workerd 54, Authority unit 55, two Authority Workerd suites of 6 each, and
+root Authority tests 28. Application inventory remains 66 migrations / 77
+tables / 1096 checked incremental columns / 111 key indexes. No secret or
+remote state was accessed. Go/VPS remains authoritative and production
+remains **NO-GO**.

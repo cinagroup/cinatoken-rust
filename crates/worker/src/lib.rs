@@ -296,6 +296,18 @@ pub async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
             },
         )
         .post_async(
+            "/internal/v1/shard-placement/dispatch-consumptions/:ticket_id/historical-readback",
+            |req, ctx| async move {
+                let ticket_id = ctx.param("ticket_id").cloned();
+                container_shard_placement_activation_read::read_dispatch_consumption_history(
+                    req,
+                    ctx.env,
+                    ticket_id,
+                )
+                .await
+            },
+        )
+        .post_async(
             "/internal/v1/shard-placement/dispatch-consumptions/:ticket_id",
             |req, ctx| async move {
                 let ticket_id = ctx.param("ticket_id").cloned();
@@ -2574,6 +2586,7 @@ mod tests {
             "/internal/v1/shard-placement/execution-ticket-authority-acks/:ticket_id",
             "/internal/v1/shard-placement/pre-enable-grants/:ticket_id",
             "/internal/v1/shard-placement/dispatch-consumptions/:ticket_id",
+            "/internal/v1/shard-placement/dispatch-consumptions/:ticket_id/historical-readback",
             "/v1/models",
             "/v1/chat/completions",
             "/v1/completions",

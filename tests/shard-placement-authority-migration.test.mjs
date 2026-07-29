@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -32,6 +33,25 @@ const dispatchConsumptionMigrationSql = readFileSync(join(
   "migrations",
   "0003_shard_placement_dispatch_consumptions.sql",
 ), "utf8");
+const dispatchConsumptionRecoveryMigrationSql = readFileSync(join(
+  import.meta.dir,
+  "..",
+  "services",
+  "shard-placement-authority",
+  "migrations",
+  "0004_shard_placement_dispatch_consumption_recoveries.sql",
+), "utf8");
+
+const RECOVERY_TRIGGER_DIGESTS = {
+  shard_placement_authority_operation_five_dispatch_consumption_insert_guard:
+    "0e1178ab5d0f33c06467f358d21ed6ac1b6e24045170f035321ef961b9f9964b",
+  shard_placement_authority_operation_five_dispatch_consumption_recovery_delete_guard:
+    "59abc0483b086e5b0f7c5bcacbff078ddb04e11aa918f3371f8ed342756f4ee5",
+  shard_placement_authority_operation_five_dispatch_consumption_recovery_insert_guard:
+    "7580be7d81ff9087d8a4a019042a93f4922291946db8b106444a8d78050540aa",
+  shard_placement_authority_operation_five_dispatch_consumption_recovery_update_guard:
+    "64dd60b10f3e27fe32bdc1dd890180eb9ea128213e45416051a922bd30c2123b",
+};
 
 describe("shard placement Authority migration", () => {
   test("keeps the migration inventory exact", () => {
@@ -45,6 +65,8 @@ describe("shard placement Authority migration", () => {
       "0001_shard_placement_authorizations.sql",
       "0002_shard_placement_execution_claims.sql",
       "0003_shard_placement_dispatch_consumptions.sql",
+      "0004_shard_placement_dispatch_consumption_recoveries.sql",
+      "0005_operation_five_send_attempts.sql",
     ]);
   });
 
@@ -1160,6 +1182,246 @@ describe("shard placement Authority migration", () => {
     `).get().count).toBe(0);
   });
 
+  test("installs exact 0001-0004 recovery triggers and rejects a same-name weak guard", () => {
+    using database = new Database(":memory:");
+    installDispatchConsumptionRecoverySchema(database);
+
+    expect(() => assertRecoveryTriggerDigests(database)).not.toThrow();
+    database.exec(`
+      DROP TRIGGER
+        shard_placement_authority_operation_five_dispatch_consumption_recovery_insert_guard
+    `);
+    database.exec(`
+      CREATE TRIGGER
+        shard_placement_authority_operation_five_dispatch_consumption_recovery_insert_guard
+      BEFORE INSERT
+      ON shard_placement_authority_operation_five_dispatch_consumption_recoveries
+      FOR EACH ROW
+      BEGIN
+        SELECT 1;
+      END
+    `);
+    expect(() => assertRecoveryTriggerDigests(database)).toThrow(
+      "Authority recovery trigger digest mismatch",
+    );
+  });
+
+  test("atomically records historical recovery evidence and its canonical receipt", () => {
+    using database = new Database(":memory:");
+    installDispatchConsumptionRecoverySchema(database);
+    const prepared = prepareOperationFiveDispatchConsumption(database);
+    const receipt = operationFiveDispatchConsumptionReceipt(
+      database,
+      prepared,
+    );
+    const recovery = operationFiveDispatchConsumptionRecovery(
+      database,
+      receipt,
+    );
+    revokeOperationFive(database, prepared);
+
+    database.transaction(() => {
+      insertOperationFiveDispatchConsumptionRecovery(database, recovery);
+      insertOperationFiveDispatchConsumption(database, receipt);
+    })();
+
+    expect(readRecoveryCounts(database)).toEqual({
+      receipts: 1,
+      recoveries: 1,
+    });
+    expect(database.query(`
+      SELECT *
+      FROM shard_placement_authority_operation_five_dispatch_consumption_recoveries
+      WHERE authorization_id_sha256 = ?
+    `).get(prepared.issuance.authorization_id_sha256)).toMatchObject(
+      recovery,
+    );
+    expect(database.query(`
+      SELECT *
+      FROM shard_placement_authority_operation_five_dispatch_consumptions
+      WHERE authorization_id_sha256 = ?
+    `).get(prepared.issuance.authorization_id_sha256)).toMatchObject(
+      receipt,
+    );
+
+    expectSqliteGuard(database, `
+      UPDATE shard_placement_authority_operation_five_dispatch_consumption_recoveries
+      SET application_version_id = 'replacement'
+      WHERE authorization_id_sha256 = ?
+    `, prepared.issuance.authorization_id_sha256,
+      "placement operation-five dispatch consumption recoveries are immutable",
+    );
+    expectSqliteGuard(database, `
+      DELETE
+      FROM shard_placement_authority_operation_five_dispatch_consumption_recoveries
+      WHERE authorization_id_sha256 = ?
+    `, prepared.issuance.authorization_id_sha256,
+      "placement operation-five dispatch consumption recoveries are append-preserved",
+    );
+    expectSqliteGuard(database, `
+      UPDATE shard_placement_authority_operation_five_dispatch_consumptions
+      SET application_version_id = 'replacement'
+      WHERE authorization_id_sha256 = ?
+    `, prepared.issuance.authorization_id_sha256,
+      "placement operation-five dispatch consumptions are immutable",
+    );
+    expectSqliteGuard(database, `
+      DELETE
+      FROM shard_placement_authority_operation_five_dispatch_consumptions
+      WHERE authorization_id_sha256 = ?
+    `, prepared.issuance.authorization_id_sha256,
+      "placement operation-five dispatch consumptions are append-preserved",
+    );
+  });
+
+  test("rolls back recovery evidence when the second batch insert fails", () => {
+    using database = new Database(":memory:");
+    installDispatchConsumptionRecoverySchema(database);
+    const prepared = prepareOperationFiveDispatchConsumption(database);
+    const receipt = operationFiveDispatchConsumptionReceipt(
+      database,
+      prepared,
+    );
+    const recovery = operationFiveDispatchConsumptionRecovery(
+      database,
+      receipt,
+    );
+    revokeOperationFive(database, prepared);
+
+    expect(() => database.transaction(() => {
+      insertOperationFiveDispatchConsumptionRecovery(database, recovery);
+      insertOperationFiveDispatchConsumption(database, {
+        ...receipt,
+        receipt_contract: "invalid-receipt-contract",
+      });
+    })()).toThrow();
+    expect(readRecoveryCounts(database)).toEqual({
+      receipts: 0,
+      recoveries: 0,
+    });
+  });
+
+  test("keeps one canonical receipt for both live/recovery race serializations", () => {
+    using recoveryWins = new Database(":memory:");
+    installDispatchConsumptionRecoverySchema(recoveryWins);
+    const recovered = prepareOperationFiveDispatchConsumption(recoveryWins);
+    const recoveredReceipt = operationFiveDispatchConsumptionReceipt(
+      recoveryWins,
+      recovered,
+    );
+    const recovery = operationFiveDispatchConsumptionRecovery(
+      recoveryWins,
+      recoveredReceipt,
+    );
+    revokeOperationFive(recoveryWins, recovered);
+    recoveryWins.transaction(() => {
+      insertOperationFiveDispatchConsumptionRecovery(recoveryWins, recovery);
+      insertOperationFiveDispatchConsumption(
+        recoveryWins,
+        recoveredReceipt,
+      );
+    })();
+    expect(() => insertOperationFiveDispatchConsumption(
+      recoveryWins,
+      recoveredReceipt,
+    )).toThrow();
+    expect(readRecoveryCounts(recoveryWins)).toEqual({
+      receipts: 1,
+      recoveries: 1,
+    });
+
+    using liveWins = new Database(":memory:");
+    installDispatchConsumptionRecoverySchema(liveWins);
+    const live = prepareOperationFiveDispatchConsumption(liveWins);
+    const liveReceipt = operationFiveDispatchConsumptionReceipt(
+      liveWins,
+      live,
+    );
+    insertOperationFiveDispatchConsumption(liveWins, liveReceipt);
+    const lateRecovery = operationFiveDispatchConsumptionRecovery(
+      liveWins,
+      liveReceipt,
+    );
+    revokeOperationFive(liveWins, live);
+    expect(() => liveWins.transaction(() => {
+      insertOperationFiveDispatchConsumptionRecovery(
+        liveWins,
+        lateRecovery,
+      );
+      insertOperationFiveDispatchConsumption(liveWins, liveReceipt);
+    })()).toThrow();
+    expect(readRecoveryCounts(liveWins)).toEqual({
+      receipts: 1,
+      recoveries: 0,
+    });
+    expect(liveWins.query(`
+      SELECT *
+      FROM shard_placement_authority_operation_five_dispatch_consumptions
+    `).get()).toMatchObject(liveReceipt);
+  });
+
+  test("rejects expired retention, source drift, and clock drift recovery", () => {
+    for (const scenario of ["retention", "source", "clock"]) {
+      using database = new Database(":memory:");
+      installDispatchConsumptionRecoverySchema(database);
+      const prepared = prepareOperationFiveDispatchConsumption(database);
+      let receipt = operationFiveDispatchConsumptionReceipt(
+        database,
+        prepared,
+      );
+      const now = database.query(
+        "SELECT unixepoch() AS now",
+      ).get().now;
+      if (scenario === "retention") {
+        const claimedAt = now - 120;
+        rewriteDispatchClaimClaimedAt(
+          database,
+          prepared.issuance.authorization_id_sha256,
+          claimedAt,
+        );
+        prepared.dispatchClaim.claimed_at = claimedAt;
+        receipt = {
+          ...receipt,
+          authority_dispatch_claimed_at: claimedAt,
+          application_consumed_at: now - 100,
+        };
+      }
+      let recovery = operationFiveDispatchConsumptionRecovery(
+        database,
+        receipt,
+      );
+      if (scenario === "retention") {
+        recovery = {
+          ...recovery,
+          application_database_now: now - 2,
+          retention_deadline_at: now - 1,
+        };
+      } else if (scenario === "source") {
+        recovery = {
+          ...recovery,
+          application_database_identity_sha256: "f".repeat(64),
+        };
+      } else {
+        recovery = {
+          ...recovery,
+          application_database_now: now + 120,
+        };
+      }
+      revokeOperationFive(database, prepared);
+
+      expect(() => database.transaction(() => {
+        insertOperationFiveDispatchConsumptionRecovery(database, recovery);
+        insertOperationFiveDispatchConsumption(database, receipt);
+      })()).toThrow(
+        "placement operation-five dispatch consumption recovery is not admissible",
+      );
+      expect(readRecoveryCounts(database)).toEqual({
+        receipts: 0,
+        recoveries: 0,
+      });
+    }
+  });
+
   test("rolls back operation-5 admission when revocation wins", () => {
     using database = new Database(":memory:");
     database.exec("PRAGMA foreign_keys = ON");
@@ -1865,6 +2127,161 @@ function insertOperationFiveDispatchConsumption(database, receipt) {
       ${columns.join(", ")}
     ) VALUES (${columns.map(() => "?").join(", ")})
   `).run(...columns.map((column) => receipt[column]));
+}
+
+function installDispatchConsumptionRecoverySchema(database) {
+  database.exec("PRAGMA foreign_keys = ON");
+  database.exec(migrationSql);
+  database.exec(executionMigrationSql);
+  database.exec(dispatchConsumptionMigrationSql);
+  database.exec(dispatchConsumptionRecoveryMigrationSql);
+}
+
+function operationFiveDispatchConsumptionRecovery(
+  database,
+  receipt,
+) {
+  return {
+    authorization_id_sha256: receipt.authorization_id_sha256,
+    contract_version: 1,
+    recovery_contract:
+      "cinatoken-shard-placement-authority-operation-five-dispatch-consumption-recovery-v1",
+    claim_digest_sha256: receipt.claim_digest_sha256,
+    application_ticket_id_sha256:
+      receipt.application_ticket_id_sha256,
+    campaign_id: receipt.campaign_id,
+    application_database_identity_sha256:
+      receipt.application_database_identity_sha256,
+    application_version_id: receipt.application_version_id,
+    authority_dispatch_claim_digest_sha256:
+      receipt.authority_dispatch_claim_digest_sha256,
+    application_dispatch_consumption_digest_sha256:
+      receipt.application_dispatch_consumption_digest_sha256,
+    application_dispatch_consumption_credential_id_sha256:
+      receipt.application_dispatch_consumption_credential_id_sha256,
+    application_dispatch_consumption_request_id_sha256:
+      receipt.application_dispatch_consumption_request_id_sha256,
+    command_dispatch_consumption_request_id_sha256:
+      receipt.command_dispatch_consumption_request_id_sha256,
+    application_consumed_at: receipt.application_consumed_at,
+    application_history_read_credential_id_sha256: "9".repeat(64),
+    application_history_read_request_id_sha256: "a".repeat(64),
+    application_response_sha256: receipt.application_response_sha256,
+    application_response_bytes: receipt.application_response_bytes,
+    application_database_now: database.query(
+      "SELECT unixepoch() AS now",
+    ).get().now,
+    recovery_credential_id_sha256: receipt.consume_credential_id_sha256,
+    recovery_request_id_sha256: receipt.consume_request_id_sha256,
+    command_recovery_request_id_sha256:
+      receipt.command_consume_request_id_sha256,
+    retention_deadline_at:
+      receipt.application_consumed_at + 2_592_000,
+    receipt_digest_sha256: receipt.receipt_digest_sha256,
+    recovery_evidence_digest_sha256: "b".repeat(64),
+  };
+}
+
+function insertOperationFiveDispatchConsumptionRecovery(
+  database,
+  recovery,
+) {
+  const columns = Object.keys(recovery);
+  database.query(`
+    INSERT INTO
+      shard_placement_authority_operation_five_dispatch_consumption_recoveries (
+        ${columns.join(", ")}
+      ) VALUES (${columns.map(() => "?").join(", ")})
+  `).run(...columns.map((column) => recovery[column]));
+}
+
+function revokeOperationFive(database, prepared) {
+  database.query(`
+    INSERT INTO shard_placement_authority_revocations (
+      authorization_id_sha256, permit_subject_digest_sha256,
+      reason_code, evidence_sha256, revocation_event_sha256,
+      revoke_credential_id_sha256
+    ) VALUES (?, ?, 'operator_abort', ?, ?, ?)
+  `).run(
+    prepared.issuance.authorization_id_sha256,
+    prepared.issuance.permit_subject_digest_sha256,
+    "9".repeat(64),
+    "a".repeat(64),
+    "b".repeat(64),
+  );
+}
+
+function readRecoveryCounts(database) {
+  return database.query(`
+    SELECT
+      (SELECT COUNT(*)
+       FROM shard_placement_authority_operation_five_dispatch_consumptions)
+        AS receipts,
+      (SELECT COUNT(*)
+       FROM
+         shard_placement_authority_operation_five_dispatch_consumption_recoveries)
+        AS recoveries
+  `).get();
+}
+
+function rewriteDispatchClaimClaimedAt(
+  database,
+  authorizationIdSha256,
+  claimedAt,
+) {
+  const triggerName =
+    "shard_placement_authority_operation_five_dispatch_claim_update_guard";
+  const trigger = database.query(`
+    SELECT sql
+    FROM sqlite_schema
+    WHERE type = 'trigger' AND name = ?
+  `).get(triggerName);
+  if (trigger === null) {
+    throw new Error("dispatch claim update guard is missing");
+  }
+  database.exec(`DROP TRIGGER ${triggerName}`);
+  try {
+    database.query(`
+      UPDATE shard_placement_authority_operation_five_dispatch_claims
+      SET claimed_at = ?
+      WHERE authorization_id_sha256 = ?
+    `).run(claimedAt, authorizationIdSha256);
+  } finally {
+    database.exec(trigger.sql);
+  }
+}
+
+function assertRecoveryTriggerDigests(database) {
+  const actual = Object.fromEntries(
+    Object.keys(RECOVERY_TRIGGER_DIGESTS).map((name) => {
+      const row = database.query(`
+        SELECT sql
+        FROM sqlite_schema
+        WHERE type = 'trigger' AND name = ?
+      `).get(name);
+      const digest = row === null
+        ? null
+        : createHash("sha256")
+          .update(row.sql.replace(/\s+/g, " ").trim().toLowerCase())
+          .digest("hex");
+      return [name, digest];
+    }),
+  );
+  if (
+    JSON.stringify(actual)
+      !== JSON.stringify(RECOVERY_TRIGGER_DIGESTS)
+  ) {
+    throw new Error("Authority recovery trigger digest mismatch");
+  }
+}
+
+function expectSqliteGuard(database, sql, value, message) {
+  const statement = database.prepare(sql);
+  try {
+    expect(() => statement.run(value)).toThrow(message);
+  } finally {
+    statement.finalize();
+  }
 }
 
 function readExecutionClaim(database) {

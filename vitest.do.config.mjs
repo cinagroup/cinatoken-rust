@@ -5,6 +5,8 @@ import {
 import { defineConfig } from "vitest/config";
 
 const authoritySecret = "0123456789abcdef0123456789abcdef";
+const dispatchConsumptionHistorySecret =
+  "history-read-runtime-secret-0123456789abcdef";
 const authorityWorker = "tenant-runtime-test";
 const accountId = "0123456789abcdef0123456789abcdef";
 const compiledWasmModules = [
@@ -54,6 +56,22 @@ export default defineConfig({
           CONTAINER_AUTHORITY_CURRENT_KID: "runtime-test-v1",
           CONTAINER_AUTHORITY_CURRENT_SECRET: authoritySecret,
           CONTAINER_PROTOCOL_VERSION: "1",
+          RELAY_CONTAINER_SHARD_APPLICATION_DATABASE_IDENTITY_SHA256:
+            "c".repeat(64),
+          RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ISSUER:
+            "shard-placement-authority-runtime-test",
+          RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_AUDIENCE:
+            "cinatoken-rust-api-runtime-test",
+          RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED:
+            "true",
+          RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_KID:
+            "dispatch-consumption-recovery-read-runtime-v1",
+          RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+            "4a".repeat(32),
+          RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_SECRET:
+            dispatchConsumptionHistorySecret,
+          RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_RETENTION_SECONDS:
+            "2592000",
           CONTAINER_R2_ORPHAN_INVENTORY_ENABLED: "true",
           CONTAINER_R2_ORPHAN_INVENTORY_SCAN_LIMIT: "1",
           CONTAINER_R2_ORPHAN_INVENTORY_GRACE_SECONDS: "0",

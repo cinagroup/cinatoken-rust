@@ -21,6 +21,8 @@ describe("shard placement Authority configuration", () => {
       "0001_shard_placement_authorizations.sql",
       "0002_shard_placement_execution_claims.sql",
       "0003_shard_placement_dispatch_consumptions.sql",
+      "0004_shard_placement_dispatch_consumption_recoveries.sql",
+      "0005_operation_five_send_attempts.sql",
     ]);
     for (const environment of ["local", "staging"]) {
       expect(report.environments[environment]).toMatchObject({

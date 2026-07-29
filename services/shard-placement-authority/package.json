@@ -3,8 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts",
-    "test": "vitest run --config vitest.config.ts",
+    "check": "tsc -p tsconfig.json --noEmit && bun run test",
+    "test": "bun run test:unit && bun run test:runtime",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:runtime": "vitest run --config vitest.send-attempt-runtime.config.mjs",
     "types": "wrangler types worker-configuration.d.ts --config wrangler.jsonc --env-interface ShardPlacementAuthorityEnv"
   }
 }

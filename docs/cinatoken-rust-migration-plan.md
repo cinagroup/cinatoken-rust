@@ -23871,3 +23871,154 @@ not read a secret, query or mutate remote state, deploy a Worker, apply a
 remote migration, or change Controller, Container, traffic, billing, DNS, or
 Go/VPS state. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.327 Historical Consumption Recovery And Send Attempt (2026-07-29)
+
+This checkpoint closes the two local P0 prerequisites identified in 22.326:
+an independently authenticated historical read path for an already committed
+Application dispatch consumption, and an Authority transaction that persists
+one send attempt together with its initial event before external I/O. It does
+not add a Controller or Cloudflare deployment call.
+
+### Historical read and receipt recovery
+
+Application now exposes only:
+
+```text
+POST /internal/v1/shard-placement/dispatch-consumptions/{ticket_id}/historical-readback
+```
+
+The route has an independent
+`dispatch_consumption_recovery_read` HMAC role, current/previous credential
+pair, 4 KiB canonical request limit, 64 KiB canonical response limit,
+`no-store`, no redirect, and no content encoding. It reads the immutable 0066
+consumption row and `unixepoch()` in one D1 batch. It does not
+depend on the live consumption write gate, fence, lease, normal deadline, or
+current worker owner, and it performs no write or external I/O.
+
+Historical readback is retained for exactly 2,592,000 seconds (30 days) from
+`consumed_at`, using Application D1 time. Local and staging track that value;
+production configuration remains absent. A request outside retention, with a
+path/body mismatch, invalid HMAC, identity drift, non-canonical body, or
+oversized request fails closed.
+
+Authority now exposes only:
+
+```text
+POST /internal/v1/shard-placement/execution-claims/{authorization_id_sha256}/recover-enable-dispatch-consumption
+```
+
+Its independent `recovery` HMAC role calls Application through a Service
+Binding using the separate historical-read role. Authority verifies the same
+30-day retention contract against Application D1, Authority D1, and Worker
+time. Migration 0004 records immutable recovery evidence and the exact
+dispatch-consumption receipt in one D1 `batch([recovery, receipt])`; failure of
+either insert rolls back both. An already exact receipt is returned before
+the Application call.
+
+Recovery is deliberately non-live. It reports
+`sendAttemptCreated=false` and `controllerRequestSent=false`; migration 0005
+and the TypeScript orchestrator both forbid a recovered receipt from creating
+a send attempt. Historical evidence can repair an Authority audit gap, but it
+cannot recreate an expired lease, reopen a fence, or renew send authority.
+
+### Attempt and initial event linearization
+
+Authority now exposes:
+
+```text
+POST /internal/v1/shard-placement/execution-claims/{authorization_id_sha256}/start-enable-dispatch-send
+```
+
+The route requires the `send` HMAC role and the dedicated
+`SHARD_PLACEMENT_AUTHORITY_SEND_ATTEMPT_WRITE_ENABLED=true` gate. The tracked
+local and staging value is `false`. Migration 0005 creates:
+
+- one immutable operation-5 send-attempt row per authorization;
+- one append-only event stream keyed by attempt digest and sequence;
+- source, identity, D1 clock, live-fence, revocation, and recovery-exclusion
+  triggers;
+- immutable update/delete guards and unique digests for all send identities.
+
+The repository uses one first-primary
+`batch([attempt, send_started_event])`. Only two successful inserts with
+`changes=1` classify as `created`. Exact readback after a caught failure or an
+indeterminate but exact result classifies as `exact_replay` and grants no new
+send authority. Missing, partial, or mismatched readback fails closed.
+
+The initial `send_started` event means only
+`unique_send_authority_persisted_network_may_not_have_occurred`. Both persisted
+rows require `controller_request_sent=0` and `gateway_request_sent=0`. Only the
+first definite creation returns `sendAttemptCreated=true`; every replay returns
+false. The route contains no Controller, gateway, Cloudflare API, or other
+network mutation.
+
+The event table is deliberately future-safe: sequence, state, event kind,
+semantics, and predecessor digest are generic columns. Migration 0005 admits
+only sequence 1; a later migration may replace that insert trigger to append
+gateway outcomes without rebuilding the table.
+
+### Source architecture decisions
+
+The production design keeps useful invariants from both source systems while
+rejecting deployment patterns that conflict with Cloudflare failure modes:
+
+- `cinaVibeSDK` demonstrates deterministic sandbox ownership and Durable
+  Object persisted metadata. Those ideas are retained. Its modulo-based
+  `hash % max_instances` assignment is rejected because resizing remaps broad
+  ownership; `crates/sharding` keyed Jump Consistent Hash remains the shard
+  authority.
+- `cinaVibeSDK` metadata written only after process or file I/O is rejected
+  for control-plane mutation. Authority persists the unique attempt before
+  any future gateway I/O.
+- `cinatoken-go` status compare-and-swap and transactional idempotent payment
+  completion are retained as concurrency models.
+- `cinatoken-go` upstream request before later task persistence and
+  best-effort asynchronous audit are rejected for placement authority. Every
+  authority-bearing fact must be durable, immutable, and recoverable before
+  an external side effect.
+
+The resulting topology remains four data-plane layers: Worker, keyed shard
+Durable Objects, Container, and KV/D1/R2. Authority and the future deployment
+gateway are private control-plane services, not an additional relay
+data-plane layer.
+
+### Verification evidence and remaining P0
+
+Local evidence now includes:
+
+- full repository `bun run check`: passed with exit code 0;
+- Rust Worker library: 911 tests passed;
+- Worker wasm32 check: passed;
+- scheduler/config contract: 29 tests and 386 assertions passed;
+- Application Workerd lifecycle: 54 tests passed, including the historical
+  route;
+- Authority unit tests: 55 passed;
+- Authority send-attempt Workerd suite: 6 passed;
+- Authority full 0001-0005 Workerd migration/runtime suite: 6 passed;
+- root Authority migration/config suite: 28 passed.
+
+The Application Workerd fixture seeds the immutable 0066 row directly because
+the complete production insert guard exceeds Workerd SQLite's test expression
+depth. Production migration SQL is unchanged; update/delete immutability,
+route behavior, retention, and identity checks remain exercised. Authority
+tests apply 0001-0005 sequentially in real Workerd SQLite and also verify a
+normalized digest of the four critical recovery triggers. Remote D1 trigger
+SQL digest and fully seeded all-migration remote evidence remain promotion
+blockers.
+
+The next P0 is a separate private `controller-deployment-gateway` with the
+minimum deployment credential, a frozen create-once command, and status-only
+readback. Only a newly created attempt may submit the command. Timeout,
+disconnect, response loss, process death, and rollout recovery must query
+status and must never submit a second enable. Authority must remain free of
+the deployment credential.
+
+Application D1 remains 66 migrations, 77 required tables, 1096 checked
+incremental columns, and 111 key indexes. Authority now contains five
+migrations (`0001-0005`). All related gates remain `false`, production
+placement configuration remains absent, and this checkpoint did not read a
+secret, query or mutate Cloudflare remote state, deploy a Worker, apply a
+remote migration, or change Controller, Container, traffic, billing, DNS, or
+Go/VPS state. Go/VPS remains authoritative and production remains
+**NO-GO**.

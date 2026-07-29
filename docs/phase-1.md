@@ -4345,3 +4345,43 @@ three files (`0001-0003`). All related gates remain false in tracked local and
 staging configuration, production placement configuration is absent, and no
 secret or remote state was accessed. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-29 Historical Recovery And Send Attempt
+
+The prior P0 recovery blocker is now implemented locally. Application provides
+an independent HMAC-authenticated, bounded POST historical readback for an
+immutable 0066 dispatch-consumption row. Application D1 time enforces a
+2,592,000-second retention window, and the route is independent from live
+write gates, leases, fences, current ownership, and normal deadlines.
+
+Authority migration 0004 appends exact historical recovery evidence and the
+missing canonical receipt in one first-primary D1 batch. Authority checks the
+same retention contract across Application D1, Authority D1, and Worker
+clocks. Recovery cannot create a send attempt, cannot contact Controller, and
+cannot renew live authority.
+
+Authority migration 0005 and the private send-role route now atomically create
+one immutable operation-5 send attempt and its sequence-1 `send_started`
+event. The event means unique send authority was persisted while network I/O
+may not have occurred. Both records keep Controller/gateway sent flags at
+zero. Only a definite first insert returns `sendAttemptCreated=true`; exact
+replay returns false, and partial or mismatched state fails closed.
+
+This phase deliberately stops before external mutation. There is no Controller
+or Cloudflare API call and Authority holds no deployment credential. The next
+P0 is a separate private `controller-deployment-gateway` that accepts one
+frozen create-once command only from a newly created attempt and exposes
+status-only recovery for every ambiguous outcome.
+
+Architecture inheritance is now explicit: retain deterministic ownership,
+Durable Object persistence, Go compare-and-swap, and transactional
+idempotency; use keyed Jump Consistent Hash instead of modulo resizing; reject
+post-I/O authority persistence and best-effort asynchronous authority audit.
+
+Application inventory remains 66 migrations / 77 tables / 1096 checked
+incremental columns / 111 key indexes. Authority inventory is now five files
+(`0001-0005`). The full repository `bun run check` and focused Rust, wasm,
+Workerd, migration, protocol, and configuration suites pass. All tracked
+gates remain false, production
+placement configuration is absent, no secret or remote state was accessed,
+Go/VPS remains authoritative, and production remains **NO-GO**.

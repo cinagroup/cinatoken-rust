@@ -265,6 +265,88 @@ describe("application placement execution ticket activation contract", () => {
     );
   });
 
+  test("exposes an independent bounded historical dispatch consumption read", () => {
+    const path =
+      "/internal/v1/shard-placement/dispatch-consumptions/:ticket_id/historical-readback";
+    const firstRegistration = libSource.indexOf(`"${path}"`);
+    expect(firstRegistration).toBeGreaterThan(-1);
+    expect(
+      libSource.slice(Math.max(0, firstRegistration - 40), firstRegistration),
+    ).toContain(".post_async(");
+    expect(libSource).toContain(
+      "container_shard_placement_activation_read::read_dispatch_consumption_history",
+    );
+    expect(libSource).not.toContain(
+      `.get_async(\n            "/internal/v1/shard-placement/dispatch-consumptions/:ticket_id"`,
+    );
+    const handler = activationReadSource
+      .split("pub async fn read_dispatch_consumption_history")[1]
+      .split("pub async fn create_pre_enable_grant")[0];
+    expect(handler).toContain(
+      "DISPATCH_CONSUMPTION_HISTORY_READ_ENABLED_ENV",
+    );
+    expect(handler).toContain('"dispatch_consumption_recovery_read"');
+    expect(handler).toContain("read_consumption_history_read_configs");
+    expect(handler).toContain(
+      "parse_dispatch_consumption_history_read_command",
+    );
+    expect(handler).toContain(
+      "DISPATCH_CONSUMPTION_HISTORY_READ_REQUEST_MAX_BYTES",
+    );
+    expect(handler).toContain(
+      "relay_container_shard_placement_dispatch_consumption_history_readback",
+    );
+    expect(handler).toContain("dispatch_consumption_row_is_historical");
+    expect(handler).toContain("dispatch_consumption_history_read_response");
+    expect(handler).toContain(
+      "runtime_dispatch_consumption_history_retention_seconds",
+    );
+    expect(handler).toContain("readback.database_now > retention_deadline_at");
+    expect(handler).not.toContain(
+      "DISPATCH_CONSUMPTION_WRITE_ENABLED_ENV",
+    );
+    expect(handler).not.toContain(
+      "create_relay_container_shard_placement_dispatch_consumption",
+    );
+    expect(handler).not.toContain(
+      "relay_container_shard_placement_execution_ticket",
+    );
+    expect(handler).not.toContain(
+      "relay_container_shard_placement_pre_enable_grant",
+    );
+    expect(handler).not.toContain("CF_VERSION_METADATA");
+    expect(handler).not.toContain("lease_expires_at");
+    expect(handler).not.toContain("normal_deadline_at");
+    expect(handler).not.toContain("permit_expires_at");
+    expect(handler).not.toContain(".fetch(");
+    expect(activationReadSource).toContain(
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_SECRET",
+    );
+    expect(activationReadSource).toContain(
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_SECRET",
+    );
+    expect(activationReadSource).toContain(
+      "DISPATCH_CONSUMPTION_HISTORY_READ_RESPONSE_MAX_BYTES",
+    );
+    expect(activationReadSource).toContain(
+      'delete("Content-Encoding")',
+    );
+    expect(activationReadSource).toContain('delete("Location")');
+    expect(activationReadSource).toContain('"sendAttemptCreated": false');
+    expect(activationReadSource).toContain(
+      '"controllerRequestSent": false',
+    );
+    expect(repositorySource).toContain(
+      "FROM relay_container_shard_placement_dispatch_consumptions",
+    );
+    expect(repositorySource).toContain(
+      "db.batch(vec![row, database_now]).await",
+    );
+    expect(repositorySource).toContain(
+      'db.prepare("SELECT unixepoch() AS database_now")',
+    );
+  });
+
   test("persists Authority operation-4 start before application read", () => {
     const startAppend = authorityActivationSource.indexOf(
       "const appended = await dependencies.appendReceipt(",
@@ -369,11 +451,20 @@ describe("application placement execution ticket activation contract", () => {
         scope.vars
           .RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_WRITE_ENABLED,
       ).toBe("false");
+      expect(
+        scope.vars
+          .RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED,
+      ).toBe("false");
+      expect(
+        scope.vars
+          .RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_RETENTION_SECONDS,
+      ).toBe("2592000");
       for (const prefix of [
         "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC",
         "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC",
         "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC",
         "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC",
+        "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC",
       ]) {
         expect(scope.vars[`${prefix}_CURRENT_KID`]).toBe("");
         expect(
@@ -386,6 +477,18 @@ describe("application placement execution ticket activation contract", () => {
         expect(scope.vars[`${prefix}_CURRENT_SECRET`]).toBeUndefined();
         expect(scope.vars[`${prefix}_PREVIOUS_SECRET`]).toBeUndefined();
       }
+    }
+    for (const [application, authority] of [
+      [rootConfig, authorityLocalConfig],
+      [rootConfig.env.staging, authorityStagingConfig],
+    ]) {
+      expect(
+        application.vars
+          .RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_RETENTION_SECONDS,
+      ).toBe(
+        authority.vars
+          .SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_RETENTION_SECONDS,
+      );
     }
     for (const assets of [
       rootConfig.assets,
@@ -407,6 +510,8 @@ describe("application placement execution ticket activation contract", () => {
       "RELAY_CONTAINER_SHARD_PLACEMENT_TICKET_AUTHORITY_ACK_WRITE_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED",
       "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_WRITE_ENABLED",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_RETENTION_SECONDS",
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ACK_READ_HMAC_CURRENT_SECRET",
@@ -419,6 +524,12 @@ describe("application placement execution ticket activation contract", () => {
       "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256",
       "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_CURRENT_SECRET",
       "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_SECRET",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_KID",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_KID",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_SECRET",
+      "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_SECRET",
     ]) {
       expect(rootConfig.env.production.vars[name]).toBeUndefined();
     }

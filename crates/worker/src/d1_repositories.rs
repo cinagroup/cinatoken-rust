@@ -1373,6 +1373,17 @@ pub struct RelayContainerShardPlacementDispatchConsumptionRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelayContainerShardPlacementDispatchConsumptionHistoryReadback {
+    pub consumption: RelayContainerShardPlacementDispatchConsumptionRow,
+    pub database_now: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelayContainerShardPlacementDispatchConsumptionDatabaseNowRow {
+    database_now: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RelayContainerShardPlacementDispatchConsumptionCreateOutcome {
     Created(RelayContainerShardPlacementDispatchConsumptionRow),
     ExactReplay(RelayContainerShardPlacementDispatchConsumptionRow),
@@ -13332,6 +13343,53 @@ pub async fn relay_container_shard_placement_dispatch_consumption(
     relay_container_shard_placement_dispatch_consumption_statement(db, ticket_id_sha256)?
         .first::<RelayContainerShardPlacementDispatchConsumptionRow>(None)
         .await
+}
+
+pub async fn relay_container_shard_placement_dispatch_consumption_history_readback(
+    db: &D1Database,
+    ticket_id_sha256: &str,
+) -> worker::Result<Option<RelayContainerShardPlacementDispatchConsumptionHistoryReadback>> {
+    validate_relay_container_sha256(ticket_id_sha256, "shard placement execution ticket id")?;
+    let row = relay_container_shard_placement_dispatch_consumption_statement(db, ticket_id_sha256)?;
+    let database_now = db.prepare("SELECT unixepoch() AS database_now");
+    let mut results = db.batch(vec![row, database_now]).await?;
+    if results.len() != 2 {
+        return Err(worker::Error::RustError(
+            "shard placement dispatch consumption history batch result is incomplete".to_string(),
+        ));
+    }
+    let database_now = results
+        .pop()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement dispatch consumption history clock result is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementDispatchConsumptionDatabaseNowRow>()?;
+    if database_now.len() != 1 || database_now[0].database_now <= 0 {
+        return Err(worker::Error::RustError(
+            "shard placement dispatch consumption history clock is invalid".to_string(),
+        ));
+    }
+    let consumption = results
+        .pop()
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "shard placement dispatch consumption history row result is missing".to_string(),
+            )
+        })?
+        .results::<RelayContainerShardPlacementDispatchConsumptionRow>()?;
+    if consumption.len() > 1 {
+        return Err(worker::Error::RustError(
+            "shard placement dispatch consumption history row is not bounded".to_string(),
+        ));
+    }
+    Ok(consumption.into_iter().next().map(|consumption| {
+        RelayContainerShardPlacementDispatchConsumptionHistoryReadback {
+            consumption,
+            database_now: database_now[0].database_now,
+        }
+    }))
 }
 
 pub async fn create_relay_container_shard_placement_dispatch_consumption(

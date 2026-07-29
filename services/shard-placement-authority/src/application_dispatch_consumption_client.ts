@@ -374,7 +374,9 @@ export async function createExactApplicationDispatchConsumption(
         502,
       );
     }
-    const consumption = parseConsumption(envelope.snapshot);
+    const consumption = parseApplicationDispatchConsumptionSnapshot(
+      envelope.snapshot,
+    );
     requireConsumptionMatches({
       consumption,
       dispatchClaim,
@@ -574,7 +576,7 @@ function applicationFetch(
   );
 }
 
-function parseConsumption(
+export function parseApplicationDispatchConsumptionSnapshot(
   value: unknown,
 ): ApplicationDispatchConsumptionSnapshot {
   const object = requireObject(value);
@@ -686,6 +688,29 @@ function requireConsumptionMatches(input: {
   requestIdSha256: string;
 }): void {
   const { consumption, dispatchClaim } = input;
+  requireApplicationDispatchConsumptionMatchesDispatchClaim(
+    consumption,
+    dispatchClaim,
+    input.dispatchConsumptionRequestIdSha256,
+  );
+  if (
+    consumption.applicationDispatchConsumptionCredentialIdSha256
+      !== input.credentialIdSha256
+    || consumption.applicationDispatchConsumptionRequestIdSha256
+      !== input.requestIdSha256
+  ) {
+    throw new ProtocolError(
+      "application_dispatch_consumption_mismatch",
+      409,
+    );
+  }
+}
+
+export function requireApplicationDispatchConsumptionMatchesDispatchClaim(
+  consumption: ApplicationDispatchConsumptionSnapshot,
+  dispatchClaim: OperationFiveDispatchClaimRow,
+  dispatchConsumptionRequestIdSha256: string,
+): void {
   if (
     consumption.ticketIdSha256
       !== dispatchClaim.application_ticket_id_sha256
@@ -713,10 +738,8 @@ function requireConsumptionMatches(input: {
       !== dispatchClaim.authority_ledger_identity_sha256
     || consumption.authorityLedgerHeadSha256
       !== dispatchClaim.authority_ledger_head_sha256
-    || consumption.authorityVersionId
-      !== dispatchClaim.authority_version_id
-    || consumption.dispatchOwnerSha256
-      !== dispatchClaim.dispatch_owner_sha256
+    || consumption.authorityVersionId !== dispatchClaim.authority_version_id
+    || consumption.dispatchOwnerSha256 !== dispatchClaim.dispatch_owner_sha256
     || consumption.leaseTokenSha256 !== dispatchClaim.lease_token_sha256
     || consumption.leaseGeneration !== dispatchClaim.lease_generation
     || consumption.leaseExpiresAt !== dispatchClaim.lease_expires_at
@@ -741,12 +764,8 @@ function requireConsumptionMatches(input: {
     || consumption.retryLimit !== dispatchClaim.retry_limit
     || consumption.missingReadbackAllowsResend
       !== dispatchClaim.missing_readback_allows_resend
-    || consumption.applicationDispatchConsumptionCredentialIdSha256
-      !== input.credentialIdSha256
-    || consumption.applicationDispatchConsumptionRequestIdSha256
-      !== input.requestIdSha256
     || consumption.commandDispatchConsumptionRequestIdSha256
-      !== input.dispatchConsumptionRequestIdSha256
+      !== dispatchConsumptionRequestIdSha256
     || consumption.consumedAt < consumption.authorityDispatchClaimedAt
   ) {
     throw new ProtocolError(

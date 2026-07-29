@@ -19,6 +19,10 @@ import {
   type ApplicationDispatchConsumptionClientEnv,
 } from "./application_dispatch_consumption_client";
 import {
+  validateApplicationDispatchConsumptionHistoryClientConfig,
+  type ApplicationDispatchConsumptionHistoryClientEnv,
+} from "./application_dispatch_consumption_history_client";
+import {
   authorizeControllerEnableDispatch,
   parseAuthorizeEnableDispatchCommand,
 } from "./authorize_enable_dispatch";
@@ -30,6 +34,14 @@ import {
   consumeControllerEnableDispatch,
   parseConsumeEnableDispatchCommand,
 } from "./consume_enable_dispatch";
+import {
+  parseRecoverEnableDispatchConsumptionCommand,
+  recoverControllerEnableDispatchConsumption,
+} from "./recover_enable_dispatch_consumption";
+import {
+  parseStartEnableDispatchSendCommand,
+  startControllerEnableDispatchSend,
+} from "./start_enable_dispatch_send";
 import {
   beginControllerEnable,
   parseBeginEnableCommand,
@@ -80,7 +92,8 @@ export interface AuthorityEnv
     ApplicationActivationClientEnv,
     ApplicationAuthorityAckClientEnv,
     ApplicationPreEnableGrantClientEnv,
-    ApplicationDispatchConsumptionClientEnv {
+    ApplicationDispatchConsumptionClientEnv,
+    ApplicationDispatchConsumptionHistoryClientEnv {
   DB: D1Database;
   CF_VERSION_METADATA: WorkerVersionMetadata;
   ENVIRONMENT: string;
@@ -105,6 +118,11 @@ export interface AuthorityEnv
     string;
   SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECEIPT_WRITE_ENABLED:
     string;
+  SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED:
+    string;
+  SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_RECEIPT_WRITE_ENABLED:
+    string;
+  SHARD_PLACEMENT_AUTHORITY_SEND_ATTEMPT_WRITE_ENABLED: string;
   SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: string;
@@ -136,6 +154,10 @@ const EXECUTION_CLAIM_ENABLE_DISPATCH_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/claim-enable-dispatch$/;
 const EXECUTION_CONSUME_ENABLE_DISPATCH_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/consume-enable-dispatch$/;
+const EXECUTION_RECOVER_ENABLE_DISPATCH_CONSUMPTION_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/recover-enable-dispatch-consumption$/;
+const EXECUTION_START_ENABLE_DISPATCH_SEND_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/start-enable-dispatch-send$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -414,6 +436,64 @@ export default {
         );
       }
 
+      if (
+        route.kind === "execution_recover_enable_dispatch_consumption"
+      ) {
+        const command =
+          parseRecoverEnableDispatchConsumptionCommand(body);
+        if (
+          command.authorizationIdSha256
+            !== route.authorizationIdSha256
+        ) {
+          throw new ProtocolError(
+            "operation_five_dispatch_consumption_recovery_path_mismatch",
+            400,
+          );
+        }
+        const result =
+          await recoverControllerEnableDispatchConsumption(
+            env,
+            command,
+            authentication,
+          );
+        return jsonResponse(
+          result.result === "dispatch_consumption_receipt_recovered"
+            ? 201
+            : 200,
+          {
+            contract:
+              "cinatoken-shard-placement-authority-recover-enable-dispatch-consumption-result-v1",
+            ...result,
+          },
+        );
+      }
+
+      if (route.kind === "execution_start_enable_dispatch_send") {
+        const command = parseStartEnableDispatchSendCommand(body);
+        if (
+          command.authorizationIdSha256
+            !== route.authorizationIdSha256
+        ) {
+          throw new ProtocolError(
+            "operation_five_send_attempt_path_mismatch",
+            400,
+          );
+        }
+        const result = await startControllerEnableDispatchSend(
+          env,
+          command,
+          authentication,
+        );
+        return jsonResponse(
+          result.result === "send_attempt_created" ? 201 : 200,
+          {
+            contract:
+              "cinatoken-shard-placement-authority-start-enable-dispatch-send-result-v1",
+            ...result,
+          },
+        );
+      }
+
       if (route.kind === "execution_receipt_append") {
         const receipt = await parseExecutionReceipt(
           body,
@@ -598,6 +678,14 @@ type Route =
   | {
       kind: "execution_consume_enable_dispatch";
       authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_recover_enable_dispatch_consumption";
+      authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_start_enable_dispatch_send";
+      authorizationIdSha256: string;
     };
 
 function matchRoute(request: Request): Route {
@@ -764,6 +852,38 @@ function matchRoute(request: Request): Route {
         executionConsumeEnableDispatchMatch[1]!,
     };
   }
+  const executionRecoverEnableDispatchConsumptionMatch =
+    EXECUTION_RECOVER_ENABLE_DISPATCH_CONSUMPTION_PATH.exec(
+      url.pathname,
+    );
+  if (
+    request.method === "POST"
+    && executionRecoverEnableDispatchConsumptionMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_recover_enable_dispatch_consumption",
+      authorizationIdSha256:
+        executionRecoverEnableDispatchConsumptionMatch[1]!,
+    };
+  }
+  const executionStartEnableDispatchSendMatch =
+    EXECUTION_START_ENABLE_DISPATCH_SEND_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionStartEnableDispatchSendMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_start_enable_dispatch_send",
+      authorizationIdSha256:
+        executionStartEnableDispatchSendMatch[1]!,
+    };
+  }
   const authorizationMatch = AUTHORIZATION_ID_PATH.exec(url.pathname);
   if (request.method === "GET" && authorizationMatch !== null) {
     return {
@@ -799,6 +919,10 @@ function routeRole(kind: Route["kind"]): HmacRole {
   }
   if (kind === "execution_claim_enable_dispatch") return "send";
   if (kind === "execution_consume_enable_dispatch") return "send";
+  if (kind === "execution_start_enable_dispatch_send") return "send";
+  if (kind === "execution_recover_enable_dispatch_consumption") {
+    return "recovery";
+  }
   if (kind === "execution_receipt_append") return "receipt";
   if (
     kind === "execution_lease_renew"
@@ -930,6 +1054,38 @@ function requireRouteGate(
     );
   }
   if (
+    kind === "execution_recover_enable_dispatch_consumption"
+    && env
+      .SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED
+      !== "true"
+  ) {
+    throw new ProtocolError(
+      "authority_dispatch_consumption_recovery_reads_disabled",
+      503,
+    );
+  }
+  if (
+    kind === "execution_start_enable_dispatch_send"
+    && env.SHARD_PLACEMENT_AUTHORITY_SEND_ATTEMPT_WRITE_ENABLED
+      !== "true"
+  ) {
+    throw new ProtocolError(
+      "authority_send_attempt_write_disabled",
+      503,
+    );
+  }
+  if (
+    kind === "execution_recover_enable_dispatch_consumption"
+    && env
+      .SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_RECEIPT_WRITE_ENABLED
+      !== "true"
+  ) {
+    throw new ProtocolError(
+      "authority_dispatch_consumption_recovery_receipt_write_disabled",
+      503,
+    );
+  }
+  if (
     kind === "execution_consume_enable_dispatch"
     && env
       .SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECEIPT_WRITE_ENABLED
@@ -1049,6 +1205,13 @@ export function validateRuntimeTrustConfiguration(
       === "true"
   ) {
     validateApplicationDispatchConsumptionClientConfig(env);
+  }
+  if (
+    env
+      .SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED
+      === "true"
+  ) {
+    validateApplicationDispatchConsumptionHistoryClientConfig(env);
   }
   requireApplicationHmacCredentialIsolation(env);
 }
@@ -1179,6 +1342,15 @@ function requireApplicationHmacCredentialIsolation(
   ) {
     prefixes.push(
       "SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC",
+    );
+  }
+  if (
+    env
+      .SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED
+      === "true"
+  ) {
+    prefixes.push(
+      "SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC",
     );
   }
   const active = prefixes.map((prefix) => ({
@@ -1478,3 +1650,19 @@ function jsonResponse(status: number, body: unknown): Response {
     },
   });
 }
+
+export const authorityRoutingForTest = {
+  match(request: Request): {
+    kind: Route["kind"];
+    role: HmacRole;
+  } {
+    const route = matchRoute(request);
+    return {
+      kind: route.kind,
+      role: routeRole(route.kind),
+    };
+  },
+  requireGate(kind: Route["kind"], env: AuthorityEnv): void {
+    requireRouteGate(kind, env);
+  },
+};

@@ -358,13 +358,17 @@ export async function auditTrackedConfigs({
     .map((entry) => entry.name)
     .sort();
   if (
-    migrationFiles.length !== 3
+    migrationFiles.length !== 5
     || migrationFiles[0]
       !== "0001_shard_placement_authorizations.sql"
     || migrationFiles[1]
       !== "0002_shard_placement_execution_claims.sql"
     || migrationFiles[2]
       !== "0003_shard_placement_dispatch_consumptions.sql"
+    || migrationFiles[3]
+      !== "0004_shard_placement_dispatch_consumption_recoveries.sql"
+    || migrationFiles[4]
+      !== "0005_operation_five_send_attempts.sql"
   ) {
     throw new ShardPlacementAuthorityConfigAuditError(
       "Authority migration inventory is invalid",

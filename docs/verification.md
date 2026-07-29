@@ -11568,3 +11568,65 @@ files (`0001-0003`). All related gates remain false, production placement
 configuration is absent, and this checkpoint used no secret and performed no
 remote read, mutation, migration, deployment, or traffic change. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-07-29 Historical Recovery And Send Attempt Verification
+
+The following local acceptance evidence is now required and passed:
+
+| Boundary | Evidence |
+|---|---|
+| Application historical route | POST-only, canonical HMAC, 4 KiB request, 64 KiB response, no-store, identity and 30-day retention checks |
+| Application D1 read | immutable 0066 row and D1 `unixepoch()` read in one D1 batch |
+| Authority recovery | real D1 batch rolls back both recovery evidence and receipt when the second insert fails |
+| Recovery isolation | recovered receipts cannot create attempts in TypeScript or SQL and report no send/Controller activity |
+| Send attempt | first-primary D1 batch persists one attempt and sequence-1 `send_started` event |
+| Replay classification | only two `changes=1` results create send authority; exact replay grants none; partial/mismatch fails closed |
+| External effects | no Controller, gateway, Cloudflare API, or other network mutation exists in the attempt route |
+| Default posture | local/staging gates false; production config absent; Go/VPS authoritative |
+
+Executed local gates:
+
+```text
+bun run check
+  passed, exit code 0
+cargo test -q -p cinatoken-worker --lib
+  911 passed
+cargo check -q -p cinatoken-worker --target wasm32-unknown-unknown
+  passed
+bun run check:container-scheduler-config
+  29 passed, 386 assertions
+bun run check:do-lifecycle-runtime
+  54 passed
+bun run check:shard-placement-authority
+  55 unit + 6 send-attempt Workerd + 6 full-migration Workerd + 28 root tests
+```
+
+The Application Workerd fixture directly seeds the 0066 immutable row because
+its production insert trigger exceeds the test runtime's SQLite expression
+depth. The production migration is not weakened. Immutability, routing,
+retention, HMAC, body bounds, and identity behavior remain under test.
+Authority Workerd applies migrations 0001-0005 sequentially. Root tests also
+lock normalized SQL digests for four critical recovery triggers and reject a
+weakened same-name trigger.
+
+Promotion still requires remote D1 schema and trigger-SQL digest evidence,
+least-privilege Service Binding and Access identities, current/previous
+credential rotation and retirement, and a fully seeded remote fault campaign.
+No local result substitutes for those remote checks.
+
+The next P0 verification target is the private deployment gateway:
+
+1. Only a response with `sendAttemptCreated=true` may submit the frozen
+   create-once command.
+2. The gateway persists its idempotency record before Cloudflare mutation.
+3. Timeouts, disconnects, response loss, restarts, and rollouts perform
+   status-only readback and never repeat enable.
+4. Gateway event append records accepted, rejected, unknown, and observed
+   terminal states without rewriting the initial attempt.
+5. Authority never receives or stores the Cloudflare deployment credential.
+
+Application inventory remains 66 migrations / 77 tables / 1096 checked
+incremental columns / 111 key indexes; Authority inventory is five migrations
+(`0001-0005`). All gates remain false, production placement configuration is
+absent, no secret or remote state was accessed, and production remains
+**NO-GO**.

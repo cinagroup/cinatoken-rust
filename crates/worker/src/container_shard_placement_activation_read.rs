@@ -12,6 +12,7 @@ use crate::d1_repositories::{
     create_relay_container_shard_placement_dispatch_consumption,
     create_relay_container_shard_placement_pre_enable_grant,
     relay_container_shard_placement_dispatch_consumption,
+    relay_container_shard_placement_dispatch_consumption_history_readback,
     relay_container_shard_placement_dispatch_consumption_matches,
     relay_container_shard_placement_execution_ticket,
     relay_container_shard_placement_execution_ticket_activation_context,
@@ -34,6 +35,8 @@ const PRE_ENABLE_GRANT_WRITE_ENABLED_ENV: &str =
     "RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_WRITE_ENABLED";
 const DISPATCH_CONSUMPTION_WRITE_ENABLED_ENV: &str =
     "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_WRITE_ENABLED";
+const DISPATCH_CONSUMPTION_HISTORY_READ_ENABLED_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED";
 const ISSUER_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_ISSUER";
 const AUDIENCE_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_AUDIENCE";
 const HMAC_KID_ENV: &str = "RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_CURRENT_KID";
@@ -82,6 +85,20 @@ const CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_ENV: &str =
     "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256";
 const CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV: &str =
     "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_SECRET";
+const CONSUMPTION_HISTORY_READ_HMAC_KID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_KID";
+const CONSUMPTION_HISTORY_READ_HMAC_CREDENTIAL_ID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256";
+const CONSUMPTION_HISTORY_READ_HMAC_SECRET_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_SECRET";
+const CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_KID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_KID";
+const CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_CREDENTIAL_ID_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256";
+const CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_SECRET_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_SECRET";
+const CONSUMPTION_HISTORY_RETENTION_SECONDS_ENV: &str =
+    "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_RETENTION_SECONDS";
 const APPLICATION_DATABASE_IDENTITY_ENV: &str =
     "RELAY_CONTAINER_SHARD_APPLICATION_DATABASE_IDENTITY_SHA256";
 const APPLICATION_HEADER: &str = "x-cinatoken-shard-placement-application";
@@ -112,6 +129,10 @@ const DISPATCH_CONSUMPTION_CONTRACT: &str =
     "cinatoken-relay-container-shard-placement-dispatch-consumption-v1";
 const DISPATCH_CONSUMPTION_RESULT_CONTRACT: &str =
     "cinatoken-relay-container-shard-placement-dispatch-consumption-result-v1";
+const DISPATCH_CONSUMPTION_HISTORY_READ_CONTRACT: &str =
+    "cinatoken-relay-container-shard-placement-dispatch-consumption-history-read-v1";
+const DISPATCH_CONSUMPTION_HISTORY_READ_RESULT_CONTRACT: &str =
+    "cinatoken-relay-container-shard-placement-dispatch-consumption-history-read-result-v1";
 const DISPATCH_CONSUMPTION_SNAPSHOT_CONTRACT: &str =
     "cinatoken-relay-container-shard-placement-dispatch-consumption-snapshot-v1";
 const TICKET_CONTRACT: &str = "cinatoken-relay-container-shard-placement-execution-ticket-v1";
@@ -119,6 +140,10 @@ const HMAC_WINDOW_SECONDS: i64 = 60;
 const HMAC_CLOCK_SKEW_SECONDS: i64 = 5;
 const TOKEN_MAX_BYTES: usize = 4096;
 const MAX_JSON_BODY_BYTES: usize = 64 * 1024;
+const DISPATCH_CONSUMPTION_HISTORY_READ_REQUEST_MAX_BYTES: usize = 4 * 1024;
+const DISPATCH_CONSUMPTION_HISTORY_READ_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+const DISPATCH_CONSUMPTION_HISTORY_RETENTION_MIN_SECONDS: i64 = 60 * 60;
+const DISPATCH_CONSUMPTION_HISTORY_RETENTION_MAX_SECONDS: i64 = 365 * 24 * 60 * 60;
 
 #[derive(Debug, Clone)]
 struct ReadConfig {
@@ -231,6 +256,20 @@ struct DispatchConsumptionCommand {
     retry_limit: i64,
     missing_readback_allows_resend: i64,
     dispatch_consumption_request_id_sha256: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DispatchConsumptionHistoryReadCommand {
+    schema_version: u32,
+    contract: String,
+    ticket_id_sha256: String,
+    authorization_id_sha256: String,
+    authority_claim_digest_sha256: String,
+    authority_dispatch_claim_digest_sha256: String,
+    application_database_identity_sha256: String,
+    command_dispatch_consumption_request_id_sha256: String,
+    recovery_request_id_sha256: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -656,6 +695,126 @@ pub async fn read_exact_ack(
             "applicationVersionId": application_version_id,
         }),
     )
+}
+
+pub async fn read_dispatch_consumption_history(
+    mut req: Request,
+    env: Env,
+    ticket_id_sha256: Option<String>,
+) -> WorkerResult<Response> {
+    if !runtime_flag(&env, DISPATCH_CONSUMPTION_HISTORY_READ_ENABLED_ENV) {
+        return protocol_error(404, "dispatch_consumption_history_read_disabled");
+    }
+    if request_has_forbidden_ambient_headers(&req) {
+        return protocol_error(400, "forbidden_request_header");
+    }
+    let path_and_query = match request_path_and_query(&req) {
+        Some(value) => value,
+        None => return protocol_error(400, "invalid_request_url"),
+    };
+    let ticket_id_sha256 = match ticket_id_sha256 {
+        Some(value) if valid_sha256(&value) => value,
+        _ => return protocol_error(400, "invalid_ticket_id"),
+    };
+    let expected_path = format!(
+        "/internal/v1/shard-placement/dispatch-consumptions/{ticket_id_sha256}/historical-readback"
+    );
+    if path_and_query != expected_path {
+        return protocol_error(400, "invalid_dispatch_consumption_history_read_path");
+    }
+    let body = match read_bounded_json_body_with_limit(
+        &mut req,
+        DISPATCH_CONSUMPTION_HISTORY_READ_REQUEST_MAX_BYTES,
+    )
+    .await
+    {
+        Ok(value) => value,
+        Err(code) => return protocol_error(code.0, code.1),
+    };
+    let command = match parse_dispatch_consumption_history_read_command(&body) {
+        Some(value) => value,
+        None => return protocol_error(400, "invalid_dispatch_consumption_history_read_command"),
+    };
+    if command.ticket_id_sha256 != ticket_id_sha256 {
+        return protocol_error(400, "dispatch_consumption_history_read_path_mismatch");
+    }
+    let configs = match read_consumption_history_read_configs(&env) {
+        Some(value) => value,
+        None => {
+            return protocol_error(
+                503,
+                "dispatch_consumption_history_read_configuration_invalid",
+            );
+        }
+    };
+    let retention_seconds = match runtime_dispatch_consumption_history_retention_seconds(&env) {
+        Some(value) => value,
+        None => {
+            return protocol_error(
+                503,
+                "dispatch_consumption_history_read_configuration_invalid",
+            );
+        }
+    };
+    let token = match req.headers().get(APPLICATION_HEADER).ok().flatten() {
+        Some(value) => value,
+        None => return protocol_error(403, "invalid_authority"),
+    };
+    let body_sha256 = sha256_hex(&body);
+    let now = (worker::Date::now().as_millis() / 1_000) as i64;
+    let config = match configs.iter().find(|config| {
+        verify_token_for_request(
+            &token,
+            config,
+            "dispatch_consumption_recovery_read",
+            "POST",
+            &path_and_query,
+            &body_sha256,
+            now,
+        )
+        .is_some()
+    }) {
+        Some(value) => value,
+        None => return protocol_error(403, "invalid_authority"),
+    };
+    if !dispatch_consumption_history_read_command_is_valid(
+        &command,
+        &config.application_database_identity_sha256,
+    ) {
+        return protocol_error(409, "dispatch_consumption_history_read_command_mismatch");
+    }
+    let db = match env.d1("DB") {
+        Ok(value) => value,
+        Err(_) => return protocol_error(503, "dispatch_consumption_ledger_unavailable"),
+    };
+    let readback = match relay_container_shard_placement_dispatch_consumption_history_readback(
+        &db,
+        &ticket_id_sha256,
+    )
+    .await
+    {
+        Ok(Some(value)) => value,
+        Ok(None) => return protocol_error(404, "dispatch_consumption_history_not_found"),
+        Err(err) => {
+            worker::console_error!("Placement dispatch consumption historical read failed: {err}");
+            return protocol_error(503, "dispatch_consumption_ledger_unavailable");
+        }
+    };
+    let row = &readback.consumption;
+    if !dispatch_consumption_row_is_historical(row, &config.application_database_identity_sha256) {
+        return protocol_error(409, "dispatch_consumption_snapshot_mismatch");
+    }
+    if !dispatch_consumption_history_read_command_matches_row(&command, row) {
+        return protocol_error(409, "dispatch_consumption_history_read_evidence_mismatch");
+    }
+    let retention_deadline_at = match row.consumed_at.checked_add(retention_seconds) {
+        Some(value) => value,
+        None => return protocol_error(409, "dispatch_consumption_history_retention_invalid"),
+    };
+    if row.consumed_at > readback.database_now || readback.database_now > retention_deadline_at {
+        return protocol_error(404, "dispatch_consumption_history_not_retained");
+    }
+    dispatch_consumption_history_read_response(row, readback.database_now, retention_deadline_at)
 }
 
 pub async fn create_pre_enable_grant(
@@ -1095,6 +1254,13 @@ async fn request_body_is_empty(req: &mut Request) -> bool {
 }
 
 async fn read_bounded_json_body(req: &mut Request) -> Result<Vec<u8>, (u16, &'static str)> {
+    read_bounded_json_body_with_limit(req, MAX_JSON_BODY_BYTES).await
+}
+
+async fn read_bounded_json_body_with_limit(
+    req: &mut Request,
+    max_bytes: usize,
+) -> Result<Vec<u8>, (u16, &'static str)> {
     let content_type = req
         .headers()
         .get("content-type")
@@ -1118,7 +1284,7 @@ async fn read_bounded_json_body(req: &mut Request) -> Result<Vec<u8>, (u16, &'st
         if length == 0 {
             return Err((400, "invalid_json"));
         }
-        if length > MAX_JSON_BODY_BYTES {
+        if length > max_bytes {
             return Err((413, "request_too_large"));
         }
     }
@@ -1130,7 +1296,7 @@ async fn read_bounded_json_body(req: &mut Request) -> Result<Vec<u8>, (u16, &'st
         let Ok(bytes) = chunk else {
             return Err((400, "invalid_json"));
         };
-        if body.len().saturating_add(bytes.len()) > MAX_JSON_BODY_BYTES {
+        if body.len().saturating_add(bytes.len()) > max_bytes {
             return Err((413, "request_too_large"));
         }
         body.extend_from_slice(&bytes);
@@ -1152,6 +1318,18 @@ fn parse_pre_enable_grant_command(body: &[u8]) -> Option<PreEnableGrantCommand> 
 }
 
 fn parse_dispatch_consumption_command(body: &[u8]) -> Option<DispatchConsumptionCommand> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let mut canonical = String::new();
+    write_canonical_json_value(&value, &mut canonical)?;
+    if canonical.as_bytes() != body {
+        return None;
+    }
+    serde_json::from_value(value).ok()
+}
+
+fn parse_dispatch_consumption_history_read_command(
+    body: &[u8],
+) -> Option<DispatchConsumptionHistoryReadCommand> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let mut canonical = String::new();
     write_canonical_json_value(&value, &mut canonical)?;
@@ -1481,6 +1659,116 @@ fn dispatch_consumption_record<'a>(
     }
 }
 
+fn dispatch_consumption_history_read_command_is_valid(
+    command: &DispatchConsumptionHistoryReadCommand,
+    application_database_identity_sha256: &str,
+) -> bool {
+    command.schema_version == 1
+        && command.contract == DISPATCH_CONSUMPTION_HISTORY_READ_CONTRACT
+        && [
+            &command.ticket_id_sha256,
+            &command.authorization_id_sha256,
+            &command.authority_claim_digest_sha256,
+            &command.authority_dispatch_claim_digest_sha256,
+            &command.application_database_identity_sha256,
+            &command.command_dispatch_consumption_request_id_sha256,
+            &command.recovery_request_id_sha256,
+        ]
+        .iter()
+        .all(|value| valid_sha256(value))
+        && command.application_database_identity_sha256 == application_database_identity_sha256
+}
+
+fn dispatch_consumption_history_read_command_matches_row(
+    command: &DispatchConsumptionHistoryReadCommand,
+    row: &RelayContainerShardPlacementDispatchConsumptionRow,
+) -> bool {
+    command.ticket_id_sha256 == row.ticket_id_sha256
+        && command.authorization_id_sha256 == row.authorization_id_sha256
+        && command.authority_claim_digest_sha256 == row.authority_claim_digest_sha256
+        && command.authority_dispatch_claim_digest_sha256
+            == row.authority_dispatch_claim_digest_sha256
+        && command.application_database_identity_sha256 == row.application_database_identity_sha256
+        && command.command_dispatch_consumption_request_id_sha256
+            == row.command_dispatch_consumption_request_id_sha256
+}
+
+fn dispatch_consumption_row_is_historical(
+    row: &RelayContainerShardPlacementDispatchConsumptionRow,
+    application_database_identity_sha256: &str,
+) -> bool {
+    if row.contract_version != 1
+        || row.consumption_contract != DISPATCH_CONSUMPTION_CONTRACT
+        || row.consumption_state != "consumed"
+        || !valid_sha256(&row.campaign_id)
+        || !valid_sha256(&row.application_dispatch_consumption_credential_id_sha256)
+        || !valid_sha256(&row.application_dispatch_consumption_request_id_sha256)
+        || !valid_sha256(&row.dispatch_consumption_digest_sha256)
+        || row.application_dispatch_consumption_credential_id_sha256
+            == row.application_dispatch_consumption_request_id_sha256
+        || row.dispatch_consumption_digest_sha256 == row.authority_dispatch_claim_digest_sha256
+        || row.consumed_at <= 0
+        || row.authority_dispatch_claimed_at > row.consumed_at
+        || row.consumed_at >= row.lease_expires_at
+        || row.consumed_at >= row.normal_deadline_at
+        || row.consumed_at >= row.permit_expires_at
+    {
+        return false;
+    }
+    let command = DispatchConsumptionCommand {
+        schema_version: 1,
+        contract: DISPATCH_CONSUMPTION_CONTRACT.to_string(),
+        ticket_id_sha256: row.ticket_id_sha256.clone(),
+        authorization_id_sha256: row.authorization_id_sha256.clone(),
+        application_database_identity_sha256: row.application_database_identity_sha256.clone(),
+        application_version_id: row.application_version_id.clone(),
+        application_grant_digest_sha256: row.application_grant_digest_sha256.clone(),
+        authority_claim_digest_sha256: row.authority_claim_digest_sha256.clone(),
+        authority_dispatch_outbox_digest_sha256: row
+            .authority_dispatch_outbox_digest_sha256
+            .clone(),
+        application_grant_receipt_digest_sha256: row
+            .application_grant_receipt_digest_sha256
+            .clone(),
+        operation_five_start_receipt_sha256: row.operation_five_start_receipt_sha256.clone(),
+        authority_dispatch_claim_digest_sha256: row.authority_dispatch_claim_digest_sha256.clone(),
+        authority_database_identity_sha256: row.authority_database_identity_sha256.clone(),
+        authority_ledger_identity_sha256: row.authority_ledger_identity_sha256.clone(),
+        authority_ledger_head_sha256: row.authority_ledger_head_sha256.clone(),
+        authority_version_id: row.authority_version_id.clone(),
+        dispatch_owner_sha256: row.dispatch_owner_sha256.clone(),
+        lease_token_sha256: row.lease_token_sha256.clone(),
+        lease_generation: row.lease_generation,
+        lease_expires_at: row.lease_expires_at,
+        normal_deadline_at: row.normal_deadline_at,
+        permit_expires_at: row.permit_expires_at,
+        dispatch_claim_credential_id_sha256: row.dispatch_claim_credential_id_sha256.clone(),
+        dispatch_claim_request_id_sha256: row.dispatch_claim_request_id_sha256.clone(),
+        command_dispatch_claim_request_id_sha256: row
+            .command_dispatch_claim_request_id_sha256
+            .clone(),
+        authority_dispatch_claimed_at: row.authority_dispatch_claimed_at,
+        controller_service_name: row.controller_service_name.clone(),
+        controller_enable_operation_id_sha256: row.controller_enable_operation_id_sha256.clone(),
+        controller_baseline_version_id: row.controller_baseline_version_id.clone(),
+        controller_enabled_version_id: row.controller_enabled_version_id.clone(),
+        send_attempt_limit: row.send_attempt_limit,
+        retry_limit: row.retry_limit,
+        missing_readback_allows_resend: row.missing_readback_allows_resend,
+        dispatch_consumption_request_id_sha256: row
+            .command_dispatch_consumption_request_id_sha256
+            .clone(),
+    };
+    dispatch_consumption_command_is_valid(&command, application_database_identity_sha256)
+        && row.dispatch_consumption_digest_sha256
+            == dispatch_consumption_digest(
+                &command,
+                &row.campaign_id,
+                &row.application_dispatch_consumption_credential_id_sha256,
+                &row.application_dispatch_consumption_request_id_sha256,
+            )
+}
+
 fn dispatch_consumption_response(
     status: u16,
     result: &'static str,
@@ -1491,76 +1779,82 @@ fn dispatch_consumption_response(
         &json!({
             "contract": DISPATCH_CONSUMPTION_RESULT_CONTRACT,
             "result": result,
-            "snapshot": ExactDispatchConsumptionSnapshot {
-                schema_version: 1,
-                contract: DISPATCH_CONSUMPTION_SNAPSHOT_CONTRACT,
-                ticket_id_sha256: &row.ticket_id_sha256,
-                contract_version: row.contract_version,
-                consumption_contract: &row.consumption_contract,
-                authorization_id_sha256: &row.authorization_id_sha256,
-                campaign_id: &row.campaign_id,
-                application_database_identity_sha256:
-                    &row.application_database_identity_sha256,
-                application_version_id: &row.application_version_id,
-                application_grant_digest_sha256:
-                    &row.application_grant_digest_sha256,
-                authority_claim_digest_sha256:
-                    &row.authority_claim_digest_sha256,
-                authority_dispatch_outbox_digest_sha256:
-                    &row.authority_dispatch_outbox_digest_sha256,
-                application_grant_receipt_digest_sha256:
-                    &row.application_grant_receipt_digest_sha256,
-                operation_five_start_receipt_sha256:
-                    &row.operation_five_start_receipt_sha256,
-                authority_dispatch_claim_digest_sha256:
-                    &row.authority_dispatch_claim_digest_sha256,
-                authority_database_identity_sha256:
-                    &row.authority_database_identity_sha256,
-                authority_ledger_identity_sha256:
-                    &row.authority_ledger_identity_sha256,
-                authority_ledger_head_sha256:
-                    &row.authority_ledger_head_sha256,
-                authority_version_id: &row.authority_version_id,
-                dispatch_owner_sha256: &row.dispatch_owner_sha256,
-                lease_token_sha256: &row.lease_token_sha256,
-                lease_generation: row.lease_generation,
-                lease_expires_at: row.lease_expires_at,
-                normal_deadline_at: row.normal_deadline_at,
-                permit_expires_at: row.permit_expires_at,
-                dispatch_claim_credential_id_sha256:
-                    &row.dispatch_claim_credential_id_sha256,
-                dispatch_claim_request_id_sha256:
-                    &row.dispatch_claim_request_id_sha256,
-                command_dispatch_claim_request_id_sha256:
-                    &row.command_dispatch_claim_request_id_sha256,
-                authority_dispatch_claimed_at:
-                    row.authority_dispatch_claimed_at,
-                controller_service_name: &row.controller_service_name,
-                controller_enable_operation_id_sha256:
-                    &row.controller_enable_operation_id_sha256,
-                controller_baseline_version_id:
-                    &row.controller_baseline_version_id,
-                controller_enabled_version_id:
-                    &row.controller_enabled_version_id,
-                send_attempt_limit: row.send_attempt_limit,
-                retry_limit: row.retry_limit,
-                missing_readback_allows_resend:
-                    row.missing_readback_allows_resend,
-                application_dispatch_consumption_credential_id_sha256:
-                    &row.application_dispatch_consumption_credential_id_sha256,
-                application_dispatch_consumption_request_id_sha256:
-                    &row.application_dispatch_consumption_request_id_sha256,
-                command_dispatch_consumption_request_id_sha256:
-                    &row.command_dispatch_consumption_request_id_sha256,
-                dispatch_consumption_digest_sha256:
-                    &row.dispatch_consumption_digest_sha256,
-                consumption_state: &row.consumption_state,
-                consumed_at: row.consumed_at,
-            },
+            "snapshot": dispatch_consumption_snapshot(row),
             "sendAttemptCreated": false,
             "controllerRequestSent": false,
         }),
     )
+}
+
+fn dispatch_consumption_history_read_response(
+    row: &RelayContainerShardPlacementDispatchConsumptionRow,
+    application_database_now: i64,
+    retention_deadline_at: i64,
+) -> WorkerResult<Response> {
+    bounded_protocol_json(
+        200,
+        &json!({
+            "contract": DISPATCH_CONSUMPTION_HISTORY_READ_RESULT_CONTRACT,
+            "result": "historical_dispatch_consumption_found",
+            "snapshot": dispatch_consumption_snapshot(row),
+            "applicationDatabaseNow": application_database_now,
+            "retentionDeadlineAt": retention_deadline_at,
+            "sendAttemptCreated": false,
+            "controllerRequestSent": false,
+        }),
+    )
+}
+
+fn dispatch_consumption_snapshot(
+    row: &RelayContainerShardPlacementDispatchConsumptionRow,
+) -> ExactDispatchConsumptionSnapshot<'_> {
+    ExactDispatchConsumptionSnapshot {
+        schema_version: 1,
+        contract: DISPATCH_CONSUMPTION_SNAPSHOT_CONTRACT,
+        ticket_id_sha256: &row.ticket_id_sha256,
+        contract_version: row.contract_version,
+        consumption_contract: &row.consumption_contract,
+        authorization_id_sha256: &row.authorization_id_sha256,
+        campaign_id: &row.campaign_id,
+        application_database_identity_sha256: &row.application_database_identity_sha256,
+        application_version_id: &row.application_version_id,
+        application_grant_digest_sha256: &row.application_grant_digest_sha256,
+        authority_claim_digest_sha256: &row.authority_claim_digest_sha256,
+        authority_dispatch_outbox_digest_sha256: &row.authority_dispatch_outbox_digest_sha256,
+        application_grant_receipt_digest_sha256: &row.application_grant_receipt_digest_sha256,
+        operation_five_start_receipt_sha256: &row.operation_five_start_receipt_sha256,
+        authority_dispatch_claim_digest_sha256: &row.authority_dispatch_claim_digest_sha256,
+        authority_database_identity_sha256: &row.authority_database_identity_sha256,
+        authority_ledger_identity_sha256: &row.authority_ledger_identity_sha256,
+        authority_ledger_head_sha256: &row.authority_ledger_head_sha256,
+        authority_version_id: &row.authority_version_id,
+        dispatch_owner_sha256: &row.dispatch_owner_sha256,
+        lease_token_sha256: &row.lease_token_sha256,
+        lease_generation: row.lease_generation,
+        lease_expires_at: row.lease_expires_at,
+        normal_deadline_at: row.normal_deadline_at,
+        permit_expires_at: row.permit_expires_at,
+        dispatch_claim_credential_id_sha256: &row.dispatch_claim_credential_id_sha256,
+        dispatch_claim_request_id_sha256: &row.dispatch_claim_request_id_sha256,
+        command_dispatch_claim_request_id_sha256: &row.command_dispatch_claim_request_id_sha256,
+        authority_dispatch_claimed_at: row.authority_dispatch_claimed_at,
+        controller_service_name: &row.controller_service_name,
+        controller_enable_operation_id_sha256: &row.controller_enable_operation_id_sha256,
+        controller_baseline_version_id: &row.controller_baseline_version_id,
+        controller_enabled_version_id: &row.controller_enabled_version_id,
+        send_attempt_limit: row.send_attempt_limit,
+        retry_limit: row.retry_limit,
+        missing_readback_allows_resend: row.missing_readback_allows_resend,
+        application_dispatch_consumption_credential_id_sha256: &row
+            .application_dispatch_consumption_credential_id_sha256,
+        application_dispatch_consumption_request_id_sha256: &row
+            .application_dispatch_consumption_request_id_sha256,
+        command_dispatch_consumption_request_id_sha256: &row
+            .command_dispatch_consumption_request_id_sha256,
+        dispatch_consumption_digest_sha256: &row.dispatch_consumption_digest_sha256,
+        consumption_state: &row.consumption_state,
+        consumed_at: row.consumed_at,
+    }
 }
 
 fn pre_enable_grant_row_is_exact(
@@ -1727,9 +2021,22 @@ fn read_activation_configs(env: &Env) -> Option<Vec<ReadConfig>> {
             CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV,
         ),
     )?;
+    let history_read = read_optional_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
     if !optional_config_inventories_are_disjoint(
         &configs,
-        &[&acknowledgement, &grant, &consumption],
+        &[&acknowledgement, &grant, &consumption, &history_read],
     ) {
         return None;
     }
@@ -1785,7 +2092,23 @@ fn read_ack_configs(env: &Env) -> Option<Vec<ReadConfig>> {
             CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV,
         ),
     )?;
-    if !optional_config_inventories_are_disjoint(&configs, &[&activation, &grant, &consumption]) {
+    let history_read = read_optional_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    if !optional_config_inventories_are_disjoint(
+        &configs,
+        &[&activation, &grant, &consumption, &history_read],
+    ) {
         return None;
     }
     Some(configs)
@@ -1840,9 +2163,22 @@ fn read_grant_configs(env: &Env) -> Option<Vec<ReadConfig>> {
             CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV,
         ),
     )?;
+    let history_read = read_optional_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
     if !optional_config_inventories_are_disjoint(
         &configs,
-        &[&activation, &acknowledgement, &consumption],
+        &[&activation, &acknowledgement, &consumption, &history_read],
     ) {
         return None;
     }
@@ -1898,8 +2234,94 @@ fn read_consumption_configs(env: &Env) -> Option<Vec<ReadConfig>> {
             GRANT_HMAC_PREVIOUS_SECRET_ENV,
         ),
     )?;
-    if !optional_config_inventories_are_disjoint(&configs, &[&activation, &acknowledgement, &grant])
-    {
+    let history_read = read_optional_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    if !optional_config_inventories_are_disjoint(
+        &configs,
+        &[&activation, &acknowledgement, &grant, &history_read],
+    ) {
+        return None;
+    }
+    Some(configs)
+}
+
+fn read_consumption_history_read_configs(env: &Env) -> Option<Vec<ReadConfig>> {
+    let configs = read_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HISTORY_READ_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    let activation = read_optional_rotating_configs(
+        env,
+        (HMAC_KID_ENV, HMAC_CREDENTIAL_ID_ENV, HMAC_SECRET_ENV),
+        (
+            HMAC_PREVIOUS_KID_ENV,
+            HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    let acknowledgement = read_optional_rotating_configs(
+        env,
+        (
+            ACK_HMAC_KID_ENV,
+            ACK_HMAC_CREDENTIAL_ID_ENV,
+            ACK_HMAC_SECRET_ENV,
+        ),
+        (
+            ACK_HMAC_PREVIOUS_KID_ENV,
+            ACK_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            ACK_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    let grant = read_optional_rotating_configs(
+        env,
+        (
+            GRANT_HMAC_KID_ENV,
+            GRANT_HMAC_CREDENTIAL_ID_ENV,
+            GRANT_HMAC_SECRET_ENV,
+        ),
+        (
+            GRANT_HMAC_PREVIOUS_KID_ENV,
+            GRANT_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            GRANT_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    let consumption = read_optional_rotating_configs(
+        env,
+        (
+            CONSUMPTION_HMAC_KID_ENV,
+            CONSUMPTION_HMAC_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_SECRET_ENV,
+        ),
+        (
+            CONSUMPTION_HMAC_PREVIOUS_KID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_CREDENTIAL_ID_ENV,
+            CONSUMPTION_HMAC_PREVIOUS_SECRET_ENV,
+        ),
+    )?;
+    if !optional_config_inventories_are_disjoint(
+        &configs,
+        &[&activation, &acknowledgement, &grant, &consumption],
+    ) {
         return None;
     }
     Some(configs)
@@ -2303,6 +2725,28 @@ fn runtime_value(env: &Env, name: &str) -> Option<String> {
         .filter(|value| !value.is_empty() && value == value.trim())
 }
 
+fn runtime_dispatch_consumption_history_retention_seconds(env: &Env) -> Option<i64> {
+    parse_dispatch_consumption_history_retention_seconds(&runtime_value(
+        env,
+        CONSUMPTION_HISTORY_RETENTION_SECONDS_ENV,
+    )?)
+}
+
+fn parse_dispatch_consumption_history_retention_seconds(value: &str) -> Option<i64> {
+    if value.is_empty()
+        || value.starts_with('0')
+        || value.len() > 9
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    value.parse::<i64>().ok().filter(|seconds| {
+        (DISPATCH_CONSUMPTION_HISTORY_RETENTION_MIN_SECONDS
+            ..=DISPATCH_CONSUMPTION_HISTORY_RETENTION_MAX_SECONDS)
+            .contains(seconds)
+    })
+}
+
 fn valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -2340,6 +2784,35 @@ fn valid_path_and_query(value: &str) -> bool {
 
 fn protocol_error(status: u16, code: &'static str) -> WorkerResult<Response> {
     protocol_json(status, &json!({"error": {"code": code}}))
+}
+
+fn bounded_protocol_json<T: Serialize>(status: u16, value: &T) -> WorkerResult<Response> {
+    let value = serde_json::to_value(value).map_err(|_| {
+        worker::Error::RustError(
+            "dispatch consumption history response serialization failed".to_string(),
+        )
+    })?;
+    let mut canonical = String::new();
+    write_canonical_json_value(&value, &mut canonical).ok_or_else(|| {
+        worker::Error::RustError(
+            "dispatch consumption history response canonicalization failed".to_string(),
+        )
+    })?;
+    let bytes = canonical.into_bytes();
+    if bytes.len() > DISPATCH_CONSUMPTION_HISTORY_READ_RESPONSE_MAX_BYTES {
+        return protocol_error(500, "dispatch_consumption_history_response_too_large");
+    }
+    let mut response = Response::from_bytes(bytes)?.with_status(status);
+    response
+        .headers_mut()
+        .set("Content-Type", "application/json; charset=utf-8")?;
+    response.headers_mut().set("Cache-Control", "no-store")?;
+    response
+        .headers_mut()
+        .set("X-Content-Type-Options", "nosniff")?;
+    response.headers_mut().delete("Content-Encoding")?;
+    response.headers_mut().delete("Location")?;
+    Ok(response)
 }
 
 fn protocol_json<T: Serialize>(status: u16, value: &T) -> WorkerResult<Response> {
@@ -2456,6 +2929,36 @@ mod tests {
         )
     }
 
+    fn sign_consumption_history_read(path_and_query: &str, body_sha256: &str, now: i64) -> String {
+        let header_part = URL_SAFE_NO_PAD.encode(
+            br#"{"typ":"CINATOKEN-SHARD-PLACEMENT-APPLICATION","alg":"HS256","kid":"activation-read-current-v1"}"#,
+        );
+        let claims_part = URL_SAFE_NO_PAD.encode(
+            serde_json::to_vec(&json!({
+                "issuer": "cinatoken-shard-placement-authority-runtime-test",
+                "audience": "cinatoken-rust-api-runtime-test",
+                "role": "dispatch_consumption_recovery_read",
+                "credential_id_sha256": "a".repeat(64),
+                "request_id": "operation-5-dispatch-consumption-history-read-1",
+                "method": "POST",
+                "path_and_query": path_and_query,
+                "body_sha256": body_sha256,
+                "issued_at": now - 1,
+                "expires_at": now + 30,
+            }))
+            .unwrap(),
+        );
+        let mut mac = Hmac::<Sha256>::new_from_slice(config().secret.as_bytes()).unwrap();
+        mac.update(HMAC_DOMAIN);
+        mac.update(header_part.as_bytes());
+        mac.update(b".");
+        mac.update(claims_part.as_bytes());
+        format!(
+            "{header_part}.{claims_part}.{}",
+            URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+        )
+    }
+
     fn dispatch_consumption_command() -> DispatchConsumptionCommand {
         DispatchConsumptionCommand {
             schema_version: 1,
@@ -2493,6 +2996,73 @@ mod tests {
             retry_limit: 0,
             missing_readback_allows_resend: 0,
             dispatch_consumption_request_id_sha256: "11".repeat(32),
+        }
+    }
+
+    fn dispatch_consumption_history_read_command() -> DispatchConsumptionHistoryReadCommand {
+        let command = dispatch_consumption_command();
+        DispatchConsumptionHistoryReadCommand {
+            schema_version: 1,
+            contract: DISPATCH_CONSUMPTION_HISTORY_READ_CONTRACT.to_string(),
+            ticket_id_sha256: command.ticket_id_sha256,
+            authorization_id_sha256: command.authorization_id_sha256,
+            authority_claim_digest_sha256: command.authority_claim_digest_sha256,
+            authority_dispatch_claim_digest_sha256: command.authority_dispatch_claim_digest_sha256,
+            application_database_identity_sha256: command.application_database_identity_sha256,
+            command_dispatch_consumption_request_id_sha256: command
+                .dispatch_consumption_request_id_sha256,
+            recovery_request_id_sha256: "15".repeat(32),
+        }
+    }
+
+    fn dispatch_consumption_row() -> RelayContainerShardPlacementDispatchConsumptionRow {
+        let command = dispatch_consumption_command();
+        RelayContainerShardPlacementDispatchConsumptionRow {
+            ticket_id_sha256: command.ticket_id_sha256,
+            contract_version: 1,
+            consumption_contract: DISPATCH_CONSUMPTION_CONTRACT.to_string(),
+            authorization_id_sha256: command.authorization_id_sha256,
+            campaign_id: "14".repeat(32),
+            application_database_identity_sha256: command.application_database_identity_sha256,
+            application_version_id: command.application_version_id,
+            application_grant_digest_sha256: command.application_grant_digest_sha256,
+            authority_claim_digest_sha256: command.authority_claim_digest_sha256,
+            authority_dispatch_outbox_digest_sha256: command
+                .authority_dispatch_outbox_digest_sha256,
+            application_grant_receipt_digest_sha256: command
+                .application_grant_receipt_digest_sha256,
+            operation_five_start_receipt_sha256: command.operation_five_start_receipt_sha256,
+            authority_dispatch_claim_digest_sha256: command.authority_dispatch_claim_digest_sha256,
+            authority_database_identity_sha256: command.authority_database_identity_sha256,
+            authority_ledger_identity_sha256: command.authority_ledger_identity_sha256,
+            authority_ledger_head_sha256: command.authority_ledger_head_sha256,
+            authority_version_id: command.authority_version_id,
+            dispatch_owner_sha256: command.dispatch_owner_sha256,
+            lease_token_sha256: command.lease_token_sha256,
+            lease_generation: command.lease_generation,
+            lease_expires_at: command.lease_expires_at,
+            normal_deadline_at: command.normal_deadline_at,
+            permit_expires_at: command.permit_expires_at,
+            dispatch_claim_credential_id_sha256: command.dispatch_claim_credential_id_sha256,
+            dispatch_claim_request_id_sha256: command.dispatch_claim_request_id_sha256,
+            command_dispatch_claim_request_id_sha256: command
+                .command_dispatch_claim_request_id_sha256,
+            authority_dispatch_claimed_at: command.authority_dispatch_claimed_at,
+            controller_service_name: command.controller_service_name,
+            controller_enable_operation_id_sha256: command.controller_enable_operation_id_sha256,
+            controller_baseline_version_id: command.controller_baseline_version_id,
+            controller_enabled_version_id: command.controller_enabled_version_id,
+            send_attempt_limit: command.send_attempt_limit,
+            retry_limit: command.retry_limit,
+            missing_readback_allows_resend: command.missing_readback_allows_resend,
+            application_dispatch_consumption_credential_id_sha256: "12".repeat(32),
+            application_dispatch_consumption_request_id_sha256: "13".repeat(32),
+            command_dispatch_consumption_request_id_sha256: command
+                .dispatch_consumption_request_id_sha256,
+            dispatch_consumption_digest_sha256:
+                "1b9f27aba0fe2d26ab23f04746ffcbe6f544e2893357d57e750c1f73a30aaabf".to_string(),
+            consumption_state: "consumed".to_string(),
+            consumed_at: 1_800_000_050,
         }
     }
 
@@ -2687,7 +3257,55 @@ mod tests {
     }
 
     #[test]
-    fn four_role_credentials_are_pairwise_disjoint_by_kid_fingerprint_and_secret() {
+    fn dispatch_consumption_history_read_hmac_binds_post_role_body_and_exact_path() {
+        let now = 1_750_000_000;
+        let path = format!(
+            "/internal/v1/shard-placement/dispatch-consumptions/{}/historical-readback",
+            "1".repeat(64)
+        );
+        let body_sha256 = "2".repeat(64);
+        let token = sign_consumption_history_read(&path, &body_sha256, now);
+        assert_eq!(
+            verify_token_for_request(
+                &token,
+                &config(),
+                "dispatch_consumption_recovery_read",
+                "POST",
+                &path,
+                &body_sha256,
+                now,
+            )
+            .as_deref(),
+            Some("operation-5-dispatch-consumption-history-read-1")
+        );
+        for (role, method, body) in [
+            ("dispatch_consumption", "POST", body_sha256.as_str()),
+            (
+                "dispatch_consumption_recovery_read",
+                "GET",
+                body_sha256.as_str(),
+            ),
+            ("dispatch_consumption_recovery_read", "POST", "3"),
+        ] {
+            assert!(
+                verify_token_for_request(&token, &config(), role, method, &path, body, now,)
+                    .is_none()
+            );
+        }
+        assert!(verify_token_for_request(
+            &token,
+            &config(),
+            "dispatch_consumption_recovery_read",
+            "POST",
+            &(path + "?extra=1"),
+            &body_sha256,
+            now,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn five_role_credentials_are_pairwise_disjoint_by_kid_fingerprint_and_secret() {
         let activation = vec![config()];
         let mut acknowledgement = config();
         acknowledgement.kid = "ack-read-current-v1".to_string();
@@ -2704,19 +3322,24 @@ mod tests {
         consumption.credential_id_sha256 = "e".repeat(64);
         consumption.secret = "fedcba0987654321fedcba0987654321".to_string();
         let consumption = Some(vec![consumption]);
+        let mut history_read = config();
+        history_read.kid = "consumption-recovery-read-current-v1".to_string();
+        history_read.credential_id_sha256 = "f".repeat(64);
+        history_read.secret = "00112233445566778899aabbccddeeff".to_string();
+        let history_read = Some(vec![history_read]);
         assert!(optional_config_inventories_are_disjoint(
             &activation,
-            &[&acknowledgement, &grant, &consumption],
+            &[&acknowledgement, &grant, &consumption, &history_read],
         ));
 
         let mut reused_kid = consumption.clone();
         reused_kid.as_mut().unwrap()[0].kid = activation[0].kid.clone();
         assert!(!optional_config_inventories_are_disjoint(
             &activation,
-            &[&acknowledgement, &grant, &reused_kid],
+            &[&acknowledgement, &grant, &reused_kid, &history_read],
         ));
 
-        let mut reused_fingerprint = consumption.clone();
+        let mut reused_fingerprint = history_read.clone();
         reused_fingerprint.as_mut().unwrap()[0].credential_id_sha256 =
             acknowledgement.as_ref().unwrap()[0]
                 .credential_id_sha256
@@ -2726,11 +3349,11 @@ mod tests {
             &[&acknowledgement, &grant, &reused_fingerprint],
         ));
 
-        let mut reused_secret = consumption.clone();
+        let mut reused_secret = history_read.clone();
         reused_secret.as_mut().unwrap()[0].secret = grant.as_ref().unwrap()[0].secret.clone();
         assert!(!optional_config_inventories_are_disjoint(
             &activation,
-            &[&acknowledgement, &grant, &reused_secret],
+            &[&acknowledgement, &grant, &consumption, &reused_secret],
         ));
     }
 
@@ -2743,6 +3366,9 @@ mod tests {
         assert!(
             source.contains("RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_WRITE_ENABLED")
         );
+        assert!(source.contains(
+            "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED"
+        ));
         assert!(
             source.contains("RELAY_CONTAINER_SHARD_PLACEMENT_ACTIVATION_READ_HMAC_PREVIOUS_SECRET")
         );
@@ -2752,9 +3378,18 @@ mod tests {
             .contains("RELAY_CONTAINER_SHARD_PLACEMENT_PRE_ENABLE_GRANT_HMAC_PREVIOUS_SECRET"));
         assert!(source
             .contains("RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_HMAC_PREVIOUS_SECRET"));
+        assert!(source.contains(
+            "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_SECRET"
+        ));
+        assert!(source.contains(
+            "RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_RECOVERY_RETENTION_SECONDS"
+        ));
         assert!(source.contains("env.secret(secret_env)"));
         assert!(source.contains("Cache-Control\", \"no-store"));
         assert!(source.contains("X-Content-Type-Options"));
+        assert!(source.contains("DISPATCH_CONSUMPTION_HISTORY_READ_RESPONSE_MAX_BYTES"));
+        assert!(source.contains("delete(\"Content-Encoding\")"));
+        assert!(source.contains("delete(\"Location\")"));
         assert!(source
             .contains("relay_container_shard_placement_execution_ticket_activation_read_snapshot"));
         assert!(source.contains(
@@ -2762,6 +3397,7 @@ mod tests {
         ));
         assert!(source.contains("create_relay_container_shard_placement_pre_enable_grant"));
         assert!(source.contains("create_relay_container_shard_placement_dispatch_consumption"));
+        assert!(source.contains("read_consumption_history_read_configs"));
     }
 
     #[test]
@@ -2826,6 +3462,73 @@ mod tests {
     }
 
     #[test]
+    fn historical_dispatch_consumption_validates_static_evidence_without_live_time() {
+        let row = dispatch_consumption_row();
+        assert!(dispatch_consumption_row_is_historical(
+            &row,
+            &"03".repeat(32),
+        ));
+        assert!(!dispatch_consumption_row_is_historical(
+            &row,
+            &"ff".repeat(32),
+        ));
+
+        let mut invalid_digest = row.clone();
+        invalid_digest.dispatch_consumption_digest_sha256 = "ff".repeat(32);
+        assert!(!dispatch_consumption_row_is_historical(
+            &invalid_digest,
+            &"03".repeat(32),
+        ));
+
+        let mut impossible_history = row;
+        impossible_history.lease_expires_at = impossible_history.consumed_at;
+        assert!(!dispatch_consumption_row_is_historical(
+            &impossible_history,
+            &"03".repeat(32),
+        ));
+    }
+
+    #[test]
+    fn historical_dispatch_consumption_response_is_bounded_and_send_inert() {
+        let row = dispatch_consumption_row();
+        let application_database_now = row.consumed_at + 1;
+        let retention_deadline_at = row.consumed_at + 3_600;
+        let value = json!({
+            "contract": DISPATCH_CONSUMPTION_HISTORY_READ_RESULT_CONTRACT,
+            "result": "historical_dispatch_consumption_found",
+            "snapshot": dispatch_consumption_snapshot(&row),
+            "applicationDatabaseNow": application_database_now,
+            "retentionDeadlineAt": retention_deadline_at,
+            "sendAttemptCreated": false,
+            "controllerRequestSent": false,
+        });
+        let mut canonical = String::new();
+        write_canonical_json_value(&value, &mut canonical).unwrap();
+        assert!(canonical.len() < DISPATCH_CONSUMPTION_HISTORY_READ_RESPONSE_MAX_BYTES);
+        assert_eq!(
+            value
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![
+                "applicationDatabaseNow",
+                "contract",
+                "controllerRequestSent",
+                "result",
+                "retentionDeadlineAt",
+                "sendAttemptCreated",
+                "snapshot",
+            ]
+        );
+        assert_eq!(value["sendAttemptCreated"], false);
+        assert_eq!(value["controllerRequestSent"], false);
+        assert_eq!(value["applicationDatabaseNow"], application_database_now);
+        assert_eq!(value["retentionDeadlineAt"], retention_deadline_at);
+    }
+
+    #[test]
     fn dispatch_consumption_command_requires_flat_canonical_json() {
         let command = dispatch_consumption_command();
         let value = serde_json::to_value(&command).unwrap();
@@ -2841,6 +3544,52 @@ mod tests {
         let mut canonical_with_extra = String::new();
         write_canonical_json_value(&with_extra, &mut canonical_with_extra).unwrap();
         assert!(parse_dispatch_consumption_command(canonical_with_extra.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn dispatch_consumption_history_command_is_canonical_and_exactly_bound_to_row() {
+        let command = dispatch_consumption_history_read_command();
+        let row = dispatch_consumption_row();
+        let value = serde_json::to_value(&command).unwrap();
+        let mut canonical = String::new();
+        write_canonical_json_value(&value, &mut canonical).unwrap();
+        assert!(parse_dispatch_consumption_history_read_command(canonical.as_bytes()).is_some());
+        assert!(parse_dispatch_consumption_history_read_command(
+            format!("{canonical}\n").as_bytes()
+        )
+        .is_none());
+        assert!(dispatch_consumption_history_read_command_is_valid(
+            &command,
+            &"03".repeat(32),
+        ));
+        assert!(dispatch_consumption_history_read_command_matches_row(
+            &command, &row,
+        ));
+
+        let mut mismatched = command;
+        mismatched.recovery_request_id_sha256 = "not-a-digest".to_string();
+        assert!(!dispatch_consumption_history_read_command_is_valid(
+            &mismatched,
+            &"03".repeat(32),
+        ));
+    }
+
+    #[test]
+    fn dispatch_consumption_history_retention_is_strictly_bounded() {
+        assert_eq!(
+            parse_dispatch_consumption_history_retention_seconds("3600"),
+            Some(3_600)
+        );
+        assert_eq!(
+            parse_dispatch_consumption_history_retention_seconds("31536000"),
+            Some(31_536_000)
+        );
+        for invalid in ["", "0", "03599", "3599", "31536001", "-3600", "3600 "] {
+            assert_eq!(
+                parse_dispatch_consumption_history_retention_seconds(invalid),
+                None
+            );
+        }
     }
 
     #[test]
@@ -2865,12 +3614,48 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_consumption_route_is_registered_in_router_and_contract_inventory() {
+    fn historical_dispatch_consumption_read_is_independent_of_live_write_authority() {
+        let source = include_str!("container_shard_placement_activation_read.rs");
+        let handler = source
+            .split("pub async fn read_dispatch_consumption_history")
+            .nth(1)
+            .unwrap()
+            .split("pub async fn create_pre_enable_grant")
+            .next()
+            .unwrap();
+        assert!(handler.contains("DISPATCH_CONSUMPTION_HISTORY_READ_ENABLED_ENV"));
+        assert!(handler.contains("\"dispatch_consumption_recovery_read\""));
+        assert!(handler.contains("read_consumption_history_read_configs"));
+        assert!(handler
+            .contains("relay_container_shard_placement_dispatch_consumption_history_readback"));
+        assert!(handler.contains("dispatch_consumption_row_is_historical"));
+        assert!(handler.contains("dispatch_consumption_history_read_response"));
+        assert!(handler.contains("readback.database_now > retention_deadline_at"));
+        assert!(!handler.contains("DISPATCH_CONSUMPTION_WRITE_ENABLED_ENV"));
+        assert!(!handler.contains("create_relay_container_shard_placement_dispatch_consumption"));
+        assert!(!handler.contains("relay_container_shard_placement_execution_ticket"));
+        assert!(!handler.contains("relay_container_shard_placement_pre_enable_grant"));
+        assert!(!handler.contains("CF_VERSION_METADATA"));
+        assert!(!handler.contains("lease_expires_at"));
+        assert!(!handler.contains("normal_deadline_at"));
+        assert!(!handler.contains("permit_expires_at"));
+        assert!(!handler.contains(".fetch("));
+    }
+
+    #[test]
+    fn dispatch_consumption_routes_are_registered_in_router_and_contract_inventory() {
         let source = include_str!("lib.rs");
-        let path = "/internal/v1/shard-placement/dispatch-consumptions/:ticket_id";
-        assert_eq!(source.matches(path).count(), 2);
+        let history_path =
+            "/internal/v1/shard-placement/dispatch-consumptions/:ticket_id/historical-readback";
+        assert_eq!(source.matches(history_path).count(), 2);
+        assert!(source.contains(
+            "container_shard_placement_activation_read::read_dispatch_consumption_history"
+        ));
         assert!(source
             .contains("container_shard_placement_activation_read::create_dispatch_consumption"));
+        assert!(!source.contains(
+            ".get_async(\n            \"/internal/v1/shard-placement/dispatch-consumptions/:ticket_id\""
+        ));
     }
 
     #[test]

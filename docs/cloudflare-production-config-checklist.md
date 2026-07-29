@@ -2083,3 +2083,67 @@ Controller, or authorize Cloudflare control-plane traffic.
 All related tracked gates remain false and production configuration remains
 absent. This checkpoint did not read a secret or query or mutate remote state.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Historical Recovery And Send Attempt Checklist
+
+### Historical Application readback
+
+- [x] Use a POST-only private route with canonical path/body binding.
+- [x] Use an independent `dispatch_consumption_recovery_read` HMAC role.
+- [x] Keep current and previous credentials separate from live consume/send
+  credentials.
+- [x] Enforce 4 KiB request, 64 KiB response, canonical JSON, `no-store`, no
+  redirects, and no content encoding.
+- [x] Read the immutable consumption and Application D1 time together.
+- [x] Enforce exactly 2,592,000 seconds retention from `consumed_at`.
+- [x] Avoid dependency on live write gates, lease/fence validity, deadlines,
+  or current ownership.
+- [ ] Provision production identity and credentials after staging evidence;
+  production configuration is intentionally absent.
+
+### Authority historical receipt
+
+- [x] Authenticate the inbound recovery role independently from send.
+- [x] Call Application only through the private Service Binding.
+- [x] Check Application D1, Authority D1, and Worker clock/retention bounds.
+- [x] Insert immutable recovery evidence and exact receipt in one D1 batch.
+- [x] Return an already exact receipt before making the Application call.
+- [x] Forbid recovered receipts from creating a send attempt in code and SQL.
+- [x] Report `sendAttemptCreated=false` and
+  `controllerRequestSent=false`.
+- [ ] Collect remote D1 trigger-SQL digest and full seeded rollback evidence.
+
+### Send attempt
+
+- [x] Require the independent `send` role and dedicated default-off write gate.
+- [x] Persist one immutable attempt and sequence-1 `send_started` event in one
+  first-primary D1 batch.
+- [x] Treat `send_started` as persisted authority while network I/O may not
+  have occurred.
+- [x] Keep persisted Controller and gateway sent flags at zero.
+- [x] Return `sendAttemptCreated=true` only for the first definite creation.
+- [x] Treat exact replay as no new send authority.
+- [x] Fail closed on missing, partial, mismatched, revoked, expired, recovered,
+  or identity-drifted source state.
+- [x] Perform no Controller, gateway, Cloudflare API, or other external
+  mutation.
+
+### Next P0 deployment gateway
+
+- [ ] Create an independent private `controller-deployment-gateway`.
+- [ ] Give only the gateway the minimum Cloudflare deployment credential.
+- [ ] Accept one frozen create-once command only from a newly created attempt.
+- [ ] Persist gateway idempotency and operation state before Cloudflare I/O.
+- [ ] Expose status-only readback for timeout, disconnect, response loss,
+  restart, and rollout recovery.
+- [ ] Prove every ambiguous outcome performs zero mutation resend.
+- [ ] Append gateway outcomes to the Authority event stream without rewriting
+  the initial attempt.
+- [ ] Keep all local/staging mutation gates false until the complete staging
+  evidence bundle is approved.
+
+Application inventory remains 66 migrations / 77 tables / 1096 checked
+incremental columns / 111 key indexes. Authority inventory is `0001-0005`.
+Production placement configuration remains absent, no secret or remote state
+was accessed, Go/VPS remains authoritative, and production remains
+**NO-GO**.

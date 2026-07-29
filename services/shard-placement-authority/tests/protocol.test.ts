@@ -310,6 +310,31 @@ describe("shard placement Authority protocol", () => {
       shardPlacementAuthorityEnv(),
     )).not.toThrow();
 
+    const historyReadEnvironment = shardPlacementAuthorityEnv({
+      SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_READ_ENABLED:
+        "true",
+      SHARD_PLACEMENT_APPLICATION: {
+        fetch: async () => new Response(),
+      } as unknown as Fetcher,
+      SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_KID:
+        "history-read-current-v1",
+      SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+        "0123456789abcdef".repeat(4),
+      SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_SECRET:
+        "history-read-current-secret-00000000000000000000000",
+      SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_KID:
+        "history-read-previous-v1",
+      SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_CREDENTIAL_ID_SHA256:
+        "fedcba9876543210".repeat(4),
+      SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_PREVIOUS_SECRET:
+        "history-read-previous-secret-0000000000000000000000",
+      SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_RETENTION_SECONDS:
+        "2592000",
+    });
+    expect(() =>
+      validateRuntimeTrustConfiguration(historyReadEnvironment)
+    ).not.toThrow();
+
     for (const environment of [
       shardPlacementAuthorityEnv({
         SHARD_PLACEMENT_REVOKE_HMAC_CURRENT_SECRET:
@@ -345,6 +370,12 @@ describe("shard placement Authority protocol", () => {
         SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_HMAC_CURRENT_SECRET:
           SHARD_PLACEMENT_AUTHORITY_HMAC.send.secret,
       }),
+      {
+        ...historyReadEnvironment,
+        SHARD_PLACEMENT_APPLICATION_DISPATCH_CONSUMPTION_RECOVERY_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256:
+          SHARD_PLACEMENT_AUTHORITY_HMAC.recovery
+            .credentialIdSha256,
+      },
     ]) {
       expect(() => validateRuntimeTrustConfiguration(
         environment,

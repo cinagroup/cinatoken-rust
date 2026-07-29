@@ -19,6 +19,11 @@ import {
 } from "./fixtures/do-runtime-worker.mjs";
 
 const authoritySecret = "0123456789abcdef0123456789abcdef";
+const dispatchConsumptionHistorySecret =
+  "history-read-runtime-secret-0123456789abcdef";
+const dispatchConsumptionHistoryKid =
+  "dispatch-consumption-recovery-read-runtime-v1";
+const dispatchConsumptionHistoryCredentialId = "4a".repeat(32);
 const workerName = "tenant-runtime-test";
 const taskRunnerRecordKey = "task_runner_record_v1";
 const quotaCoordinatorStateKey = "quota_coordinator_state_v1";
@@ -4925,6 +4930,114 @@ describe("Rust Durable Object lifecycle contracts", () => {
     });
   });
 
+  it("reads retained dispatch consumption history without mutating send authority", async () => {
+    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    const evidence = await seedDispatchConsumptionHistoryEvidence();
+    const path =
+      `/internal/v1/shard-placement/dispatch-consumptions/${evidence.ticketIdSha256}/historical-readback`;
+    const requestBody = new TextEncoder().encode(canonicalJson({
+      schemaVersion: 1,
+      contract:
+        "cinatoken-relay-container-shard-placement-dispatch-consumption-history-read-v1",
+      ticketIdSha256: evidence.ticketIdSha256,
+      authorizationIdSha256: evidence.authorizationIdSha256,
+      authorityClaimDigestSha256: evidence.authorityClaimDigestSha256,
+      authorityDispatchClaimDigestSha256:
+        evidence.authorityDispatchClaimDigestSha256,
+      applicationDatabaseIdentitySha256:
+        evidence.applicationDatabaseIdentitySha256,
+      commandDispatchConsumptionRequestIdSha256:
+        evidence.commandDispatchConsumptionRequestIdSha256,
+      recoveryRequestIdSha256: "4b".repeat(32),
+    }));
+    const token = await dispatchConsumptionHistoryToken(path, requestBody);
+    const before = await dispatchConsumptionHistoryStoredState(
+      evidence.ticketIdSha256,
+    );
+
+    const response = await SELF.fetch(
+      `https://cinatoken-application.internal${path}`,
+      {
+        method: "POST",
+        redirect: "manual",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "x-cinatoken-shard-placement-application": token,
+        },
+        body: requestBody,
+      },
+    );
+    const text = await response.text();
+    const payload = JSON.parse(text);
+
+    expect(response.status).toBe(200);
+    expect(response.redirected).toBe(false);
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("cache-control")).toContain("no-store");
+    expect(text).toBe(canonicalJson(payload));
+    expect(Object.keys(payload).sort()).toEqual([
+      "applicationDatabaseNow",
+      "contract",
+      "controllerRequestSent",
+      "result",
+      "retentionDeadlineAt",
+      "sendAttemptCreated",
+      "snapshot",
+    ]);
+    expect(payload).toMatchObject({
+      contract:
+        "cinatoken-relay-container-shard-placement-dispatch-consumption-history-read-result-v1",
+      result: "historical_dispatch_consumption_found",
+      sendAttemptCreated: false,
+      controllerRequestSent: false,
+    });
+    expect(payload.snapshot).toMatchObject({
+      ticketIdSha256: evidence.ticketIdSha256,
+      authorizationIdSha256: evidence.authorizationIdSha256,
+      authorityClaimDigestSha256: evidence.authorityClaimDigestSha256,
+      authorityDispatchClaimDigestSha256:
+        evidence.authorityDispatchClaimDigestSha256,
+      applicationDatabaseIdentitySha256:
+        evidence.applicationDatabaseIdentitySha256,
+      commandDispatchConsumptionRequestIdSha256:
+        evidence.commandDispatchConsumptionRequestIdSha256,
+      dispatchConsumptionDigestSha256:
+        evidence.dispatchConsumptionDigestSha256,
+      consumptionState: "consumed",
+    });
+    expect(payload.applicationDatabaseNow).toBeGreaterThanOrEqual(
+      payload.snapshot.consumedAt,
+    );
+    expect(payload.retentionDeadlineAt).toBe(
+      payload.snapshot.consumedAt + 2_592_000,
+    );
+    expect(payload.applicationDatabaseNow).toBeLessThanOrEqual(
+      payload.retentionDeadlineAt,
+    );
+    expect(
+      await dispatchConsumptionHistoryStoredState(evidence.ticketIdSha256),
+    ).toEqual(before);
+    await expect(
+      env.DB.prepare(
+        `UPDATE relay_container_shard_placement_dispatch_consumptions
+         SET consumption_state = 'changed'
+         WHERE ticket_id_sha256 = ?1`,
+      )
+        .bind(evidence.ticketIdSha256)
+        .run(),
+    ).rejects.toThrow(/immutable/u);
+
+    const retiredGet = await SELF.fetch(
+      `https://cinatoken-application.internal/internal/v1/shard-placement/dispatch-consumptions/${evidence.ticketIdSha256}`,
+      { method: "GET", redirect: "manual" },
+    );
+    expect(retiredGet.status).toBe(405);
+    await retiredGet.body?.cancel();
+  });
+
   it("propagates malformed TaskRunner storage so the alarm remains retryable", async () => {
     const stub = env.TASK_RUNNER.getByName("task:runtime-malformed-record");
     await runInDurableObject(stub, async (_instance, state) => {
@@ -6077,6 +6190,474 @@ async function terminalOutboxRows() {
        ORDER BY event.operation_id`,
     ).all()
   ).results;
+}
+
+async function seedDispatchConsumptionHistoryEvidence() {
+  const ticketIdSha256 = "1".repeat(64);
+  const authorizationIdSha256 = "2".repeat(64);
+  const campaignId = "3".repeat(64);
+  const applicationDatabaseIdentitySha256 = "c".repeat(64);
+  const authorityDatabaseIdentitySha256 = "d".repeat(64);
+  const authorityLedgerIdentitySha256 = "22".repeat(32);
+  const authorityClaimDigestSha256 = "20".repeat(32);
+  const authorityDispatchOutboxDigestSha256 = "2f".repeat(32);
+  const applicationGrantReceiptDigestSha256 = "33".repeat(32);
+  const applicationGrantDigestSha256 = "32".repeat(32);
+  const operationFiveStartReceiptSha256 = "2d".repeat(32);
+  const dispatchOwnerSha256 = "35".repeat(32);
+  const leaseTokenSha256 = "36".repeat(32);
+  const dispatchClaimCredentialIdSha256 = "37".repeat(32);
+  const dispatchClaimRequestIdSha256 = "38".repeat(32);
+  const commandDispatchClaimRequestIdSha256 = "39".repeat(32);
+  const commandDispatchConsumptionRequestIdSha256 = "3c".repeat(32);
+  const applicationDispatchConsumptionCredentialIdSha256 = "3a".repeat(32);
+  const applicationDispatchConsumptionRequestIdSha256 = "3b".repeat(32);
+  const controllerEnableOperationIdSha256 = "13".repeat(32);
+  const applicationVersionId = "application-version-v1";
+  const authorityVersionId = "authority-version-v1";
+  const controllerServiceName = "cinatoken-container-controller-staging";
+  const controllerBaselineVersionId = "controller-disabled-v1";
+  const controllerEnabledVersionId = "controller-enabled-v1";
+  const { database_now: databaseNow } = await env.DB.prepare(
+    "SELECT unixepoch() AS database_now",
+  ).first();
+  const activationDeadlineAt = databaseNow + 240;
+  const executionDeadlineAt = databaseNow + 300;
+  const permitExpiresAt = databaseNow + 300;
+  const leaseExpiresAt = databaseNow + 60;
+  const authorityDispatchClaimedAt = databaseNow;
+
+  const authorityDispatchClaimDigestSha256 = await sha256Hex(
+    new TextEncoder().encode(canonicalJson({
+      schemaVersion: 1,
+      contract:
+        "cinatoken-shard-placement-authority-operation-five-dispatch-claim-v1",
+      authorizationIdSha256,
+      claimDigestSha256: authorityClaimDigestSha256,
+      applicationTicketIdSha256: ticketIdSha256,
+      applicationDatabaseIdentitySha256,
+      authorityDispatchOutboxDigestSha256,
+      applicationGrantReceiptDigestSha256,
+      applicationGrantDigestSha256,
+      operationFiveStartReceiptSha256,
+      authorityDatabaseIdentitySha256,
+      authorityLedgerIdentitySha256,
+      authorityLedgerHeadSha256: operationFiveStartReceiptSha256,
+      authorityVersionId,
+      applicationVersionId,
+      dispatchOwnerSha256,
+      leaseTokenSha256,
+      leaseGeneration: 1,
+      leaseExpiresAt,
+      normalDeadlineAt: executionDeadlineAt,
+      permitExpiresAt,
+      dispatchClaimCredentialIdSha256,
+      dispatchClaimRequestIdSha256,
+      commandDispatchClaimRequestIdSha256,
+      controllerServiceName,
+      controllerEnableOperationIdSha256,
+      controllerBaselineVersionId,
+      controllerEnabledVersionId,
+      sendAttemptLimit: 1,
+      retryLimit: 0,
+      missingReadbackAllowsResend: 0,
+      claimState: "claimed",
+    })),
+  );
+  const dispatchConsumptionDigestSha256 = await lengthPrefixedSha256(
+    "cinatoken:relay-container-shard-placement-dispatch-consumption:v1\0",
+    [
+      "cinatoken-relay-container-shard-placement-dispatch-consumption-v1",
+      ticketIdSha256,
+      authorizationIdSha256,
+      campaignId,
+      applicationDatabaseIdentitySha256,
+      applicationVersionId,
+      applicationGrantDigestSha256,
+      authorityClaimDigestSha256,
+      authorityDispatchOutboxDigestSha256,
+      applicationGrantReceiptDigestSha256,
+      operationFiveStartReceiptSha256,
+      authorityDispatchClaimDigestSha256,
+      authorityDatabaseIdentitySha256,
+      authorityLedgerIdentitySha256,
+      operationFiveStartReceiptSha256,
+      authorityVersionId,
+      dispatchOwnerSha256,
+      leaseTokenSha256,
+      "1",
+      String(leaseExpiresAt),
+      String(executionDeadlineAt),
+      String(permitExpiresAt),
+      dispatchClaimCredentialIdSha256,
+      dispatchClaimRequestIdSha256,
+      commandDispatchClaimRequestIdSha256,
+      String(authorityDispatchClaimedAt),
+      controllerServiceName,
+      controllerEnableOperationIdSha256,
+      controllerBaselineVersionId,
+      controllerEnabledVersionId,
+      "1",
+      "0",
+      "0",
+      applicationDispatchConsumptionCredentialIdSha256,
+      applicationDispatchConsumptionRequestIdSha256,
+      commandDispatchConsumptionRequestIdSha256,
+      "consumed",
+    ],
+  );
+
+  const authorizationStatement = d1Statement(
+    `INSERT INTO relay_container_shard_placement_mutation_authorizations (
+       authorization_id_sha256, execution_nonce_sha256,
+       campaign_nonce_sha256, subject_digest_sha256, contract_version,
+       authorization_contract, issuer, key_id, signer_spki_sha256,
+       environment, controller_service_name, controller_version_id,
+       action_gate_inventory_sha256, foundation_manifest_sha256,
+       runtime_build_id, ring_generation, shard_count,
+       campaign_lifetime_seconds, permit_issued_at, permit_expires_at,
+       campaign_id, campaign_digest_sha256, campaign_expires_at,
+       consumed_by_admin_id
+     ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, 'staging',
+               ?9, ?10, ?11, ?12, ?13, 7, 8, 300, ?14, ?15, ?16,
+               ?17, ?18, 42)`,
+    authorizationIdSha256,
+    "4".repeat(64),
+    "5".repeat(64),
+    "6".repeat(64),
+    "cinatoken-relay-shard-placement-mutation-authorization-v1",
+    "placement-authority-staging",
+    "placement-v1",
+    "7".repeat(64),
+    controllerServiceName,
+    controllerEnabledVersionId,
+    "8".repeat(64),
+    "9".repeat(64),
+    "a".repeat(64),
+    databaseNow,
+    permitExpiresAt,
+    campaignId,
+    "b".repeat(64),
+    executionDeadlineAt,
+  );
+  const campaignStatement = d1Statement(
+    `INSERT INTO relay_container_shard_activation_campaigns (
+       campaign_id, campaign_nonce_sha256, controller_version_id,
+       action_gate_inventory_sha256, action_gate_count,
+       all_action_gates_false, foundation_manifest_sha256,
+       runtime_build_id, ring_generation, shard_count,
+       shard_contract_version, runtime_protocol_version,
+       runtime_contract_version, activation_generation, environment,
+       created_by_admin_id, campaign_digest_sha256, created_at, expires_at
+     ) VALUES (?1, ?2, ?3, ?4, 22, 1, ?5, ?6, 7, 8, 1, 1, 1, 1,
+               'staging', 42, ?7, ?8, ?9)`,
+    campaignId,
+    "5".repeat(64),
+    controllerEnabledVersionId,
+    "8".repeat(64),
+    "9".repeat(64),
+    "a".repeat(64),
+    "b".repeat(64),
+    databaseNow,
+    executionDeadlineAt,
+  );
+  const ticketStatement = d1Statement(
+    `INSERT INTO relay_container_shard_placement_execution_tickets (
+       ticket_id_sha256, contract_version, ticket_contract,
+       authorization_id_sha256, campaign_id, campaign_digest_sha256,
+       execution_nonce_sha256, permit_subject_digest_sha256,
+       application_database_identity_sha256,
+       authority_database_identity_sha256,
+       authority_ledger_identity_sha256, execution_plan_sha256,
+       operation_schedule_sha256, preparation_operation_id_sha256,
+       claim_operation_id_sha256, activation_operation_id_sha256,
+       controller_enable_operation_id_sha256,
+       controller_disable_operation_id_sha256, release_sha256,
+       publication_sha256, execution_activation_sha256, runner_build_sha256,
+       controller_service_name, controller_baseline_version_id,
+       controller_enabled_version_id, controller_disabled_version_id,
+       edge_baseline_version_id, action_gate_inventory_sha256,
+       action_gate_count, all_action_gates_false, foundation_manifest_sha256,
+       runtime_build_id, ring_generation, shard_count, environment,
+       prepared_by_admin_id, activation_deadline_at,
+       execution_deadline_at, ticket_digest_sha256
+     ) VALUES (
+       ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+       ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25,
+       ?26, ?27, 22, 1, ?28, ?29, 7, 8, 'staging', 42, ?30, ?31, ?32
+     )`,
+    ticketIdSha256,
+    "cinatoken-relay-container-shard-placement-execution-ticket-v1",
+    authorizationIdSha256,
+    campaignId,
+    "b".repeat(64),
+    "4".repeat(64),
+    "6".repeat(64),
+    applicationDatabaseIdentitySha256,
+    authorityDatabaseIdentitySha256,
+    authorityLedgerIdentitySha256,
+    "e".repeat(64),
+    "f".repeat(64),
+    "10".repeat(32),
+    "11".repeat(32),
+    "12".repeat(32),
+    controllerEnableOperationIdSha256,
+    "14".repeat(32),
+    "15".repeat(32),
+    "16".repeat(32),
+    "17".repeat(32),
+    "18".repeat(32),
+    controllerServiceName,
+    controllerBaselineVersionId,
+    controllerEnabledVersionId,
+    "controller-disabled-v1",
+    "edge-baseline-v1",
+    "8".repeat(64),
+    "9".repeat(64),
+    "a".repeat(64),
+    activationDeadlineAt,
+    executionDeadlineAt,
+    "19".repeat(32),
+  );
+  await env.DB.batch([
+    authorizationStatement,
+    ticketStatement,
+    campaignStatement,
+  ]);
+  await runD1(
+    `INSERT INTO relay_container_shard_placement_execution_ticket_activations (
+       ticket_id_sha256, contract_version, activation_contract,
+       authority_claim_digest_sha256,
+       authority_claim_acquired_receipt_sha256,
+       authority_claim_operation_id_sha256,
+       authority_activation_operation_id_sha256,
+       authority_database_identity_sha256,
+       authority_ledger_identity_sha256, authority_version_id,
+       activation_credential_id_sha256, activation_request_id_sha256,
+       activation_digest_sha256, activated_by_admin_id
+     ) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 42)`,
+    ticketIdSha256,
+    "cinatoken-relay-container-shard-placement-execution-ticket-activation-v1",
+    authorityClaimDigestSha256,
+    "21".repeat(32),
+    "11".repeat(32),
+    "12".repeat(32),
+    authorityDatabaseIdentitySha256,
+    authorityLedgerIdentitySha256,
+    authorityVersionId,
+    "23".repeat(32),
+    "24".repeat(32),
+    "25".repeat(32),
+  );
+  await runD1(
+    `INSERT INTO relay_container_shard_placement_execution_ticket_authority_acks (
+       ticket_id_sha256, contract_version, acknowledgement_contract,
+       application_ticket_digest_sha256, authority_claim_digest_sha256,
+       application_activation_digest_sha256,
+       authority_activation_terminal_receipt_sha256,
+       authority_ledger_head_sha256, authority_database_identity_sha256,
+       authority_version_id, authority_read_credential_id_sha256,
+       authority_read_request_id_sha256, acknowledgement_digest_sha256,
+       acknowledged_by_admin_id
+     ) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 42)`,
+    ticketIdSha256,
+    "cinatoken-relay-container-shard-placement-authority-ack-v1",
+    "19".repeat(32),
+    authorityClaimDigestSha256,
+    "25".repeat(32),
+    "28".repeat(32),
+    "29".repeat(32),
+    authorityDatabaseIdentitySha256,
+    authorityVersionId,
+    "2a".repeat(32),
+    "2b".repeat(32),
+    "2c".repeat(32),
+  );
+  await runD1(
+    `INSERT INTO relay_container_shard_placement_pre_enable_grants (
+       ticket_id_sha256, contract_version, grant_contract,
+       authorization_id_sha256, application_ticket_digest_sha256,
+       application_database_identity_sha256,
+       authority_claim_digest_sha256,
+       application_activation_digest_sha256,
+       application_acknowledgement_digest_sha256,
+       operation_five_admission_digest_sha256,
+       operation_five_start_receipt_sha256,
+       authority_dispatch_outbox_digest_sha256,
+       authority_database_identity_sha256,
+       authority_ledger_identity_sha256,
+       authority_ledger_head_sha256, authority_version_id,
+       controller_service_name, controller_enable_operation_id_sha256,
+       controller_baseline_version_id, controller_enabled_version_id,
+       application_grant_credential_id_sha256,
+       application_grant_request_id_sha256, grant_digest_sha256
+     ) VALUES (
+       ?1, 1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+       ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
+     )`,
+    ticketIdSha256,
+    "cinatoken-relay-container-shard-placement-pre-enable-grant-v1",
+    authorizationIdSha256,
+    "19".repeat(32),
+    applicationDatabaseIdentitySha256,
+    authorityClaimDigestSha256,
+    "25".repeat(32),
+    "2c".repeat(32),
+    "2e".repeat(32),
+    operationFiveStartReceiptSha256,
+    authorityDispatchOutboxDigestSha256,
+    authorityDatabaseIdentitySha256,
+    authorityLedgerIdentitySha256,
+    operationFiveStartReceiptSha256,
+    authorityVersionId,
+    controllerServiceName,
+    controllerEnableOperationIdSha256,
+    controllerBaselineVersionId,
+    controllerEnabledVersionId,
+    "30".repeat(32),
+    "31".repeat(32),
+    applicationGrantDigestSha256,
+  );
+  await runD1(
+    "DROP TRIGGER relay_container_shard_placement_dispatch_consumption_insert_guard",
+  );
+  await runD1(
+    `INSERT INTO relay_container_shard_placement_dispatch_consumptions (
+       ticket_id_sha256, contract_version, consumption_contract,
+       authorization_id_sha256, campaign_id,
+       application_database_identity_sha256, application_version_id,
+       application_grant_digest_sha256, authority_claim_digest_sha256,
+       authority_dispatch_outbox_digest_sha256,
+       application_grant_receipt_digest_sha256,
+       operation_five_start_receipt_sha256,
+       authority_dispatch_claim_digest_sha256,
+       authority_database_identity_sha256,
+       authority_ledger_identity_sha256, authority_ledger_head_sha256,
+       authority_version_id, dispatch_owner_sha256, lease_token_sha256,
+       lease_generation, lease_expires_at, normal_deadline_at,
+       permit_expires_at, dispatch_claim_credential_id_sha256,
+       dispatch_claim_request_id_sha256,
+       command_dispatch_claim_request_id_sha256,
+       authority_dispatch_claimed_at, controller_service_name,
+       controller_enable_operation_id_sha256,
+       controller_baseline_version_id, controller_enabled_version_id,
+       send_attempt_limit, retry_limit, missing_readback_allows_resend,
+       application_dispatch_consumption_credential_id_sha256,
+       application_dispatch_consumption_request_id_sha256,
+       command_dispatch_consumption_request_id_sha256,
+       dispatch_consumption_digest_sha256, consumption_state
+     ) VALUES (
+       ?1, 1,
+       'cinatoken-relay-container-shard-placement-dispatch-consumption-v1',
+       ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
+       ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28,
+       ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37
+     )`,
+    ticketIdSha256,
+    authorizationIdSha256,
+    campaignId,
+    applicationDatabaseIdentitySha256,
+    applicationVersionId,
+    applicationGrantDigestSha256,
+    authorityClaimDigestSha256,
+    authorityDispatchOutboxDigestSha256,
+    applicationGrantReceiptDigestSha256,
+    operationFiveStartReceiptSha256,
+    authorityDispatchClaimDigestSha256,
+    authorityDatabaseIdentitySha256,
+    authorityLedgerIdentitySha256,
+    operationFiveStartReceiptSha256,
+    authorityVersionId,
+    dispatchOwnerSha256,
+    leaseTokenSha256,
+    1,
+    leaseExpiresAt,
+    executionDeadlineAt,
+    permitExpiresAt,
+    dispatchClaimCredentialIdSha256,
+    dispatchClaimRequestIdSha256,
+    commandDispatchClaimRequestIdSha256,
+    authorityDispatchClaimedAt,
+    controllerServiceName,
+    controllerEnableOperationIdSha256,
+    controllerBaselineVersionId,
+    controllerEnabledVersionId,
+    1,
+    0,
+    0,
+    applicationDispatchConsumptionCredentialIdSha256,
+    applicationDispatchConsumptionRequestIdSha256,
+    commandDispatchConsumptionRequestIdSha256,
+    dispatchConsumptionDigestSha256,
+    "consumed",
+  );
+  return {
+    ticketIdSha256,
+    authorizationIdSha256,
+    authorityClaimDigestSha256,
+    authorityDispatchClaimDigestSha256,
+    applicationDatabaseIdentitySha256,
+    commandDispatchConsumptionRequestIdSha256,
+    dispatchConsumptionDigestSha256,
+  };
+}
+
+async function runD1(sql, ...values) {
+  await d1Statement(sql, ...values).run();
+}
+
+function d1Statement(sql, ...values) {
+  return env.DB.prepare(sql).bind(...values);
+}
+
+async function dispatchConsumptionHistoryStoredState(ticketIdSha256) {
+  return env.DB.prepare(
+    `SELECT *
+     FROM relay_container_shard_placement_dispatch_consumptions
+     WHERE ticket_id_sha256 = ?1`,
+  )
+    .bind(ticketIdSha256)
+    .first();
+}
+
+async function dispatchConsumptionHistoryToken(pathAndQuery, body) {
+  const now = Math.floor(Date.now() / 1_000);
+  const headerPart = base64Url(new TextEncoder().encode(canonicalJson({
+    typ: "CINATOKEN-SHARD-PLACEMENT-APPLICATION",
+    alg: "HS256",
+    kid: dispatchConsumptionHistoryKid,
+  })));
+  const claimsPart = base64Url(new TextEncoder().encode(canonicalJson({
+    issuer: "shard-placement-authority-runtime-test",
+    audience: "cinatoken-rust-api-runtime-test",
+    role: "dispatch_consumption_recovery_read",
+    credential_id_sha256: dispatchConsumptionHistoryCredentialId,
+    request_id: `op5-recovery-read-${"4b".repeat(20)}`,
+    method: "POST",
+    path_and_query: pathAndQuery,
+    body_sha256: await sha256Hex(body),
+    issued_at: now,
+    expires_at: now + 30,
+  })));
+  const signature = await hmac(
+    new TextEncoder().encode(dispatchConsumptionHistorySecret),
+    new TextEncoder().encode(
+      `cinatoken-shard-placement-application-v1\n${headerPart}.${claimsPart}`,
+    ),
+  );
+  return `${headerPart}.${claimsPart}.${base64Url(signature)}`;
+}
+
+async function lengthPrefixedSha256(domain, values) {
+  const encoder = new TextEncoder();
+  const parts = [encoder.encode(domain)];
+  for (const value of values) {
+    const bytes = encoder.encode(value);
+    const length = new Uint8Array(4);
+    new DataView(length.buffer).setUint32(0, bytes.byteLength, false);
+    parts.push(length, bytes);
+  }
+  return sha256Hex(concatBytes(...parts));
 }
 
 function canonicalJson(value) {

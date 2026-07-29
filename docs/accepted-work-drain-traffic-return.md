@@ -792,3 +792,48 @@ This batch does not claim the complete protocol. Specifically absent are:
 
 Until all of those are implemented and verified against one immutable remote
 candidate, Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 15. 0068 Local Enforcement Checkpoint
+
+The earlier gap statement is historical for 0068. Application migration
+`0068_relay_container_drain_admission_enforce.sql` now provides the local
+D1-linearized admission boundary:
+
+- deterministic backfill of every historical 0050 atomic admission;
+- one insertion-ordered global accepted-sequence ledger;
+- environment-bound open fence and scope-head identities;
+- a same-batch commit sidecar required before every new 0050 receipt and every
+  new Container operation, regardless of operation kind or protocol version;
+- stale/closed generation rejection before provider dispatch;
+- application readback that recomputes current fence-bound commit digests;
+- a close guard that derives count/high-watermark/first/last identities and
+  rejects any open operation missing from the commit ledger;
+- exact-current-head enforcement for close, including a cross-second
+  close/campaign transaction; and
+- an immutable 0068 scope head that rejects every recovery or aborted-campaign
+  attempt to reopen admission.
+
+Fence close plus 0067 campaign creation must be one transaction. The future
+control-plane implementation must expose neither half as a standalone
+operator action. Restoring Rust admission after close is outside 0068 and
+requires a separately reviewed migration and authorization protocol.
+
+The following remain production blockers:
+
+- authenticated, audited, generation-CAS initial-open and close writers;
+- a cardinality preflight and isolated-D1 duration proof for the one-shot
+  historical 0050 backfill;
+- independent accepted bookmark, source readback, member, page and complete
+  manifest recomputation;
+- 0067 member, closure, quarantine, reverse-sync and observation writers;
+- canonical billing snapshot/vector replay against the existing expression
+  authority;
+- remote old-writer inventory, D1 readback and N/N-1 race evidence;
+- an independent P5 admission-fence evidence type and verifier;
+- campaign-bound DO/R2/Queue/outbox/reconciliation evidence;
+- operation-14 runtime integration; and
+- 0069 typed approval/WORM evidence and independent traffic-return review.
+
+All five drain write gates remain false. There is no remote 0068 application,
+fence row, campaign or traffic change in this checkpoint. Go/VPS remains
+authoritative and production remains **NO-GO**.

@@ -7,9 +7,13 @@ const channelId = 503;
 const initialUserQuota = 1_000;
 const initialTokenQuota = 500;
 const reservedQuota = 125;
+const admissionScopeId =
+  "53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251";
+const admissionFenceId = "6".repeat(64);
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+  await seedAdmissionFence();
 });
 
 afterEach(async () => {
@@ -17,6 +21,29 @@ afterEach(async () => {
 });
 
 describe("migration 0050 atomic relay Container admission", () => {
+  it("matches the Rust admission commit digest vector", async () => {
+    expect(
+      await relayContainerAdmissionCommitSha256({
+        environment: "local",
+        scopeKind: "global",
+        scopeIdSha256: admissionScopeId,
+        admissionFenceIdSha256: hex("a"),
+        reservationKey: "relayreserve-test",
+        operationId: "relayreserve-test",
+        atomicAdmissionSha256: hex("1"),
+        operationAdmissionSha256: hex("a"),
+        billingSnapshotSha256:
+          "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        clientRequestSha256: hex("e"),
+        fenceGeneration: 1,
+        ownerGeneration: 2,
+        ringGeneration: 1,
+        shardCount: 8,
+        shardIndex: 3,
+      }),
+    ).toBe("54a3336866b7ff94e975fa7335e3979955ff3062853179c4622a321f26c003d1");
+  });
+
   it("pins the cross-runtime idempotency alias-set digest", async () => {
     await expect(idempotencyAliasesSha256([hex("a"), hex("b")])).resolves.toBe(
       "2abe3436ba079ee481e8992885fa43931306e177fce6ce8eefd51a3f360c6393",
@@ -32,9 +59,9 @@ describe("migration 0050 atomic relay Container admission", () => {
 
     const results = await runAtomicAdmissionBatch(intent);
 
-    expect(results).toHaveLength(15);
+    expect(results).toHaveLength(17);
     expect(results.map((result) => result.meta.changes)).toEqual([
-      0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
+      0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
     ]);
     expect(await atomicAdmissionState(intent)).toEqual({
       user: {
@@ -48,7 +75,13 @@ describe("migration 0050 atomic relay Container admission", () => {
         accessed_time: intent.createdAt,
       },
       channel: { used_quota: 0 },
-      counts: { reservations: 1, operations: 1, admissions: 1, aliases: 1 },
+      counts: {
+        reservations: 1,
+        operations: 1,
+        admissions: 1,
+        aliases: 1,
+        commits: 1,
+      },
     });
     expect(await classifyAtomicAdmission(intent)).toBe("matching_resumable");
   });
@@ -69,9 +102,9 @@ describe("migration 0050 atomic relay Container admission", () => {
     const applied = concurrent.find(
       ({ classification }) => classification === "newly_applied",
     );
-    expect(applied.results).toHaveLength(17);
+    expect(applied.results).toHaveLength(19);
     expect(applied.results.map((result) => result.meta.changes)).toEqual([
-      0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
+      0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
     ]);
 
     const replay = {
@@ -99,7 +132,13 @@ describe("migration 0050 atomic relay Container admission", () => {
         accessed_time: intent.createdAt,
       },
       channel: { used_quota: 0 },
-      counts: { reservations: 1, operations: 1, admissions: 1, aliases: 2 },
+      counts: {
+        reservations: 1,
+        operations: 1,
+        admissions: 1,
+        aliases: 2,
+        commits: 1,
+      },
     });
   });
 
@@ -139,9 +178,9 @@ describe("migration 0050 atomic relay Container admission", () => {
     const loser = outcomes.find(
       ({ classification }) => classification === "matching_resumable",
     );
-    expect(applied.results).toHaveLength(17);
+    expect(applied.results).toHaveLength(19);
     expect(applied.results.map((result) => result.meta.changes)).toEqual([
-      0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
+      0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0,
     ]);
     expect(loser.winner).toEqual(applied.winner);
 
@@ -161,7 +200,13 @@ describe("migration 0050 atomic relay Container admission", () => {
         accessed_time: persistedIntent.createdAt,
       },
       channel: { used_quota: 0 },
-      counts: { reservations: 1, operations: 1, admissions: 1, aliases: 2 },
+      counts: {
+        reservations: 1,
+        operations: 1,
+        admissions: 1,
+        aliases: 2,
+        commits: 1,
+      },
     });
     const aliases = await env.DB.prepare(
       `SELECT client_idempotency_hmac_sha256,
@@ -288,7 +333,13 @@ describe("migration 0050 atomic relay Container admission", () => {
         accessed_time: winner.createdAt,
       },
       channel: { used_quota: 0 },
-      counts: { reservations: 1, operations: 1, admissions: 1, aliases: 1 },
+      counts: {
+        reservations: 1,
+        operations: 1,
+        admissions: 1,
+        aliases: 1,
+        commits: 1,
+      },
     });
   });
 
@@ -339,7 +390,9 @@ describe("migration 0050 atomic relay Container admission", () => {
         runAtomicAdmissionBatch(intent, {
           markerOperationAdmissionSha256: hex("0"),
         }),
-      ).rejects.toThrow(/relay container atomic admission authority mismatch/);
+      ).rejects.toThrow(
+        /relay container atomic admission lacks an open D1 fence/,
+      );
 
       expect(await atomicAdmissionState(intent)).toEqual(before);
       expect(before.counts).toEqual({
@@ -347,6 +400,7 @@ describe("migration 0050 atomic relay Container admission", () => {
         operations: 0,
         admissions: 0,
         aliases: 0,
+        commits: 0,
       });
     },
   );
@@ -377,13 +431,63 @@ describe("migration 0050 atomic relay Container admission", () => {
         operations: 0,
         admissions: 0,
         aliases: 0,
+        commits: 0,
       });
     },
   );
 
-  it("rejects an old writer before it can create an unmarked canary operation", async () => {
+  it("rejects a pre-0068 writer before any admission or financial side effect", async () => {
     await seedAuthorityState();
     const intent = await atomicAdmissionIntent("old-writer");
+    await expect(
+      runAtomicAdmissionBatch(intent, {
+        includeAdmissionFenceCommit: false,
+        includeResponseArtifactContract: false,
+      }),
+    ).rejects.toThrow(/relay container atomic admission lacks an open D1 fence/);
+
+    expect(await atomicAdmissionState(intent)).toMatchObject({
+      counts: {
+        reservations: 0,
+        operations: 0,
+        admissions: 0,
+        aliases: 0,
+        commits: 0,
+      },
+      user: { quota: initialUserQuota },
+      token: { remain_quota: initialTokenQuota, used_quota: 0 },
+    });
+  });
+
+  it("rejects an unfenced future operation kind and protocol", async () => {
+    await seedAuthorityState();
+    const intent = await atomicAdmissionIntent("future-writer");
+
+    await expect(
+      env.DB.batch([
+        env.DB.prepare("PRAGMA defer_foreign_keys = ON"),
+        selectedReservationStatement(intent),
+        preparedOperationStatement(intent, {
+          operationKind: "future_container_dispatch",
+          protocolVersion: 2,
+        }),
+      ]),
+    ).rejects.toThrow(/relay container operation lacks an open D1 fence/);
+    expect(await atomicAdmissionState(intent)).toMatchObject({
+      counts: {
+        reservations: 0,
+        operations: 0,
+        admissions: 0,
+        aliases: 0,
+        commits: 0,
+      },
+    });
+  });
+
+  it("keeps the response-artifact writer upgrade mandatory inside a fenced batch", async () => {
+    await seedAuthorityState();
+    const intent = await atomicAdmissionIntent("old-response-artifact-writer");
+
     await expect(
       runAtomicAdmissionBatch(intent, {
         includeResponseArtifactContract: false,
@@ -391,9 +495,34 @@ describe("migration 0050 atomic relay Container admission", () => {
     ).rejects.toThrow(
       /relay container response artifact writer contract is required/,
     );
-
     expect(await atomicAdmissionState(intent)).toMatchObject({
-      counts: { reservations: 0, operations: 0, admissions: 0, aliases: 0 },
+      counts: {
+        reservations: 0,
+        operations: 0,
+        admissions: 0,
+        aliases: 0,
+        commits: 0,
+      },
+    });
+  });
+
+  it("rejects a stale fence generation and rolls back the commit sidecar", async () => {
+    await seedAuthorityState();
+    const intent = await atomicAdmissionIntent("stale-fence", {
+      fenceGeneration: 2,
+    });
+
+    await expect(runAtomicAdmissionBatch(intent)).rejects.toThrow(
+      /relay container admission fence is closed or stale/,
+    );
+    expect(await atomicAdmissionState(intent)).toMatchObject({
+      counts: {
+        reservations: 0,
+        operations: 0,
+        admissions: 0,
+        aliases: 0,
+        commits: 0,
+      },
       user: { quota: initialUserQuota },
       token: { remain_quota: initialTokenQuota, used_quota: 0 },
     });
@@ -415,6 +544,7 @@ describe("migration 0050 atomic relay Container admission", () => {
         operations: 0,
         admissions: 0,
         aliases: 0,
+        commits: 0,
       });
       await env.DB.prepare("UPDATE users SET status = 1 WHERE id = 501").run();
       await env.DB.prepare("UPDATE tokens SET status = 1 WHERE id = 502").run();
@@ -797,6 +927,31 @@ async function seedAuthorityState({
   ]);
 }
 
+async function seedAdmissionFence() {
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO relay_container_admission_fences (
+         admission_fence_id_sha256, contract_version, fence_contract,
+         fence_kind, environment, scope_kind, scope_id_sha256,
+         fence_generation, admission_open, state_digest_sha256,
+         created_by_admin_id, created_at
+       ) VALUES (
+         ?1, 1, 'relay-container-admission-fence-v1', 'admission',
+         'staging', 'global', ?2, 1, 1, ?3, 42, unixepoch()
+       )`,
+    ).bind(admissionFenceId, admissionScopeId, hex("7")),
+    env.DB.prepare(
+      `INSERT INTO relay_container_admission_scope_heads (
+         environment, scope_kind, scope_id_sha256, current_fence_id_sha256,
+         current_fence_generation, head_version, head_digest_sha256,
+         updated_by_admin_id, updated_at
+       ) VALUES (
+         'staging', 'global', ?1, ?2, 1, 1, ?3, 42, unixepoch()
+       )`,
+    ).bind(admissionScopeId, admissionFenceId, hex("8")),
+  ]);
+}
+
 async function atomicAdmissionIntent(suffix, overrides = {}) {
   const operationId =
     overrides.operationId ?? `relaycontainer-atomic-runtime-${suffix}`;
@@ -821,7 +976,7 @@ async function atomicAdmissionIntent(suffix, overrides = {}) {
       model_name: "gpt-atomic-runtime",
       model_price: reservedQuota,
     });
-  return {
+  const intent = {
     reservationKey,
     operationId,
     contractVersion: 1,
@@ -836,7 +991,15 @@ async function atomicAdmissionIntent(suffix, overrides = {}) {
     ),
     billingSnapshotSha256: await sha256Text(billingSnapshotJson),
     reconciliationId: hex("e"),
+    environment: "staging",
+    scopeKind: "global",
+    scopeIdSha256: admissionScopeId,
+    admissionFenceIdSha256: admissionFenceId,
+    fenceGeneration: 1,
     ownerGeneration: 2,
+    ringGeneration: 1,
+    shardCount: 8,
+    shardIndex: 3,
     ownerLeaseExpiresAt,
     channelId,
     selectedChannelType: 1,
@@ -860,6 +1023,12 @@ async function atomicAdmissionIntent(suffix, overrides = {}) {
       clientIdempotencyHmacAliases,
     ),
   };
+  return {
+    ...intent,
+    admissionCommitSha256:
+      overrides.admissionCommitSha256 ??
+      (await relayContainerAdmissionCommitSha256(intent)),
+  };
 }
 
 async function runAtomicAdmissionBatch(
@@ -867,10 +1036,14 @@ async function runAtomicAdmissionBatch(
   {
     markerOperationAdmissionSha256 = intent.operationAdmissionSha256,
     includeResponseArtifactContract = true,
+    includeAdmissionFenceCommit = true,
   } = {},
 ) {
   return env.DB.batch([
     env.DB.prepare("PRAGMA defer_foreign_keys = ON"),
+    ...(includeAdmissionFenceCommit
+      ? [admissionCommitStatement(intent), previousChangeAssertion(intent)]
+      : []),
     atomicAdmissionStatement(intent, markerOperationAdmissionSha256),
     previousChangeAssertion(intent),
     ...intent.clientIdempotencyHmacAliases.flatMap((alias) => [
@@ -888,6 +1061,37 @@ async function runAtomicAdmissionBatch(
     preparedOperationStatement(intent, { includeResponseArtifactContract }),
     previousChangeAssertion(intent),
   ]);
+}
+
+function admissionCommitStatement(intent) {
+  return env.DB.prepare(
+    `INSERT INTO relay_container_admission_commits (
+       source_contract, scope_kind, scope_id_sha256,
+       admission_fence_id_sha256, fence_generation,
+       reservation_key, operation_id, atomic_admission_sha256,
+       operation_admission_sha256, billing_snapshot_sha256,
+       client_request_sha256, owner_generation, ring_generation,
+       shard_count, shard_index, admission_commit_sha256
+     ) VALUES (
+       'fenced-atomic-admission-v1', ?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7,
+       ?8, ?9, ?10, ?11, ?12, ?13, ?14
+     )`,
+  ).bind(
+    intent.scopeKind,
+    intent.scopeIdSha256,
+    intent.admissionFenceIdSha256,
+    intent.fenceGeneration,
+    intent.reservationKey,
+    intent.atomicAdmissionSha256,
+    intent.operationAdmissionSha256,
+    intent.billingSnapshotSha256,
+    intent.clientRequestSha256,
+    intent.ownerGeneration,
+    intent.ringGeneration,
+    intent.shardCount,
+    intent.shardIndex,
+    intent.admissionCommitSha256,
+  );
 }
 
 function idempotencyAliasStatement(intent, alias) {
@@ -1001,7 +1205,11 @@ function previousChangeAssertion(intent) {
 
 function preparedOperationStatement(
   intent,
-  { includeResponseArtifactContract = true } = {},
+  {
+    includeResponseArtifactContract = true,
+    operationKind = "chat_completions_canary",
+    protocolVersion = 1,
+  } = {},
 ) {
   const responseArtifactContractColumn = includeResponseArtifactContract
     ? ", response_artifact_contract"
@@ -1021,10 +1229,10 @@ function preparedOperationStatement(
        reconciliation_id${responseArtifactContractColumn},
        status, created_at, updated_at
      ) VALUES (
-       ?1, ?1, ?2, ?3, ?4, ?5, 'chat_completions_canary', ?6, ?7, 1,
-       1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003', ?8, 'r2', ?9,
-       ?10, ?11, 0, 'application/json', ?12, ?13, ?14, ?15${responseArtifactContractValue},
-       'prepared', ?16, ?16
+       ?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+       1, 1, 8, 3, 'cinatoken-relay-shard-v1-0003', ?10, 'r2', ?11,
+       ?12, ?13, 0, 'application/json', ?14, ?15, ?16, ?17${responseArtifactContractValue},
+       'prepared', ?18, ?18
      )`,
   ).bind(
     intent.operationId,
@@ -1032,8 +1240,10 @@ function preparedOperationStatement(
     intent.ownerLeaseExpiresAt,
     intent.channelId,
     intent.selectedGroup,
+    operationKind,
     intent.providerOperationId,
     intent.operationAdmissionSha256,
+    protocolVersion,
     intent.executionDeadlineAt,
     intent.inputObjectKey,
     intent.inputObjectVersion,
@@ -1365,7 +1575,8 @@ async function atomicAdmissionState(intent) {
          (SELECT COUNT(*) FROM relay_billing_reservations) AS reservations,
          (SELECT COUNT(*) FROM relay_container_operations) AS operations,
          (SELECT COUNT(*) FROM relay_container_atomic_admissions) AS admissions,
-         (SELECT COUNT(*) FROM relay_container_idempotency_aliases) AS aliases`,
+         (SELECT COUNT(*) FROM relay_container_idempotency_aliases) AS aliases,
+         (SELECT COUNT(*) FROM relay_container_admission_commits) AS commits`,
     )
       .first(),
   ]);
@@ -1384,6 +1595,51 @@ async function idempotencyAliasesSha256(aliases) {
   const view = new DataView(encoded.buffer);
   let offset = 0;
   for (const value of values) {
+    view.setBigUint64(offset, BigInt(value.byteLength), false);
+    offset += 8;
+    encoded.set(value, offset);
+    offset += value.byteLength;
+  }
+  return sha256Bytes(encoded);
+}
+
+async function relayContainerAdmissionCommitSha256(intent) {
+  const encoder = new TextEncoder();
+  const integerField = (value) => {
+    const encoded = new Uint8Array(8);
+    new DataView(encoded.buffer).setBigInt64(0, BigInt(value), false);
+    return encoded;
+  };
+  const fields = [
+    "cinatoken:relay-container-admission-commit:v1",
+    "fenced-atomic-admission-v1",
+    intent.environment,
+    intent.scopeKind,
+    intent.scopeIdSha256,
+    intent.admissionFenceIdSha256,
+    intent.reservationKey,
+    intent.operationId,
+    intent.atomicAdmissionSha256,
+    intent.operationAdmissionSha256,
+    intent.billingSnapshotSha256,
+    intent.clientRequestSha256,
+  ]
+    .map((value) => encoder.encode(value))
+    .concat(
+      [
+        intent.fenceGeneration,
+        intent.ownerGeneration,
+        intent.ringGeneration,
+        intent.shardCount,
+        intent.shardIndex,
+      ].map(integerField),
+    );
+  const encoded = new Uint8Array(
+    fields.reduce((length, value) => length + 8 + value.byteLength, 0),
+  );
+  const view = new DataView(encoded.buffer);
+  let offset = 0;
+  for (const value of fields) {
     view.setBigUint64(offset, BigInt(value.byteLength), false);
     offset += 8;
     encoded.set(value, offset);

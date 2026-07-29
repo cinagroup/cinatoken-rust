@@ -2991,3 +2991,38 @@ generation matching. No credential or remote Cloudflare state was accessed.
 After 0068, 0069 must enforce typed campaign evidence, validity, retention,
 and reviewer independence before any receipt writer is considered. Production
 remains **NO-GO**.
+
+## 2026-07-30 0068 Status Update
+
+This table supersedes the preceding 0067 current-state rows.
+
+| Item | Current status |
+|---|---|
+| Application D1 head | **0068_relay_container_drain_admission_enforce.sql** |
+| Application D1 inventory | **68 MIGRATIONS / 88 TABLES / 1365 CHECKED COLUMNS / 129 KEY INDEXES** |
+| Historical 0050 accepted sequence | **DETERMINISTICALLY BACKFILLED AND APPEND-PRESERVED** |
+| New Container operation admission | **CURRENT OPEN FENCE COMMIT REQUIRED FOR ALL OPERATION KINDS/PROTOCOLS** |
+| Atomic financial admission | **COMMIT + 0050 RECEIPT + ALIASES + RESERVATION + DEBITS + OPERATION IN ONE D1 BATCH** |
+| Replay/settlement integrity | **SCHEMA-AWARE PRE-0068 READ; POST-0068 COMMIT REQUIRED AND CURRENT DIGEST RECOMPUTED** |
+| Fence close | **EXACT CURRENT HEAD + D1-DERIVED HIGH WATERMARK/COUNT/FIRST/LAST; UNCOMMITTED OPEN OPERATION REJECTED** |
+| Campaign close transaction | **FENCE CLOSE AND 0067 CAMPAIGN MUST COMMIT TOGETHER; CROSS-SECOND ORDER ACCEPTED** |
+| Recovery generation | **REOPEN PROHIBITED UNDER 0068; FUTURE SEPARATE MIGRATION/APPROVAL REQUIRED** |
+| Environment isolation | **ONE ADMISSION ENVIRONMENT PER APPLICATION D1; SEPARATE D1 STILL REQUIRED** |
+| Fence lifecycle repository/route | **ABSENT; APPLIED SCHEMA REMAINS DEFAULT-CLOSED** |
+| Historical backfill scale | **ONE-SHOT WINDOW BACKFILL; REMOTE CARDINALITY/DURATION PROOF ABSENT** |
+| Source bookmark/manifest recomputation | **NOT IMPLEMENTED; VALUES ARE CALLER-ATTESTED** |
+| P5 admission-fence evidence type | **NOT IMPLEMENTED; SCHEMA TOTALS ONLY** |
+| 0067 evidence writers | **ABSENT; FIVE TRACKED GATES REMAIN FALSE** |
+| Remote 0068 application/readback | **NOT PERFORMED** |
+| 0069 typed approval/WORM evidence | **NOT IMPLEMENTED** |
+| Traffic-return authorization | **NOT COMPILED; DATABASE RECEIPT REMAINS NON-AUTHORIZING** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The next code boundary is an authenticated and audited initial-open/close
+control plane plus independently recomputed accepted-set source/page/complete
+manifests and a dedicated P5 evidence item. It must create fence+head and
+close fence+campaign only as atomic D1 batches, retain readback evidence,
+preflight/rehearse the historical backfill, and remain disabled in every
+tracked environment until isolated-staging fault campaigns pass. It must not
+add an admission-reopen command.

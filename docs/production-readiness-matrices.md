@@ -1448,11 +1448,16 @@ ordinal 15. Operation-14 success alone cannot satisfy this matrix.
 | Stop eligibility | `execution_stop_eligible` excludes work that can safely continue in a Container; activity expiry refuses stop while that predicate is false | Staging eviction/OOM/restart campaign and measured lifecycle evidence | Local foundation |
 | Shard drain predicate | Local `accepted_work_drained` additionally rejects ambiguity, recovery-required, and missing final ACK | It has no global accepted membership, D1 billing/outbox/reconciliation/R2/Queue/reverse-sync join | Not a production drain proof |
 | Controller read attestation | Default-off private route validates exactly eight deterministic shards, Controller identity, canonical state digest, and always emits `traffic_return_authorized=false` | Deployed identity, key rotation, complete shard campaign, and stable global observations | Read foundation only |
-| D1 campaign/admission fence | Design in `docs/accepted-work-drain-traffic-return.md` | 0067 expand schema, compatible writers, 0068 admission enforcement, remote readback | Not implemented |
-| Accepted-set freeze | Membership/cutoff/keyset/digest contract documented | D1 repository, routes, fault tests, and remote evidence | Not implemented |
+| D1 campaign/admission fence | 0067 ledger plus one-way 0068 global fence/head/commit schema, schema-aware N/N-1 reads, operation-wide old-writer rejection, current-head close, cross-second close/campaign, and local race/rollback proof | Historical-backfill cardinality/duration proof, authenticated initial-open/close writer, independent P5 evidence type, remote apply/readback, N/N-1 and response-loss campaign | Local enforcement; remote blocked |
+| Accepted-set freeze | 0068 derives high watermark/count/first/last and rejects open operations outside the commit ledger | Independent source/bookmark/member/page/complete-manifest recomputation, writer, retained remote readback | Structural freeze only |
 | Ambiguity quarantine | Per-operation non-replay and financial-exposure contract documented | D1 sidecar, preview/apply authority, review workflow | Not implemented |
 | Reverse sync | Scope-bound snapshot/high-watermark/shadow contract documented | D1-to-Go exporter/importer, Go fencing, reconciliation evidence | Not implemented |
 | Traffic-return receipt | Eligibility-only contract documented; authorization is prohibited | D1 receipt, stable observation pair, independent approval workflow | Not implemented |
 
 Container/DO lifecycle state is never business drain evidence. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+The Application schema head for this matrix is 0068 with 68 migrations, 88
+required tables, 1365 checked incremental columns, and 129 key indexes. All
+five drain write gates remain false, the fence lifecycle control plane is
+absent, 0069 is absent, and traffic-return authorization is not compiled.

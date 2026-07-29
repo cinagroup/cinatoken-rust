@@ -37,20 +37,22 @@ use crate::d1_repositories::{
     relay_container_atomic_admission_schema_ready, relay_container_atomic_admission_sha256,
     relay_container_atomic_reconciliation_id, relay_container_client_response_artifact,
     relay_container_client_response_artifact_integrity_valid,
+    relay_container_drain_admission_schema_ready,
     relay_container_financial_terminal_receipt_for_operation,
-    relay_container_financial_terminal_v2_schema_ready, relay_container_operation,
-    relay_container_provider_response_evidence_exists,
+    relay_container_financial_terminal_v2_schema_ready, relay_container_open_admission_fence,
+    relay_container_operation, relay_container_provider_response_evidence_exists,
     relay_container_provider_usage_receipt_readback, RelayBillingRequestAccounting,
-    RelayBillingReservation, RelayBillingReservationRecord, RelayContainerAtomicAdmissionOutcome,
-    RelayContainerAtomicAdmissionRecord, RelayContainerClientRequestLookup,
-    RelayContainerClientResponseArtifactRecord, RelayContainerClientResponseRecord,
-    RelayContainerFinancialTerminalAction, RelayContainerFinancialTerminalCommand,
-    RelayContainerFinancialTerminalOutcome, RelayContainerOperation,
-    RelayContainerOperationDispatchOutcome, RelayContainerOperationExpectedStatus,
-    RelayContainerOperationRecord, RelayContainerOperationResultRecord,
-    RelayContainerOperationTerminalRecord, RelayContainerProviderResponseBindingRecord,
-    RelayContainerProviderUsageReceiptReadback, RelayContainerReconciliationLease,
-    RelayContainerScheduledTerminalizationFence, RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION,
+    RelayBillingReservation, RelayBillingReservationRecord, RelayContainerAdmissionFenceBinding,
+    RelayContainerAtomicAdmissionOutcome, RelayContainerAtomicAdmissionRecord,
+    RelayContainerClientRequestLookup, RelayContainerClientResponseArtifactRecord,
+    RelayContainerClientResponseRecord, RelayContainerFinancialTerminalAction,
+    RelayContainerFinancialTerminalCommand, RelayContainerFinancialTerminalOutcome,
+    RelayContainerOperation, RelayContainerOperationDispatchOutcome,
+    RelayContainerOperationExpectedStatus, RelayContainerOperationRecord,
+    RelayContainerOperationResultRecord, RelayContainerOperationTerminalRecord,
+    RelayContainerProviderResponseBindingRecord, RelayContainerProviderUsageReceiptReadback,
+    RelayContainerReconciliationLease, RelayContainerScheduledTerminalizationFence,
+    RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION,
 };
 
 pub const CONTAINER_CHAT_CANARY_TOKEN_IDS_ENV: &str = "CONTAINER_CHAT_CANARY_TOKEN_IDS";
@@ -446,16 +448,25 @@ pub async fn execute_container_chat_canary(
     context: Option<&Context>,
     execution: ContainerChatCanaryExecution<'_>,
 ) -> worker::Result<Response> {
+    let Some(environment) = deployment_environment(env) else {
+        return Err(canary_error(
+            "container chat canary atomic admission is unavailable",
+        ));
+    };
     if !container_chat_canary_admission_compiled()
         || !container_scheduler_enabled(env)
         || !container_operation_runtime_status(env).cutover_ready()
         || !relay_container_atomic_admission_schema_ready(db).await?
+        || !relay_container_drain_admission_schema_ready(db).await?
         || !relay_container_financial_terminal_v2_schema_ready(db).await?
     {
         return Err(canary_error(
             "container chat canary atomic admission is unavailable",
         ));
     }
+    let open_admission_fence = relay_container_open_admission_fence(db, environment)
+        .await?
+        .ok_or_else(|| canary_error("container chat canary admission fence is closed"))?;
     let owner_generation = RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION;
     let input = put_container_input(
         env,
@@ -584,6 +595,13 @@ pub async fn execute_container_chat_canary(
     let provisional = RelayContainerAtomicAdmissionRecord {
         reservation,
         operation,
+        admission_fence: RelayContainerAdmissionFenceBinding {
+            environment: &open_admission_fence.environment,
+            scope_kind: &open_admission_fence.scope_kind,
+            scope_id_sha256: &open_admission_fence.scope_id_sha256,
+            admission_fence_id_sha256: &open_admission_fence.admission_fence_id_sha256,
+            fence_generation: open_admission_fence.fence_generation,
+        },
         client_idempotency_hmac_aliases: &client_idempotency_hmac_aliases,
         selected_channel_type: i64::from(execution.selected_channel_type),
         selected_snapshot_key: execution.selected_snapshot_key,
@@ -2191,6 +2209,15 @@ fn valid_idempotency_key(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn deployment_environment(env: &Env) -> Option<&'static str> {
+    match env.var("ENVIRONMENT").ok()?.to_string().as_str() {
+        "local" => Some("local"),
+        "staging" => Some("staging"),
+        "production" => Some("production"),
+        _ => None,
+    }
 }
 
 fn current_unix_seconds() -> i64 {

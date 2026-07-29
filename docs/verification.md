@@ -11994,3 +11994,48 @@ claimed. Go/VPS remains authoritative and production remains **NO-GO**.
 The local verifier does not recompute the declared membership manifest from
 the authoritative admission source and does not replay the canonical billing
 snapshot/vector. Those remain explicit 0068 writer/readback blockers.
+
+## 2026-07-30 Admission Fence Verification Overlay
+
+The canonical SQLite verifier now replays 68 migrations and inventories 88
+required tables, 1365 checked incremental columns, and 129 key indexes. Its
+0068 deterministic-clock campaign proves:
+
+- historical 0050 admissions receive stable insertion-ordered pre-0068
+  commits;
+- one D1 database cannot host two admission environments;
+- old atomic writers and arbitrary future operation kinds/protocols cannot
+  bypass the fence;
+- a stale generation leaves no commit, receipt, reservation, quota mutation or
+  operation;
+- the current commit, 0050 receipt, aliases, reservation, quota debits,
+  channel authority and operation are one transaction;
+- a campaign cannot exist while admission is open;
+- a fence that is not the exact current scope head cannot close;
+- a fence cannot close over an open operation missing from the commit ledger;
+- close and campaign insert share one deferred-foreign-key transaction and
+  remain valid when the D1 clock advances one second between statements;
+- new admission is rejected after close without partial state;
+- commit, accepted-source and scope-head identities are immutable;
+- `recovery_required` cannot reopen admission under 0068; and
+- append-history and duplicate-DDL fail closed.
+
+`cargo test -p cinatoken-worker --lib` passes 914 tests. The added Rust tests
+verify exact 0067+0068 schema gating, operation-wide enforcement source,
+fence-independent 0050 idempotency identity, fence-sensitive commit identity,
+invalid fence scope/generation rejection, schema-aware pre-0068 replay,
+post-0068 missing-commit rejection, and current/historical commit tamper
+rejection.
+
+The real-workerd atomic-admission suite passes 19 tests. It includes a shared
+Rust/Bun commit-digest vector plus old
+writer, arbitrary future operation kind/protocol, stale fence, authority race,
+partial-batch rollback, immutable replay and response-artifact writer
+negatives against actual D1 migrations.
+
+These results are local evidence. No authenticated fence lifecycle writer,
+remote D1 application/readback, source-manifest recomputation, remote
+old-Worker race, billing-vector replay, reverse sync, stable observation pair,
+operation-14 execution, one-shot backfill capacity proof, independent P5
+admission-fence item, 0069 evidence or traffic-return review is claimed.
+Go/VPS remains authoritative and production remains **NO-GO**.

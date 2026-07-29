@@ -193,7 +193,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0067_relay_container_drain_expand.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0068_relay_container_drain_admission_enforce.sql";
 const CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED_ENV: &str = "CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED";
 const CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED_ENV: &str =
     "CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED";
@@ -307,6 +307,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0065_relay_container_shard_placement_pre_enable_grants.sql",
     "0066_relay_container_shard_placement_dispatch_consumptions.sql",
     "0067_relay_container_drain_expand.sql",
+    "0068_relay_container_drain_admission_enforce.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -481,6 +482,7 @@ struct PlatformCapabilities {
     container_provider_response_artifact_schema_ready: bool,
     container_scheduled_terminalizer_runtime_ready: bool,
     container_drain_schema_ready: bool,
+    container_drain_admission_schema_ready: bool,
     container_drain_campaign_write_enabled: bool,
     container_drain_observation_write_enabled: bool,
     container_ambiguity_quarantine_write_enabled: bool,
@@ -1137,6 +1139,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_provider_response_artifact_schema_ready,
         container_financial_terminal_v2_schema_ready,
         container_drain_schema_ready,
+        container_drain_admission_schema_ready,
         container_chat_canary_replay_history_probe_known,
         container_chat_canary_replay_history_present,
     ) = match env.d1("DB") {
@@ -1163,6 +1166,10 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                     .unwrap_or(false);
             let container_drain_schema_ready =
                 crate::d1_repositories::relay_container_drain_schema_ready(&db)
+                    .await
+                    .unwrap_or(false);
+            let container_drain_admission_schema_ready =
+                crate::d1_repositories::relay_container_drain_admission_schema_ready(&db)
                     .await
                     .unwrap_or(false);
             let container_chat_canary_replay_history_probe_known =
@@ -1195,6 +1202,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
                 container_provider_response_artifact_schema_ready,
                 container_financial_terminal_v2_schema_ready,
                 container_drain_schema_ready,
+                container_drain_admission_schema_ready,
                 container_chat_canary_replay_history_probe_known,
                 container_chat_canary_replay_history_present,
             )
@@ -1212,6 +1220,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
             TaskPollRecoveryRuntimeStatus {
                 schema_ready: false,
             },
+            false,
             false,
             false,
             false,
@@ -2069,6 +2078,7 @@ pub async fn capabilities(req: Request, env: Env) -> WorkerResult<Response> {
         container_provider_response_artifact_schema_ready,
         container_scheduled_terminalizer_runtime_ready,
         container_drain_schema_ready,
+        container_drain_admission_schema_ready,
         container_drain_campaign_write_enabled,
         container_drain_observation_write_enabled,
         container_ambiguity_quarantine_write_enabled,
@@ -5269,10 +5279,10 @@ mod tests {
         assert!(!d1_migration_set_matches(&extra));
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0067_relay_container_drain_expand.sql"
+            "0068_relay_container_drain_admission_enforce.sql"
         );
         assert_eq!(
-            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 14..],
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 15..],
             &[
                 "0054_relay_container_shard_activations.sql",
                 "0055_relay_container_shard_activation_campaigns.sql",
@@ -5288,6 +5298,7 @@ mod tests {
                 "0065_relay_container_shard_placement_pre_enable_grants.sql",
                 "0066_relay_container_shard_placement_dispatch_consumptions.sql",
                 "0067_relay_container_drain_expand.sql",
+                "0068_relay_container_drain_admission_enforce.sql",
             ]
         );
         assert!(

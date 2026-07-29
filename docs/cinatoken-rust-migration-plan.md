@@ -24845,3 +24845,212 @@ rewritten while this architecture is applied.
 No Cloudflare API, remote database, deployment, route, DNS record, or secret
 was accessed in this checkpoint. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-30 D1-Linearized Container Admission Fence (0068)
+
+This section supersedes the preceding "next boundary is 0068 design"
+statement. Application migration
+`0068_relay_container_drain_admission_enforce.sql` is now the local schema
+head. It implements a default-closed admission boundary for the global
+Container scope; it does not enable a campaign writer, move traffic, or change
+Go/VPS authority.
+
+The canonical local inventory is now:
+
+```text
+68 migrations
+88 required tables
+1365 checked incremental columns
+129 key indexes
+```
+
+The Worker expected migration set, D1 config audit, P5 candidate contract, P5
+schema-readback totals, platform capability response, Rust repository probes,
+SQLite verifier, and workerd atomic-admission fixture advance together to this
+head. Immutable shard-placement authorization provenance remains pinned to
+0063 and must not be rewritten when the Application head advances.
+
+### Persisted authority
+
+0068 adds three append-preserved authorities:
+
+- `relay_container_admission_fences` records one environment-bound global
+  admission generation, its open/closed state, exact accepted
+  high watermark/count/first/last keys, caller-attested bookmark and complete
+  set manifest, source schema/readback digests, and the campaign that closed
+  it;
+- `relay_container_admission_scope_heads` identifies the initial fence for the
+  one global scope and is immutable under 0068; and
+- `relay_container_admission_commits` assigns a D1 insertion-ordered
+  `accepted_sequence` to every new Container admission and binds its
+  reservation, operation, atomic receipt, request, billing snapshot, owner,
+  ring, shard and fence identities.
+
+All historical 0050 atomic admissions are deterministically backfilled in
+`(created_at, operation_id)` order with
+`pre-0068-atomic-admission-v1`, generation zero, no fence ID, and the existing
+atomic-admission digest as their immutable commit identity. New writes use
+`fenced-atomic-admission-v1`.
+
+That backfill is intentionally deterministic but remains a production
+promotion blocker: it is one migration-time full-table window operation.
+Before any remote apply, operators must retain exact 0050 cardinality and
+first/last-key evidence, rehearse the same cardinality against isolated D1,
+and prove the migration completes inside the current D1 statement limit.
+Otherwise 0068 must be replaced by a separately reviewed staged-backfill
+protocol; production must not discover the limit during migration.
+
+One Application D1 database may contain an admission fence for only one of
+`local`, `staging`, or `production`. This is an intentional fail-closed
+environment-isolation check, not a substitute for using separate Cloudflare
+D1 databases and credentials for each environment.
+
+### New-admission transaction
+
+The compatible canary writer first reads the exact open head/fence for
+`ENVIRONMENT`. Absence, an unsupported environment, missing 0068 schema, a
+closed fence, or a stale generation stops the request before provider
+dispatch. The durable D1 admission batch is ordered:
+
+1. enable deferred foreign-key checking for the batch;
+2. append the fence-bound admission commit;
+3. assert exactly one commit row changed;
+4. append the immutable 0050 atomic-admission receipt;
+5. append one or two immutable idempotency aliases;
+6. create the billing reservation;
+7. debit user and token quota with exact-change sentinels;
+8. recheck channel/model/group authority; and
+9. create the prepared Container operation.
+
+Every step is in one D1 batch. A conflict, stale fence, quota race, channel
+race, malformed marker, or operation failure rolls back the commit,
+reservation, financial changes and operation together. The input object may
+already have been written to R2, so a rejected race can leave only an
+unreferenced immutable input object for the existing orphan-inventory
+workflow; it cannot leave a provider call or partial financial admission.
+
+The 0068 operation trigger applies to every new
+`relay_container_operations` row, not only the current
+`chat_completions_canary`/protocol-v1 identity. A future operation kind,
+protocol version, dormant helper, stale Worker, migration script, or direct D1
+writer therefore cannot bypass the commit ledger by choosing a different
+label. Closing admission does not block dispatch, terminalization,
+settlement, refund, reconciliation or recovery updates for already accepted
+work.
+
+### Readback and replay integrity
+
+Application replay and settlement validation first inspect the 0068 migration
+marker. Before 0068, they preserve the existing 0050-only read path and never
+query a table that does not exist. After 0068, they read the corresponding
+commit in addition to the reservation, operation, 0050 receipt and aliases.
+The enforced reader:
+
+- accepts only the two known historical/current source contracts;
+- checks scope, reservation, operation, request, billing snapshot, owner,
+  ring and shard linkage;
+- preserves the original 0050 atomic identity across fence generations;
+- recomputes the Rust canonical fence-bound commit digest for current rows;
+  and
+- treats a missing, unknown or drifted commit as immutable-identity conflict.
+
+This schema-aware dual read permits the compatible build to deploy before the
+migration without breaking replay or recovery. Historical replay remains
+possible after admission closes because a valid pre-0068 backfill does not
+require an open fence. A new admission always requires the current open fence
+in the same transaction.
+
+### Linearizable one-way close
+
+Fence close and campaign creation are one reviewed D1 transaction with
+deferred foreign keys:
+
+1. update the current open fence to closed;
+2. bind cutoff, high watermark, count, first/last keys, bookmark, manifest,
+   source schema/readback identities and campaign ID;
+3. insert the matching 0067 drain campaign; and
+4. commit only if both trigger families accept the same identity.
+
+The close trigger first proves that the row is still the exact current scope
+head, then derives and compares high watermark, member count and first/last
+accepted keys from the insertion-ordered commit ledger. It also rejects
+closure while any `prepared`, `dispatched`, or `recovery_required` Container
+operation lacks a commit. Therefore a stale/non-head close or a pre-0068
+bypass row cannot be silently omitted from the frozen open-work boundary.
+The fence close time may precede the matching campaign creation time when two
+D1 statements cross a second boundary; ordered `closed_at <= created_at`
+replaces fragile timestamp equality while the transaction remains atomic.
+
+The database intentionally does not claim to recompute
+`accepted_bookmark_sha256`, `accepted_set_manifest_sha256`,
+`accepted_source_schema_sha256`, or
+`accepted_source_readback_sha256`. Those values are caller-attested in this
+checkpoint. The future authenticated close writer must independently read the
+authoritative source, keyset every row, recompute each member/page/set digest,
+and bind retained source readback before this is a complete accepted-set
+proof.
+
+0068 deliberately has no reopen transition. Once the initial fence closes,
+the scope head is immutable and every later admission remains rejected even
+if the campaign becomes `recovery_required` or `aborted`. Any future need to
+restore Rust admission requires a new, separately reviewed migration and
+authorization protocol that preserves the prior fence, commit, campaign and
+evidence. A recovery state is not authority to reopen traffic.
+
+### Promotion sequence
+
+0068 is not safe to apply under live mixed writers. The production sequence is:
+
+1. keep Go/VPS authoritative and all five drain write gates false;
+2. disable Container new-admission and replay-only entry points for the target
+   environment;
+3. inventory every Worker version, queue/cron/workflow consumer, replay path,
+   dormant helper and direct D1 writer;
+4. drain or terminally classify every in-flight Container operation and prove
+   no open operation exists outside 0050;
+5. retain D1 Time Travel/export plus normalized schema, trigger, row-count and
+   business-fingerprint evidence;
+6. deploy the schema-aware compatible reader/writer build while admission
+   remains disabled; prove old-schema replay works and new admission fails
+   closed before 0068;
+7. preflight historical 0050 cardinality and rehearse the one-shot backfill
+   within D1 limits, then apply 0068 in isolated staging and read back the
+   exact migration, columns, indexes, triggers and historical commits;
+8. use a future authenticated, audited, generation-CAS control-plane writer
+   to create the initial fence and head atomically;
+9. run N/N-1 stale-writer, close-race, response-loss, restart and mutation-count
+   campaigns before any canary admission;
+10. freeze one accepted set, drain it, prove recovery/aborted state cannot
+    reopen admission, and retain the complete evidence bundle; and
+11. repeat the reviewed ceremony for production only after security, SRE,
+    finance, privacy, release and rollback owners approve the same immutable
+    candidate.
+
+The current repository deliberately has no fence/head open or close
+mutation route. Local tests seed those rows directly to prove database
+behavior. This keeps an applied 0068 database default-closed, but it also means
+production enablement is not yet implementable.
+
+### Verification and remaining blockers
+
+Current local evidence proves deterministic historical backfill,
+single-environment locking, old/future-writer rejection, stale-generation
+rollback, same-batch commit/receipt/reservation/financial/operation admission,
+commit readback digest verification, open-campaign rejection, close/campaign
+atomicity across a D1 clock-second boundary, current-head enforcement,
+uncommitted-open-operation blocking, late-admission rejection, immutable
+source/commit/head identity, recovery-reopen rejection, append preservation,
+and duplicate-DDL failure.
+
+It does not prove remote D1 state, complete source-manifest recomputation,
+authenticated fence lifecycle writers, 0067 drain member/observation writers,
+canonical billing-vector replay, deployed Queue/R2/outbox/reconciliation
+convergence, Go reverse sync, two stable global observations, operation-14
+integration, one-shot historical-backfill capacity, an independent P5
+admission-fence evidence item, or 0069 typed approval/WORM evidence. All five
+0067 write gates remain false, 0069 is absent, and
+`container_traffic_return_authorization_compiled=false`.
+
+No Cloudflare API, credential, remote database, deployment, route, DNS or
+traffic state was accessed or changed. Go/VPS remains authoritative and
+production remains **NO-GO**.

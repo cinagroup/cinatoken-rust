@@ -244,15 +244,31 @@ describe("Relay Container P5 evidence contract", () => {
     await expect(verify(bundle)).rejects.toThrow(/incremental columns/);
   });
 
-  test("rejects the pre-audit 0067 column inventory", async () => {
+  test("rejects the exact 0067 column inventory", async () => {
     const bundle = await createBundle({
       mutateEvidence: (kind, evidence) => {
         if (kind === "schema-readback") {
-          evidence.facts.incrementalColumnCount = 1297;
+          evidence.facts.incrementalColumnCount = 1310;
         }
       },
     });
     await expect(verify(bundle)).rejects.toThrow(/incremental columns/);
+  });
+
+  test("rejects the complete previous 0067 schema vector", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "schema-readback") {
+          evidence.facts.migrationHead =
+            "0067_relay_container_drain_expand.sql";
+          evidence.facts.migrationCount = 67;
+          evidence.facts.tableCount = 85;
+          evidence.facts.incrementalColumnCount = 1310;
+          evidence.facts.keyIndexCount = 126;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(/migration head/);
   });
 
   test("rejects evidence facts that differ from the bound foundation artifact", async () => {
@@ -810,8 +826,8 @@ function candidateFixture() {
     ringGeneration: 1,
     shardCount: 8,
     migrationHead:
-      "0067_relay_container_drain_expand.sql",
-    migrationCount: 67,
+      "0068_relay_container_drain_admission_enforce.sql",
+    migrationCount: 68,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -1141,10 +1157,10 @@ function factsFixture(kind, candidate, foundationBinding) {
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 67,
-        tableCount: 85,
-        incrementalColumnCount: 1310,
-        keyIndexCount: 126,
+        migrationCount: 68,
+        tableCount: 88,
+        incrementalColumnCount: 1365,
+        keyIndexCount: 129,
         schemaFingerprintSha256: "a".repeat(64),
         businessFingerprintBeforeSha256: "b".repeat(64),
         businessFingerprintAfterSha256: "b".repeat(64),

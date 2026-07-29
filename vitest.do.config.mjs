@@ -17,6 +17,8 @@ const compiledWasmModules = [
   },
 ];
 const d1Migrations = await readD1Migrations("./migrations/d1");
+const d1MigrationsBeforeAdmissionFence = d1Migrations.slice(0, -1);
+const d1AdmissionFenceMigration = d1Migrations.slice(-1);
 const auxiliaryModuleRules = [
   {
     type: "ESModule",
@@ -96,6 +98,9 @@ export default defineConfig({
           QUOTA_COORD_RETENTION_VERIFIED: "true",
           QUOTA_COORD_STAGING_VERIFIED: "false",
           TEST_D1_MIGRATIONS: d1Migrations,
+          TEST_D1_MIGRATIONS_BEFORE_ADMISSION_FENCE:
+            d1MigrationsBeforeAdmissionFence,
+          TEST_D1_ADMISSION_FENCE_MIGRATION: d1AdmissionFenceMigration,
         },
         d1Databases: { DB: "do-runtime-test" },
         r2Buckets: ["FILE_BUCKET"],

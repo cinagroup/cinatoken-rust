@@ -1723,11 +1723,11 @@ describe("Rust Durable Object lifecycle contracts", () => {
       success: true,
       data: {
         d1_migration_status_available: true,
-        d1_migration_applied_count: 67,
+        d1_migration_applied_count: 68,
         d1_migration_latest:
-          "0067_relay_container_drain_expand.sql",
+          "0068_relay_container_drain_admission_enforce.sql",
         d1_expected_migration:
-          "0067_relay_container_drain_expand.sql",
+          "0068_relay_container_drain_admission_enforce.sql",
         d1_expected_migration_applied: true,
         d1_migration_set_matches: true,
         d1_migration_ready: true,
@@ -1745,6 +1745,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
         container_financial_terminal_v2_schema_ready: true,
         container_scheduled_terminalizer_runtime_ready: false,
         container_drain_schema_ready: true,
+        container_drain_admission_schema_ready: true,
         container_drain_campaign_write_enabled: false,
         container_drain_observation_write_enabled: false,
         container_ambiguity_quarantine_write_enabled: false,
@@ -2373,12 +2374,16 @@ describe("Rust Durable Object lifecycle contracts", () => {
   });
 
   it("applies an authenticated Container reconciliation retry without business mutation", async () => {
-    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await applyD1Migrations(
+      env.DB,
+      env.TEST_D1_MIGRATIONS_BEFORE_ADMISSION_FENCE,
+    );
     const { cookie, password } = await setupAndLoginBillingRoot();
     const seeded = [
       await seedContainerReconciliationObservation("1"),
       await seedContainerReconciliationObservation("2"),
     ];
+    await applyD1Migrations(env.DB, env.TEST_D1_ADMISSION_FENCE_MIGRATION);
     const statusUrl =
       "https://cinatoken.test/api/platform/container/reconciliation/status";
     const listUrl =
@@ -2797,12 +2802,16 @@ describe("Rust Durable Object lifecycle contracts", () => {
   });
 
   it("delivers terminal outbox events with retry and dead-letter fences", async () => {
-    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await applyD1Migrations(
+      env.DB,
+      env.TEST_D1_MIGRATIONS_BEFORE_ADMISSION_FENCE,
+    );
     const { cookie } = await setupAndLoginBillingRoot();
     await seedContainerTerminalOutboxAccount();
     const success = await seedContainerTerminalRecoveryEvent("success");
     const retry = await seedContainerTerminalRecoveryEvent("retry");
     const conflict = await seedContainerTerminalRecoveryEvent("conflict");
+    await applyD1Migrations(env.DB, env.TEST_D1_ADMISSION_FENCE_MIGRATION);
 
     await runScheduledRecovery();
     const rows = await terminalOutboxRows();
@@ -2886,10 +2895,14 @@ describe("Rust Durable Object lifecycle contracts", () => {
   }, 60_000);
 
   it("converges a terminal outbox replay after the acknowledgement response is lost", async () => {
-    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await applyD1Migrations(
+      env.DB,
+      env.TEST_D1_MIGRATIONS_BEFORE_ADMISSION_FENCE,
+    );
     await setupAndLoginBillingRoot();
     await seedContainerTerminalOutboxAccount();
     const seeded = await seedContainerTerminalRecoveryEvent("response-loss");
+    await applyD1Migrations(env.DB, env.TEST_D1_ADMISSION_FENCE_MIGRATION);
     const controllerResponse = await env.CONTAINER_CONTROLLER.fetch(
       "https://cinatoken-container-controller.internal/internal/v2/operations/terminal-ack",
       {
@@ -2925,7 +2938,10 @@ describe("Rust Durable Object lifecycle contracts", () => {
   });
 
   it("inventories R2 orphans across fenced generations without mutation authority", async () => {
-    await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
+    await applyD1Migrations(
+      env.DB,
+      env.TEST_D1_MIGRATIONS_BEFORE_ADMISSION_FENCE,
+    );
     const { cookie } = await setupAndLoginBillingRoot();
     const encoder = new TextEncoder();
     const referencedBody = encoder.encode("inventory-referenced");
@@ -3112,6 +3128,7 @@ describe("Rust Durable Object lifecycle contracts", () => {
       inputSha256: orphanSha256,
       inputSize: orphanBody.byteLength,
     });
+    await applyD1Migrations(env.DB, env.TEST_D1_ADMISSION_FENCE_MIGRATION);
     const orphanOperationBeforeResolve = await env.DB.prepare(
       `SELECT status, owner_generation, input_object_key, input_object_version,
               result_object_key, updated_at

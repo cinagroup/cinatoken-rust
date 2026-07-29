@@ -4618,3 +4618,41 @@ created. After 0068, 0069 must add typed campaign-bound approval/WORM evidence,
 validity/retention rules, and reviewer independence before the receipt writer
 can be considered. No Cloudflare remote state or credential was accessed.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-30 Global Container Admission Enforcement
+
+Application D1 head is now
+`0068_relay_container_drain_admission_enforce.sql`. The migration adds an
+append-preserved fence/head/commit authority, deterministically backfills
+historical 0050 admissions, and makes every new Container operation require a
+current fence-bound commit in the same D1 batch. The compatible canary writer
+loads the open environment fence before its R2 input write and commits the
+0068 sidecar before the 0050 receipt, aliases, reservation, quota debits,
+channel recheck and prepared operation.
+
+The local close contract is also fail-closed: it derives accepted
+high-watermark/count/first/last keys from D1, rejects any open operation absent
+from the commit ledger, requires the exact current scope head, and must create
+the matching 0067 campaign in the same transaction. The ordered timestamp
+predicate remains valid if the two statements cross a clock-second boundary.
+Replay and settlement first inspect the migration marker: the compatible
+Worker preserves 0050-only reads before 0068, while an installed 0068 requires
+and verifies the commit sidecar and current writer's canonical digest.
+Historical backfills remain replayable after the fence closes.
+
+0068 is intentionally one-way. The scope head is immutable after creation,
+and `recovery_required` or `aborted` cannot reopen admission. Restoring Rust
+admission would require a separately reviewed migration and authorization
+protocol.
+
+The exact local inventory is 68 migrations / 88 required tables / 1365 checked
+incremental columns / 129 key indexes. SQLite verification, 914 Rust library
+tests, and 19 real-workerd atomic-admission tests pass for this checkpoint.
+
+This is still default-closed infrastructure. No authenticated initial-fence
+or close writer/route exists, the one-shot historical backfill still needs
+cardinality and D1-duration proof, manifest/source digests remain
+caller-attested, no independent P5 admission-fence evidence type exists,
+every 0067 write gate remains false, 0069 is absent, and traffic-return
+authorization is not compiled. No Cloudflare credential or remote state was
+used. Go/VPS remains authoritative and production remains **NO-GO**.

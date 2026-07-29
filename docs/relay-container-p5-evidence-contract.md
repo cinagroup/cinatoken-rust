@@ -819,3 +819,44 @@ The Rust core and deterministic JavaScript/Rust vectors are local evidence
 only. P5 remains incomplete until a real release owner signs one candidate,
 the operator-owned filesystem produces retained create-new/ACL/durability
 evidence, and the exact installed launcher independently authorizes itself.
+
+## 0068 Admission Fence Evidence Overlay
+
+The frozen P5 candidate and schema-readback evidence now require Application
+head `0068_relay_container_drain_admission_enforce.sql`, 68 migrations, 88
+required tables, 1365 checked incremental columns, and 129 key indexes.
+Placement-mutation authorization storage provenance remains exactly 0063.
+
+A future remote P5 admission-fence item must bind:
+
+1. environment-specific D1 identity and proof that no other environment shares
+   the admission fence database;
+2. normalized 0068 table/index/trigger inventory and historical backfill
+   count/first/last/manifest readback, plus pre-apply cardinality and measured
+   isolated-D1 migration duration;
+3. exact Edge versions and every old/current admission writer in the drain
+   inventory;
+4. initial fence/head creation transaction, generation, admin identity,
+   canonical request digest and exact readback;
+5. stale Worker rejection with zero provider, Queue, billing, R2 publication,
+   commit, receipt, reservation and operation deltas;
+6. one successful same-batch commit/0050 receipt/financial/operation admission
+   and independently recomputed commit digest;
+7. the close race result, accepted high watermark/count/first/last keys,
+   independently recomputed bookmark/member/page/complete manifests, and
+   retained source schema/readback digests;
+8. proof that no open operation is outside the commit ledger;
+9. exact-current-head close+campaign atomic readback, including a transaction
+   whose statements cross a D1 clock-second boundary;
+10. N/N-1, process-loss and D1 response-loss results, plus proof that
+    `recovery_required` and `aborted` cannot reopen admission under 0068; and
+11. all five drain write gates false before any separately approved writer
+    campaign.
+
+Locally seeded fence/head rows are test fixtures, not promotion evidence.
+Caller-supplied valid SHA-256 values are not accepted-set completeness proof.
+The current P5 implementation binds only the 0068 schema head and inventory;
+the independent admission-fence evidence item described above is not yet
+implemented and remains a production blocker.
+No P5 item may infer traffic-return authorization from 0068, a drain campaign,
+operation 14, or an eligibility receipt.

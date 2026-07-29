@@ -86,6 +86,10 @@ pub(crate) const RELAY_CONTAINER_SHARD_PLACEMENT_DISPATCH_CONSUMPTION_MIGRATION:
     "0066_relay_container_shard_placement_dispatch_consumptions.sql";
 pub(crate) const RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION: &str =
     "0067_relay_container_drain_expand.sql";
+pub(crate) const RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION: &str =
+    "0068_relay_container_drain_admission_enforce.sql";
+pub(crate) const RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256: &str =
+    "53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT: i64 = 64;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_CONTRACT_VERSION: i64 = 1;
 pub(crate) const RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION: i64 = 2;
@@ -477,10 +481,29 @@ pub struct RelayContainerOperationRecord<'a> {
 pub struct RelayContainerAtomicAdmissionRecord<'a> {
     pub reservation: RelayBillingReservationRecord<'a>,
     pub operation: RelayContainerOperationRecord<'a>,
+    pub admission_fence: RelayContainerAdmissionFenceBinding<'a>,
     pub client_idempotency_hmac_aliases: &'a [&'a str],
     pub selected_channel_type: i64,
     pub selected_snapshot_key: &'a str,
     pub selected_at: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RelayContainerAdmissionFenceBinding<'a> {
+    pub environment: &'a str,
+    pub scope_kind: &'a str,
+    pub scope_id_sha256: &'a str,
+    pub admission_fence_id_sha256: &'a str,
+    pub fence_generation: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct RelayContainerOpenAdmissionFence {
+    pub environment: String,
+    pub scope_kind: String,
+    pub scope_id_sha256: String,
+    pub admission_fence_id_sha256: String,
+    pub fence_generation: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -549,6 +572,47 @@ struct RelayContainerAtomicAdmission {
     created_at: i64,
     attempt_count: i64,
     provider_attempt_generation: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerAdmissionCommit {
+    accepted_sequence: i64,
+    source_contract: String,
+    scope_kind: String,
+    scope_id_sha256: String,
+    admission_fence_id_sha256: Option<String>,
+    fence_generation: i64,
+    reservation_key: String,
+    operation_id: String,
+    atomic_admission_sha256: String,
+    operation_admission_sha256: String,
+    billing_snapshot_sha256: String,
+    client_request_sha256: String,
+    owner_generation: i64,
+    ring_generation: i64,
+    shard_count: i64,
+    shard_index: i64,
+    admission_commit_sha256: String,
+    fence_environment: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RelayContainerAdmissionCommitReadback {
+    LegacySchema,
+    Enforced(Option<RelayContainerAdmissionCommit>),
+}
+
+impl RelayContainerAdmissionCommitReadback {
+    fn persisted_commit(&self) -> Option<&RelayContainerAdmissionCommit> {
+        match self {
+            Self::LegacySchema => None,
+            Self::Enforced(commit) => commit.as_ref(),
+        }
+    }
+
+    fn requires_commit(&self) -> bool {
+        matches!(self, Self::Enforced(_))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -990,6 +1054,15 @@ struct RelayContainerDrainSchemaProbe {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerDrainAdmissionSchemaProbe {
+    migration_count: i64,
+    fence_columns: Option<String>,
+    head_columns: Option<String>,
+    commit_columns: Option<String>,
+    schema_objects: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[allow(dead_code)] // consumed when 0068 enables drain admission routes
 pub struct RelayContainerDrainCampaignRow {
     pub campaign_id: String,
@@ -1011,6 +1084,8 @@ pub struct RelayContainerDrainCampaignRow {
     pub accepted_first_operation_id: Option<String>,
     pub accepted_last_sequence: i64,
     pub accepted_last_operation_id: Option<String>,
+    pub accepted_source_schema_sha256: String,
+    pub accepted_source_readback_sha256: String,
     pub drain_ledger_schema_migration: String,
     pub ring_generation: i64,
     pub controller_service_name: String,
@@ -3634,6 +3709,47 @@ pub(crate) fn relay_container_atomic_admission_sha256(
     format!("{:x}", hasher.finalize())
 }
 
+pub(crate) fn relay_container_admission_commit_sha256(
+    record: &RelayContainerAtomicAdmissionRecord<'_>,
+    atomic_admission_sha256: &str,
+) -> String {
+    fn append_i64(hasher: &mut Sha256, value: i64) {
+        append_relay_container_digest_bytes(hasher, &value.to_be_bytes());
+    }
+
+    let fence = record.admission_fence;
+    let operation = &record.operation;
+    let billing_snapshot_sha256 =
+        relay_container_sha256_hex(record.reservation.billing_snapshot_json.trim().as_bytes());
+    let mut hasher = Sha256::new();
+    for value in [
+        "cinatoken:relay-container-admission-commit:v1",
+        "fenced-atomic-admission-v1",
+        fence.environment,
+        fence.scope_kind,
+        fence.scope_id_sha256,
+        fence.admission_fence_id_sha256,
+        record.reservation.reservation_key.trim(),
+        operation.operation_id,
+        atomic_admission_sha256,
+        operation.admission_sha256,
+        &billing_snapshot_sha256,
+        operation.client_request_sha256,
+    ] {
+        append_relay_container_digest_bytes(&mut hasher, value.as_bytes());
+    }
+    for value in [
+        fence.fence_generation,
+        operation.owner_generation,
+        operation.ring_generation,
+        operation.shard_count,
+        operation.shard_index,
+    ] {
+        append_i64(&mut hasher, value);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 pub(crate) fn relay_container_atomic_reconciliation_id(
     atomic_admission_sha256: &str,
 ) -> worker::Result<String> {
@@ -3659,6 +3775,14 @@ pub async fn admit_relay_container_operation_atomic(
     let reservation_key = record.reservation.reservation_key.trim();
     let mut statements = vec![db.prepare("PRAGMA defer_foreign_keys = ON")];
     let mut checked = Vec::new();
+    push_relay_reservation_guarded_statement(
+        db,
+        &mut statements,
+        &mut checked,
+        relay_container_admission_commit_insert_statement(db, &record, &atomic_admission_sha256)?,
+        reservation_key,
+        "relay container admission fence commit failed",
+    )?;
     push_relay_reservation_guarded_statement(
         db,
         &mut statements,
@@ -3748,6 +3872,52 @@ pub async fn admit_relay_container_operation_atomic(
             "relay container atomic admission readback is missing".to_string(),
         )),
     }
+}
+
+fn relay_container_admission_commit_insert_statement(
+    db: &D1Database,
+    record: &RelayContainerAtomicAdmissionRecord<'_>,
+    atomic_admission_sha256: &str,
+) -> worker::Result<worker::D1PreparedStatement> {
+    let operation = &record.operation;
+    let fence = record.admission_fence;
+    let billing_snapshot_sha256 =
+        relay_container_sha256_hex(record.reservation.billing_snapshot_json.trim().as_bytes());
+    let admission_commit_sha256 =
+        relay_container_admission_commit_sha256(record, atomic_admission_sha256);
+    let args = [
+        D1Type::Text(fence.scope_kind),
+        D1Type::Text(fence.scope_id_sha256),
+        D1Type::Text(fence.admission_fence_id_sha256),
+        relay_container_d1_integer(fence.fence_generation, "admission fence generation")?,
+        D1Type::Text(record.reservation.reservation_key.trim()),
+        D1Type::Text(operation.operation_id),
+        D1Type::Text(atomic_admission_sha256),
+        D1Type::Text(operation.admission_sha256),
+        D1Type::Text(&billing_snapshot_sha256),
+        D1Type::Text(operation.client_request_sha256),
+        relay_container_d1_integer(operation.owner_generation, "owner generation")?,
+        relay_container_d1_integer(operation.ring_generation, "ring generation")?,
+        relay_container_d1_integer(operation.shard_count, "shard count")?,
+        relay_container_d1_integer(operation.shard_index, "shard index")?,
+        D1Type::Text(&admission_commit_sha256),
+    ];
+    db.prepare(
+        r#"
+        INSERT INTO relay_container_admission_commits (
+          source_contract, scope_kind, scope_id_sha256,
+          admission_fence_id_sha256, fence_generation,
+          reservation_key, operation_id, atomic_admission_sha256,
+          operation_admission_sha256, billing_snapshot_sha256,
+          client_request_sha256, owner_generation, ring_generation,
+          shard_count, shard_index, admission_commit_sha256
+        ) VALUES (
+          'fenced-atomic-admission-v1', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+          ?9, ?10, ?11, ?12, ?13, ?14, ?15
+        )
+        "#,
+    )
+    .bind_refs(&args)
 }
 
 fn relay_container_atomic_reservation_insert_statement(
@@ -5075,8 +5245,10 @@ pub async fn quote_relay_container_provider_usage_settlement(
     };
     let aliases =
         relay_container_idempotency_aliases_by_reservation(db, &operation.reservation_key).await?;
+    let commit = relay_container_admission_commit_readback(db, &operation.reservation_key).await?;
     if !relay_container_atomic_admission_integrity_valid(
         &admission,
+        &commit,
         operation,
         &reservation,
         &aliases,
@@ -5166,8 +5338,10 @@ async fn validate_relay_container_provider_usage_settlement(
     };
     let aliases =
         relay_container_idempotency_aliases_by_reservation(db, command.reservation_key).await?;
+    let commit = relay_container_admission_commit_readback(db, command.reservation_key).await?;
     if !relay_container_atomic_admission_integrity_valid(
         &admission,
+        &commit,
         operation,
         reservation,
         &aliases,
@@ -6887,8 +7061,10 @@ pub async fn lookup_relay_container_client_request(
     };
     let aliases =
         relay_container_idempotency_aliases_by_reservation(db, &operation.reservation_key).await?;
+    let commit = relay_container_admission_commit_readback(db, &operation.reservation_key).await?;
     if relay_container_atomic_admission_integrity_valid(
         &admission,
+        &commit,
         &operation,
         &reservation,
         &aliases,
@@ -6973,6 +7149,60 @@ async fn relay_container_atomic_admission_by_reservation(
     .await
 }
 
+async fn relay_container_admission_commit_by_reservation(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<Option<RelayContainerAdmissionCommit>> {
+    let reservation_key = non_empty_relay_reservation_field(reservation_key, "key")?;
+    let args = [D1Type::Text(reservation_key)];
+    db.prepare(
+        r#"
+        SELECT commit_row.accepted_sequence, commit_row.source_contract,
+               commit_row.scope_kind, commit_row.scope_id_sha256,
+               commit_row.admission_fence_id_sha256,
+               commit_row.fence_generation, commit_row.reservation_key,
+               commit_row.operation_id, commit_row.atomic_admission_sha256,
+               commit_row.operation_admission_sha256,
+               commit_row.billing_snapshot_sha256,
+               commit_row.client_request_sha256,
+               commit_row.owner_generation, commit_row.ring_generation,
+               commit_row.shard_count, commit_row.shard_index,
+               commit_row.admission_commit_sha256,
+               fence.environment AS fence_environment
+        FROM relay_container_admission_commits AS commit_row
+        LEFT JOIN relay_container_admission_fences AS fence
+          ON fence.admission_fence_id_sha256 =
+               commit_row.admission_fence_id_sha256
+        WHERE commit_row.reservation_key = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerAdmissionCommit>(None)
+    .await
+}
+
+async fn relay_container_admission_commit_readback(
+    db: &D1Database,
+    reservation_key: &str,
+) -> worker::Result<RelayContainerAdmissionCommitReadback> {
+    let migration = [D1Type::Text(
+        RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION,
+    )];
+    let applied = db
+        .prepare("SELECT COUNT(1) AS count FROM d1_migrations WHERE name = ?1")
+        .bind_refs(&migration)?
+        .first::<CountRow>(None)
+        .await?
+        .is_some_and(|row| row.count == 1);
+    if !applied {
+        return Ok(RelayContainerAdmissionCommitReadback::LegacySchema);
+    }
+    relay_container_admission_commit_by_reservation(db, reservation_key)
+        .await
+        .map(RelayContainerAdmissionCommitReadback::Enforced)
+}
+
 async fn relay_container_idempotency_aliases_by_reservation(
     db: &D1Database,
     reservation_key: &str,
@@ -7040,6 +7270,7 @@ fn relay_container_atomic_admission_links_operation(
 
 fn relay_container_atomic_admission_integrity_valid(
     admission: &RelayContainerAtomicAdmission,
+    commit_readback: &RelayContainerAdmissionCommitReadback,
     operation: &RelayContainerOperation,
     reservation: &RelayBillingReservation,
     aliases: &[RelayContainerIdempotencyAlias],
@@ -7121,12 +7352,82 @@ fn relay_container_atomic_admission_integrity_valid(
             reconciliation_id: &operation.reconciliation_id,
             created_at: operation.created_at,
         },
+        admission_fence: RelayContainerAdmissionFenceBinding {
+            environment: "local",
+            scope_kind: "global",
+            scope_id_sha256: RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256,
+            admission_fence_id_sha256:
+                "0000000000000000000000000000000000000000000000000000000000000000",
+            fence_generation: 1,
+        },
         client_idempotency_hmac_aliases: &alias_values,
         selected_channel_type: admission.selected_channel_type,
         selected_snapshot_key: &admission.selected_snapshot_key,
         selected_at: admission.selected_at,
     };
-    relay_container_atomic_admission_sha256(&record) == admission.atomic_admission_sha256
+    if relay_container_atomic_admission_sha256(&record) != admission.atomic_admission_sha256 {
+        return false;
+    }
+    let Some(commit) = commit_readback.persisted_commit() else {
+        return !commit_readback.requires_commit();
+    };
+    if commit.accepted_sequence <= 0
+        || commit.scope_kind != "global"
+        || commit.scope_id_sha256 != RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256
+        || commit.reservation_key != admission.reservation_key
+        || commit.operation_id != admission.operation_id
+        || commit.atomic_admission_sha256 != admission.atomic_admission_sha256
+        || commit.operation_admission_sha256 != admission.operation_admission_sha256
+        || commit.billing_snapshot_sha256 != admission.billing_snapshot_sha256
+        || commit.client_request_sha256 != admission.client_request_sha256
+        || commit.owner_generation != admission.owner_generation
+        || commit.ring_generation != operation.ring_generation
+        || commit.shard_count != operation.shard_count
+        || commit.shard_index != operation.shard_index
+    {
+        return false;
+    }
+    match commit.source_contract.as_str() {
+        "pre-0068-atomic-admission-v1" => {
+            commit.admission_fence_id_sha256.is_none()
+                && commit.fence_environment.is_none()
+                && commit.fence_generation == 0
+                && commit.admission_commit_sha256 == admission.atomic_admission_sha256
+        }
+        "fenced-atomic-admission-v1" => {
+            let (Some(admission_fence_id_sha256), Some(environment)) = (
+                commit.admission_fence_id_sha256.as_deref(),
+                commit.fence_environment.as_deref(),
+            ) else {
+                return false;
+            };
+            if !matches!(environment, "local" | "staging" | "production")
+                || commit.fence_generation <= 0
+                || validate_relay_container_sha256(
+                    admission_fence_id_sha256,
+                    "admission fence id sha256",
+                )
+                .is_err()
+            {
+                return false;
+            }
+            let fenced_record = RelayContainerAtomicAdmissionRecord {
+                admission_fence: RelayContainerAdmissionFenceBinding {
+                    environment,
+                    scope_kind: &commit.scope_kind,
+                    scope_id_sha256: &commit.scope_id_sha256,
+                    admission_fence_id_sha256,
+                    fence_generation: commit.fence_generation,
+                },
+                ..record
+            };
+            relay_container_admission_commit_sha256(
+                &fenced_record,
+                &admission.atomic_admission_sha256,
+            ) == commit.admission_commit_sha256
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -9642,6 +9943,106 @@ pub async fn relay_container_atomic_admission_schema_ready(
         .first::<CountRow>(None)
         .await?;
     Ok(row.map(|row| row.count == 1).unwrap_or(false))
+}
+
+pub async fn relay_container_drain_admission_schema_ready(db: &D1Database) -> worker::Result<bool> {
+    const FENCE_COLUMNS: &str = "admission_fence_id_sha256,contract_version,fence_contract,fence_kind,environment,scope_kind,scope_id_sha256,fence_generation,admission_open,cutoff_at,accepted_high_watermark,accepted_bookmark_sha256,accepted_member_count,accepted_set_manifest_sha256,accepted_first_sequence,accepted_first_operation_id,accepted_last_sequence,accepted_last_operation_id,accepted_source_schema_sha256,accepted_source_readback_sha256,closed_campaign_id,state_digest_sha256,created_by_admin_id,closed_by_admin_id,created_at,closed_at";
+    const HEAD_COLUMNS: &str = "environment,scope_kind,scope_id_sha256,current_fence_id_sha256,current_fence_generation,head_version,head_digest_sha256,updated_by_admin_id,updated_at";
+    const COMMIT_COLUMNS: &str = "accepted_sequence,source_contract,scope_kind,scope_id_sha256,admission_fence_id_sha256,fence_generation,reservation_key,operation_id,atomic_admission_sha256,operation_admission_sha256,billing_snapshot_sha256,client_request_sha256,owner_generation,ring_generation,shard_count,shard_index,admission_commit_sha256,committed_at";
+    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_admission_commits_scope|index:idx_relay_container_admission_fence_generation|index:idx_relay_container_admission_open_scope|table:relay_container_admission_commits|table:relay_container_admission_fences|table:relay_container_admission_scope_heads|trigger:relay_container_admission_commit_delete_guard|trigger:relay_container_admission_commit_insert_guard|trigger:relay_container_admission_commit_update_guard|trigger:relay_container_admission_fence_delete_guard|trigger:relay_container_admission_fence_insert_guard|trigger:relay_container_admission_fence_update_guard|trigger:relay_container_admission_scope_head_delete_guard|trigger:relay_container_admission_scope_head_insert_guard|trigger:relay_container_admission_scope_head_update_guard|trigger:relay_container_atomic_admission_fence_guard|trigger:relay_container_drain_campaign_admission_fence_guard|trigger:relay_container_drain_campaign_source_identity_update_guard|trigger:relay_container_operation_admission_fence_guard";
+    let migration = [D1Type::Text(
+        RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION,
+    )];
+    let row = db
+        .prepare(
+            r#"
+            SELECT
+              (SELECT COUNT(1)
+               FROM d1_migrations
+               WHERE name = ?1) AS migration_count,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_admission_fences')
+                 ORDER BY cid
+               )) AS fence_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_admission_scope_heads')
+                 ORDER BY cid
+               )) AS head_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info('relay_container_admission_commits')
+                 ORDER BY cid
+               )) AS commit_columns,
+              (SELECT group_concat(type || ':' || name, '|') FROM (
+                 SELECT type, name
+                 FROM sqlite_master
+                 WHERE (
+                   tbl_name IN (
+                     'relay_container_admission_fences',
+                     'relay_container_admission_scope_heads',
+                     'relay_container_admission_commits'
+                   )
+                   OR name IN (
+                     'relay_container_atomic_admission_fence_guard',
+                     'relay_container_operation_admission_fence_guard',
+                     'relay_container_drain_campaign_admission_fence_guard',
+                     'relay_container_drain_campaign_source_identity_update_guard'
+                   )
+                 )
+                   AND name NOT LIKE 'sqlite_autoindex_%'
+                 ORDER BY type || ':' || name
+               )) AS schema_objects
+            "#,
+        )
+        .bind_refs(&migration)?
+        .first::<RelayContainerDrainAdmissionSchemaProbe>(None)
+        .await?;
+    Ok(row.is_some_and(|row| {
+        row.migration_count == 1
+            && row.fence_columns.as_deref() == Some(FENCE_COLUMNS)
+            && row.head_columns.as_deref() == Some(HEAD_COLUMNS)
+            && row.commit_columns.as_deref() == Some(COMMIT_COLUMNS)
+            && row.schema_objects.as_deref() == Some(SCHEMA_OBJECTS)
+    }))
+}
+
+pub async fn relay_container_open_admission_fence(
+    db: &D1Database,
+    environment: &str,
+) -> worker::Result<Option<RelayContainerOpenAdmissionFence>> {
+    if !matches!(environment, "local" | "staging" | "production") {
+        return Err(worker::Error::RustError(
+            "relay container admission environment is invalid".to_string(),
+        ));
+    }
+    let args = [
+        D1Type::Text(environment),
+        D1Type::Text(RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256),
+    ];
+    db.prepare(
+        r#"
+        SELECT fence.environment, fence.scope_kind, fence.scope_id_sha256,
+               fence.admission_fence_id_sha256, fence.fence_generation
+        FROM relay_container_admission_scope_heads AS head
+        JOIN relay_container_admission_fences AS fence
+          ON fence.admission_fence_id_sha256 = head.current_fence_id_sha256
+         AND fence.environment = head.environment
+         AND fence.scope_kind = head.scope_kind
+         AND fence.scope_id_sha256 = head.scope_id_sha256
+         AND fence.fence_generation = head.current_fence_generation
+        WHERE head.environment = ?1
+          AND head.scope_kind = 'global'
+          AND head.scope_id_sha256 = ?2
+          AND fence.fence_kind IN ('admission', 'recovery')
+          AND fence.admission_open = 1
+        LIMIT 1
+        "#,
+    )
+    .bind_refs(&args)?
+    .first::<RelayContainerOpenAdmissionFence>(None)
+    .await
 }
 
 pub async fn relay_container_scheduled_terminalization_schema_ready(
@@ -14189,7 +14590,7 @@ pub async fn relay_container_shard_placement_schema_ready(db: &D1Database) -> wo
 }
 
 pub async fn relay_container_drain_schema_ready(db: &D1Database) -> worker::Result<bool> {
-    const CAMPAIGN_COLUMNS: &str = "campaign_id,contract_version,campaign_contract,environment,scope_kind,scope_id_sha256,fence_generation,admission_fence_id_sha256,admission_open,fence_enforcement_migration,cutoff_at,accepted_high_watermark,accepted_bookmark_sha256,accepted_member_count,accepted_set_manifest_sha256,accepted_first_sequence,accepted_first_operation_id,accepted_last_sequence,accepted_last_operation_id,drain_ledger_schema_migration,ring_generation,controller_service_name,controller_version_id,shard_count,shard_inventory_sha256,edge_version_set_sha256,configuration_sha256,reverse_sync_snapshot_id_sha256,reverse_sync_source_schema_sha256,reverse_sync_target_schema_sha256,stability_window_seconds,campaign_digest_sha256,state,state_version,last_event_digest_sha256,created_by_admin_id,created_at";
+    const CAMPAIGN_COLUMNS: &str = "campaign_id,contract_version,campaign_contract,environment,scope_kind,scope_id_sha256,fence_generation,admission_fence_id_sha256,admission_open,fence_enforcement_migration,cutoff_at,accepted_high_watermark,accepted_bookmark_sha256,accepted_member_count,accepted_set_manifest_sha256,accepted_first_sequence,accepted_first_operation_id,accepted_last_sequence,accepted_last_operation_id,drain_ledger_schema_migration,ring_generation,controller_service_name,controller_version_id,shard_count,shard_inventory_sha256,edge_version_set_sha256,configuration_sha256,reverse_sync_snapshot_id_sha256,reverse_sync_source_schema_sha256,reverse_sync_target_schema_sha256,stability_window_seconds,campaign_digest_sha256,state,state_version,last_event_digest_sha256,created_by_admin_id,created_at,accepted_source_schema_sha256,accepted_source_readback_sha256";
     const EVENT_COLUMNS: &str = "campaign_id,event_sequence,event_code,from_state,to_state,previous_event_digest_sha256,page_ordinal,page_member_count,page_first_accepted_sequence,page_first_operation_id,page_last_accepted_sequence,page_last_operation_id,sealed_page_count,sealed_member_count,membership_manifest_sha256,first_observation_id_sha256,second_observation_id_sha256,reverse_sync_manifest_id_sha256,operation14_receipt_sha256,operation14_baseline_sha256,traffic_return_receipt_id_sha256,evidence_manifest_sha256,actor_identity_sha256,event_digest_sha256,recorded_at";
     const MEMBER_COLUMNS: &str = "campaign_id,accepted_sequence,operation_id,owner_generation,shard_index,page_ordinal,member_ordinal,admission_receipt_sha256,provider_attempt_identity_sha256,reservation_key_sha256,expected_terminal_identity_sha256,expected_final_ack_identity_sha256,required_r2_artifact_class,billing_contract_ref_sha256,billing_expression_sha256,billing_expression_version,usage_semantic,request_input_sha256,member_digest_sha256,recorded_at";
     const OBSERVATION_COLUMNS: &str = "observation_id_sha256,campaign_id,observation_kind,observation_generation,campaign_event_sequence,operation_id,owner_generation,closure_class,terminal_event_sha256,final_ack_sha256,financial_terminal_sha256,billing_audit_sha256,outbox_disposition_sha256,reconciliation_sha256,r2_evidence_sha256,reverse_sync_disposition_sha256,request_id_sha256,observer_identity_sha256,controller_version_id,shard_inventory_sha256,member_count,member_closure_count,quarantine_count,reverse_manifest_count,d1_open_count,billing_open_count,outbox_open_count,reconciliation_open_count,r2_missing_count,queue_open_count,reverse_sync_open_count,memory_batch_open_count,unclassified_open_count,member_closure_manifest_sha256,quarantine_manifest_sha256,reverse_sync_manifest_sha256,billing_conservation_sha256,state_digest_sha256,observation_digest_sha256,observed_at";
@@ -14197,15 +14598,18 @@ pub async fn relay_container_drain_schema_ready(db: &D1Database) -> worker::Resu
     const QUARANTINE_COLUMNS: &str = "quarantine_id_sha256,campaign_id,operation_id,owner_generation,reservation_key_sha256,provider_operation_id_sha256,send_before_journal_sha256,request_sha256,last_provider_observation_sha256,evidence_manifest_sha256,provider_resend_allowed,rust_replay_allowed,go_replay_allowed,reconciliation_owner,review_deadline_at,customer_exposure_quota,provider_exposure_microunits,accounting_disposition,accounting_disposition_sha256,go_tombstone_sha256,approval_manifest_sha256,worm_object_key_sha256,retention_until,quarantine_digest_sha256,quarantined_by_admin_id,quarantined_at";
     const REVERSE_SYNC_COLUMNS: &str = "manifest_id_sha256,campaign_id,sync_generation,snapshot_id_sha256,source_schema_sha256,target_schema_sha256,source_bookmark_sha256,source_high_watermark,target_high_watermark,source_count,target_count,rejected_count,partition_count,partition_manifest_sha256,go_import_identity_sha256,shadow_result,shadow_manifest_sha256,rust_writes_fenced,go_writes_enabled,status,manifest_digest_sha256,recorded_at";
     const TRAFFIC_RETURN_COLUMNS: &str = "receipt_id_sha256,campaign_id,contract_version,receipt_contract,evidence_enforcement_migration,first_observation_id_sha256,second_observation_id_sha256,reverse_sync_manifest_id_sha256,membership_manifest_sha256,member_closure_manifest_sha256,quarantine_manifest_sha256,billing_conservation_sha256,operation14_receipt_sha256,operation14_baseline_sha256,go_vps_readiness_sha256,traffic_rehearsal_sha256,slo_approval_sha256,security_approval_sha256,finance_approval_sha256,release_approval_sha256,immutable_evidence_location_sha256,retention_policy_sha256,eligible_for_traffic_return_review,traffic_return_authorized,reviewer_identity_sha256,receipt_digest_sha256,issued_at";
-    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_drain_active_scope|index:idx_relay_container_drain_campaign_digest|index:idx_relay_container_drain_campaign_state|index:idx_relay_container_drain_event_digest|index:idx_relay_container_drain_global_observations|index:idx_relay_container_drain_member_closure|index:idx_relay_container_drain_member_digest|index:idx_relay_container_drain_members_page|index:idx_relay_container_drain_observation_digest|index:idx_relay_container_drain_page_seal|index:idx_relay_container_drain_shard_observation_digest|index:idx_relay_container_quarantine_digest|index:idx_relay_container_quarantine_review|index:idx_relay_container_reverse_sync_status|index:idx_relay_container_traffic_return_receipt_digest|table:relay_container_ambiguity_quarantines|table:relay_container_drain_campaigns|table:relay_container_drain_events|table:relay_container_drain_members|table:relay_container_drain_observations|table:relay_container_drain_shard_observations|table:relay_container_reverse_sync_manifests|table:relay_container_traffic_return_receipts|trigger:relay_container_ambiguity_quarantine_delete_guard|trigger:relay_container_ambiguity_quarantine_insert_guard|trigger:relay_container_ambiguity_quarantine_update_guard|trigger:relay_container_drain_campaign_delete_guard|trigger:relay_container_drain_campaign_insert_guard|trigger:relay_container_drain_campaign_update_guard|trigger:relay_container_drain_event_apply|trigger:relay_container_drain_event_delete_guard|trigger:relay_container_drain_event_insert_guard|trigger:relay_container_drain_event_update_guard|trigger:relay_container_drain_member_delete_guard|trigger:relay_container_drain_member_insert_guard|trigger:relay_container_drain_member_update_guard|trigger:relay_container_drain_observation_delete_guard|trigger:relay_container_drain_observation_insert_guard|trigger:relay_container_drain_observation_update_guard|trigger:relay_container_drain_shard_observation_delete_guard|trigger:relay_container_drain_shard_observation_insert_guard|trigger:relay_container_drain_shard_observation_update_guard|trigger:relay_container_reverse_sync_manifest_delete_guard|trigger:relay_container_reverse_sync_manifest_insert_guard|trigger:relay_container_reverse_sync_manifest_update_guard|trigger:relay_container_traffic_return_receipt_delete_guard|trigger:relay_container_traffic_return_receipt_insert_guard|trigger:relay_container_traffic_return_receipt_update_guard";
-    let migration = [D1Type::Text(RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION)];
+    const SCHEMA_OBJECTS: &str = "index:idx_relay_container_drain_active_scope|index:idx_relay_container_drain_campaign_digest|index:idx_relay_container_drain_campaign_state|index:idx_relay_container_drain_event_digest|index:idx_relay_container_drain_global_observations|index:idx_relay_container_drain_member_closure|index:idx_relay_container_drain_member_digest|index:idx_relay_container_drain_members_page|index:idx_relay_container_drain_observation_digest|index:idx_relay_container_drain_page_seal|index:idx_relay_container_drain_shard_observation_digest|index:idx_relay_container_quarantine_digest|index:idx_relay_container_quarantine_review|index:idx_relay_container_reverse_sync_status|index:idx_relay_container_traffic_return_receipt_digest|table:relay_container_ambiguity_quarantines|table:relay_container_drain_campaigns|table:relay_container_drain_events|table:relay_container_drain_members|table:relay_container_drain_observations|table:relay_container_drain_shard_observations|table:relay_container_reverse_sync_manifests|table:relay_container_traffic_return_receipts|trigger:relay_container_ambiguity_quarantine_delete_guard|trigger:relay_container_ambiguity_quarantine_insert_guard|trigger:relay_container_ambiguity_quarantine_update_guard|trigger:relay_container_drain_campaign_admission_fence_guard|trigger:relay_container_drain_campaign_delete_guard|trigger:relay_container_drain_campaign_insert_guard|trigger:relay_container_drain_campaign_source_identity_update_guard|trigger:relay_container_drain_campaign_update_guard|trigger:relay_container_drain_event_apply|trigger:relay_container_drain_event_delete_guard|trigger:relay_container_drain_event_insert_guard|trigger:relay_container_drain_event_update_guard|trigger:relay_container_drain_member_delete_guard|trigger:relay_container_drain_member_insert_guard|trigger:relay_container_drain_member_update_guard|trigger:relay_container_drain_observation_delete_guard|trigger:relay_container_drain_observation_insert_guard|trigger:relay_container_drain_observation_update_guard|trigger:relay_container_drain_shard_observation_delete_guard|trigger:relay_container_drain_shard_observation_insert_guard|trigger:relay_container_drain_shard_observation_update_guard|trigger:relay_container_reverse_sync_manifest_delete_guard|trigger:relay_container_reverse_sync_manifest_insert_guard|trigger:relay_container_reverse_sync_manifest_update_guard|trigger:relay_container_traffic_return_receipt_delete_guard|trigger:relay_container_traffic_return_receipt_insert_guard|trigger:relay_container_traffic_return_receipt_update_guard";
+    let migrations = [
+        D1Type::Text(RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION),
+    ];
     let row = db
         .prepare(
             r#"
             SELECT
               (SELECT COUNT(1)
                FROM d1_migrations
-               WHERE name = ?1) AS migration_count,
+               WHERE name IN (?1, ?2)) AS migration_count,
               (SELECT group_concat(name, ',') FROM (
                  SELECT name
                  FROM pragma_table_info('relay_container_drain_campaigns')
@@ -14272,11 +14676,11 @@ pub async fn relay_container_drain_schema_ready(db: &D1Database) -> worker::Resu
                )) AS schema_objects
             "#,
         )
-        .bind_refs(&migration)?
+        .bind_refs(&migrations)?
         .first::<RelayContainerDrainSchemaProbe>(None)
         .await?;
     Ok(row.is_some_and(|row| {
-        row.migration_count == 1
+        row.migration_count == 2
             && row.campaign_columns == CAMPAIGN_COLUMNS
             && row.event_columns == EVENT_COLUMNS
             && row.member_columns == MEMBER_COLUMNS
@@ -14307,6 +14711,8 @@ pub async fn relay_container_drain_campaign(
                accepted_member_count, accepted_set_manifest_sha256,
                accepted_first_sequence, accepted_first_operation_id,
                accepted_last_sequence, accepted_last_operation_id,
+               accepted_source_schema_sha256,
+               accepted_source_readback_sha256,
                drain_ledger_schema_migration, ring_generation,
                controller_service_name, controller_version_id, shard_count,
                shard_inventory_sha256, edge_version_set_sha256,
@@ -15601,10 +16007,14 @@ async fn classify_relay_container_atomic_admission_readback(
             expected.reservation.reservation_key,
         )
         .await?;
+        let commit =
+            relay_container_admission_commit_readback(db, expected.reservation.reservation_key)
+                .await?;
         return Ok(
             if reservation.is_none()
                 && operation.is_none()
                 && admission.is_none()
+                && commit.persisted_commit().is_none()
                 && aliases.is_empty()
             {
                 None
@@ -15627,8 +16037,10 @@ async fn classify_relay_container_atomic_admission_readback(
     };
     let aliases =
         relay_container_idempotency_aliases_by_reservation(db, &operation.reservation_key).await?;
+    let commit = relay_container_admission_commit_readback(db, &operation.reservation_key).await?;
     if !relay_container_atomic_admission_integrity_valid(
         &admission,
+        &commit,
         &operation,
         &reservation,
         &aliases,
@@ -15735,7 +16147,10 @@ fn validate_relay_container_atomic_admission_record(
     validate_relay_container_operation_record(&record.operation)?;
     let reservation = &record.reservation;
     let operation = &record.operation;
+    let fence = record.admission_fence;
     let aliases = record.client_idempotency_hmac_aliases;
+    validate_relay_container_sha256(fence.scope_id_sha256, "admission fence scope sha256")?;
+    validate_relay_container_sha256(fence.admission_fence_id_sha256, "admission fence id sha256")?;
     for alias in aliases {
         validate_relay_container_sha256(alias, "client idempotency alias sha256")?;
     }
@@ -15747,6 +16162,11 @@ fn validate_relay_container_atomic_admission_record(
         || reservation.lease_expires_at != operation.owner_lease_expires_at
         || reservation.created_at != record.selected_at
         || operation.created_at != record.selected_at
+        || !matches!(fence.environment, "local" | "staging" | "production")
+        || fence.scope_kind != "global"
+        || fence.scope_id_sha256 != RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256
+        || fence.fence_generation <= 0
+        || fence.fence_generation > i64::from(i32::MAX)
         || operation.owner_generation != RELAY_CONTAINER_ATOMIC_ADMISSION_OWNER_GENERATION
         || operation.channel_id <= 0
         || record.selected_channel_type <= 0
@@ -29181,6 +29601,7 @@ mod tests {
         let admission = &source[start..end];
         let positions = [
             "PRAGMA defer_foreign_keys = ON",
+            "relay_container_admission_commit_insert_statement",
             "relay_container_atomic_admission_insert_statement",
             "relay_container_idempotency_alias_insert_statement",
             "relay_container_atomic_reservation_insert_statement",
@@ -29310,6 +29731,70 @@ mod tests {
         }
     }
 
+    fn relay_container_test_historical_admission_commit(
+        admission: &RelayContainerAtomicAdmission,
+        operation: &RelayContainerOperation,
+    ) -> RelayContainerAdmissionCommit {
+        RelayContainerAdmissionCommit {
+            accepted_sequence: 1,
+            source_contract: "pre-0068-atomic-admission-v1".to_string(),
+            scope_kind: "global".to_string(),
+            scope_id_sha256: RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256.to_string(),
+            admission_fence_id_sha256: None,
+            fence_generation: 0,
+            reservation_key: admission.reservation_key.clone(),
+            operation_id: admission.operation_id.clone(),
+            atomic_admission_sha256: admission.atomic_admission_sha256.clone(),
+            operation_admission_sha256: admission.operation_admission_sha256.clone(),
+            billing_snapshot_sha256: admission.billing_snapshot_sha256.clone(),
+            client_request_sha256: admission.client_request_sha256.clone(),
+            owner_generation: admission.owner_generation,
+            ring_generation: operation.ring_generation,
+            shard_count: operation.shard_count,
+            shard_index: operation.shard_index,
+            admission_commit_sha256: admission.atomic_admission_sha256.clone(),
+            fence_environment: None,
+        }
+    }
+
+    fn relay_container_test_fenced_admission_commit(
+        admission: &RelayContainerAtomicAdmission,
+        operation: &RelayContainerOperation,
+        record: &RelayContainerAtomicAdmissionRecord<'_>,
+    ) -> RelayContainerAdmissionCommit {
+        RelayContainerAdmissionCommit {
+            accepted_sequence: 2,
+            source_contract: "fenced-atomic-admission-v1".to_string(),
+            scope_kind: record.admission_fence.scope_kind.to_string(),
+            scope_id_sha256: record.admission_fence.scope_id_sha256.to_string(),
+            admission_fence_id_sha256: Some(
+                record.admission_fence.admission_fence_id_sha256.to_string(),
+            ),
+            fence_generation: record.admission_fence.fence_generation,
+            reservation_key: admission.reservation_key.clone(),
+            operation_id: admission.operation_id.clone(),
+            atomic_admission_sha256: admission.atomic_admission_sha256.clone(),
+            operation_admission_sha256: admission.operation_admission_sha256.clone(),
+            billing_snapshot_sha256: admission.billing_snapshot_sha256.clone(),
+            client_request_sha256: admission.client_request_sha256.clone(),
+            owner_generation: admission.owner_generation,
+            ring_generation: operation.ring_generation,
+            shard_count: operation.shard_count,
+            shard_index: operation.shard_index,
+            admission_commit_sha256: relay_container_admission_commit_sha256(
+                record,
+                &admission.atomic_admission_sha256,
+            ),
+            fence_environment: Some(record.admission_fence.environment.to_string()),
+        }
+    }
+
+    fn relay_container_test_enforced_commit(
+        commit: &RelayContainerAdmissionCommit,
+    ) -> RelayContainerAdmissionCommitReadback {
+        RelayContainerAdmissionCommitReadback::Enforced(Some(commit.clone()))
+    }
+
     fn relay_container_test_idempotency_alias(
         operation: &RelayContainerOperation,
     ) -> RelayContainerIdempotencyAlias {
@@ -29352,6 +29837,14 @@ mod tests {
                 reconciliation_id,
                 ..relay_container_test_record()
             },
+            admission_fence: RelayContainerAdmissionFenceBinding {
+                environment: "local",
+                scope_kind: "global",
+                scope_id_sha256: RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256,
+                admission_fence_id_sha256:
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                fence_generation: 1,
+            },
             client_idempotency_hmac_aliases: &[
                 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             ],
@@ -29390,6 +29883,13 @@ mod tests {
             "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
         );
         let baseline_hash = relay_container_atomic_admission_sha256(&baseline);
+        assert_eq!(
+            relay_container_admission_commit_sha256(
+                &baseline,
+                "1111111111111111111111111111111111111111111111111111111111111111",
+            ),
+            "54a3336866b7ff94e975fa7335e3979955ff3062853179c4622a321f26c003d1"
+        );
 
         let loser = RelayContainerAtomicAdmissionRecord {
             reservation: RelayBillingReservationRecord {
@@ -29469,6 +29969,23 @@ mod tests {
             relay_container_atomic_admission_sha256(&changed_channel_contract),
             baseline_hash
         );
+        let changed_fence = RelayContainerAtomicAdmissionRecord {
+            admission_fence: RelayContainerAdmissionFenceBinding {
+                admission_fence_id_sha256:
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                fence_generation: 2,
+                ..baseline.admission_fence
+            },
+            ..baseline
+        };
+        assert_eq!(
+            relay_container_atomic_admission_sha256(&changed_fence),
+            baseline_hash
+        );
+        assert_ne!(
+            relay_container_admission_commit_sha256(&changed_fence, &baseline_hash),
+            relay_container_admission_commit_sha256(&baseline, &baseline_hash)
+        );
 
         let reconciliation_id = relay_container_atomic_reconciliation_id(&baseline_hash).unwrap();
         assert_eq!(reconciliation_id.len(), 64);
@@ -29514,6 +30031,24 @@ mod tests {
             ..valid
         };
         assert!(validate_relay_container_atomic_admission_record(&wrong_snapshot_key).is_err());
+        let closed_fence_generation = RelayContainerAtomicAdmissionRecord {
+            admission_fence: RelayContainerAdmissionFenceBinding {
+                fence_generation: 0,
+                ..valid.admission_fence
+            },
+            ..valid
+        };
+        assert!(
+            validate_relay_container_atomic_admission_record(&closed_fence_generation).is_err()
+        );
+        let wrong_fence_scope = RelayContainerAtomicAdmissionRecord {
+            admission_fence: RelayContainerAdmissionFenceBinding {
+                scope_id_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ..valid.admission_fence
+            },
+            ..valid
+        };
+        assert!(validate_relay_container_atomic_admission_record(&wrong_fence_scope).is_err());
         let duplicate_aliases = [
             valid.operation.client_idempotency_hmac_sha256,
             valid.operation.client_idempotency_hmac_sha256,
@@ -29582,7 +30117,7 @@ mod tests {
         operation.reconciliation_id = reconciliation_id.clone();
         let mut reservation = relay_billing_test_reservation("reserved");
         reservation.request_id_hash = record.reservation.request_id_hash.to_string();
-        reservation.expr_hash = contract_hash;
+        reservation.expr_hash = contract_hash.clone();
         reservation.billing_kind = "flat".to_string();
         reservation.billing_snapshot_json = snapshot.to_string();
         reservation.candidate_group_count = 1;
@@ -29597,8 +30132,45 @@ mod tests {
         let aliases = vec![relay_container_test_idempotency_alias(&operation)];
         admission.atomic_admission_sha256 = atomic_hash;
         admission.billing_snapshot_sha256 = relay_container_sha256_hex(snapshot.as_bytes());
+        let historical_commit =
+            relay_container_test_historical_admission_commit(&admission, &operation);
+        let enforced_historical_commit = relay_container_test_enforced_commit(&historical_commit);
         assert!(relay_container_atomic_admission_integrity_valid(
             &admission,
+            &enforced_historical_commit,
+            &operation,
+            &reservation,
+            &aliases,
+        ));
+        assert!(relay_container_atomic_admission_integrity_valid(
+            &admission,
+            &RelayContainerAdmissionCommitReadback::LegacySchema,
+            &operation,
+            &reservation,
+            &aliases,
+        ));
+        assert!(!relay_container_atomic_admission_integrity_valid(
+            &admission,
+            &RelayContainerAdmissionCommitReadback::Enforced(None),
+            &operation,
+            &reservation,
+            &aliases,
+        ));
+
+        let current_commit =
+            relay_container_test_fenced_admission_commit(&admission, &operation, &record);
+        assert!(relay_container_atomic_admission_integrity_valid(
+            &admission,
+            &relay_container_test_enforced_commit(&current_commit),
+            &operation,
+            &reservation,
+            &aliases,
+        ));
+        let mut tampered_current_commit = current_commit;
+        tampered_current_commit.fence_generation += 1;
+        assert!(!relay_container_atomic_admission_integrity_valid(
+            &admission,
+            &relay_container_test_enforced_commit(&tampered_current_commit),
             &operation,
             &reservation,
             &aliases,
@@ -29608,6 +30180,7 @@ mod tests {
         reservation.owner_generation = 3;
         assert!(relay_container_atomic_admission_integrity_valid(
             &admission,
+            &enforced_historical_commit,
             &operation,
             &reservation,
             &aliases,
@@ -29617,6 +30190,7 @@ mod tests {
         tampered_reservation.billing_snapshot_json = "{\"price\":2}".to_string();
         assert!(!relay_container_atomic_admission_integrity_valid(
             &admission,
+            &enforced_historical_commit,
             &operation,
             &tampered_reservation,
             &aliases,
@@ -29626,6 +30200,7 @@ mod tests {
             "9999999999999999999999999999999999999999999999999999999999999999".to_string();
         assert!(!relay_container_atomic_admission_integrity_valid(
             &tampered_admission,
+            &enforced_historical_commit,
             &operation,
             &reservation,
             &aliases,
@@ -29634,6 +30209,7 @@ mod tests {
         tampered_admission.selected_snapshot_key = "7".to_string();
         assert!(!relay_container_atomic_admission_integrity_valid(
             &tampered_admission,
+            &enforced_historical_commit,
             &operation,
             &reservation,
             &aliases,
@@ -29642,9 +30218,19 @@ mod tests {
         tampered_aliases[0].client_request_sha256 = "8".repeat(64);
         assert!(!relay_container_atomic_admission_integrity_valid(
             &admission,
+            &enforced_historical_commit,
             &operation,
             &reservation,
             &tampered_aliases,
+        ));
+        let mut tampered_commit = historical_commit;
+        tampered_commit.admission_commit_sha256 = "7".repeat(64);
+        assert!(!relay_container_atomic_admission_integrity_valid(
+            &admission,
+            &relay_container_test_enforced_commit(&tampered_commit),
+            &operation,
+            &reservation,
+            &[relay_container_test_idempotency_alias(&operation)],
         ));
     }
 
@@ -32384,11 +32970,71 @@ mod tests {
         let schema = &source[schema_start..read_start];
         let read = &source[read_start..next_repository];
         assert!(schema.contains("RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION"));
+        assert!(schema.contains("RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION"));
+        assert!(schema.contains("WHERE name IN (?1, ?2)"));
+        assert!(schema.contains("row.migration_count == 2"));
         assert!(schema.contains("relay_container_traffic_return_receipts"));
         assert!(schema.contains("relay_container_drain_event_apply"));
         assert!(read.contains("FROM relay_container_drain_campaigns"));
         assert!(!read.contains("INSERT INTO"));
         assert!(!read.contains("UPDATE relay_container"));
         assert!(!read.contains("DELETE FROM"));
+    }
+
+    #[test]
+    fn relay_container_drain_admission_enforcement_is_global_and_exact_schema_gated() {
+        let migration =
+            include_str!("../../../migrations/d1/0068_relay_container_drain_admission_enforce.sql");
+        for fragment in [
+            "ROW_NUMBER() OVER (",
+            "ORDER BY admission.created_at, admission.operation_id",
+            "'pre-0068-atomic-admission-v1'",
+            "'fenced-atomic-admission-v1'",
+            "CREATE TABLE relay_container_admission_fences",
+            "CREATE TABLE relay_container_admission_scope_heads",
+            "CREATE TABLE relay_container_admission_commits",
+            "CREATE TRIGGER relay_container_atomic_admission_fence_guard",
+            "CREATE TRIGGER relay_container_operation_admission_fence_guard",
+            "WHEN NOT EXISTS (",
+            "operation.status IN (",
+            "commit_row.accepted_sequence IS NULL",
+            "CHECK (fence_kind = 'admission')",
+            "admission fence close requires current scope head",
+            "admission scope head is immutable under 0068",
+            "fence.closed_at <= NEW.created_at",
+            "relay container operation lacks an open D1 fence",
+        ] {
+            assert!(
+                migration.contains(fragment),
+                "missing 0068 invariant: {fragment}"
+            );
+        }
+        for forbidden in [
+            "fence_kind IN ('admission', 'recovery')",
+            "fence.fence_kind = 'recovery'",
+            "admission scope head recovery transition is invalid",
+        ] {
+            assert!(
+                !migration.contains(forbidden),
+                "0068 retains an unauthorized reopen path: {forbidden}"
+            );
+        }
+
+        let source = include_str!("d1_repositories.rs");
+        let schema_start = source
+            .find("pub async fn relay_container_drain_admission_schema_ready")
+            .unwrap();
+        let open_fence_start = source[schema_start..]
+            .find("pub async fn relay_container_open_admission_fence")
+            .map(|offset| schema_start + offset)
+            .unwrap();
+        let schema = &source[schema_start..open_fence_start];
+        assert!(schema.contains("RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION"));
+        assert!(schema.contains("relay_container_admission_scope_heads"));
+        assert!(schema.contains("relay_container_atomic_admission_fence_guard"));
+        assert!(source.contains("relay_container_admission_commit_by_reservation"));
+        assert!(source.contains("relay_container_admission_commit_readback"));
+        assert!(source.contains("RelayContainerAdmissionCommitReadback::LegacySchema"));
+        assert!(source.contains("relay_container_admission_commit_sha256"));
     }
 }

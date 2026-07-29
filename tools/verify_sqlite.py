@@ -285,6 +285,9 @@ REQUIRED_TABLES = [
     "relay_container_ambiguity_quarantines",
     "relay_container_reverse_sync_manifests",
     "relay_container_traffic_return_receipts",
+    "relay_container_admission_fences",
+    "relay_container_admission_scope_heads",
+    "relay_container_admission_commits",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1517,6 +1520,8 @@ REQUIRED_COLUMNS = {
         "accepted_first_operation_id",
         "accepted_last_sequence",
         "accepted_last_operation_id",
+        "accepted_source_schema_sha256",
+        "accepted_source_readback_sha256",
         "drain_ledger_schema_migration",
         "ring_generation",
         "controller_service_name",
@@ -1535,6 +1540,65 @@ REQUIRED_COLUMNS = {
         "last_event_digest_sha256",
         "created_by_admin_id",
         "created_at",
+    },
+    "relay_container_admission_fences": {
+        "admission_fence_id_sha256",
+        "contract_version",
+        "fence_contract",
+        "fence_kind",
+        "environment",
+        "scope_kind",
+        "scope_id_sha256",
+        "fence_generation",
+        "admission_open",
+        "cutoff_at",
+        "accepted_high_watermark",
+        "accepted_bookmark_sha256",
+        "accepted_member_count",
+        "accepted_set_manifest_sha256",
+        "accepted_first_sequence",
+        "accepted_first_operation_id",
+        "accepted_last_sequence",
+        "accepted_last_operation_id",
+        "accepted_source_schema_sha256",
+        "accepted_source_readback_sha256",
+        "closed_campaign_id",
+        "state_digest_sha256",
+        "created_by_admin_id",
+        "closed_by_admin_id",
+        "created_at",
+        "closed_at",
+    },
+    "relay_container_admission_scope_heads": {
+        "environment",
+        "scope_kind",
+        "scope_id_sha256",
+        "current_fence_id_sha256",
+        "current_fence_generation",
+        "head_version",
+        "head_digest_sha256",
+        "updated_by_admin_id",
+        "updated_at",
+    },
+    "relay_container_admission_commits": {
+        "accepted_sequence",
+        "source_contract",
+        "scope_kind",
+        "scope_id_sha256",
+        "admission_fence_id_sha256",
+        "fence_generation",
+        "reservation_key",
+        "operation_id",
+        "atomic_admission_sha256",
+        "operation_admission_sha256",
+        "billing_snapshot_sha256",
+        "client_request_sha256",
+        "owner_generation",
+        "ring_generation",
+        "shard_count",
+        "shard_index",
+        "admission_commit_sha256",
+        "committed_at",
     },
     "relay_container_drain_members": {
         "campaign_id",
@@ -1958,6 +2022,13 @@ REQUIRED_INDEXES = {
     "relay_container_traffic_return_receipts": {
         "idx_relay_container_traffic_return_receipt_digest": True,
     },
+    "relay_container_admission_fences": {
+        "idx_relay_container_admission_open_scope": True,
+        "idx_relay_container_admission_fence_generation": False,
+    },
+    "relay_container_admission_commits": {
+        "idx_relay_container_admission_commits_scope": False,
+    },
 }
 
 
@@ -2023,6 +2094,7 @@ def main() -> int:
     relay_container_ring_transition_claim_rollout_verified = False
     relay_container_shard_placement_attestation_rollout_verified = False
     relay_container_drain_expand_rollout_verified = False
+    relay_container_drain_admission_enforce_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -2084,6 +2156,8 @@ def main() -> int:
         relay_container_shard_placement_attestation_rollout_verified = True
         verify_relay_container_drain_expand_rollout(schema_paths)
         relay_container_drain_expand_rollout_verified = True
+        verify_relay_container_drain_admission_enforce_rollout(schema_paths)
+        relay_container_drain_admission_enforce_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -2322,6 +2396,8 @@ def main() -> int:
         )
     if relay_container_drain_expand_rollout_verified:
         message += " + 0067 default-inert accepted-work drain ledger"
+    if relay_container_drain_admission_enforce_rollout_verified:
+        message += " + 0068 D1-linearized admission fence"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -18271,6 +18347,8 @@ def verify_relay_container_atomic_admission_rollout(
 
     conn = sqlite3.connect(":memory:")
     for schema_path in schema_paths:
+        if schema_path.name == "0068_relay_container_drain_admission_enforce.sql":
+            break
         conn.executescript(schema_path.read_text(encoding="utf-8"))
     conn.execute("PRAGMA foreign_keys = ON")
     if conn.execute("PRAGMA foreign_keys").fetchone() != (1,):
@@ -20313,12 +20391,14 @@ def verify_relay_container_drain_expand_rollout(
     if drain_path is None or dispatch_path is None:
         raise SystemExit("0066/0067 accepted-work drain rollout migrations not found")
     drain_index = schema_paths.index(drain_path)
-    if (
-        drain_index == 0
-        or schema_paths[drain_index - 1] != dispatch_path
-        or drain_index != len(schema_paths) - 1
-    ):
+    if drain_index == 0 or schema_paths[drain_index - 1] != dispatch_path:
         raise SystemExit("0067 accepted-work drain expand migration must follow 0066")
+    if (
+        drain_index + 1 >= len(schema_paths)
+        or schema_paths[drain_index + 1].name
+        != "0068_relay_container_drain_admission_enforce.sql"
+    ):
+        raise SystemExit("0067 accepted-work drain expand migration must precede 0068")
 
     drain_sql = drain_path.read_text(encoding="utf-8")
     if "if not exists" in drain_sql.lower():
@@ -21641,6 +21721,599 @@ def verify_relay_container_drain_expand_rollout(
     ).fetchall()
     if schema_after_duplicate != schema_before_duplicate:
         raise SystemExit("0067 duplicate DDL attempt changed persistent schema")
+    conn.close()
+
+
+def verify_relay_container_drain_admission_enforce_rollout(
+    schema_paths: list[Path],
+) -> None:
+    enforce_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0068_relay_container_drain_admission_enforce.sql"
+        ),
+        None,
+    )
+    drain_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0067_relay_container_drain_expand.sql"
+        ),
+        None,
+    )
+    if enforce_path is None or drain_path is None:
+        raise SystemExit("0067/0068 drain admission fence migrations not found")
+    enforce_index = schema_paths.index(enforce_path)
+    if (
+        enforce_index == 0
+        or schema_paths[enforce_index - 1] != drain_path
+        or enforce_index != len(schema_paths) - 1
+    ):
+        raise SystemExit("0068 drain admission fence migration must be the current head")
+
+    enforce_sql = enforce_path.read_text(encoding="utf-8")
+    if "if not exists" in enforce_sql.lower():
+        raise SystemExit("0068 critical admission fence objects must fail duplicate DDL")
+    required_fragments = (
+        "ADD COLUMN accepted_source_schema_sha256",
+        "ADD COLUMN accepted_source_readback_sha256",
+        "CREATE TABLE relay_container_admission_fences",
+        "CREATE TABLE relay_container_admission_scope_heads",
+        "CREATE TABLE relay_container_admission_commits",
+        "ROW_NUMBER() OVER (",
+        "ORDER BY admission.created_at, admission.operation_id",
+        "'pre-0068-atomic-admission-v1'",
+        "'fenced-atomic-admission-v1'",
+        "CREATE UNIQUE INDEX idx_relay_container_admission_open_scope",
+        "WHERE admission_open = 1",
+        "CREATE INDEX idx_relay_container_admission_fence_generation",
+        "CREATE INDEX idx_relay_container_admission_commits_scope",
+        "relay_container_admission_fence_insert_guard",
+        "relay_container_admission_fence_update_guard",
+        "relay_container_admission_fence_delete_guard",
+        "relay_container_admission_scope_head_insert_guard",
+        "relay_container_admission_scope_head_update_guard",
+        "relay_container_admission_scope_head_delete_guard",
+        "relay_container_admission_commit_insert_guard",
+        "relay_container_admission_commit_update_guard",
+        "relay_container_admission_commit_delete_guard",
+        "relay_container_atomic_admission_fence_guard",
+        "relay_container_operation_admission_fence_guard",
+        "relay_container_drain_campaign_admission_fence_guard",
+        "relay_container_drain_campaign_source_identity_update_guard",
+        "relay container admission fence is closed or stale",
+        "relay container atomic admission lacks an open D1 fence",
+        "relay container operation lacks an open D1 fence",
+        "admission fence close requires current scope head",
+        "admission scope head is immutable under 0068",
+        "CHECK (fence_kind = 'admission')",
+        "fence.closed_at <= NEW.created_at",
+        "operation.status IN (",
+        "commit_row.accepted_sequence IS NULL",
+        "drain campaign does not match the closed admission fence",
+        "fence.admission_open = 1",
+    )
+    for fragment in required_fragments:
+        if fragment not in enforce_sql:
+            raise SystemExit(f"0068 drain admission fence rollout missing: {fragment}")
+    for forbidden_fragment in (
+        "fence_kind IN ('admission', 'recovery')",
+        "fence.fence_kind = 'recovery'",
+        "admission scope head recovery transition is invalid",
+    ):
+        if forbidden_fragment in enforce_sql:
+            raise SystemExit(
+                "0068 drain admission fence rollout retains an unauthorized "
+                f"reopen path: {forbidden_fragment}"
+            )
+
+    clock = [1_900_000_000]
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.create_function("unixepoch", 0, lambda: clock[0])
+    conn.executescript(
+        """
+        CREATE TABLE relay_container_atomic_admissions (
+          reservation_key TEXT PRIMARY KEY,
+          operation_id TEXT NOT NULL UNIQUE,
+          atomic_admission_sha256 TEXT NOT NULL UNIQUE,
+          operation_admission_sha256 TEXT NOT NULL,
+          billing_snapshot_sha256 TEXT NOT NULL,
+          client_request_sha256 TEXT NOT NULL,
+          owner_generation INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        CREATE TABLE relay_container_operations (
+          operation_id TEXT PRIMARY KEY,
+          reservation_key TEXT NOT NULL UNIQUE,
+          admission_sha256 TEXT NOT NULL,
+          owner_generation INTEGER NOT NULL,
+          ring_generation INTEGER NOT NULL,
+          shard_count INTEGER NOT NULL,
+          shard_index INTEGER NOT NULL,
+          protocol_version INTEGER NOT NULL,
+          operation_kind TEXT NOT NULL,
+          status TEXT NOT NULL
+        );
+        CREATE TABLE relay_container_drain_campaigns (
+          campaign_id TEXT PRIMARY KEY,
+          environment TEXT NOT NULL,
+          scope_kind TEXT NOT NULL,
+          scope_id_sha256 TEXT NOT NULL,
+          admission_fence_id_sha256 TEXT NOT NULL,
+          fence_generation INTEGER NOT NULL,
+          cutoff_at INTEGER NOT NULL,
+          accepted_high_watermark INTEGER NOT NULL,
+          accepted_bookmark_sha256 TEXT NOT NULL,
+          accepted_member_count INTEGER NOT NULL,
+          accepted_set_manifest_sha256 TEXT NOT NULL,
+          accepted_first_sequence INTEGER NOT NULL,
+          accepted_first_operation_id TEXT,
+          accepted_last_sequence INTEGER NOT NULL,
+          accepted_last_operation_id TEXT,
+          state TEXT NOT NULL,
+          created_by_admin_id INTEGER NOT NULL,
+          created_at INTEGER NOT NULL
+        );
+        """
+    )
+
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    scope_id = "53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251"
+
+    def admission_values(label: str, created_at: int) -> dict[str, object]:
+        operation_id = f"relaycontainer-0068-{label}"
+        return {
+            "reservation_key": operation_id,
+            "operation_id": operation_id,
+            "atomic_admission_sha256": digest(f"0068-atomic:{label}"),
+            "operation_admission_sha256": digest(f"0068-operation:{label}"),
+            "billing_snapshot_sha256": digest(f"0068-billing:{label}"),
+            "client_request_sha256": digest(f"0068-request:{label}"),
+            "owner_generation": 2,
+            "ring_generation": 1,
+            "shard_count": 8,
+            "shard_index": 3,
+            "admission_commit_sha256": digest(f"0068-commit:{label}"),
+            "created_at": created_at,
+        }
+
+    atomic_insert_sql = """
+        INSERT INTO relay_container_atomic_admissions (
+          reservation_key, operation_id, atomic_admission_sha256,
+          operation_admission_sha256, billing_snapshot_sha256,
+          client_request_sha256, owner_generation, created_at
+        ) VALUES (
+          :reservation_key, :operation_id, :atomic_admission_sha256,
+          :operation_admission_sha256, :billing_snapshot_sha256,
+          :client_request_sha256, :owner_generation, :created_at
+        )
+    """
+    operation_insert_sql = """
+        INSERT INTO relay_container_operations (
+          operation_id, reservation_key, admission_sha256, owner_generation,
+          ring_generation, shard_count, shard_index, protocol_version,
+          operation_kind, status
+        ) VALUES (
+          :operation_id, :reservation_key, :operation_admission_sha256,
+          :owner_generation, :ring_generation, :shard_count, :shard_index,
+          1, 'chat_completions_canary', 'prepared'
+        )
+    """
+    commit_insert_sql = """
+        INSERT INTO relay_container_admission_commits (
+          source_contract, scope_kind, scope_id_sha256,
+          admission_fence_id_sha256, fence_generation,
+          reservation_key, operation_id, atomic_admission_sha256,
+          operation_admission_sha256, billing_snapshot_sha256,
+          client_request_sha256, owner_generation, ring_generation,
+          shard_count, shard_index, admission_commit_sha256
+        ) VALUES (
+          'fenced-atomic-admission-v1', 'global', :scope_id_sha256,
+          :admission_fence_id_sha256, :fence_generation,
+          :reservation_key, :operation_id, :atomic_admission_sha256,
+          :operation_admission_sha256, :billing_snapshot_sha256,
+          :client_request_sha256, :owner_generation, :ring_generation,
+          :shard_count, :shard_index, :admission_commit_sha256
+        )
+    """
+
+    historical = admission_values("historical", clock[0] - 10)
+    conn.execute(operation_insert_sql, historical)
+    conn.execute(atomic_insert_sql, historical)
+    orphan = admission_values("uncommitted-open", clock[0] - 9)
+    conn.execute(operation_insert_sql, orphan)
+    conn.commit()
+    conn.executescript(enforce_sql)
+
+    historical_commit = conn.execute(
+        """
+        SELECT accepted_sequence, source_contract, admission_fence_id_sha256,
+               fence_generation, reservation_key, operation_id,
+               atomic_admission_sha256, ring_generation, shard_count,
+               shard_index, admission_commit_sha256, committed_at
+        FROM relay_container_admission_commits
+        WHERE operation_id = ?
+        """,
+        (historical["operation_id"],),
+    ).fetchone()
+    expected_historical_commit = (
+        1,
+        "pre-0068-atomic-admission-v1",
+        None,
+        0,
+        historical["reservation_key"],
+        historical["operation_id"],
+        historical["atomic_admission_sha256"],
+        historical["ring_generation"],
+        historical["shard_count"],
+        historical["shard_index"],
+        historical["atomic_admission_sha256"],
+        historical["created_at"],
+    )
+    if historical_commit != expected_historical_commit:
+        raise SystemExit(
+            f"0068 historical admission backfill mismatch: {historical_commit}"
+        )
+
+    fence_id = digest("0068-admission-fence-1")
+    fence_state_digest = digest("0068-admission-fence-state-1")
+    head_digest = digest("0068-admission-head-1")
+    conn.execute(
+        """
+        INSERT INTO relay_container_admission_fences (
+          admission_fence_id_sha256, contract_version, fence_contract,
+          fence_kind, environment, scope_kind, scope_id_sha256,
+          fence_generation, admission_open, state_digest_sha256,
+          created_by_admin_id, created_at
+        ) VALUES (
+          ?, 1, 'relay-container-admission-fence-v1', 'admission',
+          'staging', 'global', ?, 1, 1, ?, 42, unixepoch()
+        )
+        """,
+        (fence_id, scope_id, fence_state_digest),
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_admission_fences
+            SET admission_open = 0
+            WHERE admission_fence_id_sha256 = ?
+            """,
+            (fence_id,),
+        ),
+        "0068 allowed a fence without the current scope head to close",
+        "admission fence close requires current scope head",
+    )
+    if conn.execute(
+        """
+        SELECT admission_open
+        FROM relay_container_admission_fences
+        WHERE admission_fence_id_sha256 = ?
+        """,
+        (fence_id,),
+    ).fetchone() != (1,):
+        raise SystemExit("0068 non-head close rejection mutated the admission fence")
+    conn.execute(
+        """
+        INSERT INTO relay_container_admission_scope_heads (
+          environment, scope_kind, scope_id_sha256, current_fence_id_sha256,
+          current_fence_generation, head_version, head_digest_sha256,
+          updated_by_admin_id, updated_at
+        ) VALUES (
+          'staging', 'global', ?, ?, 1, 1, ?, 42, unixepoch()
+        )
+        """,
+        (scope_id, fence_id, head_digest),
+    )
+    conn.commit()
+
+    second_environment_fence = digest("0068-second-environment-fence")
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            INSERT INTO relay_container_admission_fences (
+              admission_fence_id_sha256, contract_version, fence_contract,
+              fence_kind, environment, scope_kind, scope_id_sha256,
+              fence_generation, admission_open, state_digest_sha256,
+              created_by_admin_id, created_at
+            ) VALUES (
+              ?, 1, 'relay-container-admission-fence-v1', 'admission',
+              'production', 'global', ?, 1, 1, ?, 42, unixepoch()
+            )
+            """,
+            (second_environment_fence, scope_id, digest("0068-wrong-environment")),
+        ),
+        "0068 allowed one D1 database to host multiple admission environments",
+        "admission fence generation is invalid",
+    )
+    conn.rollback()
+
+    old_writer = admission_values("old-writer", clock[0])
+    expect_integrity_error(
+        lambda: conn.execute(atomic_insert_sql, old_writer),
+        "0068 allowed a pre-fence atomic admission writer",
+        "relay container atomic admission lacks an open D1 fence",
+    )
+    conn.rollback()
+
+    stale_commit = admission_values("stale", clock[0])
+    stale_commit.update(
+        {
+            "scope_id_sha256": scope_id,
+            "admission_fence_id_sha256": fence_id,
+            "fence_generation": 2,
+        }
+    )
+    expect_integrity_error(
+        lambda: conn.execute(commit_insert_sql, stale_commit),
+        "0068 accepted a stale fence generation",
+        "relay container admission fence is closed or stale",
+    )
+    conn.rollback()
+
+    def append_fenced_admission(
+        values: dict[str, object],
+        active_fence_id: str,
+        active_generation: int,
+    ) -> None:
+        commit_values = dict(values)
+        commit_values.update(
+            {
+                "scope_id_sha256": scope_id,
+                "admission_fence_id_sha256": active_fence_id,
+                "fence_generation": active_generation,
+            }
+        )
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("PRAGMA defer_foreign_keys = ON")
+            conn.execute(commit_insert_sql, commit_values)
+            conn.execute(atomic_insert_sql, values)
+            conn.execute(operation_insert_sql, values)
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
+
+    accepted = admission_values("accepted", clock[0])
+    append_fenced_admission(accepted, fence_id, 1)
+    accepted_commit = conn.execute(
+        """
+        SELECT accepted_sequence, source_contract, admission_fence_id_sha256,
+               fence_generation, operation_id
+        FROM relay_container_admission_commits
+        WHERE operation_id = ?
+        """,
+        (accepted["operation_id"],),
+    ).fetchone()
+    if accepted_commit != (
+        2,
+        "fenced-atomic-admission-v1",
+        fence_id,
+        1,
+        accepted["operation_id"],
+    ):
+        raise SystemExit(f"0068 fenced admission commit mismatch: {accepted_commit}")
+
+    campaign_id = digest("0068-drain-campaign")
+    bookmark = digest("0068-accepted-bookmark")
+    manifest = digest("0068-accepted-manifest")
+    source_schema = digest("0068-source-schema")
+    source_readback = digest("0068-source-readback")
+    campaign_values = {
+        "campaign_id": campaign_id,
+        "environment": "staging",
+        "scope_kind": "global",
+        "scope_id_sha256": scope_id,
+        "admission_fence_id_sha256": fence_id,
+        "fence_generation": 1,
+        "cutoff_at": clock[0],
+        "accepted_high_watermark": 2,
+        "accepted_bookmark_sha256": bookmark,
+        "accepted_member_count": 2,
+        "accepted_set_manifest_sha256": manifest,
+        "accepted_first_sequence": 1,
+        "accepted_first_operation_id": historical["operation_id"],
+        "accepted_last_sequence": 2,
+        "accepted_last_operation_id": accepted["operation_id"],
+        "accepted_source_schema_sha256": source_schema,
+        "accepted_source_readback_sha256": source_readback,
+        "state": "fenced",
+        "created_by_admin_id": 42,
+        "created_at": clock[0],
+    }
+    campaign_insert_sql = """
+        INSERT INTO relay_container_drain_campaigns (
+          campaign_id, environment, scope_kind, scope_id_sha256,
+          admission_fence_id_sha256, fence_generation, cutoff_at,
+          accepted_high_watermark, accepted_bookmark_sha256,
+          accepted_member_count, accepted_set_manifest_sha256,
+          accepted_first_sequence, accepted_first_operation_id,
+          accepted_last_sequence, accepted_last_operation_id,
+          accepted_source_schema_sha256, accepted_source_readback_sha256,
+          state, created_by_admin_id, created_at
+        ) VALUES (
+          :campaign_id, :environment, :scope_kind, :scope_id_sha256,
+          :admission_fence_id_sha256, :fence_generation, :cutoff_at,
+          :accepted_high_watermark, :accepted_bookmark_sha256,
+          :accepted_member_count, :accepted_set_manifest_sha256,
+          :accepted_first_sequence, :accepted_first_operation_id,
+          :accepted_last_sequence, :accepted_last_operation_id,
+          :accepted_source_schema_sha256, :accepted_source_readback_sha256,
+          :state, :created_by_admin_id, :created_at
+        )
+    """
+    fence_close_sql = """
+        UPDATE relay_container_admission_fences
+        SET admission_open = 0,
+            cutoff_at = :cutoff_at,
+            accepted_high_watermark = :accepted_high_watermark,
+            accepted_bookmark_sha256 = :accepted_bookmark_sha256,
+            accepted_member_count = :accepted_member_count,
+            accepted_set_manifest_sha256 = :accepted_set_manifest_sha256,
+            accepted_first_sequence = :accepted_first_sequence,
+            accepted_first_operation_id = :accepted_first_operation_id,
+            accepted_last_sequence = :accepted_last_sequence,
+            accepted_last_operation_id = :accepted_last_operation_id,
+            accepted_source_schema_sha256 = :accepted_source_schema_sha256,
+            accepted_source_readback_sha256 = :accepted_source_readback_sha256,
+            closed_campaign_id = :campaign_id,
+            state_digest_sha256 = :closed_state_digest_sha256,
+            closed_by_admin_id = :created_by_admin_id,
+            closed_at = :created_at
+        WHERE admission_fence_id_sha256 = :admission_fence_id_sha256
+    """
+    close_values = {
+        **campaign_values,
+        "closed_state_digest_sha256": digest("0068-closed-fence-state"),
+    }
+    expect_integrity_error(
+        lambda: conn.execute(campaign_insert_sql, campaign_values),
+        "0068 allowed a drain campaign while admission remained open",
+        "drain campaign does not match the closed admission fence",
+    )
+    conn.rollback()
+
+    expect_integrity_error(
+        lambda: conn.execute(fence_close_sql, close_values),
+        "0068 closed over an uncommitted open operation",
+        "admission fence close is not linearizable",
+    )
+    conn.rollback()
+    conn.execute(
+        "UPDATE relay_container_operations SET status = 'failed' "
+        "WHERE operation_id = ?",
+        (orphan["operation_id"],),
+    )
+    conn.commit()
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute("PRAGMA defer_foreign_keys = ON")
+        conn.execute(fence_close_sql, close_values)
+        clock[0] += 1
+        campaign_values["created_at"] = clock[0]
+        conn.execute(campaign_insert_sql, campaign_values)
+        conn.commit()
+    except sqlite3.Error:
+        conn.rollback()
+        raise
+
+    late = admission_values("late", clock[0])
+    expect_integrity_error(
+        lambda: append_fenced_admission(late, fence_id, 1),
+        "0068 allowed an admission after the linearized close",
+        "relay container admission fence is closed or stale",
+    )
+    if conn.execute(
+        "SELECT COUNT(*) FROM relay_container_atomic_admissions WHERE operation_id = ?",
+        (late["operation_id"],),
+    ).fetchone() != (0,):
+        raise SystemExit("0068 late admission rejection left partial atomic state")
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_admission_commits
+            SET admission_commit_sha256 = ?
+            WHERE operation_id = ?
+            """,
+            (digest("0068-mutated-commit"), accepted["operation_id"]),
+        ),
+        "0068 allowed mutation of an admission commit",
+        "relay container admission commits are immutable",
+    )
+    conn.rollback()
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_drain_campaigns
+            SET accepted_source_readback_sha256 = ?
+            WHERE campaign_id = ?
+            """,
+            (digest("0068-mutated-readback"), campaign_id),
+        ),
+        "0068 allowed mutation of accepted-source identity",
+        "drain campaign source identity is immutable",
+    )
+    conn.rollback()
+
+    conn.execute(
+        "UPDATE relay_container_drain_campaigns "
+        "SET state = 'recovery_required' WHERE campaign_id = ?",
+        (campaign_id,),
+    )
+    conn.commit()
+    clock[0] += 1
+    recovery_fence_id = digest("0068-recovery-fence-2")
+    recovery_state_digest = digest("0068-recovery-fence-state-2")
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            INSERT INTO relay_container_admission_fences (
+              admission_fence_id_sha256, contract_version, fence_contract,
+              fence_kind, environment, scope_kind, scope_id_sha256,
+              fence_generation, admission_open, state_digest_sha256,
+              created_by_admin_id, created_at
+            ) VALUES (
+              ?, 1, 'relay-container-admission-fence-v1', 'recovery',
+              'staging', 'global', ?, 2, 1, ?, 42, unixepoch()
+            )
+            """,
+            (recovery_fence_id, scope_id, recovery_state_digest),
+        ),
+        "0068 allowed a recovery campaign to reopen admission",
+        "admission fence generation is invalid",
+    )
+    conn.rollback()
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            """
+            UPDATE relay_container_admission_scope_heads
+            SET head_digest_sha256 = ?
+            WHERE environment = 'staging'
+              AND scope_kind = 'global'
+              AND scope_id_sha256 = ?
+            """,
+            (digest("0068-mutated-head"), scope_id),
+        ),
+        "0068 allowed the admission scope head to mutate",
+        "admission scope head is immutable under 0068",
+    )
+    conn.rollback()
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            "DELETE FROM relay_container_admission_fences "
+            "WHERE admission_fence_id_sha256 = ?",
+            (fence_id,),
+        ),
+        "0068 allowed deletion of admission fence history",
+        "admission fences are append-preserved",
+    )
+    conn.rollback()
+
+    schema_before_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        conn.executescript(enforce_sql)
+    except sqlite3.Error as error:
+        if "duplicate column name" not in str(error) and "already exists" not in str(error):
+            raise SystemExit(f"0068 duplicate DDL failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0068 critical admission fence objects accepted duplicate DDL")
+    schema_after_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0068 duplicate DDL attempt changed persistent schema")
     conn.close()
 
 

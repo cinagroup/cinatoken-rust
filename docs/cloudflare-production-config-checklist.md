@@ -2274,7 +2274,16 @@ authoritative and production remains **NO-GO**.
   15 indexes, and 25 immutable/lifecycle triggers.
 - [ ] Deploy compatible readers and prove N/N-1 behavior without a 0067 write.
 - [ ] Export or retain D1 Time Travel evidence before 0068.
-- [ ] Specify the exact 0068 scope/fence row and atomic admission predicate.
+- [x] Specify and locally verify the exact 0068 global scope/fence/head/commit
+  rows and operation-wide atomic admission predicate.
+- [x] Preserve 0050-only replay before the 0068 marker and require commit
+  readback after it, so the compatible Worker can deploy before migration.
+- [x] Make 0068 one-way: close requires the exact current head, the head is
+  immutable, recovery/aborted state cannot reopen admission, and a
+  cross-second close+campaign batch remains time ordered.
+- [ ] Inventory historical 0050 cardinality and first/last keys, then rehearse
+  the one-shot window backfill against isolated D1 within current statement
+  limits; replace it with a staged protocol if the bound is not proven.
 - [ ] Make the 0068 writer derive count/first/last from the authoritative
   admission source, recompute every copied member/page/set digest, and reject
   any intermediate-key substitution.
@@ -2283,6 +2292,14 @@ authoritative and production remains **NO-GO**.
   replay without copying the billing expression.
 - [ ] Prove stale Worker generations fail in D1 before provider, Queue,
   billing, R2 publication, or accepted membership.
+- [ ] Implement authenticated, audited, generation-CAS initial-open and close
+  writers; fence+head and close+campaign must each be one D1 batch. Do not
+  expose recovery reopen under 0068.
+- [ ] Independently recompute and retain the accepted bookmark, source
+  readback, member/page and complete-set manifests; do not trust supplied
+  hashes as completeness evidence.
+- [ ] Prove no `prepared`, `dispatched`, or `recovery_required` operation is
+  outside the 0068 commit ledger before fence close.
 - [ ] Prove current-generation admission and fence closure races have one
   linearizable outcome.
 - [ ] Prove old writers and in-flight transactions are drained before 0068.
@@ -2290,6 +2307,8 @@ authoritative and production remains **NO-GO**.
 - [ ] Before each 0068/0069 candidate, advance the Worker expected migration
   set, D1 audit, SQLite inventory, P5 head/counts, and frozen foundation
   candidate together; prove the previous reader fails closed.
+- [ ] Add an independent P5 admission-fence evidence type and verifier; schema
+  totals alone are not lifecycle or accepted-set evidence.
 - [ ] Define 0069 immutable evidence types for Go readiness, traffic
   rehearsal, SLO, security, finance, release, WORM location, and retention.
 - [ ] Enforce evidence subject/issuer/validity/retention plus reviewer
@@ -2301,7 +2320,9 @@ authoritative and production remains **NO-GO**.
 - [ ] Do not run operation 14 or issue a traffic-return eligibility receipt
   during schema promotion.
 
-Current Application inventory is 67 migrations / 85 required tables / 1310
-checked columns / 126 key indexes. This checklist records no remote
+Current Application inventory is 68 migrations / 88 required tables / 1365
+checked columns / 129 key indexes. 0068 exists and is locally verified, but no
+fence lifecycle mutation route exists and no remote 0068 application is
+claimed. This checklist records no remote
 application, secret operation, route change, traffic change, or authority
 transfer. Go/VPS remains authoritative and production remains **NO-GO**.

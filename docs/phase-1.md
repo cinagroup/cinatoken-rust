@@ -4667,3 +4667,30 @@ possible without the one-SQL-step command migration.
 
 No Cloudflare credential or remote state was used. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-30 Typed Traffic-Return Evidence Enforcement
+
+Application D1 head is now
+`0069_relay_container_traffic_return_evidence_enforce.sql`. Three immutable,
+campaign-bound tables store the review subject, exactly eight typed evidence
+items, and the final evidence seal. D1 enforces fixed evidence-type/issuer-role
+mapping, distinct issuer identities and signing keys, bounded validity,
+retention, WORM/policy identity, no post-seal items, independent assembly,
+sealing and review roles, and append preservation.
+
+The 0067 receipt guard is replaced. A migration marker or arbitrary valid
+hashes can no longer satisfy receipt eligibility: every receipt field must
+resolve to the exact 0069 subject, seal, and eight evidence items while they
+remain valid and retained. The database continues to force
+`traffic_return_authorized=0`.
+
+The exact local inventory is 69 migrations / 91 required tables / 1424 checked
+incremental columns / 133 key indexes. P5 candidate/schema identity advances
+to 0069, while the admission-fence evidence remains pinned to the exact 0068
+SQL digest.
+
+This remains default-inert. There is no evidence mutation repository or
+route, all five drain write gates remain false, and the separate
+one-SQL-step fence-close/campaign command is still absent. No remote
+migration, credential, route, DNS, traffic, or Go/VPS authority changed.
+Production remains **NO-GO**.

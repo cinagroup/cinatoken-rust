@@ -169,9 +169,15 @@ const PINNED_GO_SOURCE_COMMIT =
   "73652508abc5cb09214dde02d51d69d1d1ccc703";
 const PINNED_VIBE_SOURCE_COMMIT =
   "918e97480ee44e357abe99bf33c27259d6ac7ebd";
-const EXPECTED_MIGRATION_HEAD =
+const EXPECTED_SCHEMA_MIGRATION_HEAD =
+  "0069_relay_container_traffic_return_evidence_enforce.sql";
+const EXPECTED_SCHEMA_MIGRATION_COUNT = 69;
+const EXPECTED_SCHEMA_TABLE_COUNT = 91;
+const EXPECTED_SCHEMA_INCREMENTAL_COLUMN_COUNT = 1424;
+const EXPECTED_SCHEMA_KEY_INDEX_COUNT = 133;
+const IMMUTABLE_ADMISSION_FENCE_MIGRATION =
   "0068_relay_container_drain_admission_enforce.sql";
-const EXPECTED_MIGRATION_SQL_SHA256 =
+const IMMUTABLE_ADMISSION_FENCE_MIGRATION_SQL_SHA256 =
   "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50";
 const EXPECTED_PLACEMENT_STORAGE_MIGRATION =
   "0063_relay_container_shard_placement_mutation_authorizations.sql";
@@ -763,8 +769,16 @@ function validateCandidate(value) {
   requireExact(candidate.containerClass, candidate.doClass, "[candidate] class alignment");
   requireInteger(candidate.ringGeneration, 1, 1_000_000, "[candidate] ring generation");
   requireInteger(candidate.shardCount, 1, 1024, "[candidate] shard count");
-  requireExact(candidate.migrationHead, EXPECTED_MIGRATION_HEAD, "[candidate] migration head");
-  requireExact(candidate.migrationCount, 68, "[candidate] migration count");
+  requireExact(
+    candidate.migrationHead,
+    EXPECTED_SCHEMA_MIGRATION_HEAD,
+    "[candidate] migration head",
+  );
+  requireExact(
+    candidate.migrationCount,
+    EXPECTED_SCHEMA_MIGRATION_COUNT,
+    "[candidate] migration count",
+  );
   requireExact(candidate.responseProtocolVersion, 3, "[candidate] response protocol");
   requireExact(candidate.statusContractVersion, 4, "[candidate] status contract");
   requireExact(candidate.financialTerminalContractVersion, 2, "[candidate] terminal contract");
@@ -2101,11 +2115,31 @@ function validateSchemaReadback(facts) {
     ],
     "[schema-readback] facts",
   );
-  requireExact(facts.migrationHead, EXPECTED_MIGRATION_HEAD, "[schema-readback] migration head");
-  requireExact(facts.migrationCount, 68, "[schema-readback] migration count");
-  requireExact(facts.tableCount, 88, "[schema-readback] table count");
-  requireExact(facts.incrementalColumnCount, 1365, "[schema-readback] incremental columns");
-  requireExact(facts.keyIndexCount, 129, "[schema-readback] key indexes");
+  requireExact(
+    facts.migrationHead,
+    EXPECTED_SCHEMA_MIGRATION_HEAD,
+    "[schema-readback] migration head",
+  );
+  requireExact(
+    facts.migrationCount,
+    EXPECTED_SCHEMA_MIGRATION_COUNT,
+    "[schema-readback] migration count",
+  );
+  requireExact(
+    facts.tableCount,
+    EXPECTED_SCHEMA_TABLE_COUNT,
+    "[schema-readback] table count",
+  );
+  requireExact(
+    facts.incrementalColumnCount,
+    EXPECTED_SCHEMA_INCREMENTAL_COLUMN_COUNT,
+    "[schema-readback] incremental columns",
+  );
+  requireExact(
+    facts.keyIndexCount,
+    EXPECTED_SCHEMA_KEY_INDEX_COUNT,
+    "[schema-readback] key indexes",
+  );
   requireSha256(facts.schemaFingerprintSha256, "[schema-readback] schema fingerprint");
   requireSha256(facts.businessFingerprintBeforeSha256, "[schema-readback] before fingerprint");
   requireExact(
@@ -2223,12 +2257,12 @@ function validateAdmissionFenceMigration(value) {
   );
   requireExact(
     migration.name,
-    EXPECTED_MIGRATION_HEAD,
+    IMMUTABLE_ADMISSION_FENCE_MIGRATION,
     "[admission-fence] migration name",
   );
   requireExact(
     migration.sqlSha256,
-    EXPECTED_MIGRATION_SQL_SHA256,
+    IMMUTABLE_ADMISSION_FENCE_MIGRATION_SQL_SHA256,
     "[admission-fence] migration SQL digest",
   );
   requireExact(migration.markerCount, 1, "[admission-fence] migration marker");

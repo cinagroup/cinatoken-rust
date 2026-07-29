@@ -25061,3 +25061,154 @@ false, 0069 is absent, and
 No Cloudflare API, credential, remote database, deployment, route, DNS or
 traffic state was accessed or changed. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.335 Typed Traffic-Return Evidence Enforcement (2026-07-30)
+
+This section supersedes the 0068 checkpoint statement that 0069 is absent.
+Application migration
+`0069_relay_container_traffic_return_evidence_enforce.sql` is now the local
+schema head. It is an expand-and-guard migration: it adds immutable evidence
+storage and replaces the permissive marker-era receipt trigger, but adds no
+application writer, HTTP route, Cloudflare mutation, gate activation, or
+traffic authority.
+
+The canonical local Application inventory advances as one contract:
+
+```text
+69 migrations
+91 required tables
+1424 checked incremental columns
+133 key indexes
+```
+
+The Worker expected migration set, D1 configuration audit, SQLite inventory,
+P5 candidate/schema-readback baseline, runtime capability head, and
+read-only repository probes must all move together. P5 admission-fence
+evidence does not move: its migration name and SQL digest remain pinned to
+0068. This separates current schema identity from immutable admission
+provenance.
+
+### Persisted evidence authorities
+
+0069 adds three append-preserved tables:
+
+1. `relay_container_traffic_return_evidence_subjects` binds one evidence
+   review to exactly one 0067 campaign. It repeats and database-validates the
+   environment, scope, fence, accepted-set manifest, stable observation pair,
+   reverse-sync manifest, member-closure manifest, quarantine manifest,
+   billing-conservation digest, operation-14 receipt/baseline, evidence
+   policy, bounded review window, retention horizon, assembler identity, and
+   canonical subject digest.
+2. `relay_container_traffic_return_evidence_items` permits exactly one item
+   per required evidence type and binds the artifact, approval, signature
+   envelope, canonical digest, issuer identity, signing key, capture time,
+   validity window, and retention.
+3. `relay_container_traffic_return_evidence_seals` closes one subject only
+   after all eight required valid and sufficiently retained items exist. It
+   binds the complete evidence manifest, exact retention policy, exact WORM
+   location, independent sealer identity/key, and canonical seal digest.
+
+The fixed type/role matrix is:
+
+| Evidence type | Required issuer role | Receipt binding |
+|---|---|---|
+| `go_vps_readiness` | `go-vps-owner` | artifact digest |
+| `traffic_rehearsal` | `traffic-owner` | artifact digest |
+| `slo` | `sre` | approval digest |
+| `security` | `security` | approval digest |
+| `finance` | `finance` | approval digest |
+| `release` | `release` | approval digest |
+| `retention` | `retention` | policy artifact digest |
+| `worm_location` | `worm-custodian` | immutable-location artifact digest |
+
+Each subject/type, subject/artifact, subject/issuer identity, and
+subject/signing key is unique. An issuer cannot be the subject assembler.
+Items cannot be added after a seal. A sealer cannot reuse an assembler or
+issuer identity or an issuer signing key. Subject, item, and seal rows reject
+updates and deletes.
+
+### Receipt enforcement
+
+0069 drops and recreates
+`relay_container_traffic_return_receipt_insert_guard`. The earlier 0067
+migration-marker check is retained as defense in depth, but it is no longer
+the eligibility condition. A receipt must now resolve:
+
+- the exact operation-14-complete campaign and its drain event;
+- both stable global observations and the passing reverse-sync manifest;
+- the exact accepted-set, closure, quarantine, billing-conservation,
+  operation-14 receipt, and operation-14 baseline identities;
+- one subject and one seal for that campaign;
+- all eight typed items, with the receipt fields equal to their canonical
+  artifact or approval identities;
+- seal time before receipt time, receipt time inside every item validity
+  window and the subject review window, and unexpired retention; and
+- a reviewer identity different from the assembler, sealer, and every
+  evidence issuer.
+
+A syntactically valid set of SHA-256 strings, a manually inserted migration
+marker, a partial item set, an expired approval, a reused identity/key, a
+retention/WORM mismatch, or a reviewer conflict fails in D1. The receipt
+schema still forces `eligible_for_traffic_return_review=1` and
+`traffic_return_authorized=0`. No trigger, repository, capability, or route
+can emit a positive traffic authorization.
+
+### Billing boundary
+
+Before this migration was authored,
+`C:\cinagroup\cinatoken\pkg\billingexpr\expr.md` was re-reviewed. 0069 stores
+only the campaign's existing billing-conservation digest and a finance
+approval identity. It does not copy an expression, calculate quota, normalize
+tokens, select a tier, or reinterpret settlement.
+
+The production evidence writer must resolve the immutable pre-consume
+snapshot and retain the expression/version, request input, usage semantic,
+normalized token vector, matched tier, group ratio, and quota conversion
+needed to replay the existing one-expression truth. Finance approval cannot
+turn a mismatched settlement into conservation evidence.
+
+### Cloudflare deployment and rollback order
+
+0069 must remain default-inert during reader-first deployment:
+
+1. keep Go/VPS authoritative and every 0067 write gate false;
+2. deploy a Worker that recognizes the 0069 migration and exposes only exact
+   schema readiness/readback;
+3. prove the previous Worker fails closed against a 0069 database and that
+   the compatible Worker still performs no evidence write;
+4. retain normalized pre-apply D1 catalog, trigger, row-count, bookmark/Time
+   Travel, and business-fingerprint evidence;
+5. apply 0069 only to isolated staging after the full 0068 writer-drain and
+   admission-fence campaign is proven;
+6. read back exact tables, columns, indexes, trigger bodies, and zero evidence
+   rows before any writer is introduced;
+7. separately implement and review signature/policy verification plus
+   authenticated, audited subject/item/seal writes;
+8. exercise malformed, duplicate, expired, role-confused, key-reused,
+   partial-seal, lost-response, retry, and reviewer-conflict faults; and
+9. keep receipt writes false until one immutable remote campaign passes
+   security, privacy, finance, SRE, release, retention, WORM, rollback, and
+   Go/VPS readiness review.
+
+Rollback never removes 0069 or deletes evidence. It disables writers, keeps
+the 0068 admission fence closed, preserves 0067 campaign and 0069 evidence
+history, routes no ambiguous operation through Rust or Go replay, and repairs
+forward with a new reviewed campaign/evidence generation.
+
+0069 deliberately does not implement fence closure. The next schema boundary
+is a separately reviewed one-SQL-step command that closes the current 0068
+fence and creates the matching 0067 campaign under one SQLite statement time.
+Keeping that command out of the evidence migration prevents an approval
+schema rollout from gaining admission-control mutation authority.
+
+Production blockers remain: authenticated fence open/close and evidence
+writers, complete accepted-source/member/page/set recomputation, bounded
+historical-backfill proof, canonical billing replay, 0067 drain/quarantine/
+reverse-sync writers, campaign-bound DO and cross-layer evidence, operation
+14 runtime integration, remote 0068/0069 application/readback, provider WORM
+proof, independently signed P5 evidence, Go/VPS RTO/RPO and traffic rehearsal,
+and the final independent go/no-go decision.
+
+No credential, Cloudflare API, remote database, deployment, route, DNS,
+customer traffic, or Go/VPS authority was accessed or changed. Production
+remains **NO-GO**.

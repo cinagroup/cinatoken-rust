@@ -288,6 +288,9 @@ REQUIRED_TABLES = [
     "relay_container_admission_fences",
     "relay_container_admission_scope_heads",
     "relay_container_admission_commits",
+    "relay_container_traffic_return_evidence_subjects",
+    "relay_container_traffic_return_evidence_items",
+    "relay_container_traffic_return_evidence_seals",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1600,6 +1603,71 @@ REQUIRED_COLUMNS = {
         "admission_commit_sha256",
         "committed_at",
     },
+    "relay_container_traffic_return_evidence_subjects": {
+        "evidence_subject_id_sha256",
+        "campaign_id",
+        "contract_version",
+        "subject_contract",
+        "evidence_enforcement_migration",
+        "environment",
+        "scope_kind",
+        "scope_id_sha256",
+        "fence_generation",
+        "admission_fence_id_sha256",
+        "accepted_set_manifest_sha256",
+        "first_observation_id_sha256",
+        "second_observation_id_sha256",
+        "reverse_sync_manifest_id_sha256",
+        "member_closure_manifest_sha256",
+        "quarantine_manifest_sha256",
+        "billing_conservation_sha256",
+        "operation14_receipt_sha256",
+        "operation14_baseline_sha256",
+        "evidence_policy_sha256",
+        "evidence_window_started_at",
+        "evidence_window_ends_at",
+        "review_expires_at",
+        "retention_until",
+        "assembler_identity_sha256",
+        "subject_digest_sha256",
+        "created_by_admin_id",
+        "created_at",
+    },
+    "relay_container_traffic_return_evidence_items": {
+        "evidence_id_sha256",
+        "evidence_subject_id_sha256",
+        "contract_version",
+        "evidence_contract",
+        "evidence_type",
+        "issuer_role",
+        "artifact_sha256",
+        "approval_digest_sha256",
+        "issuer_identity_sha256",
+        "signing_key_sha256",
+        "signature_envelope_sha256",
+        "canonical_digest_sha256",
+        "captured_at",
+        "valid_from",
+        "valid_until",
+        "retention_until",
+        "registered_at",
+    },
+    "relay_container_traffic_return_evidence_seals": {
+        "evidence_seal_id_sha256",
+        "evidence_subject_id_sha256",
+        "contract_version",
+        "seal_contract",
+        "evidence_item_count",
+        "evidence_manifest_sha256",
+        "worm_location_sha256",
+        "retention_policy_sha256",
+        "retention_until",
+        "sealer_role",
+        "sealer_identity_sha256",
+        "signing_key_sha256",
+        "seal_digest_sha256",
+        "sealed_at",
+    },
     "relay_container_drain_members": {
         "campaign_id",
         "accepted_sequence",
@@ -2029,6 +2097,16 @@ REQUIRED_INDEXES = {
     "relay_container_admission_commits": {
         "idx_relay_container_admission_commits_scope": False,
     },
+    "relay_container_traffic_return_evidence_subjects": {
+        "idx_relay_container_traffic_return_subject_review": False,
+    },
+    "relay_container_traffic_return_evidence_items": {
+        "idx_relay_container_traffic_return_evidence_type": False,
+        "idx_relay_container_traffic_return_evidence_retention": False,
+    },
+    "relay_container_traffic_return_evidence_seals": {
+        "idx_relay_container_traffic_return_evidence_seal_review": False,
+    },
 }
 
 
@@ -2095,6 +2173,7 @@ def main() -> int:
     relay_container_shard_placement_attestation_rollout_verified = False
     relay_container_drain_expand_rollout_verified = False
     relay_container_drain_admission_enforce_rollout_verified = False
+    relay_container_traffic_return_evidence_enforce_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -2154,10 +2233,17 @@ def main() -> int:
         relay_container_ring_transition_claim_rollout_verified = True
         verify_relay_container_shard_placement_attestation_rollout(schema_paths)
         relay_container_shard_placement_attestation_rollout_verified = True
-        verify_relay_container_drain_expand_rollout(schema_paths)
+        traffic_return_evidence_fixture = verify_relay_container_drain_expand_rollout(
+            schema_paths
+        )
         relay_container_drain_expand_rollout_verified = True
         verify_relay_container_drain_admission_enforce_rollout(schema_paths)
         relay_container_drain_admission_enforce_rollout_verified = True
+        verify_relay_container_traffic_return_evidence_enforce_rollout(
+            schema_paths,
+            traffic_return_evidence_fixture,
+        )
+        relay_container_traffic_return_evidence_enforce_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -2294,6 +2380,19 @@ def main() -> int:
             f"missing={sorted(expected_dispatch_consumption_columns - dispatch_consumption_columns)}, "
             f"extra={sorted(dispatch_consumption_columns - expected_dispatch_consumption_columns)}"
         )
+    for evidence_table in (
+        "relay_container_traffic_return_evidence_subjects",
+        "relay_container_traffic_return_evidence_items",
+        "relay_container_traffic_return_evidence_seals",
+    ):
+        evidence_columns = table_columns(conn, evidence_table)
+        expected_evidence_columns = REQUIRED_COLUMNS[evidence_table]
+        if evidence_columns != expected_evidence_columns:
+            raise SystemExit(
+                f"0069 {evidence_table} columns differ: "
+                f"missing={sorted(expected_evidence_columns - evidence_columns)}, "
+                f"extra={sorted(evidence_columns - expected_evidence_columns)}"
+            )
 
     invalid_indexes = []
     for table, expected_indexes in REQUIRED_INDEXES.items():
@@ -2398,6 +2497,8 @@ def main() -> int:
         message += " + 0067 default-inert accepted-work drain ledger"
     if relay_container_drain_admission_enforce_rollout_verified:
         message += " + 0068 D1-linearized admission fence"
+    if relay_container_traffic_return_evidence_enforce_rollout_verified:
+        message += " + 0069 immutable typed traffic-return evidence"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -20370,7 +20471,7 @@ def verify_relay_container_shard_placement_attestation_rollout(
 
 def verify_relay_container_drain_expand_rollout(
     schema_paths: list[Path],
-) -> None:
+) -> dict[str, object]:
     drain_path = next(
         (
             path
@@ -21563,6 +21664,11 @@ def verify_relay_container_drain_expand_rollout(
             event_five,
         ),
     )
+    conn.commit()
+    evidence_conn = sqlite3.connect(":memory:")
+    conn.backup(evidence_conn)
+    evidence_conn.execute("PRAGMA foreign_keys = ON")
+    evidence_conn.create_function("unixepoch", 0, lambda: clock[0])
 
     traffic_receipt_sql = """
         INSERT INTO relay_container_traffic_return_receipts (
@@ -21722,6 +21828,765 @@ def verify_relay_container_drain_expand_rollout(
     if schema_after_duplicate != schema_before_duplicate:
         raise SystemExit("0067 duplicate DDL attempt changed persistent schema")
     conn.close()
+    return {
+        "conn": evidence_conn,
+        "clock": clock,
+        "campaign_id": campaign_id,
+        "scope_id_sha256": scope_id,
+        "admission_fence_id_sha256": digest("admission-fence"),
+        "accepted_set_manifest_sha256": membership_manifest,
+        "first_observation_id_sha256": first_observation_id,
+        "second_observation_id_sha256": second_observation_id,
+        "reverse_sync_manifest_id_sha256": reverse_manifest_id,
+        "member_closure_manifest_sha256": member_closure_manifest,
+        "quarantine_manifest_sha256": quarantine_manifest,
+        "billing_conservation_sha256": billing_conservation,
+        "operation14_receipt_sha256": operation14_receipt,
+        "operation14_baseline_sha256": operation14_baseline,
+        "operation14_event_digest_sha256": event_five,
+    }
+
+
+def verify_relay_container_traffic_return_evidence_enforce_rollout(
+    schema_paths: list[Path],
+    fixture: dict[str, object],
+) -> None:
+    evidence_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0069_relay_container_traffic_return_evidence_enforce.sql"
+        ),
+        None,
+    )
+    admission_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0068_relay_container_drain_admission_enforce.sql"
+        ),
+        None,
+    )
+    if evidence_path is None or admission_path is None:
+        raise SystemExit("0068/0069 traffic-return evidence migrations not found")
+    evidence_index = schema_paths.index(evidence_path)
+    if (
+        evidence_index == 0
+        or schema_paths[evidence_index - 1] != admission_path
+        or evidence_index != len(schema_paths) - 1
+    ):
+        raise SystemExit(
+            "0069 traffic-return evidence enforcement migration must be the current head"
+        )
+
+    evidence_sql = evidence_path.read_text(encoding="utf-8")
+    if "if not exists" in evidence_sql.lower():
+        raise SystemExit("0069 critical evidence objects must fail duplicate DDL")
+    required_fragments = (
+        "CREATE TABLE relay_container_traffic_return_evidence_subjects",
+        "'relay-container-traffic-return-evidence-subject-v1'",
+        "evidence_enforcement_migration =",
+        "'0069_relay_container_traffic_return_evidence_enforce.sql'",
+        "CREATE TABLE relay_container_traffic_return_evidence_items",
+        "'relay-container-traffic-return-evidence-item-v1'",
+        "UNIQUE (evidence_subject_id_sha256, evidence_type)",
+        "UNIQUE (evidence_subject_id_sha256, issuer_identity_sha256)",
+        "UNIQUE (evidence_subject_id_sha256, signing_key_sha256)",
+        "evidence_type = 'go_vps_readiness'",
+        "issuer_role = 'go-vps-owner'",
+        "evidence_type = 'traffic_rehearsal'",
+        "issuer_role = 'traffic-owner'",
+        "evidence_type = 'slo' AND issuer_role = 'sre'",
+        "evidence_type = 'security' AND issuer_role = 'security'",
+        "evidence_type = 'finance' AND issuer_role = 'finance'",
+        "evidence_type = 'release' AND issuer_role = 'release'",
+        "evidence_type = 'retention' AND issuer_role = 'retention'",
+        "evidence_type = 'worm_location'",
+        "issuer_role = 'worm-custodian'",
+        "CREATE TABLE relay_container_traffic_return_evidence_seals",
+        "'relay-container-traffic-return-evidence-seal-v1'",
+        "evidence_item_count = 8",
+        "sealer_role = 'evidence-custodian'",
+        "idx_relay_container_traffic_return_subject_review",
+        "idx_relay_container_traffic_return_evidence_type",
+        "idx_relay_container_traffic_return_evidence_retention",
+        "idx_relay_container_traffic_return_evidence_seal_review",
+        "relay_container_traffic_return_evidence_subject_insert_guard",
+        "traffic return evidence subject does not match sealed campaign",
+        "relay_container_traffic_return_evidence_subject_update_guard",
+        "relay_container_traffic_return_evidence_subject_delete_guard",
+        "relay_container_traffic_return_evidence_item_insert_guard",
+        "sealed traffic return evidence cannot accept another item",
+        "traffic return evidence item is outside its subject contract",
+        "relay_container_traffic_return_evidence_item_update_guard",
+        "relay_container_traffic_return_evidence_item_delete_guard",
+        "relay_container_traffic_return_evidence_seal_insert_guard",
+        "traffic return evidence seal requires eight valid retained items",
+        "traffic return evidence seal is missing a required evidence type",
+        "traffic return evidence sealer must be independent",
+        "traffic return evidence seal retention or WORM identity mismatch",
+        "relay_container_traffic_return_evidence_seal_update_guard",
+        "relay_container_traffic_return_evidence_seal_delete_guard",
+        "DROP TRIGGER relay_container_traffic_return_receipt_insert_guard",
+        "CREATE TRIGGER relay_container_traffic_return_receipt_insert_guard",
+        "go_readiness.artifact_sha256 =",
+        "NEW.go_vps_readiness_sha256",
+        "rehearsal.artifact_sha256 =",
+        "NEW.traffic_rehearsal_sha256",
+        "slo.approval_digest_sha256 =",
+        "NEW.slo_approval_sha256",
+        "security.approval_digest_sha256 =",
+        "NEW.security_approval_sha256",
+        "finance.approval_digest_sha256 =",
+        "NEW.finance_approval_sha256",
+        "release.approval_digest_sha256 =",
+        "NEW.release_approval_sha256",
+        "seal.retention_policy_sha256 =",
+        "NEW.retention_policy_sha256",
+        "seal.worm_location_sha256 =",
+        "NEW.immutable_evidence_location_sha256",
+        "NEW.reviewer_identity_sha256 <>",
+        "seal.sealer_identity_sha256",
+        "NEW.issued_at <= subject.review_expires_at",
+        "NEW.issued_at > issuer_item.valid_until",
+        "traffic return receipt requires complete independent typed evidence",
+    )
+    for fragment in required_fragments:
+        if fragment not in evidence_sql:
+            raise SystemExit(
+                f"0069 traffic-return evidence rollout missing: {fragment}"
+            )
+    if evidence_sql.count("CREATE INDEX ") != 4:
+        raise SystemExit("0069 traffic-return evidence rollout must define four indexes")
+    ordered_fragments = (
+        "CREATE TABLE relay_container_traffic_return_evidence_subjects",
+        "CREATE TABLE relay_container_traffic_return_evidence_items",
+        "CREATE TABLE relay_container_traffic_return_evidence_seals",
+        "CREATE INDEX idx_relay_container_traffic_return_subject_review",
+        "CREATE INDEX idx_relay_container_traffic_return_evidence_type",
+        "CREATE INDEX idx_relay_container_traffic_return_evidence_retention",
+        "CREATE INDEX idx_relay_container_traffic_return_evidence_seal_review",
+        "CREATE TRIGGER relay_container_traffic_return_evidence_subject_insert_guard",
+        "CREATE TRIGGER relay_container_traffic_return_evidence_subject_update_guard",
+        "CREATE TRIGGER relay_container_traffic_return_evidence_subject_delete_guard",
+        "CREATE TRIGGER relay_container_traffic_return_evidence_item_insert_guard",
+        "CREATE TRIGGER relay_container_traffic_return_evidence_item_update_guard",
+        "CREATE TRIGGER relay_container_traffic_return_evidence_item_delete_guard",
+        "CREATE TRIGGER relay_container_traffic_return_evidence_seal_insert_guard",
+        "CREATE TRIGGER relay_container_traffic_return_evidence_seal_update_guard",
+        "CREATE TRIGGER relay_container_traffic_return_evidence_seal_delete_guard",
+        "DROP TRIGGER relay_container_traffic_return_receipt_insert_guard",
+        "CREATE TRIGGER relay_container_traffic_return_receipt_insert_guard",
+    )
+    ordered_positions = [evidence_sql.index(fragment) for fragment in ordered_fragments]
+    if ordered_positions != sorted(ordered_positions):
+        raise SystemExit("0069 traffic-return evidence DDL order is invalid")
+    if evidence_sql.count(
+        "DROP TRIGGER relay_container_traffic_return_receipt_insert_guard"
+    ) != 1 or evidence_sql.count(
+        "CREATE TRIGGER relay_container_traffic_return_receipt_insert_guard"
+    ) != 1:
+        raise SystemExit("0069 must replace the receipt guard exactly once")
+
+    conn = fixture["conn"]
+    clock = fixture["clock"]
+    if not isinstance(conn, sqlite3.Connection) or not isinstance(clock, list):
+        raise SystemExit("0069 traffic-return evidence fixture is invalid")
+
+    def fixture_text(name: str) -> str:
+        value = fixture[name]
+        if not isinstance(value, str):
+            raise SystemExit(f"0069 traffic-return evidence fixture lacks {name}")
+        return value
+
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    conn.executescript(evidence_sql)
+    conn.execute(
+        "INSERT INTO d1_migrations(name) VALUES (?)",
+        ("0069_relay_container_traffic_return_evidence_enforce.sql",),
+    )
+
+    created_at = clock[0]
+    review_expires_at = created_at + 600
+    subject_retention_until = created_at + 86_400
+    item_retention_until = created_at + 172_800
+    evidence_subject_id = digest("0069-evidence-subject")
+    assembler_identity = digest("0069-evidence-assembler")
+    subject_values = {
+        "evidence_subject_id_sha256": evidence_subject_id,
+        "campaign_id": fixture_text("campaign_id"),
+        "environment": "staging",
+        "scope_kind": "global",
+        "scope_id_sha256": fixture_text("scope_id_sha256"),
+        "fence_generation": 1,
+        "admission_fence_id_sha256": fixture_text(
+            "admission_fence_id_sha256"
+        ),
+        "accepted_set_manifest_sha256": fixture_text(
+            "accepted_set_manifest_sha256"
+        ),
+        "first_observation_id_sha256": fixture_text(
+            "first_observation_id_sha256"
+        ),
+        "second_observation_id_sha256": fixture_text(
+            "second_observation_id_sha256"
+        ),
+        "reverse_sync_manifest_id_sha256": fixture_text(
+            "reverse_sync_manifest_id_sha256"
+        ),
+        "member_closure_manifest_sha256": fixture_text(
+            "member_closure_manifest_sha256"
+        ),
+        "quarantine_manifest_sha256": fixture_text(
+            "quarantine_manifest_sha256"
+        ),
+        "billing_conservation_sha256": fixture_text(
+            "billing_conservation_sha256"
+        ),
+        "operation14_receipt_sha256": fixture_text(
+            "operation14_receipt_sha256"
+        ),
+        "operation14_baseline_sha256": fixture_text(
+            "operation14_baseline_sha256"
+        ),
+        "evidence_policy_sha256": digest("0069-evidence-policy"),
+        "evidence_window_started_at": created_at,
+        "evidence_window_ends_at": review_expires_at,
+        "review_expires_at": review_expires_at,
+        "retention_until": subject_retention_until,
+        "assembler_identity_sha256": assembler_identity,
+        "subject_digest_sha256": digest("0069-evidence-subject-digest"),
+        "created_by_admin_id": 42,
+    }
+    conn.execute(
+        """
+        INSERT INTO relay_container_traffic_return_evidence_subjects (
+          evidence_subject_id_sha256, campaign_id, contract_version,
+          subject_contract, evidence_enforcement_migration, environment,
+          scope_kind, scope_id_sha256, fence_generation,
+          admission_fence_id_sha256, accepted_set_manifest_sha256,
+          first_observation_id_sha256, second_observation_id_sha256,
+          reverse_sync_manifest_id_sha256, member_closure_manifest_sha256,
+          quarantine_manifest_sha256, billing_conservation_sha256,
+          operation14_receipt_sha256, operation14_baseline_sha256,
+          evidence_policy_sha256, evidence_window_started_at,
+          evidence_window_ends_at, review_expires_at, retention_until,
+          assembler_identity_sha256, subject_digest_sha256,
+          created_by_admin_id, created_at
+        ) VALUES (
+          :evidence_subject_id_sha256, :campaign_id, 1,
+          'relay-container-traffic-return-evidence-subject-v1',
+          '0069_relay_container_traffic_return_evidence_enforce.sql',
+          :environment, :scope_kind, :scope_id_sha256, :fence_generation,
+          :admission_fence_id_sha256, :accepted_set_manifest_sha256,
+          :first_observation_id_sha256, :second_observation_id_sha256,
+          :reverse_sync_manifest_id_sha256,
+          :member_closure_manifest_sha256, :quarantine_manifest_sha256,
+          :billing_conservation_sha256, :operation14_receipt_sha256,
+          :operation14_baseline_sha256, :evidence_policy_sha256,
+          :evidence_window_started_at, :evidence_window_ends_at,
+          :review_expires_at, :retention_until, :assembler_identity_sha256,
+          :subject_digest_sha256, :created_by_admin_id, unixepoch()
+        )
+        """,
+        subject_values,
+    )
+
+    evidence_roles = {
+        "go_vps_readiness": "go-vps-owner",
+        "traffic_rehearsal": "traffic-owner",
+        "slo": "sre",
+        "security": "security",
+        "finance": "finance",
+        "release": "release",
+        "retention": "retention",
+        "worm_location": "worm-custodian",
+    }
+    artifacts = {
+        "go_vps_readiness": digest("go-vps-readiness"),
+        "traffic_rehearsal": digest("traffic-rehearsal"),
+        "slo": digest("0069-slo-artifact"),
+        "security": digest("0069-security-artifact"),
+        "finance": digest("0069-finance-artifact"),
+        "release": digest("0069-release-artifact"),
+        "retention": digest("retention-policy"),
+        "worm_location": digest("immutable-evidence-location"),
+    }
+    approvals = {
+        "go_vps_readiness": digest("0069-go-vps-approval"),
+        "traffic_rehearsal": digest("0069-traffic-rehearsal-approval"),
+        "slo": digest("slo-approval"),
+        "security": digest("security-approval"),
+        "finance": digest("finance-approval"),
+        "release": digest("release-approval"),
+        "retention": digest("0069-retention-approval"),
+        "worm_location": digest("0069-worm-location-approval"),
+    }
+
+    def evidence_item_values(
+        evidence_type: str,
+        label: str,
+        *,
+        issuer_role: str | None = None,
+        issuer_identity_sha256: str | None = None,
+        signing_key_sha256: str | None = None,
+        valid_until: int | None = None,
+    ) -> dict[str, object]:
+        return {
+            "evidence_id_sha256": digest(f"0069-evidence-id:{label}"),
+            "evidence_subject_id_sha256": evidence_subject_id,
+            "evidence_type": evidence_type,
+            "issuer_role": issuer_role or evidence_roles[evidence_type],
+            "artifact_sha256": artifacts[evidence_type],
+            "approval_digest_sha256": approvals[evidence_type],
+            "issuer_identity_sha256": issuer_identity_sha256
+            or digest(f"0069-issuer:{label}"),
+            "signing_key_sha256": signing_key_sha256
+            or digest(f"0069-signing-key:{label}"),
+            "signature_envelope_sha256": digest(
+                f"0069-signature-envelope:{label}"
+            ),
+            "canonical_digest_sha256": digest(
+                f"0069-canonical-evidence:{label}"
+            ),
+            "captured_at": created_at,
+            "valid_from": created_at,
+            "valid_until": valid_until or review_expires_at,
+            "retention_until": item_retention_until,
+        }
+
+    evidence_item_sql = """
+        INSERT INTO relay_container_traffic_return_evidence_items (
+          evidence_id_sha256, evidence_subject_id_sha256, contract_version,
+          evidence_contract, evidence_type, issuer_role, artifact_sha256,
+          approval_digest_sha256, issuer_identity_sha256, signing_key_sha256,
+          signature_envelope_sha256, canonical_digest_sha256, captured_at,
+          valid_from, valid_until, retention_until, registered_at
+        ) VALUES (
+          :evidence_id_sha256, :evidence_subject_id_sha256, 1,
+          'relay-container-traffic-return-evidence-item-v1',
+          :evidence_type, :issuer_role, :artifact_sha256,
+          :approval_digest_sha256, :issuer_identity_sha256,
+          :signing_key_sha256, :signature_envelope_sha256,
+          :canonical_digest_sha256, :captured_at, :valid_from, :valid_until,
+          :retention_until, unixepoch()
+        )
+    """
+    expect_integrity_error(
+        lambda: conn.execute(
+            evidence_item_sql,
+            evidence_item_values(
+                "go_vps_readiness",
+                "wrong-role",
+                issuer_role="security",
+            ),
+        ),
+        "0069 accepted a role-mismatched evidence item",
+        "CHECK constraint failed",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            evidence_item_sql,
+            evidence_item_values(
+                "go_vps_readiness",
+                "expired",
+                valid_until=created_at + 60,
+            ),
+        ),
+        "0069 accepted evidence expiring before the review window",
+        "traffic return evidence item is outside its subject contract",
+    )
+
+    valid_items: dict[str, dict[str, object]] = {}
+    go_readiness = evidence_item_values(
+        "go_vps_readiness",
+        "go_vps_readiness",
+    )
+    conn.execute(evidence_item_sql, go_readiness)
+    valid_items["go_vps_readiness"] = go_readiness
+    expect_integrity_error(
+        lambda: conn.execute(
+            evidence_item_sql,
+            evidence_item_values(
+                "traffic_rehearsal",
+                "duplicate-issuer",
+                issuer_identity_sha256=str(
+                    go_readiness["issuer_identity_sha256"]
+                ),
+            ),
+        ),
+        "0069 accepted one issuer for two evidence types",
+        "UNIQUE constraint failed",
+    )
+    expect_integrity_error(
+        lambda: conn.execute(
+            evidence_item_sql,
+            evidence_item_values(
+                "traffic_rehearsal",
+                "duplicate-key",
+                signing_key_sha256=str(go_readiness["signing_key_sha256"]),
+            ),
+        ),
+        "0069 accepted one signing key for two evidence types",
+        "UNIQUE constraint failed",
+    )
+
+    for evidence_type in (
+        "traffic_rehearsal",
+        "slo",
+        "security",
+        "finance",
+        "release",
+        "retention",
+    ):
+        values = evidence_item_values(evidence_type, evidence_type)
+        conn.execute(evidence_item_sql, values)
+        valid_items[evidence_type] = values
+
+    seal_sql = """
+        INSERT INTO relay_container_traffic_return_evidence_seals (
+          evidence_seal_id_sha256, evidence_subject_id_sha256,
+          contract_version, seal_contract, evidence_item_count,
+          evidence_manifest_sha256, worm_location_sha256,
+          retention_policy_sha256, retention_until, sealer_role,
+          sealer_identity_sha256, signing_key_sha256, seal_digest_sha256,
+          sealed_at
+        ) VALUES (
+          :evidence_seal_id_sha256, :evidence_subject_id_sha256, 1,
+          'relay-container-traffic-return-evidence-seal-v1', 8,
+          :evidence_manifest_sha256, :worm_location_sha256,
+          :retention_policy_sha256, :retention_until,
+          'evidence-custodian', :sealer_identity_sha256,
+          :signing_key_sha256, :seal_digest_sha256, unixepoch()
+        )
+    """
+
+    def seal_values(label: str) -> dict[str, object]:
+        return {
+            "evidence_seal_id_sha256": digest(f"0069-evidence-seal:{label}"),
+            "evidence_subject_id_sha256": evidence_subject_id,
+            "evidence_manifest_sha256": digest(
+                f"0069-evidence-manifest:{label}"
+            ),
+            "worm_location_sha256": artifacts["worm_location"],
+            "retention_policy_sha256": artifacts["retention"],
+            "retention_until": subject_retention_until,
+            "sealer_identity_sha256": digest(f"0069-sealer:{label}"),
+            "signing_key_sha256": digest(f"0069-sealer-key:{label}"),
+            "seal_digest_sha256": digest(f"0069-seal-digest:{label}"),
+        }
+
+    expect_integrity_error(
+        lambda: conn.execute(seal_sql, seal_values("missing-worm")),
+        "0069 sealed a subject with a missing evidence type",
+        "traffic return evidence seal requires eight valid retained items",
+    )
+
+    worm_item = evidence_item_values("worm_location", "worm_location")
+    conn.execute(evidence_item_sql, worm_item)
+    valid_items["worm_location"] = worm_item
+    non_independent_seal = seal_values("issuer-reuse")
+    non_independent_seal["sealer_identity_sha256"] = go_readiness[
+        "issuer_identity_sha256"
+    ]
+    expect_integrity_error(
+        lambda: conn.execute(seal_sql, non_independent_seal),
+        "0069 accepted an evidence issuer as the sealer",
+        "traffic return evidence sealer must be independent",
+    )
+    reused_key_seal = seal_values("key-reuse")
+    reused_key_seal["signing_key_sha256"] = go_readiness["signing_key_sha256"]
+    expect_integrity_error(
+        lambda: conn.execute(seal_sql, reused_key_seal),
+        "0069 accepted an evidence signing key for the seal",
+        "traffic return evidence sealer must be independent",
+    )
+
+    valid_seal = seal_values("complete")
+    conn.execute(seal_sql, valid_seal)
+
+    receipt_sql = """
+        INSERT INTO relay_container_traffic_return_receipts (
+          receipt_id_sha256, campaign_id, contract_version,
+          receipt_contract, evidence_enforcement_migration,
+          first_observation_id_sha256, second_observation_id_sha256,
+          reverse_sync_manifest_id_sha256, membership_manifest_sha256,
+          member_closure_manifest_sha256, quarantine_manifest_sha256,
+          billing_conservation_sha256, operation14_receipt_sha256,
+          operation14_baseline_sha256, go_vps_readiness_sha256,
+          traffic_rehearsal_sha256, slo_approval_sha256,
+          security_approval_sha256, finance_approval_sha256,
+          release_approval_sha256, immutable_evidence_location_sha256,
+          retention_policy_sha256, eligible_for_traffic_return_review,
+          traffic_return_authorized, reviewer_identity_sha256,
+          receipt_digest_sha256, issued_at
+        ) VALUES (
+          :receipt_id_sha256, :campaign_id, 1,
+          'traffic-return-review-eligibility-v1',
+          '0069_relay_container_traffic_return_evidence_enforce.sql',
+          :first_observation_id_sha256, :second_observation_id_sha256,
+          :reverse_sync_manifest_id_sha256, :membership_manifest_sha256,
+          :member_closure_manifest_sha256, :quarantine_manifest_sha256,
+          :billing_conservation_sha256, :operation14_receipt_sha256,
+          :operation14_baseline_sha256, :go_vps_readiness_sha256,
+          :traffic_rehearsal_sha256, :slo_approval_sha256,
+          :security_approval_sha256, :finance_approval_sha256,
+          :release_approval_sha256, :immutable_evidence_location_sha256,
+          :retention_policy_sha256, 1, :traffic_return_authorized,
+          :reviewer_identity_sha256, :receipt_digest_sha256, unixepoch()
+        )
+    """
+
+    def receipt_values(label: str) -> dict[str, object]:
+        return {
+            "receipt_id_sha256": digest(f"0069-traffic-return-receipt:{label}"),
+            "campaign_id": fixture_text("campaign_id"),
+            "first_observation_id_sha256": fixture_text(
+                "first_observation_id_sha256"
+            ),
+            "second_observation_id_sha256": fixture_text(
+                "second_observation_id_sha256"
+            ),
+            "reverse_sync_manifest_id_sha256": fixture_text(
+                "reverse_sync_manifest_id_sha256"
+            ),
+            "membership_manifest_sha256": fixture_text(
+                "accepted_set_manifest_sha256"
+            ),
+            "member_closure_manifest_sha256": fixture_text(
+                "member_closure_manifest_sha256"
+            ),
+            "quarantine_manifest_sha256": fixture_text(
+                "quarantine_manifest_sha256"
+            ),
+            "billing_conservation_sha256": fixture_text(
+                "billing_conservation_sha256"
+            ),
+            "operation14_receipt_sha256": fixture_text(
+                "operation14_receipt_sha256"
+            ),
+            "operation14_baseline_sha256": fixture_text(
+                "operation14_baseline_sha256"
+            ),
+            "go_vps_readiness_sha256": artifacts["go_vps_readiness"],
+            "traffic_rehearsal_sha256": artifacts["traffic_rehearsal"],
+            "slo_approval_sha256": approvals["slo"],
+            "security_approval_sha256": approvals["security"],
+            "finance_approval_sha256": approvals["finance"],
+            "release_approval_sha256": approvals["release"],
+            "immutable_evidence_location_sha256": artifacts["worm_location"],
+            "retention_policy_sha256": artifacts["retention"],
+            "traffic_return_authorized": 0,
+            "reviewer_identity_sha256": digest(f"0069-reviewer:{label}"),
+            "receipt_digest_sha256": digest(f"0069-receipt-digest:{label}"),
+        }
+
+    digest_mismatch_receipt = receipt_values("digest-mismatch")
+    digest_mismatch_receipt["finance_approval_sha256"] = digest(
+        "0069-wrong-finance-approval"
+    )
+    expect_integrity_error(
+        lambda: conn.execute(receipt_sql, digest_mismatch_receipt),
+        "0069 accepted a receipt with a mismatched evidence digest",
+        "traffic return receipt requires complete independent typed evidence",
+    )
+    sealer_review_receipt = receipt_values("sealer-reviewer")
+    sealer_review_receipt["reviewer_identity_sha256"] = valid_seal[
+        "sealer_identity_sha256"
+    ]
+    expect_integrity_error(
+        lambda: conn.execute(receipt_sql, sealer_review_receipt),
+        "0069 accepted the evidence sealer as the eligibility reviewer",
+        "traffic return receipt requires complete independent typed evidence",
+    )
+    issuer_review_receipt = receipt_values("issuer-reviewer")
+    issuer_review_receipt["reviewer_identity_sha256"] = go_readiness[
+        "issuer_identity_sha256"
+    ]
+    expect_integrity_error(
+        lambda: conn.execute(receipt_sql, issuer_review_receipt),
+        "0069 accepted an evidence issuer as the eligibility reviewer",
+        "traffic return receipt requires complete independent typed evidence",
+    )
+
+    clock[0] = review_expires_at + 1
+    try:
+        expect_integrity_error(
+            lambda: conn.execute(receipt_sql, receipt_values("expired")),
+            "0069 accepted an eligibility receipt after evidence expiry",
+            "traffic return receipt requires complete independent typed evidence",
+        )
+    finally:
+        clock[0] = created_at
+
+    authorized_receipt = receipt_values("authorized")
+    authorized_receipt["traffic_return_authorized"] = 1
+    expect_integrity_error(
+        lambda: conn.execute(receipt_sql, authorized_receipt),
+        "0069 allowed typed evidence to authorize traffic",
+        "CHECK constraint failed",
+    )
+
+    valid_receipt = receipt_values("complete")
+    conn.execute(receipt_sql, valid_receipt)
+    receipt_state = conn.execute(
+        """
+        SELECT eligible_for_traffic_return_review, traffic_return_authorized
+        FROM relay_container_traffic_return_receipts
+        WHERE receipt_id_sha256 = ?
+        """,
+        (valid_receipt["receipt_id_sha256"],),
+    ).fetchone()
+    if receipt_state != (1, 0):
+        raise SystemExit(f"0069 eligibility receipt state mismatch: {receipt_state}")
+    if conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM relay_container_traffic_return_receipts
+        WHERE traffic_return_authorized <> 0
+        """
+    ).fetchone() != (0,):
+        raise SystemExit("0069 persisted an authorized traffic-return receipt")
+
+    conn.execute(
+        """
+        INSERT INTO relay_container_drain_events (
+          campaign_id, event_sequence, event_code, from_state, to_state,
+          previous_event_digest_sha256, traffic_return_receipt_id_sha256,
+          evidence_manifest_sha256, actor_identity_sha256,
+          event_digest_sha256, recorded_at
+        ) VALUES (
+          ?, 6, 'traffic_return_receipt_sealed', 'operation14_complete',
+          'eligible_for_traffic_return_review', ?, ?, ?, ?, ?, unixepoch()
+        )
+        """,
+        (
+            fixture_text("campaign_id"),
+            fixture_text("operation14_event_digest_sha256"),
+            valid_receipt["receipt_id_sha256"],
+            valid_seal["evidence_manifest_sha256"],
+            digest("0069-traffic-return-event-actor"),
+            digest("0069-traffic-return-event"),
+        ),
+    )
+    terminal = conn.execute(
+        """
+        SELECT campaign.state, campaign.state_version,
+               receipt.eligible_for_traffic_return_review,
+               receipt.traffic_return_authorized
+        FROM relay_container_drain_campaigns AS campaign
+        JOIN relay_container_traffic_return_receipts AS receipt
+          ON receipt.campaign_id = campaign.campaign_id
+        WHERE campaign.campaign_id = ?
+        """,
+        (fixture_text("campaign_id"),),
+    ).fetchone()
+    if terminal != ("eligible_for_traffic_return_review", 6, 1, 0):
+        raise SystemExit(f"0069 traffic-return terminal state mismatch: {terminal}")
+
+    immutable_statements = (
+        (
+            "subject update",
+            """
+            UPDATE relay_container_traffic_return_evidence_subjects
+            SET subject_digest_sha256 = ?
+            WHERE evidence_subject_id_sha256 = ?
+            """,
+            (digest("0069-mutated-subject"), evidence_subject_id),
+            "traffic return evidence subjects are immutable",
+        ),
+        (
+            "subject delete",
+            """
+            DELETE FROM relay_container_traffic_return_evidence_subjects
+            WHERE evidence_subject_id_sha256 = ?
+            """,
+            (evidence_subject_id,),
+            "traffic return evidence subjects are append-preserved",
+        ),
+        (
+            "item update",
+            """
+            UPDATE relay_container_traffic_return_evidence_items
+            SET canonical_digest_sha256 = ?
+            WHERE evidence_id_sha256 = ?
+            """,
+            (
+                digest("0069-mutated-item"),
+                go_readiness["evidence_id_sha256"],
+            ),
+            "traffic return evidence items are immutable",
+        ),
+        (
+            "item delete",
+            """
+            DELETE FROM relay_container_traffic_return_evidence_items
+            WHERE evidence_id_sha256 = ?
+            """,
+            (go_readiness["evidence_id_sha256"],),
+            "traffic return evidence items are append-preserved",
+        ),
+        (
+            "seal update",
+            """
+            UPDATE relay_container_traffic_return_evidence_seals
+            SET seal_digest_sha256 = ?
+            WHERE evidence_seal_id_sha256 = ?
+            """,
+            (
+                digest("0069-mutated-seal"),
+                valid_seal["evidence_seal_id_sha256"],
+            ),
+            "traffic return evidence seals are immutable",
+        ),
+        (
+            "seal delete",
+            """
+            DELETE FROM relay_container_traffic_return_evidence_seals
+            WHERE evidence_seal_id_sha256 = ?
+            """,
+            (valid_seal["evidence_seal_id_sha256"],),
+            "traffic return evidence seals are append-preserved",
+        ),
+    )
+    for label, statement, parameters, expected_error in immutable_statements:
+        expect_integrity_error(
+            lambda statement=statement, parameters=parameters: conn.execute(
+                statement,
+                parameters,
+            ),
+            f"0069 allowed forbidden evidence {label}",
+            expected_error,
+        )
+
+    expect_integrity_error(
+        lambda: conn.execute(
+            evidence_item_sql,
+            evidence_item_values("release", "post-seal"),
+        ),
+        "0069 accepted another evidence item after sealing",
+        "sealed traffic return evidence cannot accept another item",
+    )
+
+    schema_before_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        conn.executescript(evidence_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(f"0069 duplicate DDL failed unexpectedly: {error}") from error
+    else:
+        raise SystemExit("0069 critical evidence objects accepted duplicate DDL")
+    schema_after_duplicate = conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0069 duplicate DDL attempt changed persistent schema")
+    conn.close()
 
 
 def verify_relay_container_drain_admission_enforce_rollout(
@@ -21743,15 +22608,27 @@ def verify_relay_container_drain_admission_enforce_rollout(
         ),
         None,
     )
-    if enforce_path is None or drain_path is None:
-        raise SystemExit("0067/0068 drain admission fence migrations not found")
+    evidence_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0069_relay_container_traffic_return_evidence_enforce.sql"
+        ),
+        None,
+    )
+    if enforce_path is None or drain_path is None or evidence_path is None:
+        raise SystemExit("0067/0068/0069 drain migration chain not found")
     enforce_index = schema_paths.index(enforce_path)
     if (
         enforce_index == 0
         or schema_paths[enforce_index - 1] != drain_path
-        or enforce_index != len(schema_paths) - 1
+        or enforce_index + 1 >= len(schema_paths)
+        or schema_paths[enforce_index + 1] != evidence_path
     ):
-        raise SystemExit("0068 drain admission fence migration must be the current head")
+        raise SystemExit(
+            "0068 drain admission fence migration must follow 0067 and precede 0069"
+        )
 
     enforce_sql = enforce_path.read_text(encoding="utf-8")
     if "if not exists" in enforce_sql.lower():

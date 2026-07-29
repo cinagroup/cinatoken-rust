@@ -88,6 +88,8 @@ pub(crate) const RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION: &str =
     "0067_relay_container_drain_expand.sql";
 pub(crate) const RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION: &str =
     "0068_relay_container_drain_admission_enforce.sql";
+pub(crate) const RELAY_CONTAINER_TRAFFIC_RETURN_EVIDENCE_ENFORCE_MIGRATION: &str =
+    "0069_relay_container_traffic_return_evidence_enforce.sql";
 pub(crate) const RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256: &str =
     "53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251";
 pub(crate) const RELAY_CONTAINER_SHARD_ACTIVATION_CAMPAIGN_EXPIRY_LIMIT: i64 = 64;
@@ -1063,6 +1065,18 @@ struct RelayContainerDrainAdmissionSchemaProbe {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerTrafficReturnEvidenceSchemaProbe {
+    migration_count: i64,
+    subject_columns: Option<String>,
+    item_columns: Option<String>,
+    seal_columns: Option<String>,
+    table_names: Option<String>,
+    index_names: Option<String>,
+    trigger_names: Option<String>,
+    receipt_guard_contract: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[allow(dead_code)] // consumed when 0068 enables drain admission routes
 pub struct RelayContainerDrainCampaignRow {
     pub campaign_id: String,
@@ -1104,6 +1118,53 @@ pub struct RelayContainerDrainCampaignRow {
     pub last_event_digest_sha256: Option<String>,
     pub created_by_admin_id: i64,
     pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[allow(dead_code)] // read-only 0069 boundary; no route is enabled
+pub struct RelayContainerTrafficReturnEvidenceSubjectSealRow {
+    pub evidence_subject_id_sha256: String,
+    pub campaign_id: String,
+    pub subject_contract_version: i64,
+    pub subject_contract: String,
+    pub evidence_enforcement_migration: String,
+    pub environment: String,
+    pub scope_kind: String,
+    pub scope_id_sha256: String,
+    pub fence_generation: i64,
+    pub admission_fence_id_sha256: String,
+    pub accepted_set_manifest_sha256: String,
+    pub first_observation_id_sha256: String,
+    pub second_observation_id_sha256: String,
+    pub reverse_sync_manifest_id_sha256: String,
+    pub member_closure_manifest_sha256: String,
+    pub quarantine_manifest_sha256: String,
+    pub billing_conservation_sha256: String,
+    pub operation14_receipt_sha256: String,
+    pub operation14_baseline_sha256: String,
+    pub evidence_policy_sha256: String,
+    pub evidence_window_started_at: i64,
+    pub evidence_window_ends_at: i64,
+    pub review_expires_at: i64,
+    pub subject_retention_until: i64,
+    pub assembler_identity_sha256: String,
+    pub subject_digest_sha256: String,
+    pub created_by_admin_id: i64,
+    pub created_at: i64,
+    pub evidence_seal_id_sha256: String,
+    pub seal_contract_version: i64,
+    pub seal_contract: String,
+    pub evidence_item_count: i64,
+    pub evidence_manifest_sha256: String,
+    pub worm_location_sha256: String,
+    pub retention_policy_sha256: String,
+    pub seal_retention_until: i64,
+    pub sealer_role: String,
+    pub sealer_identity_sha256: String,
+    pub seal_signing_key_sha256: String,
+    pub seal_digest_sha256: String,
+    pub sealed_at: i64,
+    pub observed_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14693,6 +14754,146 @@ pub async fn relay_container_drain_schema_ready(db: &D1Database) -> worker::Resu
     }))
 }
 
+#[allow(dead_code)] // read-only 0069 boundary; no route is enabled
+pub async fn relay_container_traffic_return_evidence_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    if !relay_container_drain_schema_ready(db).await?
+        || !relay_container_drain_admission_schema_ready(db).await?
+    {
+        return Ok(false);
+    }
+    const SUBJECT_COLUMNS: &str = "evidence_subject_id_sha256,campaign_id,contract_version,subject_contract,evidence_enforcement_migration,environment,scope_kind,scope_id_sha256,fence_generation,admission_fence_id_sha256,accepted_set_manifest_sha256,first_observation_id_sha256,second_observation_id_sha256,reverse_sync_manifest_id_sha256,member_closure_manifest_sha256,quarantine_manifest_sha256,billing_conservation_sha256,operation14_receipt_sha256,operation14_baseline_sha256,evidence_policy_sha256,evidence_window_started_at,evidence_window_ends_at,review_expires_at,retention_until,assembler_identity_sha256,subject_digest_sha256,created_by_admin_id,created_at";
+    const ITEM_COLUMNS: &str = "evidence_id_sha256,evidence_subject_id_sha256,contract_version,evidence_contract,evidence_type,issuer_role,artifact_sha256,approval_digest_sha256,issuer_identity_sha256,signing_key_sha256,signature_envelope_sha256,canonical_digest_sha256,captured_at,valid_from,valid_until,retention_until,registered_at";
+    const SEAL_COLUMNS: &str = "evidence_seal_id_sha256,evidence_subject_id_sha256,contract_version,seal_contract,evidence_item_count,evidence_manifest_sha256,worm_location_sha256,retention_policy_sha256,retention_until,sealer_role,sealer_identity_sha256,signing_key_sha256,seal_digest_sha256,sealed_at";
+    const TABLE_NAMES: &str = "relay_container_traffic_return_evidence_items|relay_container_traffic_return_evidence_seals|relay_container_traffic_return_evidence_subjects";
+    const INDEX_NAMES: &str = "idx_relay_container_traffic_return_evidence_retention|idx_relay_container_traffic_return_evidence_seal_review|idx_relay_container_traffic_return_evidence_type|idx_relay_container_traffic_return_subject_review";
+    const TRIGGER_NAMES: &str = "relay_container_traffic_return_evidence_item_delete_guard|relay_container_traffic_return_evidence_item_insert_guard|relay_container_traffic_return_evidence_item_update_guard|relay_container_traffic_return_evidence_seal_delete_guard|relay_container_traffic_return_evidence_seal_insert_guard|relay_container_traffic_return_evidence_seal_update_guard|relay_container_traffic_return_evidence_subject_delete_guard|relay_container_traffic_return_evidence_subject_insert_guard|relay_container_traffic_return_evidence_subject_update_guard|relay_container_traffic_return_receipt_insert_guard";
+    let migration = [D1Type::Text(
+        RELAY_CONTAINER_TRAFFIC_RETURN_EVIDENCE_ENFORCE_MIGRATION,
+    )];
+    let row = db
+        .prepare(
+            r#"
+            SELECT
+              (SELECT COUNT(1)
+               FROM d1_migrations
+               WHERE name = ?1) AS migration_count,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_traffic_return_evidence_subjects'
+                 )
+                 ORDER BY cid
+               )) AS subject_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_traffic_return_evidence_items'
+                 )
+                 ORDER BY cid
+               )) AS item_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_traffic_return_evidence_seals'
+                 )
+                 ORDER BY cid
+               )) AS seal_columns,
+              (SELECT group_concat(name, '|') FROM (
+                 SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                     'relay_container_traffic_return_evidence_subjects',
+                     'relay_container_traffic_return_evidence_items',
+                     'relay_container_traffic_return_evidence_seals'
+                   )
+                 ORDER BY name
+               )) AS table_names,
+              (SELECT group_concat(name, '|') FROM (
+                 SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'index'
+                   AND tbl_name IN (
+                     'relay_container_traffic_return_evidence_subjects',
+                     'relay_container_traffic_return_evidence_items',
+                     'relay_container_traffic_return_evidence_seals'
+                   )
+                   AND name NOT LIKE 'sqlite_autoindex_%'
+                 ORDER BY name
+               )) AS index_names,
+              (SELECT group_concat(name, '|') FROM (
+                 SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'trigger'
+                   AND (
+                     tbl_name IN (
+                       'relay_container_traffic_return_evidence_subjects',
+                       'relay_container_traffic_return_evidence_items',
+                       'relay_container_traffic_return_evidence_seals'
+                     )
+                     OR name =
+                       'relay_container_traffic_return_receipt_insert_guard'
+                   )
+                 ORDER BY name
+               )) AS trigger_names,
+              (SELECT CASE WHEN
+                 instr(
+                   sql,
+                   'relay_container_traffic_return_evidence_subjects AS subject'
+                 ) > 0
+                 AND instr(
+                   sql,
+                   'relay_container_traffic_return_evidence_seals AS seal'
+                 ) > 0
+                 AND instr(
+                   sql,
+                   'go_readiness.evidence_type = ''go_vps_readiness'''
+                 ) > 0
+                 AND instr(
+                   sql,
+                   'finance.evidence_type = ''finance'''
+                 ) > 0
+                 AND instr(
+                   sql,
+                   'worm.evidence_type = ''worm_location'''
+                 ) > 0
+                 AND instr(
+                   sql,
+                   'NEW.issued_at <= subject.review_expires_at'
+                 ) > 0
+                 AND instr(
+                   sql,
+                   'NEW.issued_at < seal.retention_until'
+                 ) > 0
+                 AND instr(
+                   sql,
+                   'issuer_item.issuer_identity_sha256'
+                 ) > 0
+                THEN 1 ELSE 0 END
+               FROM sqlite_master
+               WHERE type = 'trigger'
+                 AND name =
+                   'relay_container_traffic_return_receipt_insert_guard'
+              ) AS receipt_guard_contract
+            "#,
+        )
+        .bind_refs(&migration)?
+        .first::<RelayContainerTrafficReturnEvidenceSchemaProbe>(None)
+        .await?;
+    Ok(row.is_some_and(|row| {
+        row.migration_count == 1
+            && row.subject_columns.as_deref() == Some(SUBJECT_COLUMNS)
+            && row.item_columns.as_deref() == Some(ITEM_COLUMNS)
+            && row.seal_columns.as_deref() == Some(SEAL_COLUMNS)
+            && row.table_names.as_deref() == Some(TABLE_NAMES)
+            && row.index_names.as_deref() == Some(INDEX_NAMES)
+            && row.trigger_names.as_deref() == Some(TRIGGER_NAMES)
+            && row.receipt_guard_contract == Some(1)
+    }))
+}
+
 #[allow(dead_code)] // consumed when 0068 enables drain admission routes
 pub async fn relay_container_drain_campaign(
     db: &D1Database,
@@ -14729,6 +14930,150 @@ pub async fn relay_container_drain_campaign(
     .bind_refs(&[D1Type::Text(campaign_id)])?
     .first::<RelayContainerDrainCampaignRow>(None)
     .await
+}
+
+fn validate_relay_container_traffic_return_evidence_subject_seal(
+    row: Option<&RelayContainerTrafficReturnEvidenceSubjectSealRow>,
+    expected_campaign_id: &str,
+) -> worker::Result<()> {
+    let Some(row) = row else {
+        return Ok(());
+    };
+    let digests = [
+        &row.evidence_subject_id_sha256,
+        &row.campaign_id,
+        &row.scope_id_sha256,
+        &row.admission_fence_id_sha256,
+        &row.accepted_set_manifest_sha256,
+        &row.first_observation_id_sha256,
+        &row.second_observation_id_sha256,
+        &row.reverse_sync_manifest_id_sha256,
+        &row.member_closure_manifest_sha256,
+        &row.quarantine_manifest_sha256,
+        &row.billing_conservation_sha256,
+        &row.operation14_receipt_sha256,
+        &row.operation14_baseline_sha256,
+        &row.evidence_policy_sha256,
+        &row.assembler_identity_sha256,
+        &row.subject_digest_sha256,
+        &row.evidence_seal_id_sha256,
+        &row.evidence_manifest_sha256,
+        &row.worm_location_sha256,
+        &row.retention_policy_sha256,
+        &row.sealer_identity_sha256,
+        &row.seal_signing_key_sha256,
+        &row.seal_digest_sha256,
+    ];
+    if digests.iter().any(|digest| {
+        validate_relay_container_sha256(digest, "traffic return evidence digest").is_err()
+    }) {
+        return Err(worker::Error::RustError(
+            "relay container traffic return evidence digest is invalid".to_string(),
+        ));
+    }
+    if row.campaign_id != expected_campaign_id
+        || row.subject_contract_version != 1
+        || row.subject_contract != "relay-container-traffic-return-evidence-subject-v1"
+        || row.evidence_enforcement_migration
+            != RELAY_CONTAINER_TRAFFIC_RETURN_EVIDENCE_ENFORCE_MIGRATION
+        || !matches!(row.environment.as_str(), "staging" | "production")
+        || !matches!(row.scope_kind.as_str(), "global" | "tenant" | "group")
+        || row.fence_generation <= 0
+        || row.created_by_admin_id <= 0
+        || row.created_at <= 0
+        || row.evidence_window_started_at <= 0
+        || row.evidence_window_started_at > row.created_at
+        || row.evidence_window_ends_at != row.review_expires_at
+        || row.review_expires_at < row.created_at.saturating_add(300)
+        || row.review_expires_at > row.created_at.saturating_add(86_400)
+        || row.subject_retention_until <= row.review_expires_at
+        || row.seal_contract_version != 1
+        || row.seal_contract != "relay-container-traffic-return-evidence-seal-v1"
+        || row.evidence_item_count != 8
+        || row.sealer_role != "evidence-custodian"
+        || row.sealed_at < row.created_at
+        || row.sealed_at > row.review_expires_at
+        || row.seal_retention_until < row.subject_retention_until
+        || row.observed_at <= 0
+        || row.observed_at < row.sealed_at
+    {
+        return Err(worker::Error::RustError(
+            "relay container traffic return evidence contract is invalid".to_string(),
+        ));
+    }
+    if row.observed_at > row.review_expires_at || row.observed_at >= row.seal_retention_until {
+        return Err(worker::Error::RustError(
+            "relay container traffic return evidence has expired".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)] // read-only 0069 boundary; no route is enabled
+pub async fn relay_container_traffic_return_evidence_by_campaign(
+    db: &D1Database,
+    campaign_id: &str,
+) -> worker::Result<Option<RelayContainerTrafficReturnEvidenceSubjectSealRow>> {
+    validate_relay_container_sha256(campaign_id, "traffic return evidence campaign ID")?;
+    let row = db
+        .prepare(
+            r#"
+            SELECT
+              subject.evidence_subject_id_sha256,
+              subject.campaign_id,
+              subject.contract_version AS subject_contract_version,
+              subject.subject_contract,
+              subject.evidence_enforcement_migration,
+              subject.environment,
+              subject.scope_kind,
+              subject.scope_id_sha256,
+              subject.fence_generation,
+              subject.admission_fence_id_sha256,
+              subject.accepted_set_manifest_sha256,
+              subject.first_observation_id_sha256,
+              subject.second_observation_id_sha256,
+              subject.reverse_sync_manifest_id_sha256,
+              subject.member_closure_manifest_sha256,
+              subject.quarantine_manifest_sha256,
+              subject.billing_conservation_sha256,
+              subject.operation14_receipt_sha256,
+              subject.operation14_baseline_sha256,
+              subject.evidence_policy_sha256,
+              subject.evidence_window_started_at,
+              subject.evidence_window_ends_at,
+              subject.review_expires_at,
+              subject.retention_until AS subject_retention_until,
+              subject.assembler_identity_sha256,
+              subject.subject_digest_sha256,
+              subject.created_by_admin_id,
+              subject.created_at,
+              seal.evidence_seal_id_sha256,
+              seal.contract_version AS seal_contract_version,
+              seal.seal_contract,
+              seal.evidence_item_count,
+              seal.evidence_manifest_sha256,
+              seal.worm_location_sha256,
+              seal.retention_policy_sha256,
+              seal.retention_until AS seal_retention_until,
+              seal.sealer_role,
+              seal.sealer_identity_sha256,
+              seal.signing_key_sha256 AS seal_signing_key_sha256,
+              seal.seal_digest_sha256,
+              seal.sealed_at,
+              unixepoch() AS observed_at
+            FROM relay_container_traffic_return_evidence_subjects AS subject
+            INNER JOIN relay_container_traffic_return_evidence_seals AS seal
+              ON seal.evidence_subject_id_sha256 =
+                 subject.evidence_subject_id_sha256
+            WHERE subject.campaign_id = ?1
+            LIMIT 1
+            "#,
+        )
+        .bind_refs(&D1Type::Text(campaign_id))?
+        .first::<RelayContainerTrafficReturnEvidenceSubjectSealRow>(None)
+        .await?;
+    validate_relay_container_traffic_return_evidence_subject_seal(row.as_ref(), campaign_id)?;
+    Ok(row)
 }
 
 pub async fn relay_container_shard_placement_snapshot(
@@ -33036,5 +33381,187 @@ mod tests {
         assert!(source.contains("relay_container_admission_commit_readback"));
         assert!(source.contains("RelayContainerAdmissionCommitReadback::LegacySchema"));
         assert!(source.contains("relay_container_admission_commit_sha256"));
+    }
+
+    fn relay_container_traffic_return_test_sha256(value: u8) -> String {
+        format!("{value:064x}")
+    }
+
+    fn relay_container_traffic_return_test_subject_seal(
+    ) -> RelayContainerTrafficReturnEvidenceSubjectSealRow {
+        RelayContainerTrafficReturnEvidenceSubjectSealRow {
+            evidence_subject_id_sha256: relay_container_traffic_return_test_sha256(1),
+            campaign_id: relay_container_traffic_return_test_sha256(2),
+            subject_contract_version: 1,
+            subject_contract: "relay-container-traffic-return-evidence-subject-v1".to_string(),
+            evidence_enforcement_migration:
+                RELAY_CONTAINER_TRAFFIC_RETURN_EVIDENCE_ENFORCE_MIGRATION.to_string(),
+            environment: "production".to_string(),
+            scope_kind: "global".to_string(),
+            scope_id_sha256: relay_container_traffic_return_test_sha256(3),
+            fence_generation: 7,
+            admission_fence_id_sha256: relay_container_traffic_return_test_sha256(4),
+            accepted_set_manifest_sha256: relay_container_traffic_return_test_sha256(5),
+            first_observation_id_sha256: relay_container_traffic_return_test_sha256(6),
+            second_observation_id_sha256: relay_container_traffic_return_test_sha256(7),
+            reverse_sync_manifest_id_sha256: relay_container_traffic_return_test_sha256(8),
+            member_closure_manifest_sha256: relay_container_traffic_return_test_sha256(9),
+            quarantine_manifest_sha256: relay_container_traffic_return_test_sha256(10),
+            billing_conservation_sha256: relay_container_traffic_return_test_sha256(11),
+            operation14_receipt_sha256: relay_container_traffic_return_test_sha256(12),
+            operation14_baseline_sha256: relay_container_traffic_return_test_sha256(13),
+            evidence_policy_sha256: relay_container_traffic_return_test_sha256(14),
+            evidence_window_started_at: 900,
+            evidence_window_ends_at: 1_600,
+            review_expires_at: 1_600,
+            subject_retention_until: 3_000,
+            assembler_identity_sha256: relay_container_traffic_return_test_sha256(15),
+            subject_digest_sha256: relay_container_traffic_return_test_sha256(16),
+            created_by_admin_id: 42,
+            created_at: 1_000,
+            evidence_seal_id_sha256: relay_container_traffic_return_test_sha256(17),
+            seal_contract_version: 1,
+            seal_contract: "relay-container-traffic-return-evidence-seal-v1".to_string(),
+            evidence_item_count: 8,
+            evidence_manifest_sha256: relay_container_traffic_return_test_sha256(18),
+            worm_location_sha256: relay_container_traffic_return_test_sha256(19),
+            retention_policy_sha256: relay_container_traffic_return_test_sha256(20),
+            seal_retention_until: 3_000,
+            sealer_role: "evidence-custodian".to_string(),
+            sealer_identity_sha256: relay_container_traffic_return_test_sha256(21),
+            seal_signing_key_sha256: relay_container_traffic_return_test_sha256(22),
+            seal_digest_sha256: relay_container_traffic_return_test_sha256(23),
+            sealed_at: 1_200,
+            observed_at: 1_300,
+        }
+    }
+
+    #[test]
+    fn relay_container_traffic_return_evidence_repository_is_strict_and_read_only() {
+        let migration = include_str!(
+            "../../../migrations/d1/0069_relay_container_traffic_return_evidence_enforce.sql"
+        );
+        assert_eq!(
+            RELAY_CONTAINER_TRAFFIC_RETURN_EVIDENCE_ENFORCE_MIGRATION,
+            "0069_relay_container_traffic_return_evidence_enforce.sql"
+        );
+        for fragment in [
+            "CREATE TABLE relay_container_traffic_return_evidence_subjects",
+            "CREATE TABLE relay_container_traffic_return_evidence_items",
+            "CREATE TABLE relay_container_traffic_return_evidence_seals",
+            "idx_relay_container_traffic_return_evidence_retention",
+            "idx_relay_container_traffic_return_evidence_seal_review",
+            "idx_relay_container_traffic_return_evidence_type",
+            "idx_relay_container_traffic_return_subject_review",
+            "relay_container_traffic_return_evidence_subject_insert_guard",
+            "relay_container_traffic_return_evidence_item_insert_guard",
+            "relay_container_traffic_return_evidence_seal_insert_guard",
+            "DROP TRIGGER relay_container_traffic_return_receipt_insert_guard",
+        ] {
+            assert!(
+                migration.contains(fragment),
+                "missing 0069 evidence invariant: {fragment}"
+            );
+        }
+
+        let source = include_str!("d1_repositories.rs");
+        let schema_start = source
+            .find("pub async fn relay_container_traffic_return_evidence_schema_ready")
+            .unwrap();
+        let lookup_start = source
+            .find("pub async fn relay_container_traffic_return_evidence_by_campaign")
+            .unwrap();
+        let lookup_end = source[lookup_start..]
+            .find("pub async fn relay_container_shard_placement_snapshot")
+            .map(|offset| lookup_start + offset)
+            .unwrap();
+        let schema = &source[schema_start..lookup_start];
+        let lookup = &source[lookup_start..lookup_end];
+        for fragment in [
+            "relay_container_drain_schema_ready(db).await?",
+            "relay_container_drain_admission_schema_ready(db).await?",
+            "SUBJECT_COLUMNS",
+            "ITEM_COLUMNS",
+            "SEAL_COLUMNS",
+            "TABLE_NAMES",
+            "INDEX_NAMES",
+            "TRIGGER_NAMES",
+            "receipt_guard_contract",
+            "row.migration_count == 1",
+        ] {
+            assert!(
+                schema.contains(fragment),
+                "missing strict 0069 schema probe: {fragment}"
+            );
+        }
+        assert!(lookup.contains("FROM relay_container_traffic_return_evidence_subjects AS subject"));
+        assert!(lookup.contains("INNER JOIN relay_container_traffic_return_evidence_seals AS seal"));
+        assert!(lookup.contains("WHERE subject.campaign_id = ?1"));
+        assert!(lookup.contains("unixepoch() AS observed_at"));
+        assert!(!lookup.contains("INSERT INTO"));
+        assert!(!lookup.contains("UPDATE relay_container"));
+        assert!(!lookup.contains("DELETE FROM"));
+    }
+
+    #[test]
+    fn relay_container_traffic_return_evidence_row_decodes_exact_shape() {
+        let expected = relay_container_traffic_return_test_subject_seal();
+        let mut value = serde_json::to_value(expected.clone()).unwrap();
+        let decoded = serde_json::from_value::<RelayContainerTrafficReturnEvidenceSubjectSealRow>(
+            value.clone(),
+        )
+        .unwrap();
+        assert_eq!(decoded, expected);
+
+        value.as_object_mut().unwrap().remove("seal_digest_sha256");
+        assert!(
+            serde_json::from_value::<RelayContainerTrafficReturnEvidenceSubjectSealRow>(value)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn relay_container_traffic_return_evidence_no_data_is_not_an_error() {
+        let campaign_id = relay_container_traffic_return_test_sha256(2);
+        validate_relay_container_traffic_return_evidence_subject_seal(None, &campaign_id).unwrap();
+    }
+
+    #[test]
+    fn relay_container_traffic_return_evidence_rejects_invalid_digest() {
+        let mut row = relay_container_traffic_return_test_subject_seal();
+        let campaign_id = row.campaign_id.clone();
+        row.subject_digest_sha256 = "A".repeat(64);
+        let error =
+            validate_relay_container_traffic_return_evidence_subject_seal(Some(&row), &campaign_id)
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("traffic return evidence digest is invalid"));
+    }
+
+    #[test]
+    fn relay_container_traffic_return_evidence_rejects_invalid_contract() {
+        let mut row = relay_container_traffic_return_test_subject_seal();
+        let campaign_id = row.campaign_id.clone();
+        row.evidence_item_count = 7;
+        let error =
+            validate_relay_container_traffic_return_evidence_subject_seal(Some(&row), &campaign_id)
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("traffic return evidence contract is invalid"));
+    }
+
+    #[test]
+    fn relay_container_traffic_return_evidence_rejects_expired_row() {
+        let mut row = relay_container_traffic_return_test_subject_seal();
+        let campaign_id = row.campaign_id.clone();
+        row.observed_at = row.review_expires_at + 1;
+        let error =
+            validate_relay_container_traffic_return_evidence_subject_seal(Some(&row), &campaign_id)
+                .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("traffic return evidence has expired"));
     }
 }

@@ -22,11 +22,14 @@ The current implementation batch provides:
 - an expand-only 0067 D1 ledger for campaigns, frozen membership, closures,
   shard/global observations, quarantines, reverse sync, and eligibility-only
   receipts; and
+- a one-way 0068 D1 admission fence and accepted-sequence authority;
+- a default-inert 0069 typed evidence subject/item/seal registry that replaces
+  marker-only receipt eligibility with exact campaign/evidence checks; and
 - exact read-only Worker schema readiness and campaign lookup boundaries.
 
-It does not provide the 0068 admission enforcement transaction, any 0067
-writer route, the 0069 typed approval/WORM evidence registry, or remote
-production evidence. All five write gates remain false.
+It does not provide authenticated 0067/0068/0069 writers, the one-SQL-step
+fence-close command, remote production evidence, or traffic authorization.
+All five write gates remain false.
 
 ## 1. Mandatory order
 
@@ -513,8 +516,9 @@ without copying or redefining the billing formula in this ledger.
 
 ### 7.2 D1 enforcement migration
 
-A later `0068_relay_container_drain_admission_enforce.sql` should add the
-admission transaction guard and terminal invariants only after:
+`0068_relay_container_drain_admission_enforce.sql` now provides the local
+admission transaction guard and terminal invariants. It may be applied
+remotely only after:
 
 1. 0067 is remotely applied and read back with gates false;
 2. compatible readers and writers are deployed;
@@ -528,16 +532,29 @@ and repairs forward.
 
 ### 7.3 Typed traffic-return evidence enforcement
 
-A later `0069_relay_container_traffic_return_evidence_enforce.sql` must add an
-immutable, campaign-bound registry for Go/VPS readiness, traffic rehearsal,
-SLO, security, finance, release, retention, and WORM-location evidence. It
-must enforce evidence type, subject, issuer role, validity window, retention,
-reviewer independence, and one canonical digest per approved artifact.
+`0069_relay_container_traffic_return_evidence_enforce.sql` now adds the local,
+default-inert registry:
 
-0067 receipt rows name 0069 as their enforcement migration, and the 0067
-insert trigger rejects every receipt while the 0069 migration marker is
-absent. A collection of syntactically valid SHA-256 values is therefore not
-eligible evidence.
+- one immutable subject binds the exact 0067 campaign, fence, accepted set,
+  observation pair, reverse-sync, closure/quarantine/billing manifests,
+  operation-14 receipt/baseline, review window, evidence policy, assembler,
+  and retention horizon;
+- exactly one item is required for each of Go/VPS readiness, traffic
+  rehearsal, SLO, security, finance, release, retention, and WORM location;
+- each type has one fixed issuer role, canonical artifact/approval/signature
+  digests, a distinct issuer identity and signing key, a validity window, and
+  retention at least as long as the subject;
+- one immutable seal requires all eight valid retained items, binds the
+  retention policy and WORM location, and uses an identity/key independent
+  from every issuer and the assembler; and
+- the eligibility receipt reviewer must be independent from the assembler,
+  sealer, and every issuer.
+
+0069 drops and recreates the 0067 receipt insert guard. A migration marker or
+a collection of syntactically valid SHA-256 values is no longer sufficient:
+the receipt must resolve the exact subject, sealed evidence set, item digests,
+validity, retention, and independent reviewer at D1 time. The receipt remains
+constrained to `traffic_return_authorized=0`.
 
 ### 7.4 Durable Object schema
 
@@ -751,10 +768,12 @@ The implementation order and current status are:
 5. implement member closure observations and reverse-sync manifests;
 6. implement per-operation ambiguity quarantine;
 7. run local and isolated staging fault campaigns;
-8. apply 0068 enforcement only after writer drain proof;
+8. implement 0068 enforcement locally, then apply it remotely only after
+   writer-drain proof: local schema complete, remote apply open;
 9. integrate the already enforced D1 event order with the real operation-14
    runtime/write path;
-10. add and verify the 0069 typed approval/WORM evidence registry;
+10. add and verify the 0069 typed approval/WORM evidence registry: complete
+    locally, remote apply open;
 11. implement an eligibility-only traffic-return receipt; and
 12. rehearse independent Go/VPS review without moving production traffic.
 
@@ -772,9 +791,9 @@ Rollback at any implementation stage:
 This batch does not claim the complete protocol. Specifically absent are:
 
 - authenticated write routes and writer implementation for the 0067 ledger;
-- D1-enforced admission fence;
-- typed 0069 approval/WORM evidence enforcement and reviewer-independence
-  checks;
+- authenticated initial-fence and one-SQL-step close/campaign commands for
+  the locally enforced 0068 boundary;
+- authenticated 0069 subject/item/seal writers and approval verification;
 - remote accepted-set freeze and manifest evidence;
 - authoritative source-to-member canonical recomputation for every accepted
   key, page manifest, and complete-set manifest;
@@ -833,8 +852,39 @@ The following remain production blockers:
   manifest-v3 evidence type and verifier;
 - campaign-bound DO/R2/Queue/outbox/reconciliation evidence;
 - operation-14 runtime integration; and
-- 0069 typed approval/WORM evidence and independent traffic-return review.
+- remote 0069 approval/WORM evidence and independent traffic-return review.
 
 All five drain write gates remain false. There is no remote 0068 application,
 fence row, campaign or traffic change in this checkpoint. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 16. 0069 Local Typed-Evidence Checkpoint
+
+Application migration
+`0069_relay_container_traffic_return_evidence_enforce.sql` is now the local
+schema head. It adds three append-preserved authorities and no mutation route:
+
+- `relay_container_traffic_return_evidence_subjects`;
+- `relay_container_traffic_return_evidence_items`; and
+- `relay_container_traffic_return_evidence_seals`.
+
+The exact local Application inventory is 69 migrations, 91 required tables,
+1424 checked incremental columns, and 133 key indexes. Current P5
+candidate/schema readback requires that 0069 head, while the admission-fence
+evidence item remains cryptographically pinned to the immutable 0068 SQL
+identity. Advancing schema evidence therefore cannot rewrite admission
+provenance.
+
+0069 is evidence enforcement, not the fence-close command. The required
+single-SQL-step 0068 close plus 0067 campaign creation remains assigned to a
+later migration so evidence registration cannot accidentally become an
+admission or traffic mutation path.
+
+The remaining production blockers include authenticated signature/policy
+verification before item insertion, write authorization and audit, remote
+0068/0069 apply/readback, independent issuer and reviewer identity lifecycle,
+provider WORM retention readback, one-step fence close, complete source
+manifest recomputation, billing-vector replay, full drain/reverse-sync/
+operation-14 execution, and one immutable remote P5 packet. No Cloudflare
+credential, remote database, route, DNS, traffic, or authority changed.
+Go/VPS remains authoritative and production remains **NO-GO**.

@@ -220,3 +220,29 @@ This boundary proves local R2/D1/DO/terminal agreement only. Provider invoice,
 arbitrary billing-expression and final-amount authority, remote staging
 evidence, and production terminal operation remain outside this repository and
 keep production **NO-GO**.
+
+## Migration 0069 Traffic-Return Evidence Read Boundary
+
+The Worker repository adds a deliberately read-only boundary for
+`0069_relay_container_traffic_return_evidence_enforce.sql`.
+
+`relay_container_traffic_return_evidence_schema_ready()` requires the exact
+0069 marker, ordered columns for the subject/item/seal tables, all three table
+names, four explicit indexes, nine immutable table triggers, and the rebuilt
+0067 receipt guard. The receipt-guard probe also checks that the active trigger
+joins subject and seal records, resolves typed Go/VPS, finance and WORM
+evidence, enforces review/retention time, and checks issuer independence.
+
+`relay_container_traffic_return_evidence_by_campaign()` accepts only a
+lowercase SHA-256 campaign identity and inner-joins one subject to one seal.
+It validates contract versions/names, migration identity, environment/scope,
+fence generation, every returned digest, the 300-second to 24-hour review
+window, subject/seal retention, eight-item seal count, evidence-custodian
+role, seal chronology, and expiry against D1 `unixepoch()`.
+
+The repository exposes no subject, item, seal, or traffic-return receipt
+mutation method. Signature/policy verification and authenticated writer
+authority remain a future boundary. Applying 0069 therefore makes an
+incompatible or incomplete schema fail closed without enabling traffic or
+creating evidence. All five drain write gates remain false, Go/VPS remains
+authoritative, and production remains **NO-GO**.

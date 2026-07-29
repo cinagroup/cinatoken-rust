@@ -17,8 +17,20 @@ const compiledWasmModules = [
   },
 ];
 const d1Migrations = await readD1Migrations("./migrations/d1");
-const d1MigrationsBeforeAdmissionFence = d1Migrations.slice(0, -1);
-const d1AdmissionFenceMigration = d1Migrations.slice(-1);
+const d1AdmissionFenceMigrationIndex = d1Migrations.findIndex(
+  ({ name }) => name === "0068_relay_container_drain_admission_enforce.sql",
+);
+if (d1AdmissionFenceMigrationIndex < 0) {
+  throw new Error("0068 admission fence migration is missing");
+}
+const d1MigrationsBeforeAdmissionFence = d1Migrations.slice(
+  0,
+  d1AdmissionFenceMigrationIndex,
+);
+const d1AdmissionFenceMigration = d1Migrations.slice(
+  d1AdmissionFenceMigrationIndex,
+  d1AdmissionFenceMigrationIndex + 1,
+);
 const auxiliaryModuleRules = [
   {
     type: "ESModule",

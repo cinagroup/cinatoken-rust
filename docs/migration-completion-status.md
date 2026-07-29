@@ -3032,3 +3032,30 @@ offline admission-fence assembler reads no credential, performs no network
 request, writes no file, and only emits canonical evidence-v2 to standard
 output. Its digest-only supporting projections are not source completeness
 proof and do not change the production **NO-GO** verdict.
+
+## 2026-07-30 0069 Status Update
+
+This table supersedes the preceding 0068 current-head rows.
+
+| Item | Current status |
+|---|---|
+| Application D1 head | **0069_relay_container_traffic_return_evidence_enforce.sql** |
+| Application D1 inventory | **69 MIGRATIONS / 91 TABLES / 1424 CHECKED COLUMNS / 133 KEY INDEXES** |
+| Typed evidence subject | **EXACT CAMPAIGN/FENCE/ACCEPTED-SET/OBSERVATION/REVERSE-SYNC/BILLING/OP14 BINDING** |
+| Required evidence set | **EIGHT FIXED TYPES WITH FIXED ISSUER ROLES** |
+| Issuer/key separation | **DISTINCT PER SUBJECT; ASSEMBLER AND SEALER CONFLICTS REJECTED** |
+| Validity and retention | **D1-TIME WINDOW + SUBJECT RETENTION FLOOR + WORM/POLICY MATCH** |
+| Evidence seal | **EXACTLY EIGHT VALID RETAINED ITEMS; APPEND-PRESERVED** |
+| Receipt reviewer | **INDEPENDENT FROM ASSEMBLER, SEALER, AND EVERY ISSUER** |
+| Marker-only or arbitrary-hash receipt | **DATABASE-REJECTED** |
+| Traffic-return authorization | **FORCED FALSE** |
+| 0069 evidence writer/route | **ABSENT; DEFAULT-INERT** |
+| One-SQL-step 0068 close + 0067 campaign command | **ABSENT; ASSIGNED TO LATER MIGRATION** |
+| Remote 0068/0069 application/readback | **NOT PERFORMED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+Current P5 schema identity advances to 0069, but immutable admission-fence
+evidence remains pinned to 0068 and its reviewed SQL digest. The next code
+boundary is the one-step close/campaign command plus authenticated, audited
+writers and independent signature/policy verification, not gate activation.

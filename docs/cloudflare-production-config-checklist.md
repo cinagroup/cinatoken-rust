@@ -2315,9 +2315,9 @@ authoritative and production remains **NO-GO**.
 - [ ] Collect an authenticated remote admission-fence packet with independent
   accepted-set/source recomputation; digest-only local projections are not
   lifecycle or completeness evidence.
-- [ ] Define 0069 immutable evidence types for Go readiness, traffic
+- [x] Define 0069 immutable evidence types for Go readiness, traffic
   rehearsal, SLO, security, finance, release, WORM location, and retention.
-- [ ] Enforce evidence subject/issuer/validity/retention plus reviewer
+- [x] Enforce evidence subject/issuer/validity/retention plus reviewer
   independence in D1, and prove arbitrary valid hashes cannot satisfy 0069.
 - [ ] Apply 0069 only after 0068 campaign/freeze behavior is proven in
   isolated staging.
@@ -2326,9 +2326,10 @@ authoritative and production remains **NO-GO**.
 - [ ] Do not run operation 14 or issue a traffic-return eligibility receipt
   during schema promotion.
 
-Current Application inventory is 68 migrations / 88 required tables / 1365
-checked columns / 129 key indexes. 0068 exists and is locally verified, but no
-fence lifecycle mutation route exists and no remote 0068 application is
+Current Application inventory is 69 migrations / 91 required tables / 1424
+checked columns / 133 key indexes. 0068 admission enforcement and 0069 typed
+evidence enforcement exist and are locally verified, but no fence/evidence
+lifecycle mutation route exists and no remote 0068/0069 application is
 claimed. This checklist records no remote
 application, secret operation, route change, traffic change, or authority
 transfer. Go/VPS remains authoritative and production remains **NO-GO**.

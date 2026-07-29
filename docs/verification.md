@@ -12047,3 +12047,44 @@ old-Worker race, billing-vector replay, reverse sync, stable observation pair,
 operation-14 execution, one-shot backfill capacity proof, authenticated P5
 admission-fence capture, 0069 evidence or traffic-return review is claimed.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-30 Typed Evidence Verification Overlay
+
+The canonical local schema baseline advances to:
+
+```text
+0069_relay_container_traffic_return_evidence_enforce.sql
+69 migrations
+91 required tables
+1424 checked incremental columns
+133 key indexes
+```
+
+The SQLite lifecycle verifies campaign-bound subject creation only after the
+sealed 0067 drain and operation 14, exact eight-type/fixed-role evidence,
+distinct issuer identities and signing keys, validity and retention floors,
+retention-policy/WORM seal binding, immutable subject/item/seal rows, no item
+after seal, independent assembler/sealer/reviewer identities, receipt digest
+mapping, and authorization fixed to false. Missing, duplicate, expired,
+role-confused, identity-conflicted, unsealed, and drifted evidence fails
+closed.
+
+The P5 contract separates current Application schema identity from immutable
+admission provenance. Candidate and schema-readback facts require 0069 and
+`69/91/1424/133`; the `admission-fence` evidence item still requires the exact
+0068 migration name and pinned SQL digest. A schema readback stuck at 0068 or
+an attempt to relabel 0069 as the admission migration is rejected.
+
+Rust exposes exact 0069 schema readiness and read-only subject/seal lookup
+only. No evidence mutation method or route exists. These are local results;
+remote D1 apply/readback, writer authorization, signature-policy validation,
+provider WORM evidence, the one-step fence-close command, and independent
+traffic review remain open. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
+The exact source worktree passed the 69-migration SQLite verifier, D1 migration
+configuration audit, P5 evidence 68/68, copied P5 foundation 48/48,
+ring-transition contract 132/132, Worker library 920/920, and complete Workerd
+lifecycle 54/54. The aggregate `bun run check` also passed with exit code zero,
+including formatting, remaining Rust workspace tests, Wrangler dry-runs,
+Web/Bun checks, and all three configured wasm32 targets.

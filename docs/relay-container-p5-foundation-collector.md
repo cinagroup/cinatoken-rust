@@ -11,13 +11,15 @@ or authorize production traffic.
 Every collector result has `decision=not-proven`, `p5Eligible=false`,
 `customerTrafficEligible=false`, and `productionEligible=false`.
 `foundationEvidenceReady=true` means only that the two foundation fact cores
-are ready for independent evidence assembly and owner review. The other eight
+are ready for independent evidence assembly and owner review. The other nine
 P5 evidence kinds, the signed manifest, and all five independent approvals are
 still mandatory.
 
-Current local candidate baseline: D1 head 0060/count 60, 69 tables, 909
-incremental columns, and 101 key indexes. Migration 0055 remains the historical
-shard-activation campaign baseline, but a new candidate must bind 0060. No live
+Current local candidate baseline: D1 head 0069/count 69, 91 required tables,
+1424 checked incremental columns, and 133 key indexes. Migration 0055 remains
+the historical shard-activation campaign baseline, 0063 remains placement
+authorization storage provenance, and 0068 remains admission-fence evidence
+provenance; a new candidate must bind 0069. No live
 Cloudflare readback, migration application,
 deployment, Durable Object/Container wake, or traffic change is claimed.
 
@@ -393,3 +395,17 @@ the sole possible drain owner. Any older head, active claim, unexpected abort
 or expiry row, provider call, financial delta, partial pagination, or candidate
 drift fails closed. No authenticated remote capture occurred; foundation and
 P5 remain **NO-GO**.
+
+## 0069 Foundation Candidate Overlay
+
+The current offline foundation candidate now reports
+`0069_relay_container_traffic_return_evidence_enforce.sql`, count 69, and the
+exact `91/1424/133` schema vector. This supersedes the 0060 current-candidate
+paragraph above without rewriting its historical ring-transition evidence.
+
+The collector remains read-only and always returns `decision=not-proven`.
+Advancing the candidate does not claim remote 0067/0068/0069 application,
+traffic-return evidence rows, a signed P5 packet, or customer eligibility.
+The separate P5 `admission-fence` record remains pinned to 0068; the current
+schema head and the admission authority are intentionally different
+identities.

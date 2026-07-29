@@ -365,6 +365,40 @@ describe("Relay Container P5 evidence contract", () => {
     await expect(verify(bundle)).rejects.toThrow(/migration head/);
   });
 
+  test("rejects a schema readback whose head remains at 0068", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "schema-readback") {
+          evidence.facts.migrationHead =
+            "0068_relay_container_drain_admission_enforce.sql";
+          evidence.facts.migrationCount = 68;
+          evidence.facts.tableCount = 88;
+          evidence.facts.incrementalColumnCount = 1365;
+          evidence.facts.keyIndexCount = 129;
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      /schema-readback.*migration head/,
+    );
+  });
+
+  test("rejects replacing the immutable admission migration with 0069", async () => {
+    const bundle = await createBundle({
+      mutateEvidence: (kind, evidence) => {
+        if (kind === "admission-fence") {
+          evidence.facts.migration.name =
+            "0069_relay_container_traffic_return_evidence_enforce.sql";
+          evidence.facts.migration.sqlSha256 =
+            "93860247d254d6b04c3901c3845534593a3fe63c8071cc274de0d8fbd4e1e5aa";
+        }
+      },
+    });
+    await expect(verify(bundle)).rejects.toThrow(
+      /admission-fence.*migration name/,
+    );
+  });
+
   test("rejects a tampered admission-fence supporting artifact", async () => {
     const bundle = await createBundle({
       afterWrite: async ({ admissionFenceSupportingArtifactPaths }) => {
@@ -1191,8 +1225,8 @@ function candidateFixture() {
     ringGeneration: 1,
     shardCount: 8,
     migrationHead:
-      "0068_relay_container_drain_admission_enforce.sql",
-    migrationCount: 68,
+      "0069_relay_container_traffic_return_evidence_enforce.sql",
+    migrationCount: 69,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,
@@ -1527,10 +1561,10 @@ function factsFixture(
     case "schema-readback":
       return {
         migrationHead: candidate.migrationHead,
-        migrationCount: 68,
-        tableCount: 88,
-        incrementalColumnCount: 1365,
-        keyIndexCount: 129,
+        migrationCount: 69,
+        tableCount: 91,
+        incrementalColumnCount: 1424,
+        keyIndexCount: 133,
         schemaFingerprintSha256: "a".repeat(64),
         businessFingerprintBeforeSha256: "b".repeat(64),
         businessFingerprintAfterSha256: "b".repeat(64),

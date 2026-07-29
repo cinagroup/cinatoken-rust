@@ -1452,12 +1452,13 @@ ordinal 15. Operation-14 success alone cannot satisfy this matrix.
 | Accepted-set freeze | 0068 derives high watermark/count/first/last and rejects open operations outside the commit ledger | Independent source/bookmark/member/page/complete-manifest recomputation, writer, retained remote readback | Structural freeze only |
 | Ambiguity quarantine | Per-operation non-replay and financial-exposure contract documented | D1 sidecar, preview/apply authority, review workflow | Not implemented |
 | Reverse sync | Scope-bound snapshot/high-watermark/shadow contract documented | D1-to-Go exporter/importer, Go fencing, reconciliation evidence | Not implemented |
-| Traffic-return receipt | Eligibility-only contract documented; authorization is prohibited | D1 receipt, stable observation pair, independent approval workflow | Not implemented |
+| Traffic-return evidence | 0069 subject/item/seal schema enforces eight typed roles, validity, retention, WORM/policy binding, issuer/sealer/reviewer independence, and an eligibility-only receipt | Authenticated signature-verifying writers, remote campaign, provider WORM readback, independent approvals | Local enforcement; remote blocked |
 
 Container/DO lifecycle state is never business drain evidence. Go/VPS remains
 authoritative and production remains **NO-GO**.
 
-The Application schema head for this matrix is 0068 with 68 migrations, 88
-required tables, 1365 checked incremental columns, and 129 key indexes. All
-five drain write gates remain false, the fence lifecycle control plane is
-absent, 0069 is absent, and traffic-return authorization is not compiled.
+The Application schema head for this matrix is 0069 with 69 migrations, 91
+required tables, 1424 checked incremental columns, and 133 key indexes. All
+five drain write gates remain false, the fence/evidence lifecycle control
+plane is absent, no remote 0068/0069 apply is claimed, and traffic-return
+authorization is not compiled.

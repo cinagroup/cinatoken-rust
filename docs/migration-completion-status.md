@@ -2906,3 +2906,41 @@ stable Gateway event to the execution claim and advances the operation
 ordinal. Remote schema readback, token scope, credential rotation, fault
 campaigns, operations 6-14, reverse sync, drain, cutover, and approvals remain
 blockers. Production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Terminal Closure Status
+
+| Item | Current status |
+|---|---|
+| Authority migration inventory | **0001-0007** |
+| Stable deployment-state digest | **IMPLEMENTED; CROSS-REQUEST** |
+| Stable-state change rejection | **CLASSIFICATION / HTTP / SET / TARGET** |
+| Dedicated terminal route | **IMPLEMENTED, RECEIPT HMAC** |
+| Terminal write gate | **DEFAULT FALSE** |
+| Gateway/Controller/Cloudflare call from terminal route | **NONE** |
+| Terminal sidecar + generic receipt + claim advance | **ONE D1 STATEMENT** |
+| Execution ledger after success | **SEQUENCE 5 / ORDINAL 5** |
+| Next operation | **ORDINAL 6, SHARD-0 READINESS** |
+| Exact replay | **ZERO WRITE, ZERO GATEWAY CALL** |
+| Gateway chain after terminal | **SEALED** |
+| Version drift | **FAIL CLOSED** |
+| Controller ID vs target response SHA | **SEPARATE EVIDENCE** |
+| Remote Cloudflare/D1 evidence | **NOT COLLECTED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+Migration 0007 atomically inserts the operation-5 terminal sidecar, projects
+the generic sequence-5 execution receipt through retained migration-0002
+logic, advances the claim to `last_completed_ordinal=5`, and clears inflight.
+Any source, projection, receipt, or claim mismatch rolls back the statement.
+
+The Gateway status digest defect is also closed locally. Per-request event
+identity remains private to the Gateway repository, while public
+`observationDigestSha256` now binds deployment state and can match across
+different status requests. Workerd verifies two distinct requests can become
+stable after the configured interval.
+
+The next local P0 is operation 6 readiness execution and its terminal receipt,
+followed by operations 7-13 and independent operation-14 disable/recovery.
+Remote schema and trigger readback, least-privilege credentials, rotation,
+fault campaigns, mutation-count evidence, reverse sync, drain, cutover, and
+approvals remain blockers. Production remains **NO-GO**.

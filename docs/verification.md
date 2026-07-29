@@ -11733,3 +11733,47 @@ resolution, remote D1 schema, Cloudflare token scope, HMAC rotation, real
 deployment mutation count, Worker rollout behavior, or operation-5 terminal
 closure. All tracked gates remain false, production configuration remains
 absent, Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Terminal Verification
+
+Focused local acceptance covers:
+
+```text
+bun run --cwd services/controller-deployment-gateway check
+  3 test files, 11 tests
+
+bun run test:controller-deployment-gateway:runtime
+  3 Workerd tests
+  two distinct status requests produce one state digest and stable=true
+  exact replay of the stable request remains stable=true
+
+bun run --cwd services/shard-placement-authority test:unit
+  14 test files, 90 tests
+
+bun run --cwd services/shard-placement-authority test:runtime
+  7 Workerd tests
+  migrations 0005-0007 install under D1 expression-depth limits
+
+bun run check
+  complete repository gate passed
+
+cargo fmt --all --check
+  passed
+```
+
+The migration test executes the complete Authority migration history in
+SQLite and proves fresh closure, version drift rejection, stable non-head
+rejection, revocation/readback-only/takeover/expiry rejection, immutable
+sidecar evidence, post-terminal Gateway-chain sealing, and atomic rollback
+when generic receipt projection fails.
+
+The terminalizer unit suite proves strict canonical command parsing, fresh
+success, persisted-version exact replay without another claim/attempt/Gateway
+read or write, Authority rollout drift rejection, and dedicated receipt-role
+routing with a default-off gate.
+
+This is local evidence only. It does not prove remote D1 schema or normalized
+trigger SQL, Service Binding resolution, credential scope or rotation, real
+Cloudflare mutation count, rollout/commit-response-loss recovery, operations
+6-14, reverse sync, drain, DNS, traffic, or approvals. Go/VPS remains
+authoritative and production remains **NO-GO**.

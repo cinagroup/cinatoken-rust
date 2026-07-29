@@ -278,6 +278,7 @@ export async function appendObservation(
 ): Promise<{
   classification: "recorded" | "exact_replay";
   observation: ObservationRow;
+  previousObservation: ObservationRow | null;
 }> {
   const session = database.withSession("first-primary");
   let writeSucceeded = false;
@@ -334,9 +335,26 @@ export async function appendObservation(
     }
     throw new RepositoryUnavailableError(false);
   }
+  let previousObservation: ObservationRow | null;
+  try {
+    previousObservation = await session.prepare(
+      `SELECT ${OBSERVATION_COLUMNS}
+       FROM controller_deployment_gateway_observations
+       WHERE gateway_idempotency_key_sha256 = ?1
+         AND observation_id < ?2
+       ORDER BY observation_id DESC
+       LIMIT 1`,
+    ).bind(
+      gatewayIdempotencyKeySha256,
+      persisted.observation_id,
+    ).first<ObservationRow>();
+  } catch {
+    throw new RepositoryUnavailableError(false);
+  }
   return {
     classification: writeSucceeded ? "recorded" : "exact_replay",
     observation: persisted,
+    previousObservation,
   };
 }
 

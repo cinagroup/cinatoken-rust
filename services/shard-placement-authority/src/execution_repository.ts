@@ -436,10 +436,69 @@ const OPERATION_FIVE_GATEWAY_EVENT_COLUMNS = [
   "recorded_at",
 ] as const;
 const OPERATION_FIVE_GATEWAY_EVENT_TRIGGERS = [
+  "shard_placement_authority_operation_five_gateway_closed_guard",
   "shard_placement_authority_operation_five_gateway_event_append",
   "shard_placement_authority_operation_five_gateway_event_delete_guard",
   "shard_placement_authority_operation_five_gateway_event_insert_guard",
   "shard_placement_authority_operation_five_gateway_event_update_guard",
+] as const;
+const OPERATION_FIVE_TERMINAL_COLUMNS = [
+  "authorization_id_sha256",
+  "contract_version",
+  "terminal_contract",
+  "claim_digest_sha256",
+  "claim_owner_sha256",
+  "lease_owner_sha256",
+  "lease_token_sha256",
+  "lease_generation",
+  "attempt_digest_sha256",
+  "send_started_event_digest_sha256",
+  "stable_gateway_event_sequence",
+  "stable_gateway_event_digest_sha256",
+  "stable_gateway_predecessor_event_digest_sha256",
+  "stable_gateway_request_id_sha256",
+  "stable_gateway_response_sha256",
+  "stable_gateway_response_bytes",
+  "stable_observation_digest_sha256",
+  "stable_status_response_request_id_sha256",
+  "stable_gateway_recorded_at",
+  "deployment_set_sha256",
+  "target_version_sha256",
+  "gateway_version_id",
+  "controller_service_name",
+  "controller_enabled_version_id",
+  "controller_command_digest_sha256",
+  "gateway_idempotency_key_sha256",
+  "authority_database_identity_sha256",
+  "authority_ledger_identity_sha256",
+  "authority_dispatch_version_id",
+  "authority_terminal_version_id",
+  "operation_five_id_sha256",
+  "operation_five_request_sha256",
+  "operation_start_receipt_digest_sha256",
+  "operation_start_credential_id_sha256",
+  "operation_start_request_id_sha256",
+  "admission_confirmation_digest_sha256",
+  "terminal_writer_credential_id_sha256",
+  "terminal_writer_request_id_sha256",
+  "terminal_command_digest_sha256",
+  "ledger_head_before_sha256",
+  "ledger_head_after_sha256",
+  "terminal_evidence_manifest_sha256",
+  "generic_receipt_sequence",
+  "generic_terminal_receipt_digest_sha256",
+  "next_operation_ordinal",
+  "next_operation_id_sha256",
+  "recorded_at",
+] as const;
+const OPERATION_FIVE_TERMINAL_TRIGGERS = [
+  "shard_placement_authority_operation_five_terminal_attempt_guard",
+  "shard_placement_authority_operation_five_terminal_delete_guard",
+  "shard_placement_authority_operation_five_terminal_digest_guard",
+  "shard_placement_authority_operation_five_terminal_gateway_guard",
+  "shard_placement_authority_operation_five_terminal_insert_guard",
+  "shard_placement_authority_operation_five_terminal_project",
+  "shard_placement_authority_operation_five_terminal_update_guard",
 ] as const;
 
 const SCHEMA_PROBE_SQL = `
@@ -632,7 +691,28 @@ SELECT
           'shard_placement_authority_operation_five_gateway_events'
       ORDER BY name
     )
-  ) AS operation_five_gateway_event_triggers
+  ) AS operation_five_gateway_event_triggers,
+  (
+    SELECT group_concat(name, ',')
+    FROM (
+      SELECT name
+      FROM pragma_table_info(
+        'shard_placement_authority_operation_five_terminals'
+      )
+      ORDER BY cid
+    )
+  ) AS operation_five_terminal_columns,
+  (
+    SELECT group_concat(name, ',')
+    FROM (
+      SELECT name
+      FROM sqlite_schema
+      WHERE type = 'trigger'
+        AND tbl_name =
+          'shard_placement_authority_operation_five_terminals'
+      ORDER BY name
+    )
+  ) AS operation_five_terminal_triggers
 `.trim();
 
 const INSERT_CLAIM_SQL = `
@@ -1006,6 +1086,50 @@ WHERE authorization_id_sha256 = ?1
 ORDER BY event_sequence
 `.trim();
 
+const INSERT_OPERATION_FIVE_TERMINAL_SQL = `
+INSERT INTO shard_placement_authority_operation_five_terminals (
+  authorization_id_sha256, contract_version, terminal_contract,
+  claim_digest_sha256, claim_owner_sha256, lease_owner_sha256,
+  lease_token_sha256, lease_generation, attempt_digest_sha256,
+  send_started_event_digest_sha256, stable_gateway_event_sequence,
+  stable_gateway_event_digest_sha256,
+  stable_gateway_predecessor_event_digest_sha256,
+  stable_gateway_request_id_sha256, stable_gateway_response_sha256,
+  stable_gateway_response_bytes, stable_observation_digest_sha256,
+  stable_status_response_request_id_sha256,
+  stable_gateway_recorded_at, deployment_set_sha256,
+  target_version_sha256, gateway_version_id,
+  controller_service_name, controller_enabled_version_id,
+  controller_command_digest_sha256, gateway_idempotency_key_sha256,
+  authority_database_identity_sha256,
+  authority_ledger_identity_sha256, authority_dispatch_version_id,
+  authority_terminal_version_id, operation_five_id_sha256,
+  operation_five_request_sha256,
+  operation_start_receipt_digest_sha256,
+  operation_start_credential_id_sha256,
+  operation_start_request_id_sha256,
+  admission_confirmation_digest_sha256,
+  terminal_writer_credential_id_sha256,
+  terminal_writer_request_id_sha256, terminal_command_digest_sha256,
+  ledger_head_before_sha256, ledger_head_after_sha256,
+  terminal_evidence_manifest_sha256, generic_receipt_sequence,
+  generic_terminal_receipt_digest_sha256, next_operation_ordinal,
+  next_operation_id_sha256
+) VALUES (
+  ?1, 1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8, ?9, ?10, ?11, ?12,
+  ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+  ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
+  ?37, ?38, ?39, ?40, 5, ?41, 6, ?42
+)
+`.trim();
+
+const SELECT_OPERATION_FIVE_TERMINAL_SQL = `
+SELECT ${OPERATION_FIVE_TERMINAL_COLUMNS.join(", ")}
+FROM shard_placement_authority_operation_five_terminals
+WHERE authorization_id_sha256 = ?1
+LIMIT 1
+`.trim();
+
 interface SchemaProbeRow {
   claim_columns: string;
   operation_columns: string;
@@ -1025,6 +1149,8 @@ interface SchemaProbeRow {
   operation_five_send_attempt_event_triggers: string;
   operation_five_gateway_event_columns: string;
   operation_five_gateway_event_triggers: string;
+  operation_five_terminal_columns: string;
+  operation_five_terminal_triggers: string;
 }
 
 export interface ExecutionClaimRow {
@@ -1789,6 +1915,104 @@ export interface OperationFiveGatewayEventRow {
 export interface OperationFiveGatewayDispatchTriple {
   pair: OperationFiveSendAttemptPair;
   dispatch: OperationFiveGatewayEventRow;
+}
+
+export interface OperationFiveTerminal {
+  authorizationIdSha256: string;
+  terminalContract:
+    "cinatoken-shard-placement-authority-operation-five-terminal-v1";
+  claimDigestSha256: string;
+  claimOwnerSha256: string;
+  leaseOwnerSha256: string;
+  leaseTokenSha256: string;
+  leaseGeneration: 1;
+  attemptDigestSha256: string;
+  sendStartedEventDigestSha256: string;
+  stableGatewayEventSequence: number;
+  stableGatewayEventDigestSha256: string;
+  stableGatewayPredecessorEventDigestSha256: string;
+  stableGatewayRequestIdSha256: string;
+  stableGatewayResponseSha256: string;
+  stableGatewayResponseBytes: number;
+  stableObservationDigestSha256: string;
+  stableStatusResponseRequestIdSha256: string;
+  stableGatewayRecordedAt: number;
+  deploymentSetSha256: string;
+  targetVersionSha256: string;
+  gatewayVersionId: string;
+  controllerServiceName: string;
+  controllerEnabledVersionId: string;
+  controllerCommandDigestSha256: string;
+  gatewayIdempotencyKeySha256: string;
+  authorityDatabaseIdentitySha256: string;
+  authorityLedgerIdentitySha256: string;
+  authorityDispatchVersionId: string;
+  authorityTerminalVersionId: string;
+  operationFiveIdSha256: string;
+  operationFiveRequestSha256: string;
+  operationStartReceiptDigestSha256: string;
+  operationStartCredentialIdSha256: string;
+  operationStartRequestIdSha256: string;
+  admissionConfirmationDigestSha256: string;
+  terminalWriterCredentialIdSha256: string;
+  terminalWriterRequestIdSha256: string;
+  terminalCommandDigestSha256: string;
+  ledgerHeadBeforeSha256: string;
+  ledgerHeadAfterSha256: string;
+  terminalEvidenceManifestSha256: string;
+  genericTerminalReceiptDigestSha256: string;
+  nextOperationOrdinal: 6;
+  nextOperationIdSha256: string;
+}
+
+export interface OperationFiveTerminalRow {
+  authorization_id_sha256: string;
+  contract_version: number;
+  terminal_contract: string;
+  claim_digest_sha256: string;
+  claim_owner_sha256: string;
+  lease_owner_sha256: string;
+  lease_token_sha256: string;
+  lease_generation: number;
+  attempt_digest_sha256: string;
+  send_started_event_digest_sha256: string;
+  stable_gateway_event_sequence: number;
+  stable_gateway_event_digest_sha256: string;
+  stable_gateway_predecessor_event_digest_sha256: string;
+  stable_gateway_request_id_sha256: string;
+  stable_gateway_response_sha256: string;
+  stable_gateway_response_bytes: number;
+  stable_observation_digest_sha256: string;
+  stable_status_response_request_id_sha256: string;
+  stable_gateway_recorded_at: number;
+  deployment_set_sha256: string;
+  target_version_sha256: string;
+  gateway_version_id: string;
+  controller_service_name: string;
+  controller_enabled_version_id: string;
+  controller_command_digest_sha256: string;
+  gateway_idempotency_key_sha256: string;
+  authority_database_identity_sha256: string;
+  authority_ledger_identity_sha256: string;
+  authority_dispatch_version_id: string;
+  authority_terminal_version_id: string;
+  operation_five_id_sha256: string;
+  operation_five_request_sha256: string;
+  operation_start_receipt_digest_sha256: string;
+  operation_start_credential_id_sha256: string;
+  operation_start_request_id_sha256: string;
+  admission_confirmation_digest_sha256: string;
+  terminal_writer_credential_id_sha256: string;
+  terminal_writer_request_id_sha256: string;
+  terminal_command_digest_sha256: string;
+  ledger_head_before_sha256: string;
+  ledger_head_after_sha256: string;
+  terminal_evidence_manifest_sha256: string;
+  generic_receipt_sequence: number;
+  generic_terminal_receipt_digest_sha256: string;
+  next_operation_ordinal: number;
+  next_operation_id_sha256: string;
+  recorded_at: number;
 }
 
 export async function createExecutionClaim(
@@ -2877,6 +3101,109 @@ export async function readOperationFiveGatewayEventChain(
   }
 }
 
+export async function readExactOperationFiveTerminal(
+  database: D1Database,
+  authorizationIdSha256: string,
+  claimDigestSha256: string,
+): Promise<OperationFiveTerminalRow | null> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  const row = await readOperationFiveTerminal(
+    session,
+    authorizationIdSha256,
+  );
+  if (
+    row !== null
+    && row.claim_digest_sha256 !== claimDigestSha256
+  ) {
+    throw new RepositoryConflictError(
+      "operation_five_terminal_conflict",
+    );
+  }
+  return row;
+}
+
+export async function createOperationFiveTerminal(
+  database: D1Database,
+  terminal: OperationFiveTerminal,
+): Promise<{
+  classification: "created" | "exact_replay";
+  terminal: OperationFiveTerminalRow;
+  claim: ExecutionClaimRow;
+  receipt: ExecutionReceiptRow;
+}> {
+  const session = database.withSession("first-primary");
+  await requireExecutionSchema(session);
+  let writeOutcome: "created" | "failed" | "unknown";
+  try {
+    const result = await operationFiveTerminalInsertStatement(
+      session,
+      terminal,
+    ).run();
+    writeOutcome =
+      result.success === true
+        && (result.meta?.changes ?? 0) >= 1
+        ? "created"
+        : "unknown";
+  } catch {
+    writeOutcome = "failed";
+  }
+
+  const persisted = await readOperationFiveTerminal(
+    session,
+    terminal.authorizationIdSha256,
+  );
+  if (persisted === null) {
+    if (writeOutcome === "failed") {
+      throw new RepositoryConflictError(
+        "operation_five_terminal_not_created",
+      );
+    }
+    throw new RepositoryUnavailableError(true);
+  }
+  if (!matchesOperationFiveTerminal(persisted, terminal)) {
+    if (writeOutcome === "failed") {
+      throw new RepositoryConflictError(
+        "operation_five_terminal_conflict",
+      );
+    }
+    throw new RepositoryUnavailableError(true);
+  }
+  const snapshot = await readSnapshotByDigest(
+    session,
+    terminal.authorizationIdSha256,
+    terminal.claimDigestSha256,
+  );
+  const receipt = await readReceipt(
+    session,
+    terminal.authorizationIdSha256,
+    5,
+  );
+  if (
+    receipt === null
+    || snapshot.claim.status !== "running"
+    || snapshot.claim.ledger_version !== 5
+    || snapshot.claim.ledger_head_sha256
+      !== terminal.genericTerminalReceiptDigestSha256
+    || snapshot.claim.last_completed_ordinal !== 5
+    || snapshot.claim.inflight_operation_ordinal !== null
+    || receipt.receipt_digest_sha256
+      !== terminal.genericTerminalReceiptDigestSha256
+    || receipt.response_sha256
+      !== terminal.terminalEvidenceManifestSha256
+  ) {
+    throw new RepositoryUnavailableError(true);
+  }
+  return {
+    classification: writeOutcome === "created"
+      ? "created"
+      : "exact_replay",
+    terminal: persisted,
+    claim: snapshot.claim,
+    receipt,
+  };
+}
+
 function classifyOperationFiveSendAttemptPairReadback(
   writeOutcome: "created" | "failed" | "unknown",
   persisted: OperationFiveSendAttemptPair | null,
@@ -3103,6 +3430,58 @@ function operationFiveGatewayEventInsertStatement(
     );
 }
 
+function operationFiveTerminalInsertStatement(
+  session: D1DatabaseSession,
+  terminal: OperationFiveTerminal,
+): D1PreparedStatement {
+  return session
+    .prepare(INSERT_OPERATION_FIVE_TERMINAL_SQL)
+    .bind(
+      terminal.authorizationIdSha256,
+      terminal.terminalContract,
+      terminal.claimDigestSha256,
+      terminal.claimOwnerSha256,
+      terminal.leaseOwnerSha256,
+      terminal.leaseTokenSha256,
+      terminal.attemptDigestSha256,
+      terminal.sendStartedEventDigestSha256,
+      terminal.stableGatewayEventSequence,
+      terminal.stableGatewayEventDigestSha256,
+      terminal.stableGatewayPredecessorEventDigestSha256,
+      terminal.stableGatewayRequestIdSha256,
+      terminal.stableGatewayResponseSha256,
+      terminal.stableGatewayResponseBytes,
+      terminal.stableObservationDigestSha256,
+      terminal.stableStatusResponseRequestIdSha256,
+      terminal.stableGatewayRecordedAt,
+      terminal.deploymentSetSha256,
+      terminal.targetVersionSha256,
+      terminal.gatewayVersionId,
+      terminal.controllerServiceName,
+      terminal.controllerEnabledVersionId,
+      terminal.controllerCommandDigestSha256,
+      terminal.gatewayIdempotencyKeySha256,
+      terminal.authorityDatabaseIdentitySha256,
+      terminal.authorityLedgerIdentitySha256,
+      terminal.authorityDispatchVersionId,
+      terminal.authorityTerminalVersionId,
+      terminal.operationFiveIdSha256,
+      terminal.operationFiveRequestSha256,
+      terminal.operationStartReceiptDigestSha256,
+      terminal.operationStartCredentialIdSha256,
+      terminal.operationStartRequestIdSha256,
+      terminal.admissionConfirmationDigestSha256,
+      terminal.terminalWriterCredentialIdSha256,
+      terminal.terminalWriterRequestIdSha256,
+      terminal.terminalCommandDigestSha256,
+      terminal.ledgerHeadBeforeSha256,
+      terminal.ledgerHeadAfterSha256,
+      terminal.terminalEvidenceManifestSha256,
+      terminal.genericTerminalReceiptDigestSha256,
+      terminal.nextOperationIdSha256,
+    );
+}
+
 async function requireExecutionSchema(
   session: D1DatabaseSession,
 ): Promise<void> {
@@ -3149,6 +3528,10 @@ async function requireExecutionSchema(
       !== OPERATION_FIVE_GATEWAY_EVENT_COLUMNS.join(",")
     || row.operation_five_gateway_event_triggers
       !== OPERATION_FIVE_GATEWAY_EVENT_TRIGGERS.join(",")
+    || row.operation_five_terminal_columns
+      !== OPERATION_FIVE_TERMINAL_COLUMNS.join(",")
+    || row.operation_five_terminal_triggers
+      !== OPERATION_FIVE_TERMINAL_TRIGGERS.join(",")
   ) {
     throw new RepositoryUnavailableError(false);
   }
@@ -3291,6 +3674,20 @@ async function readOperationFiveGatewayEvent(
         eventSequence,
       )
       .first<OperationFiveGatewayEventRow>();
+  } catch {
+    throw new RepositoryUnavailableError(true);
+  }
+}
+
+async function readOperationFiveTerminal(
+  session: D1DatabaseSession,
+  authorizationIdSha256: string,
+): Promise<OperationFiveTerminalRow | null> {
+  try {
+    return await session
+      .prepare(SELECT_OPERATION_FIVE_TERMINAL_SQL)
+      .bind(authorizationIdSha256)
+      .first<OperationFiveTerminalRow>();
   } catch {
     throw new RepositoryUnavailableError(true);
   }
@@ -4152,6 +4549,92 @@ function matchesOperationFiveGatewayEvent(
   );
 }
 
+function matchesOperationFiveTerminal(
+  row: OperationFiveTerminalRow,
+  terminal: OperationFiveTerminal,
+): boolean {
+  return (
+    row.authorization_id_sha256 === terminal.authorizationIdSha256
+    && row.contract_version === 1
+    && row.terminal_contract === terminal.terminalContract
+    && row.claim_digest_sha256 === terminal.claimDigestSha256
+    && row.claim_owner_sha256 === terminal.claimOwnerSha256
+    && row.lease_owner_sha256 === terminal.leaseOwnerSha256
+    && row.lease_token_sha256 === terminal.leaseTokenSha256
+    && row.lease_generation === terminal.leaseGeneration
+    && row.attempt_digest_sha256 === terminal.attemptDigestSha256
+    && row.send_started_event_digest_sha256
+      === terminal.sendStartedEventDigestSha256
+    && row.stable_gateway_event_sequence
+      === terminal.stableGatewayEventSequence
+    && row.stable_gateway_event_digest_sha256
+      === terminal.stableGatewayEventDigestSha256
+    && row.stable_gateway_predecessor_event_digest_sha256
+      === terminal.stableGatewayPredecessorEventDigestSha256
+    && row.stable_gateway_request_id_sha256
+      === terminal.stableGatewayRequestIdSha256
+    && row.stable_gateway_response_sha256
+      === terminal.stableGatewayResponseSha256
+    && row.stable_gateway_response_bytes
+      === terminal.stableGatewayResponseBytes
+    && row.stable_observation_digest_sha256
+      === terminal.stableObservationDigestSha256
+    && row.stable_status_response_request_id_sha256
+      === terminal.stableStatusResponseRequestIdSha256
+    && row.stable_gateway_recorded_at
+      === terminal.stableGatewayRecordedAt
+    && row.deployment_set_sha256 === terminal.deploymentSetSha256
+    && row.target_version_sha256 === terminal.targetVersionSha256
+    && row.gateway_version_id === terminal.gatewayVersionId
+    && row.controller_service_name === terminal.controllerServiceName
+    && row.controller_enabled_version_id
+      === terminal.controllerEnabledVersionId
+    && row.controller_command_digest_sha256
+      === terminal.controllerCommandDigestSha256
+    && row.gateway_idempotency_key_sha256
+      === terminal.gatewayIdempotencyKeySha256
+    && row.authority_database_identity_sha256
+      === terminal.authorityDatabaseIdentitySha256
+    && row.authority_ledger_identity_sha256
+      === terminal.authorityLedgerIdentitySha256
+    && row.authority_dispatch_version_id
+      === terminal.authorityDispatchVersionId
+    && row.authority_terminal_version_id
+      === terminal.authorityTerminalVersionId
+    && row.operation_five_id_sha256 === terminal.operationFiveIdSha256
+    && row.operation_five_request_sha256
+      === terminal.operationFiveRequestSha256
+    && row.operation_start_receipt_digest_sha256
+      === terminal.operationStartReceiptDigestSha256
+    && row.operation_start_credential_id_sha256
+      === terminal.operationStartCredentialIdSha256
+    && row.operation_start_request_id_sha256
+      === terminal.operationStartRequestIdSha256
+    && row.admission_confirmation_digest_sha256
+      === terminal.admissionConfirmationDigestSha256
+    && row.terminal_writer_credential_id_sha256
+      === terminal.terminalWriterCredentialIdSha256
+    && row.terminal_writer_request_id_sha256
+      === terminal.terminalWriterRequestIdSha256
+    && row.terminal_command_digest_sha256
+      === terminal.terminalCommandDigestSha256
+    && row.ledger_head_before_sha256
+      === terminal.ledgerHeadBeforeSha256
+    && row.ledger_head_after_sha256
+      === terminal.ledgerHeadAfterSha256
+    && row.terminal_evidence_manifest_sha256
+      === terminal.terminalEvidenceManifestSha256
+    && row.generic_receipt_sequence === 5
+    && row.generic_terminal_receipt_digest_sha256
+      === terminal.genericTerminalReceiptDigestSha256
+    && row.next_operation_ordinal === terminal.nextOperationOrdinal
+    && row.next_operation_id_sha256
+      === terminal.nextOperationIdSha256
+    && Number.isSafeInteger(row.recorded_at)
+    && row.recorded_at > 0
+  );
+}
+
 export const executionRepositorySqlForTest = {
   insertClaim: INSERT_CLAIM_SQL,
   insertOperation: INSERT_OPERATION_SQL,
@@ -4186,6 +4669,10 @@ export const executionRepositorySqlForTest = {
     INSERT_OPERATION_FIVE_GATEWAY_EVENT_SQL,
   selectOperationFiveGatewayEvent:
     SELECT_OPERATION_FIVE_GATEWAY_EVENT_SQL,
+  insertOperationFiveTerminal:
+    INSERT_OPERATION_FIVE_TERMINAL_SQL,
+  selectOperationFiveTerminal:
+    SELECT_OPERATION_FIVE_TERMINAL_SQL,
 } as const;
 
 export const operationFiveSendAttemptRepositoryForTest = {

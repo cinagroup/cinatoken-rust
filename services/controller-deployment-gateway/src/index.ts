@@ -17,6 +17,11 @@ import {
   type GatewaySecurityEnv,
 } from "./protocol";
 import {
+  deploymentStateDigest,
+  isTargetStable,
+  type DeploymentStateObservation,
+} from "./deployment_state";
+import {
   RepositoryConflictError,
   RepositoryNotFoundError,
   RepositoryUnavailableError,
@@ -243,16 +248,40 @@ async function handleStatus(
   const stabilityMinimumSeconds = Number(
     env.CONTROLLER_DEPLOYMENT_GATEWAY_STATUS_STABILITY_MIN_SECONDS,
   );
-  const targetStable = observation.classification === "target_observed"
-    && Number.isSafeInteger(stabilityMinimumSeconds)
-    && stabilityMinimumSeconds >= 5
-    && stabilityMinimumSeconds <= 120
-    && snapshot.observations[0]?.classification === "target_observed"
-    && snapshot.observations[0].status_request_id_sha256
-      !== requestIdSha256
-    && persisted.observation.recorded_at
-      - snapshot.observations[0].recorded_at
-      >= stabilityMinimumSeconds;
+  const currentStateDigestSha256 = await deploymentStateDigest(
+    idempotencyKeySha256,
+    commandDigestSha256,
+    command,
+    deploymentStateFromRow(persisted.observation),
+  );
+  const previousObservation = persisted.previousObservation;
+  const previousStateDigestSha256 = previousObservation === null
+    ? null
+    : await deploymentStateDigest(
+      idempotencyKeySha256,
+      commandDigestSha256,
+      command,
+      deploymentStateFromRow(previousObservation),
+    );
+  const targetStable = isTargetStable(
+    {
+      classification: persisted.observation.classification,
+      statusRequestIdSha256:
+        persisted.observation.status_request_id_sha256,
+      recordedAt: persisted.observation.recorded_at,
+      deploymentStateDigestSha256: currentStateDigestSha256,
+    },
+    previousObservation === null || previousStateDigestSha256 === null
+      ? null
+      : {
+        classification: previousObservation.classification,
+        statusRequestIdSha256:
+          previousObservation.status_request_id_sha256,
+        recordedAt: previousObservation.recorded_at,
+        deploymentStateDigestSha256: previousStateDigestSha256,
+      },
+    stabilityMinimumSeconds,
+  );
   return jsonResponse(
     persisted.classification === "recorded" ? 201 : 200,
     {
@@ -278,13 +307,24 @@ async function handleStatus(
           persisted.observation.target_version_sha256,
         responseRequestIdSha256:
           persisted.observation.response_request_id_sha256,
-        observationDigestSha256:
-          persisted.observation.observation_digest_sha256,
+        observationDigestSha256: currentStateDigestSha256,
         recordedAt: persisted.observation.recorded_at,
       },
       gatewayVersionId: env.CF_VERSION_METADATA.id,
     },
   );
+}
+
+function deploymentStateFromRow(
+  observation: OperationSnapshot["observations"][number],
+): DeploymentStateObservation {
+  return {
+    classification: observation.classification,
+    deploymentsHttpStatus: observation.deployments_http_status,
+    versionHttpStatus: observation.version_http_status,
+    deploymentSetSha256: observation.deployment_set_sha256,
+    targetVersionSha256: observation.target_version_sha256,
+  };
 }
 
 type Route =

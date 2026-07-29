@@ -193,7 +193,10 @@ send_started
 
 Migration 0006 stores Gateway-specific fields in a side table and projects
 each insert into the existing migration-0005 send-attempt event stream.
-Migration 0005 rows are not rewritten. Both tables deny update and delete.
+Migration 0007 consumes only the latest stable chain head, projects the
+sequence-5 execution terminal receipt, advances the claim to ordinal 5, and
+seals the Gateway chain in one D1 statement. Earlier migration rows are not
+rewritten. All evidence tables deny update and delete.
 
 Every appended event requires:
 
@@ -230,7 +233,8 @@ For the first staging ceremony:
 
 1. Confirm old Authority code and every placement/Gateway gate are false.
 2. Apply Gateway migration 0001 and the backward-compatible Authority
-   migration 0006 before deploying code that requires the new schema.
+   migrations 0006 and 0007 before deploying code that requires the new
+   schema.
 3. Read back exact tables, columns, indexes, triggers, and normalized trigger
    SQL.
 4. Deploy Gateway and Authority code with every action gate still false.
@@ -244,6 +248,10 @@ For the first staging ceremony:
 11. Enable Authority Gateway create last.
 12. Execute one authorization and immediately disable Authority create.
 13. Complete status-only readback and archive redacted evidence.
+14. Enable the Authority operation-5 terminal gate only after the latest
+    stable event and both Worker versions are independently verified.
+15. Close operation 5 once, disable the terminal gate, and read back the
+    sequence-5 receipt and ordinal-6 successor.
 
 The event-write gate is opened before either caller gate. Status read is
 opened before create so every ambiguous create has a recovery path.
@@ -252,17 +260,18 @@ opened before create so every ambiguous create has a recovery path.
 
 Rollback never deletes evidence or repeats create:
 
-1. Disable Authority Gateway create.
-2. Disable Gateway remote mutation and create.
-3. Keep Authority/Gateway status read available for in-flight readback.
-4. Classify target, baseline, drift, or ambiguity from immutable evidence.
-5. Use a separately authorized rollback operation; do not reinterpret
+1. Disable Authority operation-5 terminal writes.
+2. Disable Authority Gateway create.
+3. Disable Gateway remote mutation and create.
+4. Keep Authority/Gateway status read available for in-flight readback.
+5. Classify target, baseline, drift, or ambiguity from immutable evidence.
+6. Use a separately authorized rollback operation; do not reinterpret
    operation-5 create as rollback authority.
-6. Disable status reads after all in-flight attempts are terminally classified.
+7. Disable status reads after all in-flight attempts are terminally classified.
 
-An old Authority version that does not understand migration 0006 must remain
-disabled after 0006 is applied. Rollback is code-forward with gates closed,
-not a schema downgrade.
+An old Authority version that does not understand migrations 0006 and 0007
+must remain disabled after they are applied. Rollback is code-forward with
+gates closed, not a schema downgrade.
 
 ## Observability
 
@@ -280,22 +289,23 @@ Production evidence must record only non-secret identities:
 Acceptance requires mutation POST count `<= 1` for every attempt across fault
 injection, replay, restart, concurrency, and rollout campaigns.
 
-## Remaining P0
+## Operation-5 Closure
 
-Local integration does not yet close operation 5 in the execution claim.
-`gateway_status_stable` is durable evidence, but a dedicated terminal receipt
-must still atomically bind:
+The local operation-5 terminal boundary is implemented by Authority migration
+0007 and the dedicated receipt-role `complete-enable-dispatch` route. It
+atomically binds the latest stable Gateway chain head, operation-5 start,
+claim and ledger identities, Controller enabled version, Authority and Gateway
+Worker versions, terminal writer identity, and operation-6 successor.
 
-- the stable Gateway event digest;
-- operation-5 operation ID;
-- claim and ledger head;
-- Controller enabled version;
-- Authority and Gateway Worker versions; and
-- the next operation ordinal.
+The Gateway observation digest is now a deployment-state digest. It excludes
+per-request and per-response identities, so two distinct status requests can
+prove the same state. Controller enabled version ID and the Cloudflare target
+version response digest remain separate evidence and are never compared as
+equal.
 
-That terminal transition must be exact-replay safe and must reject baseline,
-drift, ambiguous, stale, or non-consecutive observations.
+See `operation-five-terminal-receipt.md` for the schema, receipt semantics,
+failure matrix, and replay contract.
 
 Remote schema readback, least-privilege token proof, credential rotation,
-fault campaigns, operation-5 terminal closure, operations 6-14, reverse sync,
-drain, traffic and DNS cutover, and security/SRE approvals all remain open.
+fault campaigns, operations 6-14, reverse sync, drain, traffic and DNS
+cutover, and security/SRE approvals all remain open.

@@ -4468,3 +4468,32 @@ Workerd, migration, protocol, and configuration suites pass. All tracked
 gates remain false, production
 placement configuration is absent, no secret or remote state was accessed,
 Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 2026-07-29 Operation-5 Terminal Receipt
+
+Phase 1 now closes operation 5 locally without adding another external call.
+The dedicated receipt-role route consumes only the latest immutable
+`gateway_status_stable` event. Authority migration 0007 inserts the terminal
+sidecar, projects execution receipt sequence 5, advances the claim to
+`last_completed_ordinal=5`, clears inflight, and identifies operation 6 in one
+D1 statement.
+
+The terminal manifest binds the attempt, send-started event, stable Gateway
+chain head, operation start, admission evidence, Controller enabled version,
+Gateway and Authority Worker versions, database and ledger identities,
+terminal writer identity, before-ledger head, and operation-6 successor. The
+generic receipt retains the operation-start actor identity required by
+migration 0002. Exact replay reads the sidecar only and makes zero Gateway or
+Cloudflare calls.
+
+Gateway public status evidence now uses a deployment-state digest rather than
+a per-request event digest. Distinct status requests can prove unchanged
+state; classification, HTTP status, deployment set, or target-version evidence
+drift changes the digest and prevents stability. The Controller enabled
+version ID and Cloudflare version response SHA remain separate.
+
+All tracked terminal, Gateway, and placement gates remain false. No remote
+state or secret was accessed. Operations 6-14, remote proof, rollback
+campaigns, reverse sync, drain, traffic, DNS, security, SRE, and migration
+approvals remain open. Go/VPS remains authoritative and production remains
+**NO-GO**.

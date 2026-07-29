@@ -47,6 +47,10 @@ import {
   startControllerEnableDispatchThroughGateway,
 } from "./operation_five_gateway_dispatch";
 import {
+  completeControllerEnableDispatch,
+  parseCompleteEnableDispatchCommand,
+} from "./complete_enable_dispatch";
+import {
   validateControllerDeploymentGatewayClientConfig,
   type ControllerDeploymentGatewayClientEnv,
 } from "./controller_deployment_gateway_client";
@@ -135,6 +139,8 @@ export interface AuthorityEnv
   SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED: string;
   SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED: string;
+  SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED:
+    string;
   SHARD_PLACEMENT_APPLICATION_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_DATABASE_IDENTITY_SHA256: string;
   SHARD_PLACEMENT_AUTHORITY_LEDGER_IDENTITY_SHA256: string;
@@ -172,6 +178,8 @@ const EXECUTION_START_ENABLE_DISPATCH_SEND_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/start-enable-dispatch-send$/;
 const EXECUTION_READ_ENABLE_DISPATCH_STATUS_PATH =
   /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/read-enable-dispatch-status$/;
+const EXECUTION_COMPLETE_ENABLE_DISPATCH_PATH =
+  /^\/internal\/v1\/shard-placement\/execution-claims\/([0-9a-f]{64})\/complete-enable-dispatch$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const IDENTITY = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -539,6 +547,33 @@ export default {
         );
       }
 
+      if (route.kind === "execution_complete_enable_dispatch") {
+        const command =
+          parseCompleteEnableDispatchCommand(body);
+        if (
+          command.authorizationIdSha256
+            !== route.authorizationIdSha256
+        ) {
+          throw new ProtocolError(
+            "operation_five_terminal_path_mismatch",
+            400,
+          );
+        }
+        const result = await completeControllerEnableDispatch(
+          env,
+          command,
+          authentication,
+        );
+        return jsonResponse(
+          result.result === "terminal_recorded" ? 201 : 200,
+          {
+            contract:
+              "cinatoken-shard-placement-authority-complete-enable-dispatch-result-v1",
+            ...result,
+          },
+        );
+      }
+
       if (route.kind === "execution_receipt_append") {
         const receipt = await parseExecutionReceipt(
           body,
@@ -734,6 +769,10 @@ type Route =
     }
   | {
       kind: "execution_read_enable_dispatch_status";
+      authorizationIdSha256: string;
+    }
+  | {
+      kind: "execution_complete_enable_dispatch";
       authorizationIdSha256: string;
     };
 
@@ -948,6 +987,21 @@ function matchRoute(request: Request): Route {
         executionReadEnableDispatchStatusMatch[1]!,
     };
   }
+  const executionCompleteEnableDispatchMatch =
+    EXECUTION_COMPLETE_ENABLE_DISPATCH_PATH.exec(url.pathname);
+  if (
+    request.method === "POST"
+    && executionCompleteEnableDispatchMatch !== null
+  ) {
+    if (url.search.length !== 0) {
+      throw new ProtocolError("invalid_query", 400);
+    }
+    return {
+      kind: "execution_complete_enable_dispatch",
+      authorizationIdSha256:
+        executionCompleteEnableDispatchMatch[1]!,
+    };
+  }
   const authorizationMatch = AUTHORIZATION_ID_PATH.exec(url.pathname);
   if (request.method === "GET" && authorizationMatch !== null) {
     return {
@@ -986,6 +1040,9 @@ function routeRole(kind: Route["kind"]): HmacRole {
   if (kind === "execution_start_enable_dispatch_send") return "send";
   if (kind === "execution_read_enable_dispatch_status") {
     return "recovery";
+  }
+  if (kind === "execution_complete_enable_dispatch") {
+    return "receipt";
   }
   if (kind === "execution_recover_enable_dispatch_consumption") {
     return "recovery";
@@ -1166,6 +1223,17 @@ function requireRouteGate(
   ) {
     throw new ProtocolError(
       "authority_gateway_status_disabled",
+      503,
+    );
+  }
+  if (
+    kind === "execution_complete_enable_dispatch"
+    && env
+      .SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED
+      !== "true"
+  ) {
+    throw new ProtocolError(
+      "authority_operation_five_terminal_write_disabled",
       503,
     );
   }

@@ -24,6 +24,7 @@ describe("shard placement Authority configuration", () => {
       "0004_shard_placement_dispatch_consumption_recoveries.sql",
       "0005_operation_five_send_attempts.sql",
       "0006_operation_five_gateway_events.sql",
+      "0007_operation_five_terminal_receipts.sql",
     ]);
     for (const environment of ["local", "staging"]) {
       expect(report.environments[environment]).toMatchObject({
@@ -91,6 +92,8 @@ describe("shard placement Authority configuration", () => {
           "false",
         SHARD_PLACEMENT_AUTHORITY_SEND_ATTEMPT_WRITE_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED: "false",
+        SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED:
+          "false",
         SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED: "false",
         SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED: "false",
         CONTROLLER_DEPLOYMENT_GATEWAY_ISSUER:
@@ -221,6 +224,21 @@ describe("shard placement Authority configuration", () => {
       vars: {
         ...base.vars,
         SHARD_PLACEMENT_AUTHORITY_ENABLED: "true",
+      },
+    }, "local")).toThrow(ShardPlacementAuthorityConfigAuditError);
+    const varsWithoutTerminalWriteGate = { ...base.vars };
+    delete varsWithoutTerminalWriteGate
+      .SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED;
+    expect(() => auditConfig({
+      ...base,
+      vars: varsWithoutTerminalWriteGate,
+    }, "local")).toThrow(ShardPlacementAuthorityConfigAuditError);
+    expect(() => auditConfig({
+      ...base,
+      vars: {
+        ...base.vars,
+        SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED:
+          "true",
       },
     }, "local")).toThrow(ShardPlacementAuthorityConfigAuditError);
     expect(() => auditConfig({

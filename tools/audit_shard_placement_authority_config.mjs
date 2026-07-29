@@ -51,6 +51,7 @@ export const REQUIRED_DISABLED_GATES = Object.freeze([
   "SHARD_PLACEMENT_AUTHORITY_DISPATCH_CONSUMPTION_RECOVERY_RECEIPT_WRITE_ENABLED",
   "SHARD_PLACEMENT_AUTHORITY_SEND_ATTEMPT_WRITE_ENABLED",
   "SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED",
+  "SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED",
   "SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED",
   "SHARD_PLACEMENT_AUTHORITY_GATEWAY_STATUS_READ_ENABLED",
 ]);
@@ -392,7 +393,7 @@ export async function auditTrackedConfigs({
     .map((entry) => entry.name)
     .sort();
   if (
-    migrationFiles.length !== 6
+    migrationFiles.length !== 7
     || migrationFiles[0]
       !== "0001_shard_placement_authorizations.sql"
     || migrationFiles[1]
@@ -405,6 +406,8 @@ export async function auditTrackedConfigs({
       !== "0005_operation_five_send_attempts.sql"
     || migrationFiles[5]
       !== "0006_operation_five_gateway_events.sql"
+    || migrationFiles[6]
+      !== "0007_operation_five_terminal_receipts.sql"
   ) {
     throw new ShardPlacementAuthorityConfigAuditError(
       "Authority migration inventory is invalid",

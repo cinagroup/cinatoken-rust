@@ -430,6 +430,10 @@ describe("application placement execution ticket activation contract", () => {
         config.vars.SHARD_PLACEMENT_AUTHORITY_GATEWAY_EVENT_WRITE_ENABLED,
       ).toBe("false");
       expect(
+        config.vars
+          .SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED,
+      ).toBe("false");
+      expect(
         config.vars.SHARD_PLACEMENT_AUTHORITY_GATEWAY_CREATE_ENABLED,
       ).toBe("false");
       expect(

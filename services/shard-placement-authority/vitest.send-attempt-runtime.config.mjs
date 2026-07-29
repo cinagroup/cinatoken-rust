@@ -16,11 +16,18 @@ const gatewayEventMigration = authorityMigrations.find(
   (migration) =>
     migration.name === "0006_operation_five_gateway_events.sql",
 );
+const terminalMigration = authorityMigrations.find(
+  (migration) =>
+    migration.name === "0007_operation_five_terminal_receipts.sql",
+);
 if (
   sendAttemptMigration === undefined
   || gatewayEventMigration === undefined
+  || terminalMigration === undefined
 ) {
-  throw new Error("operation-5 send/gateway migrations are missing");
+  throw new Error(
+    "operation-5 send/gateway/terminal migrations are missing",
+  );
 }
 
 export default defineConfig({
@@ -34,6 +41,7 @@ export default defineConfig({
             ...baseline,
             sendAttemptMigration,
             gatewayEventMigration,
+            terminalMigration,
           ],
         },
         d1Databases: {

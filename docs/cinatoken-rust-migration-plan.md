@@ -24296,3 +24296,78 @@ HMAC rotation, at-most-one mutation fault campaigns, status drift/outage
 campaigns, operations 6-14, reverse sync, drain, traffic and DNS cutover, and
 security/SRE approvals remain open. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 22.330 Operation-5 Terminal Closure (2026-07-29)
+
+This checkpoint supersedes the local terminal-receipt P0 in 22.329. It does
+not deploy, apply a remote migration, enable a gate, or change Go/VPS
+authority.
+
+### Stable state correction
+
+Gateway `observationDigestSha256` is now the canonical deployment-state digest.
+It binds the frozen command target, classification, deployments/version HTTP
+status, deployment set, and target-version response SHA. It excludes status
+request, credential, Cloudflare response-request, and timestamp identities.
+Two distinct reads of unchanged target state can therefore satisfy stability.
+
+The Controller enabled version ID is not the target response SHA. The ID is
+the expected deployment target; `target_version_sha256` hashes the bounded
+Cloudflare version response body after that response has been classified.
+Both are retained and never compared for equality.
+
+### Atomic terminal contract
+
+Authority migration 0007 adds one immutable operation-5 terminal sidecar and
+four categories of D1 guard:
+
+1. live claim, lease, deadline, revocation, schedule, and next-operation
+   guards;
+2. attempt, send-started, admission, and operation-start identity guards;
+3. stable Gateway head, direct predecessor, state, Worker-version, mirror,
+   and chain-contiguity guards; and
+4. generic receipt projection, after-ledger, chain-seal, update, and delete
+   guards.
+
+The dedicated route is:
+
+```text
+POST /internal/v1/shard-placement/execution-claims/{authorization_id_sha256}/complete-enable-dispatch
+```
+
+It uses receipt-role HMAC and the independent
+`SHARD_PLACEMENT_AUTHORITY_OPERATION_FIVE_TERMINAL_WRITE_ENABLED` gate. The
+gate is false in all tracked environments. The route performs no external
+I/O.
+
+One successful INSERT projects generic execution receipt sequence 5 through
+the retained migration-0002 trigger. Commit atomically produces:
+
+- `ledger_version=5`;
+- ledger head equal to the terminal receipt digest;
+- `last_completed_ordinal=5`;
+- cleared inflight state;
+- next ordinal 6 and its exact operation ID; and
+- a closed Gateway evidence chain.
+
+Terminal response SHA binds the canonical evidence manifest. The manifest
+excludes after-ledger and terminal receipt digest to avoid circular hashing;
+the sidecar stores and equates those values separately.
+
+### Recovery and acceptance
+
+Exact replay requires the same terminal command, stable event, credential, and
+request identity. It returns persisted Authority/Gateway versions and performs
+zero inserts and zero Gateway calls. Stable non-head, version drift,
+revocation, takeover, readback-only, disable-required, expiry, chain gaps, or
+projection failure leave the claim at ordinal 4.
+
+Detailed evidence is in
+[`operation-five-terminal-receipt.md`](operation-five-terminal-receipt.md).
+
+The next local execution P0 is operation 6 readiness probing, followed by
+operations 7-13 and independent operation-14 disable/recovery. Remote D1
+schema and normalized-trigger evidence, private binding proof, least-privilege
+token and HMAC rotation, rollout/commit-loss fault campaigns, mutation-count
+evidence, reverse sync, drain, traffic/DNS cutover, and approvals remain open.
+Go/VPS remains authoritative and production remains **NO-GO**.

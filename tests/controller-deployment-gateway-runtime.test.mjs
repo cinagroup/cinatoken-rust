@@ -109,7 +109,8 @@ describe("controller deployment gateway Workerd runtime", () => {
       requestId: "status-runtime-1",
     });
     expect(first.status).toBe(201);
-    expect(await first.json()).toMatchObject({
+    const firstPayload = await first.json();
+    expect(firstPayload).toMatchObject({
       result: "status_observation_recorded",
       remoteMutationSent: false,
       statusRequestCount: 2,
@@ -127,11 +128,40 @@ describe("controller deployment gateway Workerd runtime", () => {
       remoteMutationSent: false,
       observation: { classification: "target_observed" },
     });
+    await new Promise((resolve) => setTimeout(resolve, 5_100));
+    const stable = await gatewayFetch("POST", statusPath, {
+      role: "status",
+      requestId: "status-runtime-2",
+    });
+    expect(stable.status).toBe(201);
+    const stablePayload = await stable.json();
+    expect(stablePayload).toMatchObject({
+      result: "status_observation_recorded",
+      remoteMutationSent: false,
+      targetStable: true,
+      observation: { classification: "target_observed" },
+    });
+    expect(stablePayload.observation.observationDigestSha256)
+      .toBe(firstPayload.observation.observationDigestSha256);
+    const stableReplay = await gatewayFetch("POST", statusPath, {
+      role: "status",
+      requestId: "status-runtime-2",
+    });
+    expect(stableReplay.status).toBe(200);
+    const stableReplayPayload = await stableReplay.json();
+    expect(stableReplayPayload).toMatchObject({
+      result: "status_observation_replayed",
+      remoteMutationSent: false,
+      targetStable: true,
+      observation: { classification: "target_observed" },
+    });
+    expect(stableReplayPayload.observation.observationDigestSha256)
+      .toBe(stablePayload.observation.observationDigestSha256);
     const observationCount = await env.DB.prepare(
       `SELECT COUNT(*) AS count
        FROM controller_deployment_gateway_observations`,
     ).first();
-    expect(observationCount).toEqual({ count: 1 });
+    expect(observationCount).toEqual({ count: 2 });
   });
 
   it("fails closed before D1 or network when gates or roles are wrong", async () => {

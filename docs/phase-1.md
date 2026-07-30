@@ -4873,3 +4873,45 @@ counts `4/0`. A dedicated permit-only verifier and storage-free isolated issuer
 identity also remain absent. No registration writer, route, credential, gate,
 collector, or remote operation was added. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-30 M1 Isolated Registration-Permit Issuer And Verifier
+
+The local M1 issuance foundation now has a dedicated storage-free TypeScript
+Worker and a crate-private Rust verifier. The issuer exposes only the fixed
+internal registration-permit POST, authenticates canonical bounded bodies
+with a current/previous exact-body HMAC, derives a deterministic request-bound
+permit from the authenticated HMAC window, signs with Ed25519, and self-checks
+the configured SPKI before returning. Its local/staging configs have no public
+route or runtime capability beyond version metadata, remain disabled, and
+have no production counterpart.
+
+The signed LP subject contains 43 exact fields, including both the D1-read
+previous passkey count and assertion-reported new count. Rust verifies the same
+TypeScript canary, audience, key/identity/SPKI pins, request-bound permit ID,
+time window, signature, envelope digest, and every typed
+action/authorization/Root/session/passkey/writer/ledger binding. The verified
+type does not expose signing or accept a caller-provided receipt.
+
+The WebAuthn proof and binding projection are opaque in production Rust. One
+canonical encoder emits the fixed action plus all 33 issuer request fields;
+Rust and TypeScript pin the same 2,120-byte request and SHA-256. The verifier
+strictly parses the complete issuer response, binds its request-ID and two
+digest echoes, and enforces `verifiedAt <= issuedAt <= verifiedAt + 5`.
+
+The root aggregate check now checks separate local/staging generated types and
+Wrangler dry-runs, 25 service tests, real Workerd
+concurrent/cross-second exact replay loaded from tracked staging config, the
+Rust verifier/action tests, an exact configuration allowlist, Git
+candidate-file secret rejection, absence of any issuer production config, and
+complete omission of registration issuer capabilities from the Application
+production environment.
+
+M1 remains incomplete and unreachable. The Application has no issuer Service
+Binding or trust config. Next is 0074: one top-level command must atomically
+project the command, protected passkey audit, credential sign-count CAS,
+registration, and ledger, with exact same-Session readback. Its candidate
+fresh/replay change count is now `5/0`, superseding the earlier `4/0` design,
+but real Workerd must prove the final trigger accounting. The private
+begin/finish coordinator follows 0074; no route, gate, isolated-staging
+deployment, remote D1 change, collector authority, or production change is
+included. Go/VPS remains authoritative and production remains **NO-GO**.

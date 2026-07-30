@@ -4,6 +4,8 @@
 //! exact Root action into a mandatory-UV challenge and returns proof digests
 //! only after the WebAuthn signature has been verified.
 
+use std::collections::BTreeMap;
+
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -136,18 +138,245 @@ pub(crate) struct DrainSourceRegistrationStoredCredential<'a> {
     pub(crate) credential: StoredCredential<'a>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VerifiedDrainSourceRegistrationPasskeyProof {
-    pub(crate) passkey_credential_row_id: i64,
-    pub(crate) passkey_credential_id_sha256: String,
-    pub(crate) passkey_assertion_subject_sha256: String,
-    pub(crate) passkey_assertion_signature_sha256: String,
-    pub(crate) secure_verification_challenge_sha256: String,
-    pub(crate) sign_count: u32,
-    pub(crate) user_present: bool,
-    pub(crate) user_verified: bool,
-    pub(crate) backup_eligible: bool,
-    pub(crate) backup_state: bool,
+    passkey_credential_row_id: i64,
+    passkey_credential_id_sha256: String,
+    passkey_assertion_subject_sha256: String,
+    passkey_assertion_signature_sha256: String,
+    secure_verification_challenge_sha256: String,
+    previous_sign_count: u32,
+    sign_count: u32,
+    user_present: bool,
+    user_verified: bool,
+    backup_eligible: bool,
+    backup_state: bool,
+    verified_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DrainSourceRegistrationPermitBindings {
+    environment: String,
+    authorization_id_sha256: String,
+    authorization_subject_sha256: String,
+    authorization_signature_envelope_sha256: String,
+    action_subject_sha256: String,
+    action_digest_sha256: String,
+    registration_request_sha256: String,
+    admin_audit_digest_sha256: String,
+    change_ticket_sha256: String,
+    root_admin_id: i64,
+    root_session_epoch: i64,
+    root_session_binding_sha256: String,
+    passkey_credential_row_id: i64,
+    passkey_credential_id_sha256: String,
+    passkey_assertion_subject_sha256: String,
+    passkey_assertion_signature_sha256: String,
+    secure_verification_challenge_sha256: String,
+    passkey_previous_sign_count: u32,
+    passkey_sign_count: u32,
+    passkey_user_present: bool,
+    passkey_user_verified: bool,
+    passkey_backup_eligible: bool,
+    passkey_backup_state: bool,
+    registered_by_service_name: String,
+    registered_by_version_id: String,
+    registration_execution_id_sha256: String,
+    registration_credential_id_sha256: String,
+    authority_ledger_identity_sha256: String,
+    receipt_sequence: i64,
+    ledger_head_before_sha256: String,
+    verification_expires_at: i64,
+    verified_at: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DrainSourceRegistrationPermitIssueRequestV1 {
+    canonical_json: Vec<u8>,
+}
+
+impl DrainSourceRegistrationPermitIssueRequestV1 {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.canonical_json
+    }
+}
+
+impl DrainSourceRegistrationPermitBindings {
+    pub(crate) fn issue_request(
+        &self,
+    ) -> Result<DrainSourceRegistrationPermitIssueRequestV1, DrainSourceRegistrationCeremonyError>
+    {
+        let request = BTreeMap::from([
+            (
+                "action",
+                serde_json::Value::String(DRAIN_SOURCE_REGISTRATION_ACTION.to_owned()),
+            ),
+            (
+                "actionDigestSha256",
+                serde_json::Value::String(self.action_digest_sha256.clone()),
+            ),
+            (
+                "actionSubjectSha256",
+                serde_json::Value::String(self.action_subject_sha256.clone()),
+            ),
+            (
+                "adminAuditDigestSha256",
+                serde_json::Value::String(self.admin_audit_digest_sha256.clone()),
+            ),
+            (
+                "authorityLedgerIdentitySha256",
+                serde_json::Value::String(self.authority_ledger_identity_sha256.clone()),
+            ),
+            (
+                "authorizationIdSha256",
+                serde_json::Value::String(self.authorization_id_sha256.clone()),
+            ),
+            (
+                "authorizationSignatureEnvelopeSha256",
+                serde_json::Value::String(self.authorization_signature_envelope_sha256.clone()),
+            ),
+            (
+                "authorizationSubjectSha256",
+                serde_json::Value::String(self.authorization_subject_sha256.clone()),
+            ),
+            (
+                "changeTicketSha256",
+                serde_json::Value::String(self.change_ticket_sha256.clone()),
+            ),
+            (
+                "environment",
+                serde_json::Value::String(self.environment.clone()),
+            ),
+            (
+                "ledgerHeadBeforeSha256",
+                serde_json::Value::String(self.ledger_head_before_sha256.clone()),
+            ),
+            (
+                "passkeyAssertionSignatureSha256",
+                serde_json::Value::String(self.passkey_assertion_signature_sha256.clone()),
+            ),
+            (
+                "passkeyAssertionSubjectSha256",
+                serde_json::Value::String(self.passkey_assertion_subject_sha256.clone()),
+            ),
+            (
+                "passkeyBackupEligible",
+                serde_json::Value::Bool(self.passkey_backup_eligible),
+            ),
+            (
+                "passkeyBackupState",
+                serde_json::Value::Bool(self.passkey_backup_state),
+            ),
+            (
+                "passkeyCredentialIdSha256",
+                serde_json::Value::String(self.passkey_credential_id_sha256.clone()),
+            ),
+            (
+                "passkeyCredentialRowId",
+                serde_json::Value::from(self.passkey_credential_row_id),
+            ),
+            (
+                "passkeyPreviousSignCount",
+                serde_json::Value::from(self.passkey_previous_sign_count),
+            ),
+            (
+                "passkeySignCount",
+                serde_json::Value::from(self.passkey_sign_count),
+            ),
+            (
+                "passkeyUserPresent",
+                serde_json::Value::Bool(self.passkey_user_present),
+            ),
+            (
+                "passkeyUserVerified",
+                serde_json::Value::Bool(self.passkey_user_verified),
+            ),
+            (
+                "receiptSequence",
+                serde_json::Value::from(self.receipt_sequence),
+            ),
+            (
+                "registeredByServiceName",
+                serde_json::Value::String(self.registered_by_service_name.clone()),
+            ),
+            (
+                "registeredByVersionId",
+                serde_json::Value::String(self.registered_by_version_id.clone()),
+            ),
+            (
+                "registrationCredentialIdSha256",
+                serde_json::Value::String(self.registration_credential_id_sha256.clone()),
+            ),
+            (
+                "registrationExecutionIdSha256",
+                serde_json::Value::String(self.registration_execution_id_sha256.clone()),
+            ),
+            (
+                "registrationRequestSha256",
+                serde_json::Value::String(self.registration_request_sha256.clone()),
+            ),
+            ("rootAdminId", serde_json::Value::from(self.root_admin_id)),
+            (
+                "rootSessionBindingSha256",
+                serde_json::Value::String(self.root_session_binding_sha256.clone()),
+            ),
+            (
+                "rootSessionEpoch",
+                serde_json::Value::from(self.root_session_epoch),
+            ),
+            (
+                "secureVerificationChallengeSha256",
+                serde_json::Value::String(self.secure_verification_challenge_sha256.clone()),
+            ),
+            (
+                "verificationExpiresAt",
+                serde_json::Value::from(self.verification_expires_at),
+            ),
+            ("verifiedAt", serde_json::Value::from(self.verified_at)),
+        ]);
+        let canonical_json = serde_json::to_vec(&request)
+            .map_err(|_| DrainSourceRegistrationCeremonyError::InvalidCeremony)?;
+        Ok(DrainSourceRegistrationPermitIssueRequestV1 { canonical_json })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_fixture(now: i64) -> Self {
+        let digest = |byte: u8| format!("{byte:02x}").repeat(32);
+        Self {
+            environment: "staging".to_owned(),
+            authorization_id_sha256: digest(1),
+            authorization_subject_sha256: digest(2),
+            authorization_signature_envelope_sha256: digest(3),
+            action_subject_sha256: digest(4),
+            action_digest_sha256: digest(5),
+            registration_request_sha256: digest(6),
+            admin_audit_digest_sha256: digest(8),
+            change_ticket_sha256: digest(9),
+            root_admin_id: 1,
+            root_session_epoch: 7,
+            root_session_binding_sha256: digest(10),
+            passkey_credential_row_id: 11,
+            passkey_credential_id_sha256: digest(11),
+            passkey_assertion_subject_sha256: digest(12),
+            passkey_assertion_signature_sha256: digest(13),
+            secure_verification_challenge_sha256: digest(14),
+            passkey_previous_sign_count: 41,
+            passkey_sign_count: 42,
+            passkey_user_present: true,
+            passkey_user_verified: true,
+            passkey_backup_eligible: true,
+            passkey_backup_state: false,
+            registered_by_service_name: "cinatoken-application".to_owned(),
+            registered_by_version_id: "application-version-001".to_owned(),
+            registration_execution_id_sha256: digest(15),
+            registration_credential_id_sha256: digest(20),
+            authority_ledger_identity_sha256: digest(17),
+            receipt_sequence: 1,
+            ledger_head_before_sha256: digest(18),
+            verification_expires_at: now + 24,
+            verified_at: now,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -256,6 +485,76 @@ impl DrainSourceRegistrationCeremonyState {
             rp_id: &self.rp_id,
             require_user_verification: true,
         }
+    }
+
+    pub(crate) fn registration_permit_bindings(
+        &self,
+        proof: &VerifiedDrainSourceRegistrationPasskeyProof,
+    ) -> Result<DrainSourceRegistrationPermitBindings, DrainSourceRegistrationCeremonyError> {
+        self.validate_at(proof.verified_at)?;
+        let action_subject_sha256 = self.action_subject_sha256()?;
+        let challenge_sha256 = self.secure_verification_challenge_sha256()?;
+        if proof.passkey_credential_row_id != self.action.passkey_credential_row_id
+            || proof.passkey_credential_id_sha256 != self.action.passkey_credential_id_sha256
+            || proof.secure_verification_challenge_sha256 != challenge_sha256
+            || !proof.user_present
+            || !proof.user_verified
+            || proof.backup_state && !proof.backup_eligible
+            || !valid_sign_count_transition(proof.previous_sign_count, proof.sign_count)
+        {
+            return Err(DrainSourceRegistrationCeremonyError::InvalidCeremony);
+        }
+        for digest in [
+            &proof.passkey_assertion_subject_sha256,
+            &proof.passkey_assertion_signature_sha256,
+        ] {
+            if !valid_sha256(digest) {
+                return Err(DrainSourceRegistrationCeremonyError::InvalidCeremony);
+            }
+        }
+
+        Ok(DrainSourceRegistrationPermitBindings {
+            environment: self.action.environment.clone(),
+            authorization_id_sha256: self.action.authorization_id_sha256.clone(),
+            authorization_subject_sha256: self.action.authorization_subject_sha256.clone(),
+            authorization_signature_envelope_sha256: self
+                .action
+                .authorization_signature_envelope_sha256
+                .clone(),
+            action_subject_sha256,
+            action_digest_sha256: self.action.action_digest_sha256.clone(),
+            registration_request_sha256: self.action.registration_request_sha256.clone(),
+            admin_audit_digest_sha256: self.action.admin_audit_digest_sha256.clone(),
+            change_ticket_sha256: self.action.change_ticket_sha256.clone(),
+            root_admin_id: self.action.root_admin_id,
+            root_session_epoch: self.action.root_session_epoch,
+            root_session_binding_sha256: self.action.root_session_binding_sha256.clone(),
+            passkey_credential_row_id: proof.passkey_credential_row_id,
+            passkey_credential_id_sha256: proof.passkey_credential_id_sha256.clone(),
+            passkey_assertion_subject_sha256: proof.passkey_assertion_subject_sha256.clone(),
+            passkey_assertion_signature_sha256: proof.passkey_assertion_signature_sha256.clone(),
+            secure_verification_challenge_sha256: proof
+                .secure_verification_challenge_sha256
+                .clone(),
+            passkey_previous_sign_count: proof.previous_sign_count,
+            passkey_sign_count: proof.sign_count,
+            passkey_user_present: proof.user_present,
+            passkey_user_verified: proof.user_verified,
+            passkey_backup_eligible: proof.backup_eligible,
+            passkey_backup_state: proof.backup_state,
+            registered_by_service_name: self.action.registered_by_service_name.clone(),
+            registered_by_version_id: self.action.registered_by_version_id.clone(),
+            registration_execution_id_sha256: self.action.registration_execution_id_sha256.clone(),
+            registration_credential_id_sha256: self
+                .action
+                .registration_credential_id_sha256
+                .clone(),
+            authority_ledger_identity_sha256: self.action.authority_ledger_identity_sha256.clone(),
+            receipt_sequence: self.action.receipt_sequence,
+            ledger_head_before_sha256: self.action.ledger_head_before_sha256.clone(),
+            verification_expires_at: self.action.verification_expires_at,
+            verified_at: proof.verified_at,
+        })
     }
 
     pub(crate) async fn store_once(
@@ -385,11 +684,13 @@ impl DrainSourceRegistrationCeremonyState {
             passkey_assertion_subject_sha256: encode_hex(&verified.signed_subject_sha256),
             passkey_assertion_signature_sha256: encode_hex(&verified.signature_sha256),
             secure_verification_challenge_sha256: encode_hex(&verified.challenge_sha256),
+            previous_sign_count: stored.credential.sign_count,
             sign_count: verified.sign_count,
             user_present: verified.user_present,
             user_verified: verified.user_verified,
             backup_eligible: verified.backup_eligible,
             backup_state: verified.backup_state,
+            verified_at: now,
         })
     }
 }
@@ -725,6 +1026,10 @@ fn valid_version_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
+}
+
+fn valid_sign_count_transition(previous: u32, current: u32) -> bool {
+    previous == 0 && current == 0 || current > previous
 }
 
 fn valid_reason_code(value: &str) -> bool {
@@ -1113,6 +1418,36 @@ mod tests {
         assert_eq!(
             proof.secure_verification_challenge_sha256,
             state.secure_verification_challenge_sha256().unwrap()
+        );
+        assert_eq!(proof.previous_sign_count, 7);
+        assert_eq!(proof.sign_count, 8);
+        assert_eq!(proof.verified_at, NOW);
+        let bindings = state.registration_permit_bindings(&proof).unwrap();
+        assert_eq!(
+            bindings.action_subject_sha256,
+            state.action_subject_sha256().unwrap()
+        );
+        assert_eq!(
+            bindings.passkey_assertion_signature_sha256,
+            sha256_hex(b"signature")
+        );
+        assert_eq!(bindings.passkey_previous_sign_count, 7);
+        assert_eq!(bindings.passkey_sign_count, 8);
+        assert_eq!(bindings.verified_at, NOW);
+
+        let mut invalid_backup = proof.clone();
+        invalid_backup.backup_eligible = false;
+        invalid_backup.backup_state = true;
+        assert_eq!(
+            state.registration_permit_bindings(&invalid_backup),
+            Err(DrainSourceRegistrationCeremonyError::InvalidCeremony)
+        );
+
+        let mut invalid_sign_count = proof.clone();
+        invalid_sign_count.sign_count = invalid_sign_count.previous_sign_count;
+        assert_eq!(
+            state.registration_permit_bindings(&invalid_sign_count),
+            Err(DrainSourceRegistrationCeremonyError::InvalidCeremony)
         );
 
         let mut cloned = verified.clone();

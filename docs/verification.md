@@ -12484,6 +12484,10 @@ The Workerd test sends 32 concurrent create-only requests to one
 replacement returns `409`, the first take returns the original payload, and
 the second take returns `410`; create-only reuse after take remains `409`.
 
+Historical checkpoint: the following issuer/verifier section supersedes only
+this paragraph's issuer/verifier-absence statement and earlier `4/0` design.
+Migration 0074 remains required with candidate `5/0` accounting.
+
 This closes only the local action-bound challenge and mandatory-UV proof
 foundation. The generic passkey marker remains ineligible. Registration remains
 blocked on a 0074 single-statement command that immutably projects exact audit,
@@ -12491,3 +12495,47 @@ registration, and ledger with runtime-proven `4/0` fresh/replay changes, plus a
 dedicated permit-only verifier and isolated issuer. No route, writer, gate,
 remote migration, or authority transfer was tested. Production remains
 **NO-GO**.
+
+## 2026-07-30 M1 Registration-Permit Issuer/Verifier Verification
+
+Targeted current-worktree verification:
+
+```text
+bun run check:drain-source-registration-permit-issuer
+  local/staging generated Wrangler types: current
+  TypeScript and local/staging dry-run bundles: passed
+  issuer protocol/index/config: 25 passed
+  real Workerd runtime: 2 passed
+  structured config/production omission audit: 15 passed
+  Rust action plus permit verifier: 9 passed
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+  passed with existing dead-code warnings only
+```
+
+The TypeScript and Rust tests pin one identical 43-field, LP-encoded Ed25519
+canary plus one identical 2,120-byte canonical issuer request with SHA-256
+`0af33ec080e15ee14f24877d805deed7fcf27fd5ebd8cda1a48313c0ba8416e1`.
+Issuance binds the authenticated HMAC credential to the registration
+credential, requires the WebAuthn verification to precede issuance by no more
+than five seconds, and derives `issuedAt`/`expiresAt` from the authenticated
+HMAC and verification windows. Rust strictly parses the complete issuer
+response and validates its request-ID and digest echoes. Workerd proves 16
+concurrent responses are byte-identical and that the same valid request
+remains byte-identical after a server-clock second changes. Body drift and
+ambient cookies fail with no-store, secret-free errors.
+
+The configuration audit permits only local/staging disabled Workers with
+`CF_VERSION_METADATA`, rejects every public route/runtime binding family,
+secret-bearing candidate filename and common secret literal, forbids any
+issuer production config, and proves the Application production slice
+contains no registration issuer gate, Service Binding, rate limiter, HMAC,
+private key, or trust pin. This is local configuration evidence, not remote
+account inventory.
+
+The next verification boundary is 0074. Its candidate fresh/replay count is
+`5/0` because the final command must include a credential sign-count CAS in
+addition to command, audit, registration, and ledger. No count is accepted
+until the final migration runs under real Workerd with exact same-Session
+readback and fault/concurrency tests. No remote resource, secret, route, gate,
+or deployment was used. Production remains **NO-GO**.

@@ -30,6 +30,8 @@ mod container_controller;
 mod container_drain_source_authorization;
 #[allow(dead_code)]
 mod container_drain_source_registration_action;
+#[allow(dead_code)]
+mod container_drain_source_registration_permit;
 mod container_r2_inventory;
 mod container_r2_inventory_admin;
 mod container_reconciliation;

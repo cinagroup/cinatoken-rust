@@ -10,6 +10,8 @@
 /.dev.vars
 /services/container-controller/.dev.vars*
 /services/container-controller/.env*
+/services/drain-source-registration-permit-issuer/.dev.vars*
+/services/drain-source-registration-permit-issuer/.env*
 /exports/
 *.cinatoken-export.json
 *.log

@@ -26063,3 +26063,121 @@ error, response loss without exact readback, or readback drift is
 
 No remote Cloudflare resource or D1 database was accessed. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 22.341 Isolated Registration-Permit Issuer And Verifier (2026-07-30)
+
+This overlay implements the local, unreachable issuance/verifier foundation
+that item 1 of 22.340 required. Checkpoint completion additionally requires a
+committed revision, clean tracked diff, and recorded aggregate-gate result.
+It does not connect an Application Service Binding, add a registration route
+or writer, apply 0074, deploy isolated staging, or change the
+`73/103/1701/156` D1 baseline.
+
+### Isolated issuer
+
+`services/drain-source-registration-permit-issuer` is a storage-free
+TypeScript Worker with one exact private endpoint:
+
+```text
+POST /internal/v1/drain-source-registration/permits
+```
+
+The Worker has only `CF_VERSION_METADATA`. Its local and staging Wrangler
+files set `workers_dev=false`, `preview_urls=false`, declare no route, keep
+the issuance gate false, and contain no D1, KV, R2, Durable Object, Queue,
+Service, Asset, Container, AI, browser, dispatch, rate-limit, or other runtime
+binding. There is no issuer production config.
+
+The issuer accepts only canonical UTF-8 JSON of at most 16 KiB plus a
+current/previous HMAC credential. The HMAC claims bind the exact issuer,
+audience, credential digest, request ID, method, path, body SHA-256, and
+validity window. The signed registration credential digest must equal the
+authenticated HMAC credential digest. Service Binding transport alone is not
+semantic authorization.
+
+The authenticated HMAC `issued_at` fixes permit `issuedAt`; expiry is the
+minimum of that time plus 30 seconds, the HMAC expiry, and the action
+verification expiry. Consequently, an exact valid HMAC/body retry produces
+the same permit ID, subject, deterministic Ed25519 signature, and envelope
+without giving the issuer storage. The issuer validates its PKCS8/SPKI shape
+and SPKI digest, signs, and verifies its own signature before returning only
+the envelope and derived digests.
+
+The Application-side proof and binding fields are now private. The binding
+projection can produce only one opaque 33-field canonical issue request,
+including the fixed action. TypeScript and Rust pin its exact 2,120-byte
+encoding and SHA-256
+`0af33ec080e15ee14f24877d805deed7fcf27fd5ebd8cda1a48313c0ba8416e1`.
+The issuer requires causal ordering `verifiedAt <= issuedAt` with at most five
+seconds between them; symmetric absolute skew is forbidden.
+
+### Exact permit and Application verifier
+
+The v1 subject has 43 ordered length-prefixed fields. It adds
+`passkeyPreviousSignCount` immediately before the assertion's new
+`passkeySignCount`. Both zero is valid for authenticators without a counter;
+otherwise the new value must be strictly greater. This exact old/new pair is
+required for the future D1 credential CAS.
+
+The crate-private, route-free Rust verifier:
+
+1. loads one complete issuer/audience/key/identity/SPKI trust tuple;
+2. requires staging plus the fixed registration action;
+3. checks canonical base64url, exact 44-byte Ed25519 SPKI DER and its SHA-256;
+4. strictly parses the complete five-field issuer response, binds its request
+   ID and digest echoes, and recomputes the request-bound permit ID, all 43
+   canonical subject fields, subject SHA-256, Ed25519 signature, and
+   signature-envelope SHA-256;
+5. compares every action, authorization, Root/session, passkey, writer, and
+   ledger field to `DrainSourceRegistrationPermitBindings`; and
+6. returns an opaque verified type rather than caller-supplied receipt data.
+
+The Application config intentionally has no issuer Service Binding, issuance
+gate, HMAC metadata, rate limiter, or trust pin in this checkpoint.
+`env.production` must omit those capabilities entirely, including empty or
+`false` placeholders. A structured config auditor proves that omission and
+rejects any production issuer config, public ingress, extra capability,
+tracked secret name/value, or local/staging identity reuse.
+
+### Portable and runtime evidence
+
+TypeScript and Rust pin the same test-only `0x07` Ed25519 seed and 43-field
+canary:
+
+```text
+SPKI SHA-256       324be2dea8bc44461b0233e51fa48902ed6b1cc671e7739af2551e0bfe68f54e
+permit ID SHA-256  33b768701f84f398cbf03fb83daffb0ff850bb1130f07c65551355cf8208c347
+subject SHA-256    5bcbcc90ac9a1a46b65e2f2853dfdb032bfe0652984c3066acabe1507498ff52
+envelope SHA-256   8d8c6c6399f38fa712c6352b341252dd62c201a050166dfd1bac47e10b2296b7
+```
+
+The service suite covers every subject field, HMAC rotation/bindings,
+canonical JSON, time windows, counter rules, credential identity, SPKI pin,
+PKCS8/SPKI mismatch, disabled gate, and coarse no-store errors. Real Workerd
+proves 16 concurrent exact responses and an identical replay after the server
+clock advances to another second while loading the tracked staging Wrangler
+configuration. The root check now includes separate local/staging generated
+types and Wrangler dry-runs, service tests, Workerd,
+configuration/production-omission audit, Git candidate-file secret scanning,
+Rust tests, and the portable canary.
+
+### Remaining M1 order
+
+1. Add `0074_relay_container_drain_source_registration_command.sql` and the
+   repository/runtime matrix. Because the top-level command must also perform
+   the protected credential-count CAS, the candidate fresh change count is
+   now `5` (command, protected audit, credential update, registration, and
+   ledger), with exact replay `0`. These are design values until the final
+   triggers and real Workerd exact readback prove them.
+2. Add the private begin/finish coordinator. It must reread Root, session,
+   credential count/clone state, authorization, fence, and ledger before
+   challenge, before issuer call, and immediately before 0074.
+3. Only after the 0074 fault/concurrency matrix may local and isolated staging
+   gain the private Service Binding, public trust tuple, and default-off
+   coordinator gate. Production must continue to omit all of them.
+4. Collection, claim/terminal workers, close, traffic return, reopen,
+   billing/settlement ownership, DNS, customer traffic, and Go/VPS retirement
+   remain separately authorized later milestones.
+
+No remote Cloudflare resource, secret, D1 database, route, or deployment was
+accessed. Go/VPS remains authoritative and production remains **NO-GO**.

@@ -390,3 +390,66 @@ one terminal receipt, bounded Session batch and unknown-commit readback,
 independent keyset recomputation, create-only locked R2 evidence and remote
 staging fault campaigns. The root Application Worker remains the sole D1
 owner. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## Migration 0073 Source-Authorization Consumption Repository Boundary
+
+Migration
+`0073_relay_container_drain_source_authorization_consumption.sql` advances
+the local Application candidate to 73 migrations, 103 required tables, 1701
+checked incremental columns, and 156 key indexes. Its preflight rejects apply
+when any 0070 close command, 0071 source row, or 0072 authorization/
+attestation row exists.
+
+`relay_container_drain_source_consumption_schema_ready()` and
+`relay_container_drain_source_consumption_readback()` add an exact,
+first-primary read boundary for the registration, claim, terminal and global
+receipt ledger. The schema gate verifies 34 normalized table/index/trigger SQL
+fingerprints plus four table PRAGMA fingerprints covering columns, defaults,
+PK/unique indexes, foreign keys, `WITHOUT ROWID` and strict flags. The
+readback validates the complete 0067-0073 marker chain, exact
+authorization/registration binding, optional claim and terminal lifecycle,
+current ledger sequence and predecessor, canonical evidence object keys, and
+a bounded bookmark digest. The readback alone grants no mutation authority.
+
+The crate-private D1 Session bridge now also owns prepared-statement binding
+and batch execution. It rejects cross-Session statements, empty or
+cardinality-changing results, unreadable/failed result status, unsafe
+`meta.changes`, redacts bridge exceptions, and bounds D1 result error text; it
+never reads business rows or exposes the raw bookmark. Two default-inert
+repository methods use that surface:
+
+- `claim_relay_container_drain_source_authorization()` derives the exact
+  collector owner/build/run/credential, nonce, registration predecessor and
+  next receipt sequence from the retained authorization; and
+- `record_relay_container_drain_source_terminal()` derives the exact claim
+  predecessor and inserts one validated terminal shape.
+
+Both use plain `INSERT`, one first-primary Session batch and exact readback on
+the same Session. Workerd includes immutable trigger projections in
+`meta.changes`, so `FreshApplied` requires the operation-specific exact count
+plus exact readback: claim `2` (claim plus ledger), non-success terminal `2`
+(terminal plus ledger), or successful terminal `3` (terminal, seal and
+ledger). Only the guarded no-write path with explicit `changes=0` plus exact
+readback is `ExactReplay`; proven no-write divergence is `Conflict`. Every
+other count, malformed metadata, batch/protocol error and unreadable readback
+is `OutcomeUnknown`. Registration writing remains deliberately absent.
+
+The database contract permits a claimed authorization to terminalize as
+`expired` after the lease even without a scan or seal. A successful terminal
+requires exact independent attestations and atomically projects the 0071 seal
+before appending the terminal ledger event. The 0070 close guard then requires
+that retained successful terminal and exact seal.
+
+Registration checks the current active UV passkey row, but the stored passkey
+row ID deliberately has no foreign key. This preserves immutable digest
+evidence without preventing credential rotation or deletion.
+
+There is no connected registration writer, issuer, claim worker, collector,
+route, credential, runtime write gate, close authority, traffic-return
+authority, or reopen authority. The private claim/terminal methods have no
+caller and confer no runtime capability. Before connecting any writer, M1
+must supply an
+action-bound one-shot passkey ceremony, hard UV, a dedicated atomic audit
+writer carrying exact `request_id` and `auth_method=passkey`, and a
+permit-only verifier with an isolated issuer identity. Go/VPS remains
+authoritative and production remains **NO-GO**.

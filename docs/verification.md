@@ -12210,6 +12210,13 @@ bun run check:relay-container:p5-foundation
 
 bun run check:relay-container:ring-transition
   132 tests passed
+
+bun run check
+  PASS; exit 0
+  release Worker/WFP builds, Cloudflare dry-run, Workerd 54/54 + 33/33
+  Playground 1/1, frontend 71/71 with zero bundle/lint findings
+  D1 73/103/1701/156, P5 68/68 + 48/48 + 132/132
+  Worker 959/959, remaining workspace tests, and all three wasm32 checks passed
 ```
 
 The SQLite verifier uses the complete 0001-0071 chain and exercises empty and
@@ -12338,3 +12345,96 @@ reopen authority was added or tested. No remote migration, credential,
 deployment, DNS, customer traffic, provider request or Go/VPS state was
 accessed or changed. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-30 Authorization-Consumption Verification Overlay
+
+The canonical local candidate baseline advances to:
+
+```text
+0073_relay_container_drain_source_authorization_consumption.sql
+73 migrations
+103 required tables
+1701 checked incremental columns
+156 key indexes
+```
+
+Integrated current-worktree verification passes:
+
+```text
+python tools/verify_sqlite.py
+  73 migrations / 103 tables / 1701 incremental columns / 156 key indexes
+  34 Rust schema-object fingerprints / 4 table PRAGMA fingerprints matched
+  0073 claimed terminal source authorization consumption passed
+
+bun run check:d1:migration-config
+  73 contiguous migrations; runtime set matched
+
+bun run test:relay-container-atomic-admission:runtime
+  1 Workerd test file passed; 33 tests passed
+  first-primary claim fresh/replay changes = 2/0
+  first-primary no-seal failed terminal fresh/replay changes = 2/0
+  first-primary terminal fresh/replay changes = 3/0
+  nonempty Session bookmarks and exact same-Session readback passed
+
+bun run check:do-lifecycle-runtime
+  release-built all three Workers; 1 Workerd test file passed; 54 tests passed
+
+cargo test -p cinatoken-worker --lib
+  959 tests passed
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+  passed with existing dead-code warnings only
+
+bun run check:relay-container:p5-evidence
+  68 tests passed; admission-fence collector self-test passed
+
+bun run check:relay-container:p5-foundation
+  48 tests passed; foundation collector self-test passed
+
+bun run check:relay-container:ring-transition
+  132 tests passed
+```
+
+The verifier applies the complete 0001-0073 chain and locks the 0073
+production invariants: migration preflight rejects any retained 0070-0072
+drain authority; registration requires exact Root, live UV passkey and
+passkey-authenticated audit evidence; a source scan without the exact live
+claim fails; claimed lease expiry can append an `expired` terminal without a
+scan or seal; source writes stop after any terminal; and registration, claim,
+terminal and global ledger rows are immutable and append-preserved.
+
+The successful path proves that terminal insertion requires exact unsealed
+assembler/verifier attestations, projects the 0071 seal and appends the
+terminal ledger receipt atomically. SQLite and Workerd fault injection prove
+that missing/conflicting attestations, late source drift, control characters
+in evidence keys, seal projection failure, or ledger-head conflict leave no
+terminal and no partial seal. Literal `c]` and `n]` evidence-key text remains
+valid. The 0070 close path rejects a source lacking the retained successful
+terminal.
+
+Passkey lifecycle coverage must preserve two facts at once: registration
+checks the current active credential row at insert time, while the
+registration table has no foreign key to that row. Deleting or rotating the
+passkey after registration must leave the immutable row ID and credential/
+assertion digests readable.
+
+The repository audit also closed five local hardening defects. Bridge
+exceptions are fixed and redacted; `meta.changes` uses exact trigger-aware
+fresh counts (`2` for claim/non-success terminal and `3` for successful
+terminal), while every unexpected count or malformed/failed batch remains
+unknown; exact replay requires a confirmed zero-write statement; and each
+mutation first validates 34 exact schema-object fingerprints plus four table
+PRAGMA fingerprints. Mutation and readback share the same canonical
+evidence-key validator.
+
+Before production promotion, one frozen commit must still prove remote
+concurrent single-winner claims, claimed expiry, unknown commit/readback,
+process loss, late admission, and atomic terminal/seal rollback. These local
+results are not remote evidence.
+
+There is still no action-bound one-shot passkey ceremony, mandatory-UV issuer,
+dedicated atomic audit writer with exact `request_id` and
+`auth_method=passkey`, permit-only verifier, isolated issuer, claim worker,
+collector, route, gate, close/traffic/reopen authority, or authenticated
+remote P5 capture. P5 advances only as a local candidate contract. Go/VPS
+remains authoritative and production remains **NO-GO**.

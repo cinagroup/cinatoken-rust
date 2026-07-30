@@ -15,11 +15,11 @@ are ready for independent evidence assembly and owner review. The other nine
 P5 evidence kinds, the signed manifest, and all five independent approvals are
 still mandatory.
 
-Current local candidate baseline: D1 head 0072/count 72, 99 required tables,
-1611 checked incremental columns, and 148 key indexes. Migration 0055 remains
+Current local candidate baseline: D1 head 0073/count 73, 103 required tables,
+1701 checked incremental columns, and 156 key indexes. Migration 0055 remains
 the historical shard-activation campaign baseline, 0063 remains placement
 authorization storage provenance, and 0068 remains admission-fence evidence
-provenance; a new candidate must bind 0072. No live
+provenance; a new candidate must bind 0073. No live
 Cloudflare readback, migration application,
 deployment, Durable Object/Container wake, or traffic change is claimed.
 
@@ -442,3 +442,23 @@ candidate still requires RootAuth plus fresh second-factor authorization,
 Session batch/unknown-commit handling, independently recomputed source
 evidence, create-only retained R2 evidence, and remote isolated-staging fault
 campaigns. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 0073 Foundation Candidate Overlay
+
+The current offline foundation candidate reports
+`0073_relay_container_drain_source_authorization_consumption.sql`, count 73,
+and the exact `103/1701/156` schema vector. This supersedes only the 0072
+current-candidate paragraph and retains 0055, 0063, 0068, 0071 and 0072 as
+their historical authority identities.
+
+0073 adds registration, claim, terminal and global receipt-ledger storage,
+claimed expiry, and atomic successful-terminal seal projection. It remains
+default-inert and adds no action-bound passkey ceremony, issuer, claim worker,
+collector, route, credential, gate, close authority, traffic-return authority
+or reopen authority. The collector remains read-only and always reports
+`decision=not-proven`.
+
+This is a local P5 contract advance only. No remote 0073 apply/readback,
+authenticated evidence packet, deployment, traffic change, or authority
+transfer is claimed. Go/VPS remains authoritative and production remains
+**NO-GO**.

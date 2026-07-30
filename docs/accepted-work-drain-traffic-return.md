@@ -1009,3 +1009,46 @@ isolated-staging concurrency/fault/rollback campaigns.
 semantics. No remote migration, credential, route, gate, traffic or authority
 change occurred. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 20. 0073 Source-Authorization Consumption Checkpoint
+
+Application migration
+`0073_relay_container_drain_source_authorization_consumption.sql` is the
+current local candidate head. The exact inventory is 73 migrations, 103
+required tables, 1701 checked incremental columns, and 156 key indexes.
+
+0073 adds one append-preserved registration, one owner/lease-bound claim, one
+terminal receipt and one global receipt-ledger chain around each 0072
+authorization. A claimed lease can terminalize as `expired` without creating
+a source scan or seal. Success requires the exact source scan and independent
+attestations; terminal insertion atomically projects the 0071 seal and appends
+the terminal ledger receipt. The 0070 close command requires the retained
+successful terminal and matching seal.
+
+The registration guard validates a live user-present/user-verified passkey row
+and exact passkey-authenticated audit linkage. The passkey row ID intentionally
+has no foreign key so rotation or deletion does not invalidate retained digest
+evidence.
+
+The root Worker now contains a crate-private, owner-preserving D1 Session
+batch bridge and default-inert claim/terminal repository methods. Each uses a
+plain insert and same-Session exact readback. Workerd counts immutable trigger
+projections in `meta.changes`: an exact claim fresh write is `2` (claim plus
+ledger), a non-success terminal fresh write is `2` (terminal plus ledger), and
+an exact successful terminal fresh write is `3` (terminal, seal and ledger).
+Only that operation-specific count plus exact readback is fresh; only explicit
+`changes=0` plus exact readback is replay. Any other count, malformed metadata,
+batch error or unreadable readback remains unknown. The bridge exposes neither
+business rows nor a raw D1 bookmark. No registration mutation method was
+added.
+
+This is still default-inert. There is no route, issuer, claim worker,
+collector, credential, runtime gate, close authority, traffic-return
+authority, or reopen authority. M1 remains blocked on an action-bound
+one-shot passkey ceremony, mandatory UV, a dedicated atomic audit writer with
+exact `request_id` and `auth_method=passkey`, and a permit-only verifier with
+an isolated issuer identity.
+
+P5 advances only as a local candidate/schema contract. No remote 0073 apply,
+readback, deployment, evidence capture, traffic change, or authority transfer
+is claimed. Go/VPS remains authoritative and production remains **NO-GO**.

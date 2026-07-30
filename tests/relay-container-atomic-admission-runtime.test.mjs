@@ -211,10 +211,25 @@ describe("migration 0050 atomic relay Container admission", () => {
             WHERE source_scan_id_sha256 = ?1) AS authorizations,
            (SELECT COUNT(*) FROM relay_container_drain_source_attestations
             WHERE source_scan_id_sha256 = ?1) AS attestations,
+           (SELECT COUNT(*) FROM
+              relay_container_drain_source_authorization_registrations
+            WHERE source_scan_id_sha256 = ?1) AS registrations,
+           (SELECT COUNT(*) FROM
+              relay_container_drain_source_authorization_claims
+            WHERE authorization_id_sha256 = ?3) AS claims,
+           (SELECT COUNT(*) FROM
+              relay_container_drain_source_terminal_receipts
+            WHERE authorization_id_sha256 = ?3) AS terminals,
+           (SELECT COUNT(*) FROM relay_container_drain_source_receipt_ledger
+            WHERE authorization_id_sha256 = ?3) AS ledger_rows,
            (SELECT COUNT(*) FROM relay_container_drain_close_commands
             WHERE close_command_id_sha256 = ?2) AS commands`,
       )
-        .bind(source.sourceScanIdSha256, command.closeCommandIdSha256)
+        .bind(
+          source.sourceScanIdSha256,
+          command.closeCommandIdSha256,
+          source.authorizationIdSha256,
+        )
         .first(),
     ).resolves.toEqual({
       members: 3,
@@ -223,6 +238,10 @@ describe("migration 0050 atomic relay Container admission", () => {
       seals: 1,
       authorizations: 1,
       attestations: 2,
+      registrations: 1,
+      claims: 1,
+      terminals: 1,
+      ledger_rows: 3,
       commands: 1,
     });
     await expect(
@@ -252,8 +271,301 @@ describe("migration 0050 atomic relay Container admission", () => {
     const source = await prepareAcceptedSource([intent], { pageSize: 1 });
 
     await expect(sourceSealStatement(source).run()).rejects.toThrow(
-      /drain source seal requires exact authorized independent attestations/,
+      /drain source seal is only an atomic successful terminal projection/,
     );
+    await expect(sourceTerminalStatement(source).run()).rejects.toThrow(
+      /successful drain source receipt requires exact unsealed attestations/,
+    );
+  });
+
+  it("reports trigger-aware fresh and replay changes through first-primary Session batches", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet(
+      "drain-source-session-terminal",
+      [3],
+    );
+    const session = env.DB.withSession("first-primary");
+    const source = await prepareAcceptedSource([intent], {
+      pageSize: 1,
+      includeClaim: false,
+      claimAuthorization: async (candidate) => {
+        const fresh = await session.batch([
+          sourceClaimRepositoryStatement(session, candidate),
+        ]);
+        expect(fresh).toHaveLength(1);
+        expect(fresh[0].success).toBe(true);
+        expect(fresh[0].meta.changes).toBe(2);
+        const freshBookmark = session.getBookmark();
+        expect(typeof freshBookmark).toBe("string");
+        expect(freshBookmark.length).toBeGreaterThan(0);
+
+        const replay = await session.batch([
+          sourceClaimRepositoryStatement(session, candidate),
+        ]);
+        expect(replay).toHaveLength(1);
+        expect(replay[0].success).toBe(true);
+        expect(replay[0].meta.changes).toBe(0);
+        const replayBookmark = session.getBookmark();
+        expect(typeof replayBookmark).toBe("string");
+        expect(replayBookmark.length).toBeGreaterThan(0);
+      },
+    });
+    await attestAcceptedSource(source);
+
+    const fresh = await session.batch([
+      sourceTerminalRepositoryStatement(session, source),
+    ]);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0].success).toBe(true);
+    expect(fresh[0].meta.changes).toBe(3);
+    const freshBookmark = session.getBookmark();
+    expect(typeof freshBookmark).toBe("string");
+    expect(freshBookmark.length).toBeGreaterThan(0);
+
+    const replay = await session.batch([
+      sourceTerminalRepositoryStatement(session, source),
+    ]);
+    expect(replay).toHaveLength(1);
+    expect(replay[0].success).toBe(true);
+    expect(replay[0].meta.changes).toBe(0);
+    const replayBookmark = session.getBookmark();
+    expect(typeof replayBookmark).toBe("string");
+    expect(replayBookmark.length).toBeGreaterThan(0);
+
+    await expect(
+      session
+        .prepare(
+          `SELECT terminal.authorization_id_sha256,
+                  terminal.terminal_outcome,
+                  terminal.terminal_phase,
+                  terminal.source_scan_id_sha256,
+                  terminal.source_seal_id_sha256,
+                  terminal.source_seal_digest_sha256,
+                  terminal.evidence_object_key,
+                  terminal.terminal_receipt_sha256,
+                  (SELECT COUNT(*)
+                   FROM relay_container_drain_source_seals
+                   WHERE source_scan_id_sha256 =
+                         terminal.source_scan_id_sha256) AS seals,
+                  (SELECT COUNT(*)
+                   FROM relay_container_drain_source_terminal_receipts
+                   WHERE authorization_id_sha256 =
+                         terminal.authorization_id_sha256) AS terminals,
+                  (SELECT COUNT(*)
+                   FROM relay_container_drain_source_receipt_ledger
+                   WHERE authorization_id_sha256 =
+                         terminal.authorization_id_sha256) AS ledger_rows
+           FROM relay_container_drain_source_terminal_receipts AS terminal
+           WHERE terminal.authorization_id_sha256 = ?1`,
+        )
+        .bind(source.authorizationIdSha256)
+        .first(),
+    ).resolves.toEqual({
+      authorization_id_sha256: source.authorizationIdSha256,
+      terminal_outcome: "succeeded",
+      terminal_phase: "evidence",
+      source_scan_id_sha256: source.sourceScanIdSha256,
+      source_seal_id_sha256: source.sourceSealIdSha256,
+      source_seal_digest_sha256: source.sealDigestSha256,
+      evidence_object_key:
+        `relay-container/p5/0073/${source.authorizationIdSha256}.json`,
+      terminal_receipt_sha256: source.terminalReceiptSha256,
+      seals: 1,
+      terminals: 1,
+      ledger_rows: 3,
+    });
+  });
+
+  it("reports a no-seal failed terminal as two trigger-aware changes", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet("drain-source-session-expired", [
+      3,
+    ]);
+    const session = env.DB.withSession("first-primary");
+    const source = await prepareAcceptedSource([intent], {
+      pageSize: 1,
+      includeClaim: false,
+      collectSource: false,
+      claimAuthorization: async (candidate) => {
+        const fresh = await session.batch([
+          sourceClaimRepositoryStatement(session, candidate),
+        ]);
+        expect(fresh).toHaveLength(1);
+        expect(fresh[0].success).toBe(true);
+        expect(fresh[0].meta.changes).toBe(2);
+      },
+    });
+
+    const failedTerminal = {
+      terminalOutcome: "failed",
+      terminalPhase: "claim",
+      sourceSealIdSha256: null,
+      sourceSealDigestSha256: null,
+      failureClass: "collector-unavailable",
+      ambiguityClass: null,
+      evidenceManifestSha256: null,
+      evidenceObjectKey: null,
+      evidenceObjectVersionSha256: null,
+      evidenceObjectEtagSha256: null,
+      evidenceContentSha256: null,
+      evidenceBytes: null,
+      retentionPolicySha256: null,
+      reasonCode: "source-collection-failed",
+    };
+    const fresh = await session.batch([
+      sourceTerminalRepositoryStatement(session, source, failedTerminal),
+    ]);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0].success).toBe(true);
+    expect(fresh[0].meta.changes).toBe(2);
+    expect(session.getBookmark()).toEqual(expect.any(String));
+
+    const replay = await session.batch([
+      sourceTerminalRepositoryStatement(session, source, failedTerminal),
+    ]);
+    expect(replay).toHaveLength(1);
+    expect(replay[0].success).toBe(true);
+    expect(replay[0].meta.changes).toBe(0);
+    expect(session.getBookmark()).toEqual(expect.any(String));
+
+    await expect(
+      session
+        .prepare(
+          `SELECT terminal.terminal_outcome,
+                  terminal.terminal_phase,
+                  terminal.source_seal_id_sha256,
+                  terminal.source_seal_digest_sha256,
+                  terminal.evidence_object_key,
+                  (SELECT COUNT(*)
+                   FROM relay_container_drain_source_scans
+                   WHERE source_scan_id_sha256 =
+                         terminal.source_scan_id_sha256) AS scans,
+                  (SELECT COUNT(*)
+                   FROM relay_container_drain_source_seals
+                   WHERE source_scan_id_sha256 =
+                         terminal.source_scan_id_sha256) AS seals,
+                  (SELECT COUNT(*)
+                   FROM relay_container_drain_source_terminal_receipts
+                   WHERE authorization_id_sha256 =
+                         terminal.authorization_id_sha256) AS terminals,
+                  (SELECT COUNT(*)
+                   FROM relay_container_drain_source_receipt_ledger
+                   WHERE authorization_id_sha256 =
+                         terminal.authorization_id_sha256) AS ledger_rows
+           FROM relay_container_drain_source_terminal_receipts AS terminal
+           WHERE terminal.authorization_id_sha256 = ?1`,
+        )
+        .bind(source.authorizationIdSha256)
+        .first(),
+    ).resolves.toEqual({
+      terminal_outcome: "failed",
+      terminal_phase: "claim",
+      source_seal_id_sha256: null,
+      source_seal_digest_sha256: null,
+      evidence_object_key: null,
+      scans: 0,
+      seals: 0,
+      terminals: 1,
+      ledger_rows: 3,
+    });
+  });
+
+  it("rejects ASCII controls in evidence keys without rejecting literal c] or n]", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet("drain-source-evidence-key", [3]);
+    const source = await prepareAcceptedSource([intent], { pageSize: 1 });
+    await attestAcceptedSource(source);
+
+    const asciiControlCodePoints = [
+      ...Array.from({ length: 0x20 }, (_, codePoint) => codePoint),
+      0x7f,
+    ];
+    for (const codePoint of asciiControlCodePoints) {
+      const evidenceObjectKey =
+        `relay-container/p5/0073/control-` +
+        `${String.fromCharCode(codePoint)}-evidence.json`;
+      await expect(
+        sourceTerminalStatement(source, { evidenceObjectKey }).run(),
+      ).rejects.toThrow(/CHECK constraint failed/);
+    }
+
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM relay_container_drain_source_seals
+            WHERE source_scan_id_sha256 = ?1) AS seals,
+           (SELECT COUNT(*) FROM relay_container_drain_source_terminal_receipts
+            WHERE authorization_id_sha256 = ?2) AS terminals,
+           (SELECT COUNT(*) FROM relay_container_drain_source_receipt_ledger
+            WHERE authorization_id_sha256 = ?2) AS ledger_rows`,
+      )
+        .bind(source.sourceScanIdSha256, source.authorizationIdSha256)
+        .first(),
+    ).resolves.toEqual({ seals: 0, terminals: 0, ledger_rows: 2 });
+
+    const validEvidenceObjectKey =
+      "relay-container/p5/0073/literal-c]/literal-n]/evidence.json";
+    await expect(
+      sourceTerminalStatement(source, {
+        evidenceObjectKey: validEvidenceObjectKey,
+      }).run(),
+    ).resolves.toBeDefined();
+    await expect(
+      env.DB.prepare(
+        `SELECT evidence_object_key
+         FROM relay_container_drain_source_terminal_receipts
+         WHERE authorization_id_sha256 = ?1`,
+      )
+        .bind(source.authorizationIdSha256)
+        .first(),
+    ).resolves.toEqual({ evidence_object_key: validEvidenceObjectKey });
+  });
+
+  it("rejects accepted-source collection before the authorization is claimed", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet("drain-source-unclaimed", [3]);
+
+    await expect(
+      prepareAcceptedSource([intent], {
+        pageSize: 1,
+        includeClaim: false,
+      }),
+    ).rejects.toThrow(
+      /drain source scan requires the exact live authorization claim/,
+    );
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM relay_container_drain_source_scans)
+             AS scans,
+           (SELECT COUNT(*) FROM
+              relay_container_drain_source_authorization_registrations)
+             AS registrations,
+           (SELECT COUNT(*) FROM
+              relay_container_drain_source_authorization_claims)
+             AS claims,
+           (SELECT COUNT(*) FROM relay_container_drain_source_receipt_ledger)
+             AS ledger_rows`,
+      ).first(),
+    ).resolves.toEqual({
+      scans: 0,
+      registrations: 1,
+      claims: 0,
+      ledger_rows: 1,
+    });
+    await expect(
+      env.DB.prepare(
+        "DELETE FROM passkey_credentials WHERE user_id = ?1",
+      )
+        .bind(42)
+        .run(),
+    ).resolves.toBeDefined();
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM relay_container_drain_source_authorization_registrations`,
+      ).first(),
+    ).resolves.toEqual({ count: 1 });
   });
 
   it("rejects verifier snapshot drift and assembler key reuse", async () => {
@@ -324,6 +636,32 @@ describe("migration 0050 atomic relay Container admission", () => {
     ).resolves.toEqual({ count: 7 });
   });
 
+  it("rolls back terminal and ledger when atomic seal projection detects a late admission", async () => {
+    await seedAuthorityState();
+    const [accepted] = await admitAcceptedSet(
+      "drain-source-terminal-before-late",
+      [3],
+    );
+    const source = await prepareAcceptedSource([accepted], { pageSize: 1 });
+    await attestAcceptedSource(source);
+    await admitAcceptedSet("drain-source-terminal-late", [7]);
+
+    await expect(sourceTerminalStatement(source).run()).rejects.toThrow();
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM relay_container_drain_source_seals
+            WHERE source_scan_id_sha256 = ?1) AS seals,
+           (SELECT COUNT(*) FROM relay_container_drain_source_terminal_receipts
+            WHERE authorization_id_sha256 = ?2) AS terminals,
+           (SELECT COUNT(*) FROM relay_container_drain_source_receipt_ledger
+            WHERE authorization_id_sha256 = ?2) AS ledger_rows`,
+      )
+        .bind(source.sourceScanIdSha256, source.authorizationIdSha256)
+        .first(),
+    ).resolves.toEqual({ seals: 0, terminals: 0, ledger_rows: 2 });
+  });
+
   it("rejects close after a late admission advances a sealed source", async () => {
     await seedAuthorityState();
     const [accepted] = await admitAcceptedSet("drain-source-before-late", [3]);
@@ -370,7 +708,7 @@ describe("migration 0050 atomic relay Container admission", () => {
         ),
       }).run(),
     ).rejects.toThrow(
-      /drain close command requires an exact sealed accepted source/,
+      /drain close command requires a retained successful terminal receipt/,
     );
     await expect(
       drainCloseCommandStatement({
@@ -380,7 +718,7 @@ describe("migration 0050 atomic relay Container admission", () => {
         ),
       }).run(),
     ).rejects.toThrow(
-      /drain close command requires an exact sealed accepted source/,
+      /drain close command requires a retained successful terminal receipt/,
     );
     await expect(
       env.DB.prepare(
@@ -1425,6 +1763,9 @@ async function prepareAcceptedSource(
     pageSize,
     omittedPageOrdinals = [],
     omittedShardIndexes = [],
+    includeClaim = true,
+    claimAuthorization = null,
+    collectSource = true,
   },
 ) {
   const commitResult = await env.DB.prepare(
@@ -1466,6 +1807,42 @@ async function prepareAcceptedSource(
     acceptedSourceReadbackSha256: await digest("source-readback"),
     shardSetManifestSha256: await digest("shard-set-manifest"),
     sourceSealIdSha256: await digest("seal-id"),
+    rootAdminId: 42,
+    rootSessionEpoch: 7,
+    passkeyCredentialRowId: 42073,
+    rootSessionBindingSha256: await digest("root-session-binding"),
+    passkeyCredentialIdSha256: await digest("passkey-credential"),
+    passkeyAssertionSubjectSha256: await digest("passkey-assertion-subject"),
+    passkeyAssertionSignatureSha256: await digest(
+      "passkey-assertion-signature",
+    ),
+    secureVerificationChallengeSha256: await digest(
+      "secure-verification-challenge",
+    ),
+    secureVerificationReceiptSha256: await digest(
+      "secure-verification-receipt",
+    ),
+    actionDigestSha256: await digest("registration-action"),
+    adminAuditDigestSha256: await digest("admin-audit"),
+    changeTicketSha256: await digest("change-ticket"),
+    registrationExecutionIdSha256: await digest("registration-execution"),
+    registrationCredentialIdSha256: await digest(
+      "registration-credential",
+    ),
+    registrationRequestSha256: await digest("registration-request"),
+    registrationReceiptSha256: await digest("registration-receipt"),
+    claimIdSha256: await digest("claim-id"),
+    claimRequestSha256: await digest("claim-request"),
+    claimDigestSha256: await digest("claim-receipt"),
+    terminalActorExecutionIdSha256: await digest("terminal-execution"),
+    terminalCredentialIdSha256: await digest("terminal-credential"),
+    terminalObservationSha256: await digest("terminal-observation"),
+    terminalReceiptSha256: await digest("terminal-receipt"),
+    evidenceManifestSha256: await digest("evidence-manifest"),
+    evidenceObjectVersionSha256: await digest("evidence-object-version"),
+    evidenceObjectEtagSha256: await digest("evidence-object-etag"),
+    evidenceContentSha256: await digest("evidence-content"),
+    retentionPolicySha256: await digest("retention-policy"),
     authorizerIdentitySha256: await digest("authorizer-identity"),
     authorizerSpkiSha256: await digest("authorizer-spki"),
     authorizationSubjectSha256: await digest("authorization-subject"),
@@ -1486,9 +1863,36 @@ async function prepareAcceptedSource(
     collectorCredentialIdSha256: await digest("collector-credential"),
     permitIssuedAt: d1Clock.now,
     permitExpiresAt: d1Clock.now + 300,
+    claimLeaseExpiresAt: d1Clock.now + 240,
   };
 
   await env.DB.prepare(
+    `INSERT INTO users (
+       id, username, password, display_name, role, status, session_epoch,
+       aff_code
+     ) VALUES (?1, 'root-runtime-42', 'not-a-live-password',
+       'Root Runtime 42', 100, 1, ?2, 'runtime-aff-0073')`,
+  )
+    .bind(source.rootAdminId, source.rootSessionEpoch)
+    .run();
+  await env.DB.prepare(
+    `INSERT INTO passkey_credentials (
+       id, user_id, credential_id, public_key, clone_warning,
+       user_present, user_verified, last_used_at, created_at, updated_at
+     ) VALUES (
+       ?1, ?2, 'base64url-runtime-passkey-0073',
+       'base64url-runtime-public-key-0073', 0, 1, 1, ?3, ?4, ?3
+     )`,
+  )
+    .bind(
+      source.passkeyCredentialRowId,
+      source.rootAdminId,
+      source.permitIssuedAt,
+      source.permitIssuedAt - 100,
+    )
+    .run();
+
+  const authorizationStatement = env.DB.prepare(
     `INSERT INTO relay_container_drain_source_authorizations (
        authorization_id_sha256, contract_version,
        authorization_contract, authorization_migration,
@@ -1512,7 +1916,7 @@ async function prepareAcceptedSource(
        'relay-source-collector', 'runtime-test-v1', ?7, ?8, ?9, ?10,
        ?11, 'cinatoken-drain-source-authorizer',
        'drain-source-authorizer-v1', ?12, ?13, ?14, ?15, ?16,
-       ?17, ?18, 42
+       ?17, ?18, ?19
      )`,
   )
     .bind(
@@ -1534,8 +1938,127 @@ async function prepareAcceptedSource(
       source.executionNonceSha256,
       source.permitIssuedAt,
       source.permitExpiresAt,
-    )
-    .run();
+      source.rootAdminId,
+    );
+  const auditStatement = env.DB.prepare(
+    `INSERT INTO logs (
+       user_id, created_at, type, content, username, ip, request_id, other
+     ) VALUES (
+       ?1, unixepoch(), 3,
+       'registered runtime drain source authorization',
+       'root-runtime-42', '192.0.2.73', ?2, ?3
+     )`,
+  ).bind(
+    source.rootAdminId,
+    source.adminAuditDigestSha256,
+    JSON.stringify({
+      op: {
+        action: "relay_container.drain_source_authorization_register",
+        params: {
+          authorization_id_sha256: source.authorizationIdSha256,
+          action_digest_sha256: source.actionDigestSha256,
+        },
+      },
+      admin_info: {
+        admin_id: source.rootAdminId,
+        admin_username: "root-runtime-42",
+        admin_role: 100,
+        auth_method: "passkey",
+      },
+    }),
+  );
+  const registrationStatement = env.DB.prepare(
+    `INSERT INTO relay_container_drain_source_authorization_registrations (
+       authorization_id_sha256, contract_version,
+       registration_contract, registration_migration,
+       environment, scope_kind, scope_id_sha256, source_scan_id_sha256,
+       root_admin_id, root_session_epoch, root_session_binding_sha256,
+       passkey_credential_row_id, passkey_credential_id_sha256,
+       passkey_assertion_subject_sha256,
+       passkey_assertion_signature_sha256,
+       secure_verification_challenge_sha256,
+       secure_verification_receipt_sha256, action_digest_sha256,
+       admin_audit_digest_sha256, change_ticket_sha256, reason_code,
+       registered_by_service_name, registered_by_version_id,
+       registration_execution_id_sha256,
+       registration_credential_id_sha256,
+       registration_request_sha256, authority_ledger_identity_sha256,
+       receipt_sequence, ledger_head_before_sha256,
+       registration_receipt_sha256, verified_at,
+       verification_expires_at
+     ) VALUES (
+       ?1, 1,
+       'relay-container-drain-source-authorization-registration-v1',
+       '0073_relay_container_drain_source_authorization_consumption.sql',
+       'staging', 'global', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+       ?11, ?12, ?13, ?14, ?15, 'runtime-source-collection',
+       'cinatoken-application-worker', 'runtime-test-v1', ?16, ?17,
+       ?18, ?2, 1, ?19, ?20, ?21, ?22
+     )`,
+  ).bind(
+    source.authorizationIdSha256,
+    admissionScopeId,
+    source.sourceScanIdSha256,
+    source.rootAdminId,
+    source.rootSessionEpoch,
+    source.rootSessionBindingSha256,
+    source.passkeyCredentialRowId,
+    source.passkeyCredentialIdSha256,
+    source.passkeyAssertionSubjectSha256,
+    source.passkeyAssertionSignatureSha256,
+    source.secureVerificationChallengeSha256,
+    source.secureVerificationReceiptSha256,
+    source.actionDigestSha256,
+    source.adminAuditDigestSha256,
+    source.changeTicketSha256,
+    source.registrationExecutionIdSha256,
+    source.registrationCredentialIdSha256,
+    source.registrationRequestSha256,
+    hex("8"),
+    source.registrationReceiptSha256,
+    source.permitIssuedAt,
+    source.permitIssuedAt + 120,
+  );
+  const claimStatement = env.DB.prepare(
+    `INSERT INTO relay_container_drain_source_authorization_claims (
+       authorization_id_sha256, contract_version, claim_contract,
+       claim_migration, authority_ledger_identity_sha256,
+       registration_receipt_sha256, execution_nonce_sha256,
+       claim_id_sha256, claim_request_sha256,
+       predecessor_receipt_sha256, receipt_sequence,
+       claim_digest_sha256, claim_owner_service_name,
+       claim_owner_version_id, claim_owner_execution_id_sha256,
+       claim_credential_id_sha256, lease_expires_at
+     ) VALUES (
+       ?1, 1, 'relay-container-drain-source-authorization-claim-v1',
+       '0073_relay_container_drain_source_authorization_consumption.sql',
+       ?2, ?3, ?4, ?5, ?6, ?3, 2, ?7,
+       'relay-source-collector', 'runtime-test-v1', ?8, ?9, ?10
+     )`,
+  ).bind(
+    source.authorizationIdSha256,
+    admissionScopeId,
+    source.registrationReceiptSha256,
+    source.executionNonceSha256,
+    source.claimIdSha256,
+    source.claimRequestSha256,
+    source.claimDigestSha256,
+    source.collectorRunIdSha256,
+    source.collectorCredentialIdSha256,
+    source.claimLeaseExpiresAt,
+  );
+  await env.DB.batch([
+    authorizationStatement,
+    auditStatement,
+    registrationStatement,
+    ...(includeClaim ? [claimStatement] : []),
+  ]);
+  if (claimAuthorization !== null) {
+    await claimAuthorization(source);
+  }
+  if (!collectSource) {
+    return source;
+  }
 
   await env.DB.prepare(
     `INSERT INTO relay_container_drain_source_scans (
@@ -1575,6 +2098,14 @@ async function prepareAcceptedSource(
       source.collectorCredentialIdSha256,
     )
     .run();
+  const scanClock = await env.DB.prepare(
+    `SELECT started_at
+     FROM relay_container_drain_source_scans
+     WHERE source_scan_id_sha256 = ?1`,
+  )
+    .bind(source.sourceScanIdSha256)
+    .first();
+  expect(scanClock).not.toBeNull();
 
   for (const commit of commits) {
     const pageOrdinal =
@@ -1687,6 +2218,7 @@ async function prepareAcceptedSource(
 
   return {
     ...source,
+    scanStartedAt: scanClock.started_at,
     pageCount,
     firstPageDigestSha256: pageDigests[0],
     lastPageDigestSha256: pageDigests.at(-1),
@@ -1721,8 +2253,8 @@ function sourceAttestationStatement(source, role, overrides = {}) {
     acceptedBookmarkSha256: source.acceptedBookmarkSha256,
     acceptedSetManifestSha256: source.acceptedSetManifestSha256,
     acceptedSourceReadbackSha256: source.acceptedSourceReadbackSha256,
-    attestedAt: source.permitIssuedAt,
-    validUntil: source.permitIssuedAt + 240,
+    attestedAt: source.scanStartedAt,
+    validUntil: source.permitExpiresAt,
     ...overrides,
   };
   return env.DB.prepare(
@@ -1819,10 +2351,216 @@ function sourceSealStatement(source) {
   );
 }
 
+function sourceTerminalStatement(source, overrides = {}) {
+  const values = {
+    terminalOutcome: "succeeded",
+    terminalPhase: "evidence",
+    sourceSealIdSha256: source.sourceSealIdSha256,
+    sourceSealDigestSha256: source.sealDigestSha256,
+    failureClass: null,
+    ambiguityClass: null,
+    evidenceManifestSha256: source.evidenceManifestSha256,
+    evidenceObjectKey: `relay-container/p5/0073/${source.authorizationIdSha256}.json`,
+    evidenceObjectVersionSha256: source.evidenceObjectVersionSha256,
+    evidenceObjectEtagSha256: source.evidenceObjectEtagSha256,
+    evidenceContentSha256: source.evidenceContentSha256,
+    evidenceBytes: 4096,
+    retentionPolicySha256: source.retentionPolicySha256,
+    reasonCode: "retained-source-evidence",
+    ...overrides,
+  };
+  return env.DB.prepare(
+    `INSERT INTO relay_container_drain_source_terminal_receipts (
+       authorization_id_sha256, contract_version, terminal_contract,
+       terminal_migration, authority_ledger_identity_sha256,
+       registration_receipt_sha256, claim_id_sha256,
+       claim_digest_sha256, receipt_sequence,
+       predecessor_receipt_sha256, terminal_outcome, terminal_phase,
+       source_scan_id_sha256, source_seal_id_sha256,
+       source_seal_digest_sha256, failure_class, ambiguity_class,
+       evidence_manifest_sha256, evidence_object_key,
+       evidence_object_version_sha256, evidence_object_etag_sha256,
+       evidence_content_sha256, evidence_bytes,
+       retention_policy_sha256, terminal_actor_service_name,
+       terminal_actor_version_id, terminal_actor_execution_id_sha256,
+       terminal_credential_id_sha256, reason_code,
+       observation_sha256, terminal_receipt_sha256
+     ) VALUES (
+       ?1, 1, 'relay-container-drain-source-authorization-terminal-v1',
+       '0073_relay_container_drain_source_authorization_consumption.sql',
+       ?2, ?3, ?4, ?5, 3, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+       ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+       'cinatoken-drain-evidence-writer', 'runtime-test-v1',
+       ?20, ?21, ?22, ?23, ?24
+     )`,
+  ).bind(
+    source.authorizationIdSha256,
+    admissionScopeId,
+    source.registrationReceiptSha256,
+    source.claimIdSha256,
+    source.claimDigestSha256,
+    values.terminalOutcome,
+    values.terminalPhase,
+    source.sourceScanIdSha256,
+    values.sourceSealIdSha256,
+    values.sourceSealDigestSha256,
+    values.failureClass,
+    values.ambiguityClass,
+    values.evidenceManifestSha256,
+    values.evidenceObjectKey,
+    values.evidenceObjectVersionSha256,
+    values.evidenceObjectEtagSha256,
+    values.evidenceContentSha256,
+    values.evidenceBytes,
+    values.retentionPolicySha256,
+    source.terminalActorExecutionIdSha256,
+    source.terminalCredentialIdSha256,
+    values.reasonCode,
+    source.terminalObservationSha256,
+    source.terminalReceiptSha256,
+  );
+}
+
+function sourceClaimRepositoryStatement(session, source, leaseSeconds = 240) {
+  return session
+    .prepare(
+      `INSERT INTO relay_container_drain_source_authorization_claims (
+         authorization_id_sha256, contract_version, claim_contract,
+         claim_migration, authority_ledger_identity_sha256,
+         registration_receipt_sha256, execution_nonce_sha256,
+         claim_id_sha256, claim_request_sha256,
+         predecessor_receipt_sha256, receipt_sequence,
+         claim_digest_sha256, claim_owner_service_name,
+         claim_owner_version_id, claim_owner_execution_id_sha256,
+         claim_credential_id_sha256, lease_expires_at, claimed_at
+       )
+       SELECT authorization.authorization_id_sha256, 1,
+              'relay-container-drain-source-authorization-claim-v1',
+              '0073_relay_container_drain_source_authorization_consumption.sql',
+              registration.authority_ledger_identity_sha256,
+              registration.registration_receipt_sha256,
+              authorization.execution_nonce_sha256,
+              ?2, ?3, registration.registration_receipt_sha256,
+              registration.receipt_sequence + 1, ?4,
+              authorization.collector_service_name,
+              authorization.collector_version_id,
+              authorization.collector_run_id_sha256,
+              authorization.started_by_credential_id_sha256,
+              unixepoch() + ?5, unixepoch()
+       FROM relay_container_drain_source_authorizations AS authorization
+       JOIN relay_container_drain_source_authorization_registrations
+            AS registration
+         ON registration.authorization_id_sha256 =
+              authorization.authorization_id_sha256
+       WHERE authorization.authorization_id_sha256 = ?1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM relay_container_drain_source_authorization_claims AS existing
+           WHERE existing.authorization_id_sha256 =
+                 authorization.authorization_id_sha256
+         )`,
+    )
+    .bind(
+      source.authorizationIdSha256,
+      source.claimIdSha256,
+      source.claimRequestSha256,
+      source.claimDigestSha256,
+      leaseSeconds,
+    );
+}
+
+function sourceTerminalRepositoryStatement(session, source, overrides = {}) {
+  const values = {
+    terminalOutcome: "succeeded",
+    terminalPhase: "evidence",
+    sourceSealIdSha256: source.sourceSealIdSha256,
+    sourceSealDigestSha256: source.sealDigestSha256,
+    failureClass: null,
+    ambiguityClass: null,
+    evidenceManifestSha256: source.evidenceManifestSha256,
+    evidenceObjectKey: `relay-container/p5/0073/${source.authorizationIdSha256}.json`,
+    evidenceObjectVersionSha256: source.evidenceObjectVersionSha256,
+    evidenceObjectEtagSha256: source.evidenceObjectEtagSha256,
+    evidenceContentSha256: source.evidenceContentSha256,
+    evidenceBytes: 4096,
+    retentionPolicySha256: source.retentionPolicySha256,
+    reasonCode: "retained-source-evidence",
+    ...overrides,
+  };
+  return session
+    .prepare(
+      `INSERT INTO relay_container_drain_source_terminal_receipts (
+         authorization_id_sha256, contract_version, terminal_contract,
+         terminal_migration, authority_ledger_identity_sha256,
+         registration_receipt_sha256, claim_id_sha256,
+         claim_digest_sha256, receipt_sequence,
+         predecessor_receipt_sha256, terminal_outcome,
+         terminal_phase, source_scan_id_sha256,
+         source_seal_id_sha256, source_seal_digest_sha256,
+         failure_class, ambiguity_class, evidence_manifest_sha256,
+         evidence_object_key, evidence_object_version_sha256,
+         evidence_object_etag_sha256, evidence_content_sha256,
+         evidence_bytes, retention_policy_sha256,
+         terminal_actor_service_name, terminal_actor_version_id,
+         terminal_actor_execution_id_sha256,
+         terminal_credential_id_sha256, reason_code,
+         observation_sha256, terminal_receipt_sha256, terminal_at
+       )
+       SELECT authorization.authorization_id_sha256, 1,
+              'relay-container-drain-source-authorization-terminal-v1',
+              '0073_relay_container_drain_source_authorization_consumption.sql',
+              claim.authority_ledger_identity_sha256,
+              registration.registration_receipt_sha256,
+              claim.claim_id_sha256, claim.claim_digest_sha256,
+              claim.receipt_sequence + 1, claim.claim_digest_sha256,
+              ?2, ?3, authorization.source_scan_id_sha256,
+              ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+              ?15, ?16, ?17, ?18, ?19, ?20, ?21, unixepoch()
+       FROM relay_container_drain_source_authorizations AS authorization
+       JOIN relay_container_drain_source_authorization_registrations
+            AS registration
+         ON registration.authorization_id_sha256 =
+              authorization.authorization_id_sha256
+       JOIN relay_container_drain_source_authorization_claims AS claim
+         ON claim.authorization_id_sha256 =
+              authorization.authorization_id_sha256
+       WHERE authorization.authorization_id_sha256 = ?1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM relay_container_drain_source_terminal_receipts AS existing
+           WHERE existing.authorization_id_sha256 =
+                 authorization.authorization_id_sha256
+         )`,
+    )
+    .bind(
+      source.authorizationIdSha256,
+      values.terminalOutcome,
+      values.terminalPhase,
+      values.sourceSealIdSha256,
+      values.sourceSealDigestSha256,
+      values.failureClass,
+      values.ambiguityClass,
+      values.evidenceManifestSha256,
+      values.evidenceObjectKey,
+      values.evidenceObjectVersionSha256,
+      values.evidenceObjectEtagSha256,
+      values.evidenceContentSha256,
+      values.evidenceBytes,
+      values.retentionPolicySha256,
+      "cinatoken-drain-evidence-writer",
+      "runtime-test-v1",
+      source.terminalActorExecutionIdSha256,
+      source.terminalCredentialIdSha256,
+      values.reasonCode,
+      source.terminalObservationSha256,
+      source.terminalReceiptSha256,
+    );
+}
+
 async function sealAcceptedSource(intents, options) {
   const source = await prepareAcceptedSource(intents, options);
   await attestAcceptedSource(source);
-  await sourceSealStatement(source).run();
+  await sourceTerminalStatement(source).run();
   return source;
 }
 

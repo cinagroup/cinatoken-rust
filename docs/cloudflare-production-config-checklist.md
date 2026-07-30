@@ -2265,7 +2265,7 @@ authoritative and production remains **NO-GO**.
 - [x] Advance the Application migration head to 0067 while preserving 0063 as
   immutable shard-placement authorization storage provenance.
 
-### Remote 0067 through 0072 promotion
+### Remote 0067 through 0073 promotion
 
 - [ ] Inventory every admission writer, version, queue consumer, cron,
   workflow, replay path, and direct D1 client.
@@ -2290,15 +2290,36 @@ authoritative and production remains **NO-GO**.
   authorization and attestation tables, independent assembler/verifier
   guards, fail-closed Ed25519 verifier, and read-only `first-primary`
   capability.
+- [x] Add the 0073 empty-authority preflight plus append-preserved
+  registration, claim, terminal, and global receipt-ledger tables.
+- [x] Allow a claimed lease to terminalize as `expired` without a scan/seal,
+  and make successful terminal insertion atomically project the exact 0071
+  seal and append the terminal ledger receipt.
+- [x] Validate a live UV passkey row at registration without retaining a
+  passkey-row foreign key, so immutable evidence survives credential rotation
+  or deletion.
 - [ ] Before remote 0072 apply, stop and inventory every 0071 writer and prove
   all five source tables are empty without deleting evidence to pass the
   preflight.
-- [ ] Implement RootAuth plus fresh phishing-resistant second-factor issuance,
-  one-time authorization consumption, atomic admin audit, and exactly one
-  terminal receipt for every authorization.
-- [ ] Extend the private D1 Session bridge with only the reviewed batch and
-  unknown-commit readback surface required by the collector; do not treat
-  `first-primary` as a frozen snapshot.
+- [ ] Before remote 0073 apply, stop every 0070-0072 drain writer and prove
+  every guarded command/source/authorization/attestation table is empty
+  without deleting evidence to pass the preflight.
+- [ ] Implement an action-bound one-shot passkey ceremony with mandatory user
+  verification; reusable/session-bound markers and `preferred` UV are not
+  eligible.
+- [ ] Implement a dedicated first-primary atomic audit writer with exact
+  `request_id` and `auth_method=passkey`.
+- [ ] Implement a permit-only verifier and isolated issuer identity with no
+  inherited claim, collector, close, traffic, or reopen authority.
+- [x] Add crate-private, owner-preserving first-primary Session batch support
+  plus plain-INSERT claim/terminal repositories with exact same-Session
+  readback. Fresh requires the exact Workerd trigger-aware count: claim `2`
+  (claim plus ledger), non-success terminal `2` (terminal plus ledger), or
+  terminal success `3` (terminal, seal and ledger). Replay requires explicit
+  `changes=0`; every other count, malformed metadata, batch error and
+  unreadable readback remains unknown.
+- [ ] Implement the single-winner claim worker, authoritative collector,
+  claimed-expiry path, and stable exact-readback handling for unknown commits.
 - [ ] Retain canonical subjects, detached signatures, public verification
   material, source manifests and terminal linkage in create-only,
   retention-locked R2 evidence.
@@ -2331,7 +2352,7 @@ authoritative and production remains **NO-GO**.
   linearizable outcome.
 - [ ] Prove old writers and in-flight transactions are drained before 0068.
 - [ ] Apply 0068 only through a reviewed isolated-staging ceremony.
-- [ ] Before each 0068/0069/0070/0071/0072 candidate, advance the Worker expected
+- [ ] Before each 0068/0069/0070/0071/0072/0073 candidate, advance the Worker expected
   migration set, D1 audit, SQLite inventory, P5 head/counts, and frozen
   foundation candidate together; prove the previous reader fails closed.
 - [x] Add manifest-v3 independent P5 admission-fence evidence, an offline
@@ -2351,13 +2372,16 @@ authoritative and production remains **NO-GO**.
 - [ ] Do not run operation 14 or issue a traffic-return eligibility receipt
   during schema promotion.
 
-Current Application inventory is 72 migrations / 99 required tables / 1611
-checked columns / 148 key indexes. 0068 admission enforcement, 0069 typed
+Current Application inventory is 73 migrations / 103 required tables / 1701
+checked columns / 156 key indexes. 0068 admission enforcement, 0069 typed
 evidence enforcement, the default-unreachable 0070 close command, and the
-0071 accepted-source seal plus 0072 source authorization boundary exist and
-are locally verified. The 0072 capability remains schema/readback-only: no
-issuer, claim, collector, terminal receipt, R2 evidence writer, write gate,
-close/traffic/reopen authority, or authenticated lifecycle route exists, and
-no remote 0068/0069/0070/0071/0072 application is claimed. This checklist records no remote
-application, secret operation, route change, traffic change, or authority
-transfer. Go/VPS remains authoritative and production remains **NO-GO**.
+0071 accepted-source seal, 0072 source authorization boundary, and 0073
+registration/claim/terminal/global-ledger contract exist and are locally
+verified. 0073 remains default-inert: no action-bound passkey ceremony,
+issuer, claim worker, collector, R2 evidence writer, write gate,
+close/traffic/reopen authority, or authenticated lifecycle route exists.
+P5 advances only as a local contract; no remote
+0068/0069/0070/0071/0072/0073 application is claimed. This checklist records
+no remote application, secret operation, route change, traffic change, or
+authority transfer. Go/VPS remains authoritative and production remains
+**NO-GO**.

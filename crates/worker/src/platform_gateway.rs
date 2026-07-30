@@ -193,7 +193,8 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str = "0072_relay_container_drain_source_authorization.sql";
+pub const EXPECTED_D1_MIGRATION: &str =
+    "0073_relay_container_drain_source_authorization_consumption.sql";
 const CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED_ENV: &str = "CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED";
 const CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED_ENV: &str =
     "CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED";
@@ -312,6 +313,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0070_relay_container_drain_close_command.sql",
     "0071_relay_container_drain_accepted_set_source_seal.sql",
     "0072_relay_container_drain_source_authorization.sql",
+    "0073_relay_container_drain_source_authorization_consumption.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -5319,13 +5321,13 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATIONS.len(), 72);
+        assert_eq!(EXPECTED_D1_MIGRATIONS.len(), 73);
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0072_relay_container_drain_source_authorization.sql"
+            "0073_relay_container_drain_source_authorization_consumption.sql"
         );
         assert_eq!(
-            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 19..],
+            &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 20..],
             &[
                 "0054_relay_container_shard_activations.sql",
                 "0055_relay_container_shard_activation_campaigns.sql",
@@ -5346,6 +5348,7 @@ mod tests {
                 "0070_relay_container_drain_close_command.sql",
                 "0071_relay_container_drain_accepted_set_source_seal.sql",
                 "0072_relay_container_drain_source_authorization.sql",
+                "0073_relay_container_drain_source_authorization_consumption.sql",
             ]
         );
         assert!(

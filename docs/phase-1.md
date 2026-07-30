@@ -4790,3 +4790,47 @@ isolated-staging concurrency/fault/rollback proof.
 No billing-expression or settlement semantics changed, and no remote
 Cloudflare state or Go/VPS authority changed. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-30 Source-Authorization Consumption Boundary
+
+Application D1 candidate head is now
+`0073_relay_container_drain_source_authorization_consumption.sql`, with 73
+migrations, 103 required tables, 1701 checked incremental columns, and 156 key
+indexes.
+
+0073 adds append-preserved registration, claim, terminal, and global receipt
+ledger authorities around 0072. A claimed lease can terminalize as `expired`
+without a source scan or seal. A successful terminal instead requires the
+exact scan and independent attestations, then atomically projects the 0071
+seal and terminal ledger receipt in one SQLite statement. The 0070 close
+command requires that retained successful terminal and projected seal.
+
+Registration checks a live user-present/user-verified passkey row and exact
+`auth_method=passkey` audit evidence at insert time. Its passkey row ID is
+intentionally not retained as a foreign key, so credential rotation or
+deletion does not invalidate immutable digest evidence.
+
+This remains a default-inert repository boundary, not a production control
+plane. The root Worker now has crate-private first-primary Session batch
+support plus unreachable claim and terminal methods with exact readback and
+`FreshApplied` / `ExactReplay` / `Conflict` / `OutcomeUnknown`
+classification. Workerd counts immutable trigger projections, so fresh
+requires the exact operation-specific count plus exact readback: claim `2`
+(claim plus ledger), non-success terminal `2` (terminal plus ledger), or
+successful terminal `3` (terminal, seal and ledger). Replay requires explicit
+`changes=0`; every other count, malformed metadata, batch error and unreadable
+readback remains unknown. A fail-closed pre-mutation gate binds 34 exact
+schema-object fingerprints and four table PRAGMA fingerprints. Registration
+mutation remains absent, and the claim/terminal methods have no route, worker
+or gate.
+
+There is no action-bound one-shot passkey ceremony, hard-UV issuer, dedicated
+atomic audit writer with exact `request_id`, permit-only verifier, isolated
+issuer, claim worker, collector, route, credential, gate, close authority,
+traffic-return authority, or reopen authority. Those M1 controls must exist
+before any registration writer can be connected.
+
+P5 candidate and schema contracts advance locally to `73/103/1701/156` only.
+No remote 0073 application, readback, deployment, credential, route, traffic,
+or authority change is claimed. Go/VPS remains authoritative and production
+remains **NO-GO**.

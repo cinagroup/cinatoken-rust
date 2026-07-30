@@ -6,15 +6,15 @@ Status: local, credential-free, campaign-aware evidence-verifier candidate. It a
 remote mutation, customer traffic, production cutover, or Go/VPS shutdown.
 
 Current candidate baseline: migration head
-`0072_relay_container_drain_source_authorization.sql`, migration count 72,
-and the locally verified schema shape of 99 required tables, 1611 checked
-incremental columns, and 148 key indexes. This baseline supersedes every
+`0073_relay_container_drain_source_authorization_consumption.sql`, migration
+count 73, and the locally verified schema shape of 103 required tables, 1701
+checked incremental columns, and 156 key indexes. This baseline supersedes every
 earlier current-candidate head/count retained below. Nothing in this document
-claims that 0072 was applied, deployed, or read back from Cloudflare.
+claims that 0073 was applied, deployed, or read back from Cloudflare.
 
 Migration 0068 remains the immutable admission-fence evidence identity, and
 0063 remains shard-placement authorization storage provenance. Advancing the
-current schema head to 0072 does not relabel either historical authority.
+current schema head to 0073 does not relabel either historical authority.
 
 Historical activation baseline, retained for continuity: 0054 ended at 54
 migrations with 58 tables, 694 incremental columns, and 83 key indexes. Those
@@ -221,8 +221,8 @@ The signed subject binds:
 - Container SBOM digest and image signature result;
 - exact D1 name/UUID, R2 bucket, KV namespace digest, Controller/egress service,
   DO namespace digest, binding, class, shard count, and ring generation;
-- D1 head 0072 and count 72, with exact 99-table, 1611-column, and
-  148-index readback totals;
+- D1 head 0073 and count 73, with exact 103-table, 1701-column, and
+  156-index readback totals;
 - response protocol 3, status contract 4, financial terminal contract 2, and
   terminal ACK contract 3;
 - a bounded, non-streaming, synthetic `/v1/chat/completions` cohort with no
@@ -828,11 +828,11 @@ only. P5 remains incomplete until a real release owner signs one candidate,
 the operator-owned filesystem produces retained create-new/ACL/durability
 evidence, and the exact installed launcher independently authorizes itself.
 
-## 0068 Admission Evidence On The 0072 Schema Head
+## 0068 Admission Evidence On The 0073 Schema Head
 
 The frozen P5 candidate and schema-readback evidence now require Application
-head `0072_relay_container_drain_source_authorization.sql`, 72 migrations,
-99 required tables, 1611 checked incremental columns, and 148 key
+head `0073_relay_container_drain_source_authorization_consumption.sql`, 73
+migrations, 103 required tables, 1701 checked incremental columns, and 156 key
 indexes. The `admission-fence` item still requires the exact 0068 migration
 name and pinned SQL digest. Placement-mutation authorization storage
 provenance remains exactly 0063.
@@ -910,3 +910,25 @@ The collect command emits canonical evidence JSON to standard output. The
 operator must redirect it only into a create-new evidence location governed by
 the external evidence-retention ceremony; the collector itself never chooses
 or overwrites a destination.
+
+## 0073 Authorization-Consumption P5 Overlay
+
+The P5 candidate/schema contract now binds the exact `73/103/1701/156`
+baseline. 0073 contributes append-preserved registration, claim, terminal and
+global receipt-ledger schema. It also admits claimed expiry and requires a
+successful terminal to atomically project the exact 0071 seal.
+
+This advances only local candidate validation. It does not prove an
+action-bound one-shot passkey ceremony, mandatory UV, an atomic audit row with
+exact `request_id` and `auth_method=passkey`, a permit-only verifier, an
+isolated issuer, a claim worker, a collector, an R2 evidence object, or any
+remote row. The missing passkey-row foreign key is intentional: current
+credential state is checked at registration, while historical digest evidence
+must survive rotation and deletion.
+
+No P5 verifier decision may infer remote 0073 application, close authority,
+traffic-return authority, reopen authority, customer eligibility, or
+production eligibility from local counts or fixtures. Authenticated remote
+before/after schema readback, immutable source/R2 evidence, candidate
+signatures, resource budgets and independent approvals remain mandatory.
+Go/VPS remains authoritative and production remains **NO-GO**.

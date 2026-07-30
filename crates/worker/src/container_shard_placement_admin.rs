@@ -580,13 +580,22 @@ mod tests {
         assert!(!source.contains(".durable_object("));
         assert!(!source.contains(".service("));
 
-        let repository = include_str!("d1_repositories.rs")
+        let repository_source = include_str!("d1_repositories.rs");
+        let schema_repository = repository_source
             .split("pub async fn relay_container_shard_placement_schema_ready")
+            .nth(1)
+            .unwrap()
+            .split("pub async fn relay_container_drain_schema_ready")
+            .next()
+            .unwrap();
+        let snapshot_repository = repository_source
+            .split("pub async fn relay_container_shard_placement_snapshot")
             .nth(1)
             .unwrap()
             .split("pub async fn claim_relay_container_r2_inventory_run")
             .next()
             .unwrap();
+        let repository = [schema_repository, snapshot_repository].concat();
         assert!(repository.contains("FROM relay_container_shard_placement_events"));
         assert!(repository.contains("JOIN relay_container_shard_placement_attestations"));
         assert!(repository.contains("placement_event_sequence"));

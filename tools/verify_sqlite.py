@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -299,6 +300,10 @@ REQUIRED_TABLES = [
     "relay_container_drain_source_seals",
     "relay_container_drain_source_authorizations",
     "relay_container_drain_source_attestations",
+    "relay_container_drain_source_authorization_registrations",
+    "relay_container_drain_source_authorization_claims",
+    "relay_container_drain_source_terminal_receipts",
+    "relay_container_drain_source_receipt_ledger",
 ]
 
 REQUIRED_COLUMNS = {
@@ -1814,6 +1819,104 @@ REQUIRED_COLUMNS = {
         "valid_until",
         "recorded_at",
     },
+    "relay_container_drain_source_authorization_registrations": {
+        "authorization_id_sha256",
+        "contract_version",
+        "registration_contract",
+        "registration_migration",
+        "environment",
+        "scope_kind",
+        "scope_id_sha256",
+        "source_scan_id_sha256",
+        "root_admin_id",
+        "root_session_epoch",
+        "root_session_binding_sha256",
+        "passkey_credential_row_id",
+        "passkey_credential_id_sha256",
+        "passkey_assertion_subject_sha256",
+        "passkey_assertion_signature_sha256",
+        "secure_verification_challenge_sha256",
+        "secure_verification_receipt_sha256",
+        "action_digest_sha256",
+        "admin_audit_digest_sha256",
+        "change_ticket_sha256",
+        "reason_code",
+        "registered_by_service_name",
+        "registered_by_version_id",
+        "registration_execution_id_sha256",
+        "registration_credential_id_sha256",
+        "registration_request_sha256",
+        "authority_ledger_identity_sha256",
+        "receipt_sequence",
+        "ledger_head_before_sha256",
+        "registration_receipt_sha256",
+        "verified_at",
+        "verification_expires_at",
+        "registered_at",
+    },
+    "relay_container_drain_source_authorization_claims": {
+        "authorization_id_sha256",
+        "contract_version",
+        "claim_contract",
+        "claim_migration",
+        "authority_ledger_identity_sha256",
+        "registration_receipt_sha256",
+        "execution_nonce_sha256",
+        "claim_id_sha256",
+        "claim_request_sha256",
+        "predecessor_receipt_sha256",
+        "receipt_sequence",
+        "claim_digest_sha256",
+        "claim_owner_service_name",
+        "claim_owner_version_id",
+        "claim_owner_execution_id_sha256",
+        "claim_credential_id_sha256",
+        "lease_expires_at",
+        "claimed_at",
+    },
+    "relay_container_drain_source_terminal_receipts": {
+        "authorization_id_sha256",
+        "contract_version",
+        "terminal_contract",
+        "terminal_migration",
+        "authority_ledger_identity_sha256",
+        "registration_receipt_sha256",
+        "claim_id_sha256",
+        "claim_digest_sha256",
+        "receipt_sequence",
+        "predecessor_receipt_sha256",
+        "terminal_outcome",
+        "terminal_phase",
+        "source_scan_id_sha256",
+        "source_seal_id_sha256",
+        "source_seal_digest_sha256",
+        "failure_class",
+        "ambiguity_class",
+        "evidence_manifest_sha256",
+        "evidence_object_key",
+        "evidence_object_version_sha256",
+        "evidence_object_etag_sha256",
+        "evidence_content_sha256",
+        "evidence_bytes",
+        "retention_policy_sha256",
+        "terminal_actor_service_name",
+        "terminal_actor_version_id",
+        "terminal_actor_execution_id_sha256",
+        "terminal_credential_id_sha256",
+        "reason_code",
+        "observation_sha256",
+        "terminal_receipt_sha256",
+        "terminal_at",
+    },
+    "relay_container_drain_source_receipt_ledger": {
+        "authority_ledger_identity_sha256",
+        "receipt_sequence",
+        "event_kind",
+        "authorization_id_sha256",
+        "predecessor_receipt_sha256",
+        "receipt_digest_sha256",
+        "recorded_at",
+    },
     "relay_container_traffic_return_evidence_subjects": {
         "evidence_subject_id_sha256",
         "campaign_id",
@@ -2349,6 +2452,22 @@ REQUIRED_INDEXES = {
         "idx_relay_container_drain_source_attestation_seal": False,
         "idx_relay_container_drain_source_attestation_audit": False,
     },
+    "relay_container_drain_source_authorization_registrations": {
+        "idx_relay_container_drain_source_registration_audit": False,
+        "idx_relay_container_drain_source_registration_expiry": False,
+    },
+    "relay_container_drain_source_authorization_claims": {
+        "idx_relay_container_drain_source_claim_lease": False,
+        "idx_relay_container_drain_source_claim_owner": False,
+    },
+    "relay_container_drain_source_terminal_receipts": {
+        "idx_relay_container_drain_source_terminal_outcome": False,
+        "idx_relay_container_drain_source_terminal_evidence": False,
+    },
+    "relay_container_drain_source_receipt_ledger": {
+        "idx_relay_container_drain_source_receipt_ledger_authorization": False,
+        "idx_relay_container_drain_source_receipt_ledger_audit": False,
+    },
 }
 
 
@@ -2419,6 +2538,7 @@ def main() -> int:
     relay_container_drain_close_command_rollout_verified = False
     relay_container_drain_source_seal_rollout_verified = False
     relay_container_drain_source_authorization_rollout_verified = False
+    relay_container_drain_source_consumption_rollout_verified = False
     flat_intent_guard_verified = False
     task_billing_intents_verified = False
     task_submit_reconciliation_verified = False
@@ -2495,6 +2615,8 @@ def main() -> int:
         relay_container_drain_source_seal_rollout_verified = True
         verify_relay_container_drain_source_authorization_rollout(schema_paths)
         relay_container_drain_source_authorization_rollout_verified = True
+        verify_relay_container_drain_source_consumption_rollout(schema_paths)
+        relay_container_drain_source_consumption_rollout_verified = True
         verify_task_submit_reconciliation_rollout(schema_paths)
         task_submit_reconciliation_rollout_verified = True
         verify_task_submit_operation_rollout(schema_paths)
@@ -2659,6 +2781,20 @@ def main() -> int:
                 f"missing={sorted(expected_source_columns - source_columns)}, "
                 f"extra={sorted(source_columns - expected_source_columns)}"
             )
+    for consumption_table in (
+        "relay_container_drain_source_authorization_registrations",
+        "relay_container_drain_source_authorization_claims",
+        "relay_container_drain_source_terminal_receipts",
+        "relay_container_drain_source_receipt_ledger",
+    ):
+        consumption_columns = table_columns(conn, consumption_table)
+        expected_consumption_columns = REQUIRED_COLUMNS[consumption_table]
+        if consumption_columns != expected_consumption_columns:
+            raise SystemExit(
+                f"0073 {consumption_table} columns differ: "
+                f"missing={sorted(expected_consumption_columns - consumption_columns)}, "
+                f"extra={sorted(consumption_columns - expected_consumption_columns)}"
+            )
 
     invalid_indexes = []
     for table, expected_indexes in REQUIRED_INDEXES.items():
@@ -2771,6 +2907,8 @@ def main() -> int:
         message += " + 0071 immutable accepted-source seal"
     if relay_container_drain_source_authorization_rollout_verified:
         message += " + 0072 authorized independently attested accepted source"
+    if relay_container_drain_source_consumption_rollout_verified:
+        message += " + 0073 claimed terminal source authorization consumption"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -24008,7 +24146,21 @@ def verify_relay_container_drain_source_seal_rollout(
         ),
         None,
     )
-    if source_path is None or close_path is None or authorization_path is None:
+    consumption_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0073_relay_container_drain_source_authorization_consumption.sql"
+        ),
+        None,
+    )
+    if (
+        source_path is None
+        or close_path is None
+        or authorization_path is None
+        or consumption_path is None
+    ):
         raise SystemExit("0070/0071/0072 drain source authority chain not found")
     source_index = schema_paths.index(source_path)
     if (
@@ -24016,10 +24168,12 @@ def verify_relay_container_drain_source_seal_rollout(
         or schema_paths[source_index - 1] != close_path
         or source_index + 1 >= len(schema_paths)
         or schema_paths[source_index + 1] != authorization_path
-        or schema_paths[-1] != authorization_path
+        or source_index + 2 >= len(schema_paths)
+        or schema_paths[source_index + 2] != consumption_path
     ):
         raise SystemExit(
-            "0071 drain source seal must follow 0070 and immediately precede 0072"
+            "0071 drain source seal must follow 0070 and immediately precede "
+            "the 0072/0073 authority chain"
         )
     historical_schema_paths = schema_paths[: source_index + 1]
 
@@ -25209,18 +25363,35 @@ def verify_relay_container_drain_source_authorization_rollout(
         ),
         None,
     )
-    if authorization_path is None or source_path is None:
-        raise SystemExit("0071/0072 drain source authorization chain not found")
+    consumption_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0073_relay_container_drain_source_authorization_consumption.sql"
+        ),
+        None,
+    )
+    if (
+        authorization_path is None
+        or source_path is None
+        or consumption_path is None
+    ):
+        raise SystemExit(
+            "0071/0072/0073 drain source authorization chain not found"
+        )
     authorization_index = schema_paths.index(authorization_path)
     if (
         authorization_index == 0
         or schema_paths[authorization_index - 1] != source_path
-        or authorization_index != len(schema_paths) - 1
+        or authorization_index + 1 >= len(schema_paths)
+        or schema_paths[authorization_index + 1] != consumption_path
     ):
         raise SystemExit(
             "0072 drain source authorization must immediately follow 0071 "
-            "and be the current head"
+            "and immediately precede 0073"
         )
+    schema_paths = schema_paths[: authorization_index + 1]
 
     authorization_sql = authorization_path.read_text(encoding="utf-8")
     if "if not exists" in authorization_sql.lower():
@@ -26107,6 +26278,1081 @@ def verify_relay_container_drain_source_authorization_rollout(
 
     positive_conn.close()
     schema_conn.close()
+
+
+def verify_relay_container_drain_source_consumption_rollout(
+    schema_paths: list[Path],
+) -> None:
+    consumption_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0073_relay_container_drain_source_authorization_consumption.sql"
+        ),
+        None,
+    )
+    authorization_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0072_relay_container_drain_source_authorization.sql"
+        ),
+        None,
+    )
+    if consumption_path is None or authorization_path is None:
+        raise SystemExit("0072/0073 drain source consumption chain not found")
+    consumption_index = schema_paths.index(consumption_path)
+    if (
+        consumption_index == 0
+        or schema_paths[consumption_index - 1] != authorization_path
+        or consumption_index != len(schema_paths) - 1
+    ):
+        raise SystemExit(
+            "0073 drain source consumption must immediately follow 0072 "
+            "and be the current head"
+        )
+
+    consumption_sql = consumption_path.read_text(encoding="utf-8")
+    if "if not exists" in consumption_sql.lower():
+        raise SystemExit(
+            "0073 critical consumption objects must fail duplicate DDL"
+        )
+    required_fragments = (
+        "CREATE TABLE relay_container_drain_source_authorization_registrations",
+        "CREATE TABLE relay_container_drain_source_authorization_claims",
+        "CREATE TABLE relay_container_drain_source_terminal_receipts",
+        "CREATE TABLE relay_container_drain_source_receipt_ledger",
+        "relay_container_drain_source_consumption_preflight_guard",
+        "0073 requires an empty 0070-0072 drain authority and stopped writers",
+        "complete 0067 through 0073 chain",
+        "relay_container_drain_source_registration_insert_guard",
+        "relay_container_drain_source_claim_insert_guard",
+        "relay_container_drain_source_terminal_insert_guard",
+        "relay_container_drain_source_registration_project",
+        "relay_container_drain_source_claim_project",
+        "relay_container_drain_source_terminal_project",
+        "relay_container_drain_source_receipt_ledger_insert_guard",
+        "relay_container_drain_source_scan_claim_guard",
+        "relay_container_drain_source_member_claim_guard",
+        "relay_container_drain_source_page_claim_guard",
+        "relay_container_drain_source_shard_claim_guard",
+        "relay_container_drain_source_attestation_claim_guard",
+        "relay_container_drain_source_seal_terminal_projection_guard",
+        "relay_container_drain_close_command_terminal_receipt_guard",
+        "drain source registration requires a live Root passkey assertion",
+        "drain source registration requires an exact Root audit row",
+        "drain source scan requires the exact live authorization claim",
+        "successful drain source receipt requires exact unsealed attestations",
+        "successful drain source terminal failed atomic seal projection",
+        "drain close command requires a retained successful terminal receipt",
+        "drain source registrations are append-preserved",
+        "drain source authorization claims are append-preserved",
+        "drain source terminal receipts are append-preserved",
+        "drain source receipt ledger is append-preserved",
+        "drain source receipt ledger predecessor is not the current head",
+        "registration_receipt_sha256 = predecessor_receipt_sha256",
+        "NEW.receipt_sequence = claim.receipt_sequence + 1",
+        "NEW.terminal_outcome = 'expired'",
+        "NEW.terminal_at >= claim.lease_expires_at",
+        "terminal_outcome = 'succeeded'",
+        "evidence_object_version_sha256",
+        "retention_policy_sha256",
+        "instr(CAST(evidence_object_key AS BLOB), X'00') = 0",
+        "instr(CAST(evidence_object_key AS BLOB), X'1F') = 0",
+        "instr(CAST(evidence_object_key AS BLOB), X'7F') = 0",
+    )
+    for fragment in required_fragments:
+        if fragment not in consumption_sql:
+            raise SystemExit(
+                f"0073 drain source consumption rollout missing: {fragment}"
+            )
+    for forbidden_fragment in (
+        "SET admission_open = 1",
+        "INSERT INTO relay_container_admission_fences",
+        "UPDATE relay_container_admission_scope_heads",
+        "INSERT INTO relay_container_drain_close_commands",
+        "CREATE TABLE IF NOT EXISTS",
+        "CREATE TRIGGER IF NOT EXISTS",
+        "expired_unclaimed",
+        "[[:cntrl:]]",
+        "REFERENCES relay_container_drain_source_scans(source_scan_id_sha256)",
+        "REFERENCES relay_container_drain_source_seals(source_seal_id_sha256)",
+    ):
+        if forbidden_fragment in consumption_sql:
+            raise SystemExit(
+                "0073 drain source consumption retains an unrelated "
+                f"authority or idempotent-DDL path: {forbidden_fragment}"
+            )
+
+    clock = [2_100_200_000]
+    scope_id = (
+        "53481a32b6f9f49915477efcfca093d0f"
+        "504943bf27e1a870dbcc1a0a2d69251"
+    )
+    source_schema_sha256 = (
+        "fa8b6a9639ef803d367a0be3013c62e9"
+        "c5bc47861a1bb38c18085fde5e1dca50"
+    )
+
+    def digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    authorization_values = {
+        "authorization_id": digest("0073-authorization"),
+        "environment": "staging",
+        "scope_id": scope_id,
+        "fence_id": digest("0073-fence"),
+        "fence_state": digest("0073-fence-state"),
+        "head_digest": digest("0073-head"),
+        "source_scan_id": digest("0073-source-scan"),
+        "collector_service": "cinatoken-drain-collector",
+        "collector_version": "collector-v1",
+        "collector_run": digest("0073-collector-run"),
+        "claim_credential": digest("0073-claim-credential"),
+        "authorizer_identity": digest("0073-authorizer-identity"),
+        "authorizer_spki": digest("0073-authorizer-spki"),
+        "authorization_subject": digest("0073-authorization-subject"),
+        "authorization_signature": digest("0073-authorization-signature"),
+        "execution_nonce": digest("0073-execution-nonce"),
+        "admin_id": 9001,
+        "permit_issued_at": clock[0] - 1,
+        "permit_expires_at": clock[0] + 300,
+        "recorded_at": clock[0],
+    }
+    authorization_insert_sql = """
+        INSERT INTO relay_container_drain_source_authorizations (
+          authorization_id_sha256, contract_version,
+          authorization_contract, authorization_migration,
+          environment, scope_kind, scope_id_sha256,
+          admission_fence_id_sha256, fence_generation,
+          expected_fence_state_digest_sha256, expected_head_version,
+          expected_head_digest_sha256, source_scan_id_sha256,
+          collector_service_name, collector_version_id,
+          collector_run_id_sha256, started_by_credential_id_sha256,
+          page_size, shard_count, accepted_source_schema_sha256,
+          authorizer_issuer, authorizer_key_id,
+          authorizer_identity_sha256, authorizer_spki_sha256,
+          authorization_subject_sha256,
+          authorization_signature_envelope_sha256,
+          execution_nonce_sha256, permit_issued_at, permit_expires_at,
+          authorized_by_admin_id, recorded_at
+        ) VALUES (
+          :authorization_id, 1,
+          'relay-container-drain-source-authorization-v1',
+          '0072_relay_container_drain_source_authorization.sql',
+          :environment, 'global', :scope_id,
+          :fence_id, 1, :fence_state, 1, :head_digest,
+          :source_scan_id, :collector_service, :collector_version,
+          :collector_run, :claim_credential, 128, 4,
+          :source_schema_sha256, 'cinatoken-root-authority',
+          'root-key-1', :authorizer_identity, :authorizer_spki,
+          :authorization_subject, :authorization_signature,
+          :execution_nonce, :permit_issued_at, :permit_expires_at,
+          :admin_id, :recorded_at
+        )
+    """
+    authorization_params = {
+        **authorization_values,
+        "source_schema_sha256": source_schema_sha256,
+    }
+
+    def apply_schema(
+        conn: sqlite3.Connection,
+        paths: list[Path],
+    ) -> None:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.create_function("unixepoch", 0, lambda: clock[0])
+        conn.execute("CREATE TABLE d1_migrations (name TEXT PRIMARY KEY)")
+        for path in paths:
+            conn.executescript(path.read_text(encoding="utf-8"))
+            conn.execute(
+                "INSERT INTO d1_migrations(name) VALUES (?)",
+                (path.name,),
+            )
+        conn.commit()
+
+    schema_conn = sqlite3.connect(":memory:")
+    apply_schema(schema_conn, schema_paths)
+    repositories_source = (
+        Path(__file__).resolve().parents[1]
+        / "crates"
+        / "worker"
+        / "src"
+        / "d1_repositories.rs"
+    ).read_text(encoding="utf-8")
+    object_fingerprint_pattern = re.compile(
+        r"RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint \{"
+        r'\s*object_type: "([^"]+)",'
+        r'\s*object_name: "([^"]+)",'
+        r'\s*table_name: "([^"]+)",'
+        r'\s*normalized_sql_sha256: "([0-9a-f]{64})",'
+        r"\s*\}",
+        re.DOTALL,
+    )
+    expected_object_fingerprints = {
+        (object_type, object_name, table_name): object_sha256
+        for object_type, object_name, table_name, object_sha256 in (
+            object_fingerprint_pattern.findall(repositories_source)
+        )
+    }
+    if len(expected_object_fingerprints) != 34:
+        raise SystemExit(
+            "0073 Rust schema contract must contain exactly 34 object fingerprints"
+        )
+    schema_object_rows = schema_conn.execute(
+        """
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_master
+        WHERE sql IS NOT NULL
+          AND (
+            (
+              type = 'table'
+              AND name IN (
+                'relay_container_drain_source_authorization_registrations',
+                'relay_container_drain_source_authorization_claims',
+                'relay_container_drain_source_terminal_receipts',
+                'relay_container_drain_source_receipt_ledger'
+              )
+            )
+            OR (
+              type = 'index'
+              AND tbl_name IN (
+                'relay_container_drain_source_authorization_registrations',
+                'relay_container_drain_source_authorization_claims',
+                'relay_container_drain_source_terminal_receipts',
+                'relay_container_drain_source_receipt_ledger'
+              )
+            )
+            OR (
+              type = 'trigger'
+              AND (
+                tbl_name IN (
+                  'relay_container_drain_source_authorization_registrations',
+                  'relay_container_drain_source_authorization_claims',
+                  'relay_container_drain_source_terminal_receipts',
+                  'relay_container_drain_source_receipt_ledger'
+                )
+                OR name IN (
+                  'relay_container_drain_close_command_terminal_receipt_guard',
+                  'relay_container_drain_source_attestation_claim_guard',
+                  'relay_container_drain_source_member_claim_guard',
+                  'relay_container_drain_source_page_claim_guard',
+                  'relay_container_drain_source_scan_claim_guard',
+                  'relay_container_drain_source_seal_terminal_projection_guard',
+                  'relay_container_drain_source_shard_claim_guard'
+                )
+                OR instr(
+                  lower(sql),
+                  'relay_container_drain_source_authorization_registrations'
+                ) > 0
+                OR instr(
+                  lower(sql),
+                  'relay_container_drain_source_authorization_claims'
+                ) > 0
+                OR instr(
+                  lower(sql),
+                  'relay_container_drain_source_terminal_receipts'
+                ) > 0
+                OR instr(
+                  lower(sql),
+                  'relay_container_drain_source_receipt_ledger'
+                ) > 0
+              )
+            )
+          )
+        ORDER BY type, name
+        """
+    ).fetchall()
+    actual_object_fingerprints = {
+        (object_type, object_name, table_name): hashlib.sha256(
+            " ".join(object_sql.split()).encode("utf-8")
+        ).hexdigest()
+        for object_type, object_name, table_name, object_sql in schema_object_rows
+    }
+    if actual_object_fingerprints != expected_object_fingerprints:
+        raise SystemExit(
+            "0073 Rust schema object fingerprints do not match applied SQLite"
+        )
+
+    table_pragma_pattern = re.compile(
+        r"RelayContainerDrainSourceConsumptionExpectedTablePragma \{"
+        r'\s*table_name: "([^"]+)",'
+        r'\s*columns_sha256: "([0-9a-f]{64})",'
+        r'\s*indexes_sha256: "([0-9a-f]{64})",'
+        r'\s*foreign_keys_sha256: "([0-9a-f]{64})",'
+        r'\s*table_flags_sha256: "([0-9a-f]{64})",'
+        r"\s*\}",
+        re.DOTALL,
+    )
+    expected_table_pragmas = {
+        table_name: (
+            columns_sha256,
+            indexes_sha256,
+            foreign_keys_sha256,
+            table_flags_sha256,
+        )
+        for (
+            table_name,
+            columns_sha256,
+            indexes_sha256,
+            foreign_keys_sha256,
+            table_flags_sha256,
+        ) in table_pragma_pattern.findall(repositories_source)
+    }
+    if len(expected_table_pragmas) != 4:
+        raise SystemExit(
+            "0073 Rust schema contract must contain exactly four table PRAGMA fingerprints"
+        )
+    table_pragma_sql = """
+        SELECT
+          (SELECT group_concat(entry, '|') FROM (
+             SELECT printf(
+               '%d:%s:%s:%d:%s:%d:%d',
+               cid,
+               hex(CAST(name AS BLOB)),
+               hex(CAST(type AS BLOB)),
+               "notnull",
+               COALESCE(hex(CAST(dflt_value AS BLOB)), '-'),
+               pk,
+               hidden
+             ) AS entry
+             FROM pragma_table_xinfo(?1)
+             ORDER BY cid
+           )) AS columns_contract,
+          (SELECT group_concat(entry, '|') FROM (
+             SELECT printf(
+               '%d:%s:%d:%s:%d:%s',
+               il.seq,
+               hex(CAST(il.name AS BLOB)),
+               il."unique",
+               hex(CAST(il.origin AS BLOB)),
+               il.partial,
+               (SELECT group_concat(xentry, ',') FROM (
+                  SELECT printf(
+                    '%d:%d:%s:%d:%s:%d',
+                    xi.seqno,
+                    xi.cid,
+                    COALESCE(hex(CAST(xi.name AS BLOB)), '-'),
+                    xi."desc",
+                    hex(CAST(xi.coll AS BLOB)),
+                    xi."key"
+                  ) AS xentry
+                  FROM pragma_index_xinfo(il.name) AS xi
+                  ORDER BY xi.seqno
+               ))
+             ) AS entry
+             FROM pragma_index_list(?1) AS il
+             ORDER BY il.seq
+           )) AS indexes_contract,
+          (SELECT group_concat(entry, '|') FROM (
+             SELECT printf(
+               '%d:%d:%s:%s:%s:%s:%s:%s',
+               id,
+               seq,
+               hex(CAST("table" AS BLOB)),
+               hex(CAST("from" AS BLOB)),
+               hex(CAST("to" AS BLOB)),
+               hex(CAST(on_update AS BLOB)),
+               hex(CAST(on_delete AS BLOB)),
+               hex(CAST("match" AS BLOB))
+             ) AS entry
+             FROM pragma_foreign_key_list(?1)
+             ORDER BY id, seq
+           )) AS foreign_keys_contract,
+          (SELECT printf(
+             '%s:%d:%d:%d',
+             hex(CAST(type AS BLOB)),
+             ncol,
+             wr,
+             strict
+           )
+           FROM pragma_table_list(?1)
+           WHERE name = ?1) AS table_flags_contract
+    """
+    actual_table_pragmas = {}
+    for table_name in expected_table_pragmas:
+        pragma_contracts = schema_conn.execute(
+            table_pragma_sql,
+            (table_name,),
+        ).fetchone()
+        if pragma_contracts is None or any(
+            contract is None for contract in pragma_contracts
+        ):
+            raise SystemExit(
+                f"0073 SQLite PRAGMA contract is unreadable for {table_name}"
+            )
+        actual_table_pragmas[table_name] = tuple(
+            hashlib.sha256(contract.encode("utf-8")).hexdigest()
+            for contract in pragma_contracts
+        )
+    if actual_table_pragmas != expected_table_pragmas:
+        raise SystemExit(
+            "0073 Rust table PRAGMA fingerprints do not match applied SQLite"
+        )
+
+    schema_before_duplicate = schema_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    try:
+        schema_conn.executescript(consumption_sql)
+    except sqlite3.Error as error:
+        if "already exists" not in str(error):
+            raise SystemExit(
+                f"0073 duplicate DDL failed unexpectedly: {error}"
+            ) from error
+    else:
+        raise SystemExit(
+            "0073 critical consumption objects accepted duplicate DDL"
+        )
+    schema_after_duplicate = schema_conn.execute(
+        "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+    ).fetchall()
+    if schema_after_duplicate != schema_before_duplicate:
+        raise SystemExit("0073 duplicate DDL attempt changed persistent schema")
+    schema_conn.close()
+
+    preflight_conn = sqlite3.connect(":memory:")
+    apply_schema(preflight_conn, schema_paths[:consumption_index])
+    preflight_conn.execute(
+        "DROP TRIGGER relay_container_drain_source_authorization_insert_guard"
+    )
+    preflight_conn.execute(authorization_insert_sql, authorization_params)
+    preflight_conn.commit()
+    expect_integrity_error(
+        lambda: preflight_conn.executescript(consumption_sql),
+        "0073 migrated across pre-existing 0072 authorization rows",
+        "0073 requires an empty 0070-0072 drain authority and stopped writers",
+    )
+    preflight_conn.close()
+
+    positive_conn = sqlite3.connect(":memory:")
+    apply_schema(positive_conn, schema_paths)
+    positive_conn.execute(
+        "DROP TRIGGER relay_container_drain_source_authorization_insert_guard"
+    )
+    positive_conn.execute(
+        "DROP TRIGGER relay_container_drain_source_scan_insert_guard"
+    )
+    positive_conn.execute(
+        """
+        INSERT INTO users (
+          id, username, password, display_name, role, status, session_epoch
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            authorization_values["admin_id"],
+            "root-0073",
+            "not-a-live-password",
+            "Root 0073",
+            100,
+            1,
+            7,
+        ),
+    )
+    positive_conn.execute(
+        """
+        INSERT INTO passkey_credentials (
+          id, user_id, credential_id, public_key, clone_warning,
+          user_present, user_verified, last_used_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 0, 1, 1, ?, ?, ?)
+        """,
+        (
+            9101,
+            authorization_values["admin_id"],
+            "base64url-passkey-0073",
+            "base64url-public-key-0073",
+            clock[0],
+            clock[0] - 100,
+            clock[0],
+        ),
+    )
+    positive_conn.execute(authorization_insert_sql, authorization_params)
+    positive_conn.commit()
+
+    registration_values = {
+        **authorization_values,
+        "root_session_epoch": 7,
+        "root_session_binding": digest("0073-root-session"),
+        "passkey_credential_row_id": 9101,
+        "passkey_credential_id": digest("0073-passkey-credential"),
+        "passkey_assertion_subject": digest("0073-passkey-subject"),
+        "passkey_assertion_signature": digest("0073-passkey-signature"),
+        "verification_challenge": digest("0073-verification-challenge"),
+        "verification_receipt": digest("0073-verification-receipt"),
+        "action_digest": digest("0073-action"),
+        "admin_audit_digest": digest("0073-admin-audit"),
+        "change_ticket": digest("0073-change-ticket"),
+        "registration_execution": digest("0073-registration-execution"),
+        "registration_credential": digest("0073-registration-credential"),
+        "registration_request": digest("0073-registration-request"),
+        "ledger_identity": scope_id,
+        "receipt_sequence": 1,
+        "ledger_head_before": authorization_values["head_digest"],
+        "registration_receipt": digest("0073-registration-receipt"),
+        "verified_at": clock[0],
+        "verification_expires_at": clock[0] + 120,
+    }
+    registration_insert_sql = """
+        INSERT INTO relay_container_drain_source_authorization_registrations (
+          authorization_id_sha256, contract_version,
+          registration_contract, registration_migration,
+          environment, scope_kind, scope_id_sha256, source_scan_id_sha256,
+          root_admin_id, root_session_epoch, root_session_binding_sha256,
+          passkey_credential_row_id, passkey_credential_id_sha256,
+          passkey_assertion_subject_sha256,
+          passkey_assertion_signature_sha256,
+          secure_verification_challenge_sha256,
+          secure_verification_receipt_sha256, action_digest_sha256,
+          admin_audit_digest_sha256, change_ticket_sha256, reason_code,
+          registered_by_service_name, registered_by_version_id,
+          registration_execution_id_sha256,
+          registration_credential_id_sha256,
+          registration_request_sha256,
+          authority_ledger_identity_sha256, receipt_sequence,
+          ledger_head_before_sha256, registration_receipt_sha256,
+          verified_at, verification_expires_at
+        ) VALUES (
+          :authorization_id, 1,
+          'relay-container-drain-source-authorization-registration-v1',
+          '0073_relay_container_drain_source_authorization_consumption.sql',
+          :environment, 'global', :scope_id, :source_scan_id,
+          :admin_id, :root_session_epoch, :root_session_binding,
+          :passkey_credential_row_id, :passkey_credential_id,
+          :passkey_assertion_subject, :passkey_assertion_signature,
+          :verification_challenge, :verification_receipt, :action_digest,
+          :admin_audit_digest, :change_ticket, 'planned-m1-collection',
+          'cinatoken-application-worker', 'worker-v1',
+          :registration_execution, :registration_credential,
+          :registration_request, :ledger_identity, :receipt_sequence,
+          :ledger_head_before, :registration_receipt,
+          :verified_at, :verification_expires_at
+        )
+    """
+    expect_integrity_error(
+        lambda: positive_conn.execute(
+            registration_insert_sql,
+            registration_values,
+        ),
+        "0073 registered an authorization without its Root audit row",
+        "drain source registration requires an exact Root audit row",
+    )
+    positive_conn.rollback()
+
+    audit_other = json.dumps(
+        {
+            "op": {
+                "action": "relay_container.drain_source_authorization_register",
+                "params": {
+                    "authorization_id_sha256": registration_values[
+                        "authorization_id"
+                    ],
+                    "action_digest_sha256": registration_values[
+                        "action_digest"
+                    ],
+                },
+            },
+            "admin_info": {
+                "admin_id": registration_values["admin_id"],
+                "admin_username": "root-0073",
+                "admin_role": 100,
+                "auth_method": "passkey",
+            },
+        },
+        separators=(",", ":"),
+    )
+    positive_conn.execute(
+        """
+        INSERT INTO logs (
+          user_id, created_at, type, content, username, ip, request_id, other
+        ) VALUES (?, ?, 3, ?, ?, ?, ?, ?)
+        """,
+        (
+            registration_values["admin_id"],
+            clock[0],
+            "registered 0073 drain source authorization",
+            "root-0073",
+            "192.0.2.73",
+            registration_values["admin_audit_digest"],
+            audit_other,
+        ),
+    )
+    positive_conn.execute(registration_insert_sql, registration_values)
+    positive_conn.commit()
+
+    expired_conn = sqlite3.connect(":memory:")
+    positive_conn.backup(expired_conn)
+    expired_conn.create_function("unixepoch", 0, lambda: clock[0])
+    expired_conn.execute("PRAGMA foreign_keys = ON")
+    rotation_conn = sqlite3.connect(":memory:")
+    positive_conn.backup(rotation_conn)
+    rotation_conn.create_function("unixepoch", 0, lambda: clock[0])
+    rotation_conn.execute("PRAGMA foreign_keys = ON")
+    rotation_conn.execute(
+        "DELETE FROM passkey_credentials WHERE id = ?",
+        (registration_values["passkey_credential_row_id"],),
+    )
+    rotation_conn.commit()
+    if rotation_conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM relay_container_drain_source_authorization_registrations
+        WHERE authorization_id_sha256 = ?
+        """,
+        (authorization_values["authorization_id"],),
+    ).fetchone() != (1,):
+        raise SystemExit("0073 passkey rotation removed immutable registration evidence")
+    rotation_conn.close()
+
+    scan_values = {
+        **authorization_values,
+        "source_schema_sha256": source_schema_sha256,
+    }
+    scan_insert_sql = """
+        INSERT INTO relay_container_drain_source_scans (
+          source_scan_id_sha256, contract_version, scan_contract,
+          scan_migration, environment, scope_kind, scope_id_sha256,
+          admission_fence_id_sha256, fence_generation,
+          expected_fence_state_digest_sha256, expected_head_version,
+          expected_head_digest_sha256, captured_high_watermark,
+          captured_member_count, captured_first_sequence,
+          captured_first_operation_id, captured_last_sequence,
+          captured_last_operation_id, page_size, shard_count,
+          collector_service_name, collector_version_id,
+          collector_run_id_sha256, started_by_credential_id_sha256,
+          started_at
+        ) VALUES (
+          :source_scan_id, 1, 'relay-container-drain-source-scan-v1',
+          '0071_relay_container_drain_accepted_set_source_seal.sql',
+          :environment, 'global', :scope_id, :fence_id, 1,
+          :fence_state, 1, :head_digest, 0, 0, 0, NULL, 0, NULL,
+          128, 4, :collector_service, :collector_version,
+          :collector_run, :claim_credential, :recorded_at
+        )
+    """
+    expect_integrity_error(
+        lambda: positive_conn.execute(scan_insert_sql, scan_values),
+        "0073 accepted a source scan without a claim",
+        "drain source scan requires the exact live authorization claim",
+    )
+    positive_conn.rollback()
+
+    claim_values = {
+        **registration_values,
+        "claim_id": digest("0073-claim"),
+        "claim_request": digest("0073-claim-request"),
+        "claim_digest": digest("0073-claim-digest"),
+        "lease_expires_at": clock[0] + 60,
+    }
+    claim_insert_sql = """
+        INSERT INTO relay_container_drain_source_authorization_claims (
+          authorization_id_sha256, contract_version, claim_contract,
+          claim_migration, authority_ledger_identity_sha256,
+          registration_receipt_sha256,
+          execution_nonce_sha256, claim_id_sha256, claim_request_sha256,
+          predecessor_receipt_sha256, receipt_sequence,
+          claim_digest_sha256, claim_owner_service_name,
+          claim_owner_version_id, claim_owner_execution_id_sha256,
+          claim_credential_id_sha256, lease_expires_at
+        ) VALUES (
+          :authorization_id, 1,
+          'relay-container-drain-source-authorization-claim-v1',
+          '0073_relay_container_drain_source_authorization_consumption.sql',
+          :ledger_identity, :registration_receipt, :execution_nonce,
+          :claim_id, :claim_request, :registration_receipt,
+          :receipt_sequence + 1, :claim_digest,
+          :collector_service, :collector_version, :collector_run,
+          :claim_credential, :lease_expires_at
+        )
+    """
+    wrong_claim = {
+        **claim_values,
+        "registration_receipt": digest("0073-wrong-predecessor"),
+    }
+    expect_integrity_error(
+        lambda: positive_conn.execute(claim_insert_sql, wrong_claim),
+        "0073 accepted a claim with a detached predecessor",
+        "drain source authorization claim is detached, stale, or misowned",
+    )
+    positive_conn.rollback()
+    positive_conn.execute(
+        "DELETE FROM d1_migrations WHERE name = ?",
+        (consumption_path.name,),
+    )
+    expect_integrity_error(
+        lambda: positive_conn.execute(claim_insert_sql, claim_values),
+        "0073 accepted a claim without the complete migration chain",
+        "drain source claim requires the complete 0067 through 0073 chain",
+    )
+    positive_conn.rollback()
+    positive_conn.execute(claim_insert_sql, claim_values)
+    positive_conn.commit()
+    positive_conn.execute(scan_insert_sql, scan_values)
+    positive_conn.commit()
+
+    terminal_values = {
+        **claim_values,
+        "source_seal_id": digest("0073-source-seal"),
+        "source_seal_digest": digest("0073-source-seal-digest"),
+        "evidence_manifest": digest("0073-evidence-manifest"),
+        "evidence_object_key": "relay-container/p5/0073/evidence.json",
+        "evidence_version": digest("0073-evidence-version"),
+        "evidence_etag": digest("0073-evidence-etag"),
+        "evidence_content": digest("0073-evidence-content"),
+        "retention_policy": digest("0073-retention-policy"),
+        "terminal_execution": digest("0073-terminal-execution"),
+        "terminal_credential": digest("0073-terminal-credential"),
+        "observation": digest("0073-observation"),
+        "terminal_receipt": digest("0073-terminal-receipt"),
+    }
+    success_terminal_sql = """
+        INSERT INTO relay_container_drain_source_terminal_receipts (
+          authorization_id_sha256, contract_version, terminal_contract,
+          terminal_migration, authority_ledger_identity_sha256,
+          registration_receipt_sha256, claim_id_sha256,
+          claim_digest_sha256, receipt_sequence,
+          predecessor_receipt_sha256,
+          terminal_outcome, terminal_phase, source_scan_id_sha256,
+          source_seal_id_sha256, source_seal_digest_sha256,
+          failure_class, ambiguity_class, evidence_manifest_sha256,
+          evidence_object_key, evidence_object_version_sha256,
+          evidence_object_etag_sha256, evidence_content_sha256,
+          evidence_bytes, retention_policy_sha256,
+          terminal_actor_service_name, terminal_actor_version_id,
+          terminal_actor_execution_id_sha256,
+          terminal_credential_id_sha256, reason_code,
+          observation_sha256, terminal_receipt_sha256
+        ) VALUES (
+          :authorization_id, 1,
+          'relay-container-drain-source-authorization-terminal-v1',
+          '0073_relay_container_drain_source_authorization_consumption.sql',
+          :ledger_identity, :registration_receipt, :claim_id,
+          :claim_digest, :receipt_sequence + 2, :claim_digest,
+          'succeeded', 'evidence', :source_scan_id, :source_seal_id,
+          :source_seal_digest, NULL, NULL, :evidence_manifest,
+          :evidence_object_key,
+          :evidence_version, :evidence_etag, :evidence_content, 4096,
+          :retention_policy, 'cinatoken-drain-evidence-writer',
+          'writer-v1', :terminal_execution, :terminal_credential,
+          'retained-source-evidence', :observation, :terminal_receipt
+        )
+    """
+    evidence_key_conn = sqlite3.connect(":memory:")
+    apply_schema(evidence_key_conn, schema_paths)
+    evidence_key_conn.execute(
+        "DROP TRIGGER relay_container_drain_source_terminal_insert_guard"
+    )
+    evidence_key_conn.execute(
+        "DROP TRIGGER relay_container_drain_source_terminal_project"
+    )
+    ascii_control_code_points = (*range(0x20), 0x7F)
+    for code_point in ascii_control_code_points:
+        invalid_evidence_values = {
+            **terminal_values,
+            "evidence_object_key": (
+                "relay-container/p5/0073/control-"
+                f"{chr(code_point)}-evidence.json"
+            ),
+        }
+        expect_integrity_error(
+            lambda values=invalid_evidence_values: evidence_key_conn.execute(
+                success_terminal_sql,
+                values,
+            ),
+            "0073 accepted ASCII control byte "
+            f"0x{code_point:02X} in evidence_object_key",
+            "CHECK constraint failed",
+        )
+        evidence_key_conn.rollback()
+    valid_evidence_object_key = (
+        "relay-container/p5/0073/literal-c]/literal-n]/evidence.json"
+    )
+    evidence_key_conn.execute(
+        success_terminal_sql,
+        {
+            **terminal_values,
+            "evidence_object_key": valid_evidence_object_key,
+        },
+    )
+    evidence_key_readback = evidence_key_conn.execute(
+        """
+        SELECT evidence_object_key
+        FROM relay_container_drain_source_terminal_receipts
+        """
+    ).fetchone()
+    if evidence_key_readback != (valid_evidence_object_key,):
+        raise SystemExit(
+            "0073 evidence_object_key ASCII control verifier "
+            f"readback mismatch: {evidence_key_readback}"
+        )
+    evidence_key_conn.close()
+
+    expect_integrity_error(
+        lambda: positive_conn.execute(success_terminal_sql, terminal_values),
+        "0073 accepted success without an independently attested seal",
+        "successful drain source receipt requires exact unsealed attestations",
+    )
+    positive_conn.rollback()
+
+    failed_terminal_sql = """
+        INSERT INTO relay_container_drain_source_terminal_receipts (
+          authorization_id_sha256, contract_version, terminal_contract,
+          terminal_migration, authority_ledger_identity_sha256,
+          registration_receipt_sha256, claim_id_sha256,
+          claim_digest_sha256, receipt_sequence,
+          predecessor_receipt_sha256,
+          terminal_outcome, terminal_phase, source_scan_id_sha256,
+          source_seal_id_sha256, source_seal_digest_sha256,
+          failure_class, ambiguity_class, evidence_manifest_sha256,
+          evidence_object_key, evidence_object_version_sha256,
+          evidence_object_etag_sha256, evidence_content_sha256,
+          evidence_bytes, retention_policy_sha256,
+          terminal_actor_service_name, terminal_actor_version_id,
+          terminal_actor_execution_id_sha256,
+          terminal_credential_id_sha256, reason_code,
+          observation_sha256, terminal_receipt_sha256
+        ) VALUES (
+          :authorization_id, 1,
+          'relay-container-drain-source-authorization-terminal-v1',
+          '0073_relay_container_drain_source_authorization_consumption.sql',
+          :ledger_identity, :registration_receipt, :claim_id,
+          :claim_digest, :receipt_sequence + 2, :claim_digest,
+          :terminal_outcome, :terminal_phase, :source_scan_id,
+          NULL, NULL, :failure_class, :ambiguity_class,
+          NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+          'cinatoken-drain-evidence-writer', 'writer-v1',
+          :terminal_execution, :terminal_credential,
+          'synthetic-rollout-rejection', :observation, :terminal_receipt
+        )
+    """
+    expired_conn.execute(claim_insert_sql, claim_values)
+    expired_conn.commit()
+    original_clock = clock[0]
+    clock[0] = claim_values["lease_expires_at"]
+    expired_terminal_values = {
+        **terminal_values,
+        "terminal_outcome": "expired",
+        "terminal_phase": "claim",
+        "failure_class": None,
+        "ambiguity_class": None,
+    }
+    expired_conn.execute(failed_terminal_sql, expired_terminal_values)
+    expired_conn.commit()
+    expired_readback = expired_conn.execute(
+        """
+        SELECT terminal_outcome, terminal_at
+        FROM relay_container_drain_source_terminal_receipts
+        WHERE authorization_id_sha256 = ?
+        """,
+        (authorization_values["authorization_id"],),
+    ).fetchone()
+    if expired_readback != ("expired", clock[0]):
+        raise SystemExit(
+            f"0073 claimed expiry terminal readback mismatch: {expired_readback}"
+        )
+    if expired_conn.execute(
+        "SELECT COUNT(*) FROM relay_container_drain_source_scans"
+    ).fetchone() != (0,):
+        raise SystemExit("0073 claimed expiry unexpectedly required a source scan")
+    if expired_conn.execute(
+        "SELECT COUNT(*) FROM relay_container_drain_source_seals"
+    ).fetchone() != (0,):
+        raise SystemExit("0073 claimed expiry unexpectedly projected a seal")
+    if expired_conn.execute(
+        "PRAGMA foreign_key_check('relay_container_drain_source_terminal_receipts')"
+    ).fetchall():
+        raise SystemExit("0073 claimed expiry violates enabled foreign keys")
+    clock[0] = original_clock
+    expired_conn.close()
+
+    failed_terminal_values = {
+        **terminal_values,
+        "terminal_outcome": "failed",
+        "terminal_phase": "scan",
+        "failure_class": "synthetic-validation-failure",
+        "ambiguity_class": None,
+    }
+    positive_conn.execute(failed_terminal_sql, failed_terminal_values)
+    positive_conn.commit()
+
+    positive_conn.execute(
+        "DROP TRIGGER relay_container_drain_source_member_insert_guard"
+    )
+    expect_integrity_error(
+        lambda: positive_conn.execute(
+            """
+            INSERT INTO relay_container_drain_source_members (
+              source_scan_id_sha256, accepted_sequence, operation_id,
+              source_contract, admission_fence_id_sha256, fence_generation,
+              reservation_key, atomic_admission_sha256,
+              operation_admission_sha256, billing_snapshot_sha256,
+              client_request_sha256, owner_generation, ring_generation,
+              source_shard_count, shard_index, admission_commit_sha256,
+              committed_at, page_ordinal, member_ordinal,
+              member_digest_sha256, collected_at
+            ) VALUES (
+              ?, 1, 'operation-0073',
+              'fenced-atomic-admission-v1', ?, 1,
+              'operation-0073', ?, ?, ?, ?, 1, 1, 4, 0, ?,
+              ?, 1, 1, ?, ?
+            )
+            """,
+            (
+                authorization_values["source_scan_id"],
+                authorization_values["fence_id"],
+                digest("0073-atomic"),
+                digest("0073-operation-admission"),
+                digest("0073-billing"),
+                digest("0073-client-request"),
+                digest("0073-member"),
+                clock[0] - 10,
+                digest("0073-member"),
+                clock[0],
+            ),
+        ),
+        "0073 allowed source writes after a terminal receipt",
+        "drain source member requires a live nonterminal claim",
+    )
+    positive_conn.rollback()
+
+    chain_row = positive_conn.execute(
+        """
+        SELECT registration.registration_receipt_sha256,
+               claim.predecessor_receipt_sha256,
+               claim.claim_digest_sha256,
+               terminal.predecessor_receipt_sha256,
+               claim.receipt_sequence,
+               terminal.receipt_sequence,
+               terminal.terminal_outcome
+        FROM relay_container_drain_source_authorization_registrations
+             AS registration
+        JOIN relay_container_drain_source_authorization_claims AS claim
+          ON claim.authorization_id_sha256 =
+               registration.authorization_id_sha256
+        JOIN relay_container_drain_source_terminal_receipts AS terminal
+          ON terminal.authorization_id_sha256 =
+               registration.authorization_id_sha256
+        """
+    ).fetchone()
+    if chain_row != (
+        registration_values["registration_receipt"],
+        registration_values["registration_receipt"],
+        claim_values["claim_digest"],
+        claim_values["claim_digest"],
+        2,
+        3,
+        "failed",
+    ):
+        raise SystemExit(f"0073 receipt chain readback mismatch: {chain_row}")
+
+    ledger_rows = positive_conn.execute(
+        """
+        SELECT receipt_sequence, event_kind, predecessor_receipt_sha256,
+               receipt_digest_sha256
+        FROM relay_container_drain_source_receipt_ledger
+        ORDER BY receipt_sequence
+        """
+    ).fetchall()
+    if ledger_rows != [
+        (
+            1,
+            "registration",
+            registration_values["ledger_head_before"],
+            registration_values["registration_receipt"],
+        ),
+        (
+            2,
+            "claim",
+            registration_values["registration_receipt"],
+            claim_values["claim_digest"],
+        ),
+        (
+            3,
+            "terminal",
+            claim_values["claim_digest"],
+            terminal_values["terminal_receipt"],
+        ),
+    ]:
+        raise SystemExit(f"0073 receipt ledger readback mismatch: {ledger_rows}")
+
+    immutable_cases = (
+        (
+            "relay_container_drain_source_authorization_registrations",
+            "reason_code",
+            "'mutated'",
+            "drain source registrations are immutable",
+            "drain source registrations are append-preserved",
+            "drain source registration identity already exists",
+        ),
+        (
+            "relay_container_drain_source_authorization_claims",
+            "lease_expires_at",
+            str(clock[0] + 90),
+            "drain source authorization claims are immutable",
+            "drain source authorization claims are append-preserved",
+            "drain source authorization claim identity already exists",
+        ),
+        (
+            "relay_container_drain_source_terminal_receipts",
+            "reason_code",
+            "'mutated'",
+            "drain source terminal receipts are immutable",
+            "drain source terminal receipts are append-preserved",
+            "drain source terminal receipt identity already exists",
+        ),
+        (
+            "relay_container_drain_source_receipt_ledger",
+            "recorded_at",
+            str(clock[0] + 1),
+            "drain source receipt ledger is immutable",
+            "drain source receipt ledger is append-preserved",
+            "drain source receipt ledger identity already exists",
+        ),
+    )
+    for (
+        table,
+        update_column,
+        update_value,
+        update_error,
+        delete_error,
+        replace_error,
+    ) in immutable_cases:
+        row_count = positive_conn.execute(
+            f"SELECT COUNT(*) FROM {table}"
+        ).fetchone()
+        expect_integrity_error(
+            lambda table=table,
+            update_column=update_column,
+            update_value=update_value: positive_conn.execute(
+                f"UPDATE {table} SET {update_column} = {update_value}"
+            ),
+            f"0073 allowed mutation of {table}",
+            update_error,
+        )
+        positive_conn.rollback()
+        expect_integrity_error(
+            lambda table=table: positive_conn.execute(f"DELETE FROM {table}"),
+            f"0073 allowed deletion from {table}",
+            delete_error,
+        )
+        positive_conn.rollback()
+        expect_integrity_error(
+            lambda table=table: positive_conn.execute(
+                f"INSERT OR REPLACE INTO {table} SELECT * FROM {table}"
+            ),
+            f"0073 allowed INSERT OR REPLACE to rewrite {table}",
+            replace_error,
+        )
+        positive_conn.rollback()
+        if positive_conn.execute(
+            f"SELECT COUNT(*) FROM {table}"
+        ).fetchone() != row_count:
+            raise SystemExit(
+                f"0073 INSERT OR REPLACE changed {table} cardinality"
+            )
+
+    positive_conn.close()
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

@@ -25814,3 +25814,134 @@ therefore cannot share one production candidate or one go/no-go decision.
 No remote D1, R2, Cloudflare API, credential, deployment, route, DNS, runtime
 gate, customer traffic, or Go/VPS state was accessed or changed by this
 planning increment. Production remains **NO-GO**.
+
+## 22.339 Source Authorization Consumption Production Gates (2026-07-30)
+
+This overlay supersedes only the 0072 current-candidate and missing
+claim/terminal-schema statements in 22.338. It retains the 0072 authorization
+and independent-attestation boundary as historical evidence and does not
+claim a remote migration, enabled writer, or authority transfer.
+
+### Candidate baseline and implemented boundary
+
+The local Application candidate head is now:
+
+```text
+0073_relay_container_drain_source_authorization_consumption.sql
+73 migrations
+103 required tables
+1701 checked incremental columns
+156 key indexes
+```
+
+0073 remains default-inert. It adds no HTTP route, authorization issuer,
+claim worker, source collector, credential, runtime write gate, close
+authority, traffic-return authority, or reopen authority. Its apply-time
+preflight requires an empty 0070-0072 drain authority and stopped writers;
+existing command, source, authorization, or attestation rows are a migration
+blocker and must never be deleted merely to make the preflight pass.
+
+The migration adds four append-preserved authorities:
+
+1. one Root/passkey action-bound registration for each 0072 authorization,
+   linked to an exact admin audit row and the current global receipt head;
+2. one execution claim bound to the exact collector service, version, run,
+   credential, lease, registration receipt, and next receipt sequence;
+3. one terminal receipt with `succeeded`, `failed`, `expired`, or `ambiguous`
+   outcome; and
+4. one global receipt ledger chaining every registration, claim, and terminal
+   event through a unique sequence, predecessor, and receipt digest.
+
+A claimed authorization can terminalize as `expired` at or after its D1 lease
+deadline even when no source scan or seal exists. A successful terminal is
+stricter: it requires the exact live claim, completed scan, independent
+assembler/verifier attestations and matching evidence fields. The terminal
+`INSERT` atomically projects the 0071 seal, verifies that projection, and
+appends the terminal ledger receipt in one SQLite statement. Any projection
+or ledger failure rolls back the terminal and seal together. The 0070 close
+command now requires the retained successful terminal and its exact projected
+seal.
+
+Registration validates a live, non-cloned, user-present and user-verified
+passkey row at insert time. The stored `passkey_credential_row_id` is
+deliberately not a foreign key. Immutable credential/assertion digests retain
+the evidence identity while allowing normal passkey rotation or deletion;
+adding a row foreign key would turn historical drain evidence into a
+credential-lifecycle lock.
+
+### M1 blockers before any writer
+
+The schema is not an issuance implementation. All of the following remain
+hard M1 blockers:
+
+1. an action-bound, one-shot passkey ceremony whose challenge commits to the
+   exact authorization, action digest, request, environment, scope, source
+   scan, change ticket, expiry, and current receipt head;
+2. mandatory WebAuthn user verification. `preferred`, user-presence-only, a
+   reusable secure-verification marker, or a session-bound assertion cannot
+   satisfy this boundary;
+3. a dedicated first-primary atomic audit writer that records the exact
+   `request_id`, uses `auth_method=passkey`, and commits the audit linkage with
+   registration. The generic session audit writer is not eligible; and
+4. a permit-only verifier plus an isolated issuer identity. Successful proof
+   verification may mint only the narrow, single-use capability required for
+   the reviewed registration batch. The issuer must not inherit collector,
+   claim-worker, close, traffic, or reopen authority.
+
+Until these four controls exist and pass isolated-staging review, no
+registration mutation method or route may be connected. A syntactically valid
+0073 row, direct D1 access, RootAuth alone, or a generic passkey marker is not
+production authorization.
+
+### Ordered implementation and promotion plan
+
+1. **M1, issuance only:** implement the four blockers above with every runtime
+   gate false. Prove exact replay, challenge reuse, UV downgrade, audit drift,
+   issuer/collector identity reuse, expired proof, and response-loss cases
+   produce no second registration and no collection authority.
+2. **M2, claim and terminal worker:** the crate-private
+   root-Application-Worker claim/terminal repository now exists locally and
+   remains unreachable. It uses plain inserts, one bounded `first-primary`
+   Session batch and exact same-Session readback. Workerd includes immutable
+   trigger projections in `meta.changes`, so fresh requires the exact
+   operation-specific count plus exact readback: claim `2` (claim plus ledger)
+   or non-success terminal `2` (terminal plus ledger), and successful terminal
+   `3` (terminal, seal and ledger). Replay requires explicit `changes=0` plus
+   exact readback; every other count, malformed metadata, batch error and
+   unreadable readback remains unknown and grants no retry authority. The
+   pre-mutation gate binds 34 exact schema-object and four table PRAGMA
+   fingerprints. The
+   remaining M2 work is the authenticated single-winner worker, bounded
+   claimed-expiry scheduler and fault campaign; every terminal outcome must
+   remain retained.
+3. **M2, collector and evidence:** keyset the authoritative 0068 source under
+   a captured high watermark, re-read fence/head/cardinality at every
+   irreversible boundary, run independent assembler/verifier identities, and
+   create one retention-locked R2 evidence object. Only then may a successful
+   terminal atomically project the seal. No collector path may call 0070.
+4. **M3, isolated remote staging:** stop all old writers, prove the 0070-0072
+   tables empty, retain backup/Time Travel and normalized schema evidence,
+   apply 0073 with every gate false, read back the exact
+   `73/103/1701/156` inventory, and hold a reader-only soak before a bounded
+   synthetic campaign. Exercise N/N-1, 32-way claim races, lease expiry,
+   D1 response loss, process loss, late admission, R2 conflict, evidence
+   mismatch, and terminal/seal rollback.
+5. **M4, P5 evidence:** freeze one exact candidate and advance only the local
+   P5 candidate/schema contract to 0073. A real P5 packet still requires
+   authenticated remote before/after readback, immutable artifacts, candidate
+   signatures, resource/error budgets, and independent approvals. Local
+   fixtures or local candidate counts are never remote evidence.
+6. **Separate production decision:** even a successful source-evidence
+   ceremony does not authorize 0070 close, operation 14, billing or settlement
+   ownership transfer, DNS/route change, traffic return, reopen, or Go/VPS
+   retirement. Each retains its own authenticated gate and evidence review.
+
+Rollback remains disable-first and evidence-preserving: stop issuance, claims
+and collectors; classify any uncertain mutation by stable first-primary
+readback; append at most the permitted terminal outcome; never delete 0073 or
+its ledger; and repair forward with a new migration and authorization.
+
+P5 has advanced only as a local contract in this candidate. No remote
+Cloudflare migration, schema readback, deployment, credential, route, gate,
+traffic, close, reopen, or authority change is claimed. Go/VPS remains the
+authoritative production system and production remains **NO-GO**.

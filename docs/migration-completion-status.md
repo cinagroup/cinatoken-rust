@@ -3156,3 +3156,40 @@ terminal receipt, bounded keyset collection with phase rereads, independent
 assembler/verifier execution, create-only locked R2 evidence, ambiguous-write
 classification without retry, and remote isolated-staging resource/fault/
 rollback proof.
+
+## 2026-07-30 0073 Status Update
+
+This table supersedes only the 0072 current-head and missing consumption-schema
+rows. The 0072 authorization and attestation checkpoint remains historical
+evidence.
+
+| Item | Current status |
+|---|---|
+| Application D1 head | **0073_RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_CONSUMPTION.SQL** |
+| Application D1 inventory | **73 MIGRATIONS / 103 TABLES / 1701 CHECKED INCREMENTAL COLUMNS / 156 KEY INDEXES** |
+| Migration preflight | **EMPTY 0070-0072 DRAIN AUTHORITY + STOPPED WRITERS REQUIRED** |
+| Registration | **ONE ACTION-BOUND ROOT/PASSKEY/AUDIT RECEIPT PER AUTHORIZATION** |
+| Passkey lifecycle | **LIVE UV ROW CHECKED AT INSERT; ROW FOREIGN KEY INTENTIONALLY ABSENT FOR ROTATION/DELETION** |
+| Claim | **ONE OWNER/BUILD/RUN/CREDENTIAL/LEASE-BOUND CLAIM** |
+| Claimed expiry | **EXPIRED TERMINAL ALLOWED AFTER LEASE WITHOUT SCAN OR SEAL** |
+| Terminal | **ONE SUCCEEDED / FAILED / EXPIRED / AMBIGUOUS RECEIPT PER CLAIM** |
+| Successful seal | **TERMINAL INSERT ATOMICALLY PROJECTS EXACT 0071 SEAL AND GLOBAL LEDGER RECEIPT** |
+| Global receipt ledger | **APPEND-PRESERVED REGISTRATION -> CLAIM -> TERMINAL HEAD CHAIN** |
+| Private claim/terminal repository | **IMPLEMENTED LOCALLY; FRESH=EXPLICIT 1 WRITE, REPLAY=EXPLICIT 0 WRITES, MALFORMED/BATCH/READBACK ERROR=UNKNOWN; NO CALLER** |
+| Schema attestation | **34 EXACT SQL OBJECT FINGERPRINTS + 4 TABLE PRAGMA FINGERPRINTS REQUIRED BEFORE MUTATION** |
+| Registration repository | **NOT IMPLEMENTED; BLOCKED ON M1 CEREMONY/AUDIT/ISSUER** |
+| M1 passkey/audit/permit controls | **NOT IMPLEMENTED** |
+| Issuer / claim worker / collector | **ABSENT** |
+| Route / credential / runtime write gate | **ABSENT** |
+| Close / traffic-return / reopen authority | **ABSENT** |
+| P5 candidate status | **LOCAL CONTRACT ADVANCED ONLY; AUTHENTICATED REMOTE EVIDENCE ABSENT** |
+| Remote D1/Cloudflare operation | **NOT PERFORMED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+M1 remains blocked on an action-bound one-shot passkey ceremony, mandatory
+user verification, a dedicated atomic audit writer with exact `request_id`
+and `auth_method=passkey`, and a permit-only verifier backed by an isolated
+issuer identity. The next runtime boundary is those controls plus a private
+single-winner claim/terminal worker and authoritative collector using the
+already-inert repository methods; it is not route or gate activation.

@@ -1521,3 +1521,22 @@ Application schema head is 0072 with `72/99/1611/148`.
 | Runtime proof | SQLite `72/99/1611/148`, Rust/wasm, atomic-admission and full Workerd lifecycle suites pass locally | Dedicated remote staging fault matrix for concurrency, 1024 shards, process/response loss, Queue redelivery, R2 conflict, resource budgets and two rollback rehearsals | Local pass; remote open |
 | Billing and settlement | 0072 changes no expression, normalization, tier, quota, settlement, refund or reverse-sync behavior | Frozen Go/Rust vector parity, conservation, reverse-sync, finance approval and rollback evidence before any authority transfer | **Blocked** |
 | Promotion | Go/VPS remains the sole production authority and all Cloudflare mutation/traffic gates remain false or absent | M0-M4 evidence, broader drain/close/operation-14/traffic-return decisions and independent security/SRE/database/finance/privacy/release/rollback approvals | **NO-GO** |
+
+## 2026-07-30 Authorization-Consumption Overlay
+
+This overlay advances only the current schema and consumption rows above.
+Application candidate head is 0073 with `73/103/1701/156`; the 0072
+authorization/attestation matrix remains historical evidence.
+
+| Control | Current local evidence | Production implementation/evidence still required | Decision |
+|---|---|---|---|
+| Schema identity | Exact 0073 marker, `73/103/1701/156` inventory, 34 normalized table/index/trigger SQL fingerprints and four table PRAGMA fingerprints | Stopped-writer inventory, backup/Time Travel evidence, authenticated apply, normalized remote catalog/trigger readback and N/N-1 fail-closed proof | Local pass; remote open |
+| Apply safety | Preflight rejects any 0070 close, 0071 source or 0072 authorization/attestation authority | Prove all writers stopped and every guarded table empty without deleting evidence | **Blocked remotely** |
+| Registration authority | D1 requires exact 0072 authorization, Root/session binding, live UV passkey evidence, exact passkey audit linkage and current ledger head | Action-bound one-shot passkey ceremony, mandatory UV, dedicated atomic audit writer with exact `request_id` and `auth_method=passkey` | Schema only |
+| Passkey lifecycle | Active credential row is checked at insert; immutable row/digest evidence is stored without a passkey-row foreign key | Rotation/deletion rehearsal proving historical evidence remains readable and no retired credential can issue a new registration | Local contract |
+| Claim and expiry | One exact owner/build/run/credential claim; fresh requires explicit one-write plus exact readback, replay explicit zero-write plus exact readback, and malformed/batch/readback errors remain unknown; a claimed lease can terminalize as `expired` without scan/seal | Private single-winner claim worker, authenticated caller, concurrent claim/response-loss/expiry fault campaign and remote readback | Repository local pass; runtime blocked |
+| Terminal and seal | Crate-private terminal repository accepts one validated succeeded/failed/expired/ambiguous shape; success atomically projects the exact 0071 seal and terminal ledger event | Authoritative collector, independent verifier, retained R2 evidence, response-loss/process-loss and remote atomic rollback proof | Repository/structural local pass |
+| Global ledger | Registration, claim and terminal consume one append-preserved global sequence/head chain | Remote concurrency, fork rejection, immutable export and independent audit reconciliation | Local pass; remote open |
+| Runtime authority | No route, issuer, claim worker, collector, credential, gate, close, traffic-return or reopen authority | Permit-only verifier, isolated issuer, root-Worker physical D1 ownership and separately reviewed default-false gates | Default-inert |
+| P5 | Candidate/schema values advance locally to 0073 | Authenticated remote before/after readback, immutable signed packet, budgets and independent approvals | Local contract only |
+| Promotion | Go/VPS remains authoritative; no remote 0073 apply or traffic change is claimed | Full M1-M4, drain, billing/reverse-sync, operation-14, rollback and traffic-return gates | **NO-GO** |

@@ -1800,8 +1800,8 @@ function candidateFixture() {
     ringGeneration: 2,
     shardCount: 12,
     migrationHead:
-      "0071_relay_container_drain_accepted_set_source_seal.sql",
-    migrationCount: 71,
+      "0072_relay_container_drain_source_authorization.sql",
+    migrationCount: 72,
     responseProtocolVersion: 3,
     statusContractVersion: 4,
     financialTerminalContractVersion: 2,

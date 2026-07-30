@@ -3122,3 +3122,37 @@ replay-protected root-Worker collector/verifier protocol using D1 Sessions,
 typed machine authorization plus append-preserved audit receipt, real
 signature verification, bounded pagination, stable response-loss readback,
 and isolated-staging N/N-1 and late-admission campaigns.
+
+## 2026-07-30 0072 Status Update
+
+This table supersedes only the 0071 current-head and unsigned-source-authority
+rows. The 0071 source-seal checkpoint remains historical evidence.
+
+| Item | Current status |
+|---|---|
+| Application D1 head | **0072_relay_container_drain_source_authorization.sql** |
+| Application D1 inventory | **72 MIGRATIONS / 99 TABLES / 1611 CHECKED INCREMENTAL COLUMNS / 148 KEY INDEXES** |
+| Migration preflight | **ALL FIVE 0071 SOURCE TABLES MUST BE EMPTY; WRITER STOP REMAINS AN OPERATIONAL PROOF** |
+| Authorization binding | **EXACT FENCE/HEAD/SCAN/COLLECTOR/RUN/CREDENTIAL/PAGE/SHARD/SCHEMA/NONCE/TIME** |
+| Cryptographic verifier | **THREE DISTINCT DEPLOYMENT-PINNED ED25519 SPKI ROLES; FAIL-CLOSED LOCAL RUST** |
+| Attestation order | **ASSEMBLER THEN VERIFIER OVER ONE EXACT SNAPSHOT; ROLE/IDENTITY/SPKI/ENVELOPE REUSE REJECTED** |
+| D1 Session readback | **ONE FIRST-PRIMARY SESSION; RAW BOOKMARK NEVER EXPOSED; REAL WORKERD VERIFIED** |
+| D1 Session semantics | **SEQUENTIAL CONSISTENCY ONLY; NOT A FROZEN SNAPSHOT** |
+| Authorization issuer / RootAuth second factor | **NOT IMPLEMENTED** |
+| One-time claim / terminal receipt | **NOT IMPLEMENTED** |
+| Source collector / Session batch | **NOT IMPLEMENTED** |
+| Immutable R2 offline evidence | **NOT IMPLEMENTED** |
+| Route / credential / runtime write gate | **ABSENT** |
+| Close / traffic-return / reopen authority | **ABSENT** |
+| Billing-expression semantics | **UNCHANGED** |
+| Remote D1/Cloudflare operation | **NOT PERFORMED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The next code boundary is M1/M2 authorization consumption and the authoritative
+collector, not gate activation. It requires RootAuth plus fresh second-factor
+issuance, an atomic single-winner claim and admin audit, exactly one durable
+terminal receipt, bounded keyset collection with phase rereads, independent
+assembler/verifier execution, create-only locked R2 evidence, ambiguous-write
+classification without retry, and remote isolated-staging resource/fault/
+rollback proof.

@@ -207,6 +207,10 @@ describe("migration 0050 atomic relay Container admission", () => {
             WHERE source_scan_id_sha256 = ?1) AS shards,
            (SELECT COUNT(*) FROM relay_container_drain_source_seals
             WHERE source_scan_id_sha256 = ?1) AS seals,
+           (SELECT COUNT(*) FROM relay_container_drain_source_authorizations
+            WHERE source_scan_id_sha256 = ?1) AS authorizations,
+           (SELECT COUNT(*) FROM relay_container_drain_source_attestations
+            WHERE source_scan_id_sha256 = ?1) AS attestations,
            (SELECT COUNT(*) FROM relay_container_drain_close_commands
             WHERE close_command_id_sha256 = ?2) AS commands`,
       )
@@ -217,6 +221,8 @@ describe("migration 0050 atomic relay Container admission", () => {
       pages: 2,
       shards: 8,
       seals: 1,
+      authorizations: 1,
+      attestations: 2,
       commands: 1,
     });
     await expect(
@@ -238,6 +244,40 @@ describe("migration 0050 atomic relay Container admission", () => {
     });
   });
 
+  it("rejects a complete accepted source seal without both attestations", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet("drain-source-no-attestation", [
+      3,
+    ]);
+    const source = await prepareAcceptedSource([intent], { pageSize: 1 });
+
+    await expect(sourceSealStatement(source).run()).rejects.toThrow(
+      /drain source seal requires exact authorized independent attestations/,
+    );
+  });
+
+  it("rejects verifier snapshot drift and assembler key reuse", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet("drain-source-attestation-drift", [
+      3,
+    ]);
+    const source = await prepareAcceptedSource([intent], { pageSize: 1 });
+    await sourceAttestationStatement(source, "assembler").run();
+
+    await expect(
+      sourceAttestationStatement(source, "verifier", {
+        acceptedSetManifestSha256: await sha256Text(
+          "runtime-divergent-accepted-set",
+        ),
+      }).run(),
+    ).rejects.toThrow(/ordered independent roles/);
+    await expect(
+      sourceAttestationStatement(source, "verifier", {
+        signerSpkiSha256: source.assemblerSpkiSha256,
+      }).run(),
+    ).rejects.toThrow();
+  });
+
   it("rejects an accepted source seal with a missing page", async () => {
     await seedAuthorityState();
     const intents = await admitAcceptedSet("drain-source-missing-page", [
@@ -248,8 +288,8 @@ describe("migration 0050 atomic relay Container admission", () => {
       omittedPageOrdinals: [2],
     });
 
-    await expect(sourceSealStatement(source).run()).rejects.toThrow(
-      /drain source seal is incomplete, stale, or detached/,
+    await expect(attestAcceptedSource(source)).rejects.toThrow(
+      /drain source attestation is incomplete, stale, or unauthorized/,
     );
     await expect(
       env.DB.prepare(
@@ -270,8 +310,8 @@ describe("migration 0050 atomic relay Container admission", () => {
       omittedShardIndexes: [7],
     });
 
-    await expect(sourceSealStatement(source).run()).rejects.toThrow(
-      /drain source seal is incomplete, stale, or detached/,
+    await expect(attestAcceptedSource(source)).rejects.toThrow(
+      /drain source attestation is incomplete, stale, or unauthorized/,
     );
     await expect(
       env.DB.prepare(
@@ -1408,7 +1448,9 @@ async function prepareAcceptedSource(
   const fixtureKey = intents.map(({ operationId }) => operationId).join(":");
   const digest = (field) =>
     sha256Text(`relay-container-drain-source:${fixtureKey}:${field}`);
+  const d1Clock = await env.DB.prepare("SELECT unixepoch() AS now").first();
   const source = {
+    authorizationIdSha256: await digest("authorization-id"),
     sourceScanIdSha256: await digest("scan-id"),
     capturedHighWatermark: commits.at(-1).accepted_sequence,
     capturedMemberCount: commits.length,
@@ -1424,12 +1466,76 @@ async function prepareAcceptedSource(
     acceptedSourceReadbackSha256: await digest("source-readback"),
     shardSetManifestSha256: await digest("shard-set-manifest"),
     sourceSealIdSha256: await digest("seal-id"),
+    authorizerIdentitySha256: await digest("authorizer-identity"),
+    authorizerSpkiSha256: await digest("authorizer-spki"),
+    authorizationSubjectSha256: await digest("authorization-subject"),
+    authorizationSignatureEnvelopeSha256: await digest(
+      "authorization-signature",
+    ),
+    executionNonceSha256: await digest("execution-nonce"),
     assemblerIdentitySha256: await digest("assembler-identity"),
+    assemblerSpkiSha256: await digest("assembler-spki"),
+    assemblerAttestationSubjectSha256: await digest("assembler-subject"),
     assemblerSignatureEnvelopeSha256: await digest("assembler-signature"),
     verifierIdentitySha256: await digest("verifier-identity"),
+    verifierSpkiSha256: await digest("verifier-spki"),
+    verifierAttestationSubjectSha256: await digest("verifier-subject"),
     verifierSignatureEnvelopeSha256: await digest("verifier-signature"),
     sealDigestSha256: await digest("seal-digest"),
+    collectorRunIdSha256: await digest("collector-run"),
+    collectorCredentialIdSha256: await digest("collector-credential"),
+    permitIssuedAt: d1Clock.now,
+    permitExpiresAt: d1Clock.now + 300,
   };
+
+  await env.DB.prepare(
+    `INSERT INTO relay_container_drain_source_authorizations (
+       authorization_id_sha256, contract_version,
+       authorization_contract, authorization_migration,
+       environment, scope_kind, scope_id_sha256,
+       admission_fence_id_sha256, fence_generation,
+       expected_fence_state_digest_sha256, expected_head_version,
+       expected_head_digest_sha256, source_scan_id_sha256,
+       collector_service_name, collector_version_id,
+       collector_run_id_sha256, started_by_credential_id_sha256,
+       page_size, shard_count, accepted_source_schema_sha256,
+       authorizer_issuer, authorizer_key_id,
+       authorizer_identity_sha256, authorizer_spki_sha256,
+       authorization_subject_sha256,
+       authorization_signature_envelope_sha256,
+       execution_nonce_sha256, permit_issued_at, permit_expires_at,
+       authorized_by_admin_id
+     ) VALUES (
+       ?1, 1, 'relay-container-drain-source-authorization-v1',
+       '0072_relay_container_drain_source_authorization.sql',
+       'staging', 'global', ?2, ?3, 1, ?4, 1, ?5, ?6,
+       'relay-source-collector', 'runtime-test-v1', ?7, ?8, ?9, ?10,
+       ?11, 'cinatoken-drain-source-authorizer',
+       'drain-source-authorizer-v1', ?12, ?13, ?14, ?15, ?16,
+       ?17, ?18, 42
+     )`,
+  )
+    .bind(
+      source.authorizationIdSha256,
+      admissionScopeId,
+      admissionFenceId,
+      hex("7"),
+      hex("8"),
+      source.sourceScanIdSha256,
+      source.collectorRunIdSha256,
+      source.collectorCredentialIdSha256,
+      source.pageSize,
+      source.shardCount,
+      source.acceptedSourceSchemaSha256,
+      source.authorizerIdentitySha256,
+      source.authorizerSpkiSha256,
+      source.authorizationSubjectSha256,
+      source.authorizationSignatureEnvelopeSha256,
+      source.executionNonceSha256,
+      source.permitIssuedAt,
+      source.permitExpiresAt,
+    )
+    .run();
 
   await env.DB.prepare(
     `INSERT INTO relay_container_drain_source_scans (
@@ -1465,8 +1571,8 @@ async function prepareAcceptedSource(
       source.capturedLastOperationId,
       source.pageSize,
       source.shardCount,
-      await digest("collector-run"),
-      await digest("collector-credential"),
+      source.collectorRunIdSha256,
+      source.collectorCredentialIdSha256,
     )
     .run();
 
@@ -1587,6 +1693,94 @@ async function prepareAcceptedSource(
   };
 }
 
+function sourceAttestationStatement(source, role, overrides = {}) {
+  const roleValues =
+    role === "assembler"
+      ? {
+          issuer: "cinatoken-drain-source-assembler",
+          keyId: "drain-source-assembler-v1",
+          identitySha256: source.assemblerIdentitySha256,
+          signerSpkiSha256: source.assemblerSpkiSha256,
+          attestationSubjectSha256:
+            source.assemblerAttestationSubjectSha256,
+          signatureEnvelopeSha256:
+            source.assemblerSignatureEnvelopeSha256,
+        }
+      : {
+          issuer: "cinatoken-drain-source-verifier",
+          keyId: "drain-source-verifier-v1",
+          identitySha256: source.verifierIdentitySha256,
+          signerSpkiSha256: source.verifierSpkiSha256,
+          attestationSubjectSha256:
+            source.verifierAttestationSubjectSha256,
+          signatureEnvelopeSha256:
+            source.verifierSignatureEnvelopeSha256,
+        };
+  const values = {
+    ...roleValues,
+    acceptedBookmarkSha256: source.acceptedBookmarkSha256,
+    acceptedSetManifestSha256: source.acceptedSetManifestSha256,
+    acceptedSourceReadbackSha256: source.acceptedSourceReadbackSha256,
+    attestedAt: source.permitIssuedAt,
+    validUntil: source.permitIssuedAt + 240,
+    ...overrides,
+  };
+  return env.DB.prepare(
+    `INSERT INTO relay_container_drain_source_attestations (
+       authorization_id_sha256, attestation_role, contract_version,
+       attestation_contract, attestation_migration,
+       source_scan_id_sha256, source_seal_id_sha256, issuer, key_id,
+       identity_sha256, signer_spki_sha256,
+       attestation_subject_sha256, signature_envelope_sha256,
+       accepted_bookmark_sha256, accepted_set_manifest_sha256,
+       accepted_source_schema_sha256,
+       accepted_source_readback_sha256, page_count,
+       first_page_digest_sha256, last_page_digest_sha256,
+       shard_set_manifest_sha256, captured_high_watermark,
+       captured_member_count, captured_first_sequence,
+       captured_first_operation_id, captured_last_sequence,
+       captured_last_operation_id, attested_at, valid_until
+     ) VALUES (
+       ?1, ?2, 1, 'relay-container-drain-source-attestation-v1',
+       '0072_relay_container_drain_source_authorization.sql',
+       ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
+       ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26
+     )`,
+  ).bind(
+    source.authorizationIdSha256,
+    role,
+    source.sourceScanIdSha256,
+    source.sourceSealIdSha256,
+    values.issuer,
+    values.keyId,
+    values.identitySha256,
+    values.signerSpkiSha256,
+    values.attestationSubjectSha256,
+    values.signatureEnvelopeSha256,
+    values.acceptedBookmarkSha256,
+    values.acceptedSetManifestSha256,
+    source.acceptedSourceSchemaSha256,
+    values.acceptedSourceReadbackSha256,
+    source.pageCount,
+    source.firstPageDigestSha256,
+    source.lastPageDigestSha256,
+    source.shardSetManifestSha256,
+    source.capturedHighWatermark,
+    source.capturedMemberCount,
+    source.capturedFirstSequence,
+    source.capturedFirstOperationId,
+    source.capturedLastSequence,
+    source.capturedLastOperationId,
+    values.attestedAt,
+    values.validUntil,
+  );
+}
+
+async function attestAcceptedSource(source) {
+  await sourceAttestationStatement(source, "assembler").run();
+  await sourceAttestationStatement(source, "verifier").run();
+}
+
 function sourceSealStatement(source) {
   return env.DB.prepare(
     `INSERT INTO relay_container_drain_source_seals (
@@ -1627,6 +1821,7 @@ function sourceSealStatement(source) {
 
 async function sealAcceptedSource(intents, options) {
   const source = await prepareAcceptedSource(intents, options);
+  await attestAcceptedSource(source);
   await sourceSealStatement(source).run();
   return source;
 }

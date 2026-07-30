@@ -1503,3 +1503,21 @@ rows only. Application schema head is 0071 with `71/97/1550/144`.
 | Admission provenance | Source schema is fixed to unchanged 0068 SHA-256 `fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50` | Authenticated remote source capture and independent review | Immutable local contract |
 | Billing | 0071 copies only existing admission snapshot identity and changes no expression or settlement behavior | Canonical snapshot/vector replay and finance conservation evidence | **Blocked** |
 | Promotion | Go/VPS unchanged; no remote mutation, traffic or provider action | Full drain/reverse-sync/op14/WORM/rollback evidence and independent approvals | **NO-GO** |
+
+## 2026-07-30 Accepted-Source Authorization Overlay
+
+This overlay advances only the current schema and accepted-source authority
+rows above. The 0071 matrix remains the historical source-seal baseline.
+Application schema head is 0072 with `72/99/1611/148`.
+
+| Control | Current local evidence | Production implementation/evidence still required | Decision |
+|---|---|---|---|
+| Schema identity | Exact 0072 marker; two 61-column authorization/attestation tables, four indexes and eight persistent guards; apply preflight rejects any pre-existing 0071 source row | Stopped-writer inventory, authenticated remote backup/apply, normalized catalog/trigger readback, zero-row proof and N/N-1 fail-closed evidence | Local pass; remote open |
+| Cryptographic authority | Rust strictly verifies canonical Ed25519 authorization plus independently keyed assembler/verifier attestations against three deployment-pinned SPKI roots | RootAuth plus fresh phishing-resistant second factor, managed key lifecycle, signer service identities, rotation/revocation ceremony and immutable offline-verifiable evidence | Verification foundation only |
+| Session consistency | One private `worker-rs 0.5` bridge performs 0072 schema/readback through `withSession("first-primary")`, returns only bookmark SHA-256 and passes real Workerd | Collector-owned high watermark, keyset pages, phase-boundary rereads, malformed-result/unknown-commit handling and remote replica evidence; first-primary is not a frozen snapshot | Read-only local pass |
+| Replay and consumption | SQL uniqueness and append-preservation reject duplicate identities and `INSERT OR REPLACE` substitution | One-time authorization claim, atomic admin audit, exactly one terminal receipt per authorization, expiry/abandon/recovery lifecycle and zero-retry ambiguous outcome handling | **Blocked** |
+| Evidence retention | D1 retains canonical subject/signature-envelope/public-key fingerprints as digests | Create-only locked R2 bundle containing canonical subjects, detached signatures, public verification material, D1 receipt linkage, retention policy and offline revalidator | **Blocked** |
+| Write authority | Platform exposes only a schema capability; there is no 0072 route, mutation repository, write gate, collector, close, traffic-return or reopen authority | Root Application Worker as sole D1 owner, separately reviewed issuer/collector gates and Service Binding protocol that cannot substitute for application authorization | Default-inert |
+| Runtime proof | SQLite `72/99/1611/148`, Rust/wasm, atomic-admission and full Workerd lifecycle suites pass locally | Dedicated remote staging fault matrix for concurrency, 1024 shards, process/response loss, Queue redelivery, R2 conflict, resource budgets and two rollback rehearsals | Local pass; remote open |
+| Billing and settlement | 0072 changes no expression, normalization, tier, quota, settlement, refund or reverse-sync behavior | Frozen Go/Rust vector parity, conservation, reverse-sync, finance approval and rollback evidence before any authority transfer | **Blocked** |
+| Promotion | Go/VPS remains the sole production authority and all Cloudflare mutation/traffic gates remain false or absent | M0-M4 evidence, broader drain/close/operation-14/traffic-return decisions and independent security/SRE/database/finance/privacy/release/rollback approvals | **NO-GO** |

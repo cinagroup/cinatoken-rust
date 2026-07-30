@@ -973,3 +973,39 @@ The immutable source-schema digest remains the 0068 SHA-256
 No billing-expression or settlement semantic changes. No remote migration,
 credential, route, gate, traffic, or authority change occurred. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 19. 0072 Accepted-Source Authorization Checkpoint
+
+Application migration
+`0072_relay_container_drain_source_authorization.sql` is the current local
+schema head. The exact local inventory is 72 migrations, 99 required tables,
+1611 checked incremental columns, and 148 key indexes.
+
+0072 requires an empty 0071 source ledger at migration time, then adds
+append-preserved authorization and attestation authorities. An authorization
+is bound to the current fence/head, scan, collector build/run, credential,
+page/shard limits, pinned source schema, short D1-time window and hashed
+single-use nonce. A source seal now requires ordered assembler and verifier
+attestations over one exact source snapshot with distinct identities, SPKIs
+and signature envelopes.
+
+The root Worker has a fail-closed Rust Ed25519 verifier and a private,
+read-only D1 Session bridge. Schema readiness and exact authority readback use
+one `withSession("first-primary")` session and expose only a SHA-256 digest of
+the bounded opaque bookmark. `first-primary` is sequential consistency, not a
+frozen snapshot; a future collector must capture a high watermark, use keyset
+pagination, and recheck the fence/head and complete source at every
+irreversible boundary.
+
+This checkpoint adds no authorization issuer, one-time claim, collector,
+terminal receipt, R2 evidence writer, HTTP route, write gate, close command
+authority, traffic-return authority or reopen path. Production requires
+RootAuth plus a fresh phishing-resistant second factor, atomic claim/audit and
+exactly one terminal receipt, Session batch and ambiguous-commit handling,
+create-only retention-locked offline-verifiable R2 evidence, and remote
+isolated-staging concurrency/fault/rollback campaigns.
+
+0072 changes no billing expression, quota, settlement, refund or reverse-sync
+semantics. No remote migration, credential, route, gate, traffic or authority
+change occurred. Go/VPS remains authoritative and production remains
+**NO-GO**.

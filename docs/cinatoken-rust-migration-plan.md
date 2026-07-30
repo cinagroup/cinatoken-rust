@@ -25401,3 +25401,416 @@ No remote migration, D1 Session, credential, Cloudflare API, deployment,
 route, DNS, gate, customer traffic, provider request, or Go/VPS authority was
 accessed or changed. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 22.338 Source Authorization Production Gates (2026-07-30)
+
+This production-plan overlay audits the 0072 candidate implementation against
+the 0071 promotion sequence. It does not promote the implementation, enable a
+mutation, or change the authority decision.
+
+Application migration
+`0072_relay_container_drain_source_authorization.sql` is the current candidate
+head. The candidate Application inventory is:
+
+```text
+72 migrations
+99 required tables
+1611 checked incremental columns
+148 key indexes
+```
+
+### Audited implementation boundary
+
+The completed local 0072 slice is limited to three capabilities:
+
+1. **Schema and database guards.** The migration has an apply-time preflight
+   that requires all five 0071 source tables to be empty and the 0071 writer
+   to be stopped. It then adds two persistent append-preserved tables with 61
+   total columns, four indexes, and eight persistent triggers. The guards bind
+   an unexpired authorization to the exact open fence, scope head, source
+   scan, collector build/run, credential, page size, shard count, and pinned
+   0068 source schema. They require ordered, independently keyed assembler and
+   verifier attestations before a source seal.
+2. **Fail-closed Rust verification.** The Rust verifier uses three
+   deployment-pinned Ed25519 SPKI trust roots for authorizer, assembler, and
+   verifier roles; canonical length-prefixed messages and base64url encoding;
+   strict DTO decoding; exact environment/fence/head/scan/run bindings; short
+   validity windows; a minimum remaining-time check; and identity/key
+   separation. The raw execution nonce is bounded, hashed, and excluded from
+   verified output.
+3. **Read-only `first-primary` readback.** Schema readiness and exact
+   authorization-plus-two-attestation readback execute through one D1 Session,
+   validate every returned field, and expose only a SHA-256 digest of the
+   bounded opaque bookmark. The platform capability is schema-only.
+
+This completed slice is **not** an authenticated collector, authorization
+issuer, authorization mutation writer, one-time claim/consumption authority,
+terminal receipt ledger, R2 evidence writer, close-command control plane,
+runtime write gate, traffic-return authority, reopen path, or production
+route. No code path can currently insert a 0072 authorization, collect 0071
+members/pages/shards, attest a source, or seal it from a production request.
+The SQL uniqueness constraints reduce replay surface but do not prove that an
+authorization was atomically claimed once or that every attempt reached one
+durable terminal outcome.
+
+0072 therefore improves the fail-closed evidence boundary without making the
+0071 writer safe to enable. Go/VPS remains the sole production authority, all
+drain/close/traffic-return gates remain false or absent, and the full
+Cloudflare migration remains **NO-GO**.
+
+### Consistency and ownership rules
+
+`withSession("first-primary")` provides sequential consistency from the
+primary. It is **not** a frozen SQLite snapshot, transaction spanning multiple
+Worker invocations, source lock, or guarantee that two reads observe the same
+database state. A later query may legitimately observe a write that committed
+after an earlier query in the same Session. The bookmark is a causal position,
+not a snapshot identifier, and its digest is evidence metadata rather than a
+proof that the accepted set did not change.
+
+The production collector must consequently:
+
+1. capture an upper `accepted_sequence` high watermark and use bounded keyset
+   pagination, never offset pagination;
+2. bind each page to the authorization, prior-page digest, source schema,
+   first/last identity, and captured high watermark;
+3. reread the open fence, scope head, source count, high watermark, and
+   first/last identities before each irreversible phase and after the final
+   page;
+4. let any late admission, changed head/fence, cardinality drift, missing page,
+   missing shard, or changed digest abort the generation rather than hide the
+   drift;
+5. retain a digest of the Session bookmark at each phase boundary without
+   logging or persisting the raw bookmark; and
+6. require the assembler and verifier to independently enumerate and
+   recompute the source. Reusing the assembler's materialized output is not an
+   independent verification.
+
+The root Application Worker that owns the Application D1 binding remains the
+only D1 mutation authority. A placement worker, release worker, or internal
+service may orchestrate through a Service Binding, but must not receive an
+independent Application D1 binding. Cloudflare Access, a Service Binding,
+mTLS, or an internal HMAC can narrow transport reachability; none replaces
+RootAuth, fresh human verification, signed action binding, replay protection,
+or durable admin audit.
+
+### M0 - Freeze and prove the inert baseline
+
+**Entry conditions**
+
+- Go/VPS is serving authoritative production traffic.
+- Every 0067-0071 admission, drain, close, reverse-sync, and traffic-return
+  mutation gate is false or absent.
+- Every Worker, Queue, Workflow, cron, alarm, replay helper, and direct D1
+  writer that could populate the five 0071 source tables is inventoried and
+  stopped in isolated staging.
+- The five 0071 source tables are empty. Any pre-existing row is an apply
+  blocker; it must not be deleted to make the 0072 preflight pass.
+- The candidate commit, Worker version ID, migration bytes, normalized schema,
+  binding inventory, and rollback build are frozen before remote work.
+
+**Execution**
+
+1. Export or retain D1 Time Travel recovery evidence, the complete migration
+   ledger, normalized table/index/trigger SQL, row counts, business
+   fingerprints, and the current fence/head state.
+2. Run the full local SQLite verifier, Rust unit suite, wasm check, frontend
+   check, and real-Workerd lifecycle/atomic-admission suites against the same
+   candidate.
+3. Apply 0072 to a dedicated remote staging D1 database with no production
+   bindings or customer traffic.
+4. Read back the exact 72-migration head and canonical 99-table,
+   1611-column, 148-index inventory. Separately prove the two 0072 tables, 61
+   ordered columns, four indexes, eight triggers, trigger-body contracts, and
+   zero authorization/attestation/source rows.
+5. Deploy the reader-first candidate with every future issuer/collector gate
+   false. Prove its schema capability through real Workerd and remote staging.
+   Prove an N-1 build fails closed on the unexpected 0072 head and cannot
+   mutate any 0071/0072 table.
+
+**Exit gate**
+
+M0 passes only with exact schema evidence, zero unexpected writes, zero
+enabled mutation gates, a reproducible candidate, a tested rollback build,
+and independent security/SRE review of the retained evidence. A count-only or
+capability-only response does not pass. On failure, stop at the reader-first
+build, preserve all rows and artifacts, keep Go/VPS authoritative, and repair
+forward in staging. There is no destructive 0072 down migration.
+
+### M1 - Add authenticated issuance, still without collection
+
+M1 introduces the human and cryptographic authorization control plane, but
+does not yet authorize source-table writes.
+
+1. Put issuance only in the root Application Worker behind a separately named,
+   default-false gate that tracked production configuration must reject when
+   true. Do not reuse a relay, placement, status, smoke, or generic admin
+   endpoint.
+2. Require an active RootAuth session **and** a fresh phishing-resistant
+   WebAuthn/passkey assertion with user verification. The assertion challenge
+   must bind the environment, action name, candidate Worker version, current
+   fence/head digests, source scan ID, collector build/run, page/shard limits,
+   raw-nonce digest, permit expiry, reason, and change-ticket digest. Maximum
+   acceptable assertion age is five minutes and it cannot outlive the permit.
+3. Persist in D1 only the verified admin ID, credential ID digest,
+   challenge/action digest, authorization subject/envelope digests, pinned
+   public-key fingerprints, D1 times, and redacted reason/ticket references.
+   The locked R2 evidence bundle may retain the canonical signed subject,
+   detached signature, and required public verification material for offline
+   revalidation. Never place a private key, raw passkey assertion, raw
+   execution nonce, raw D1 bookmark, session cookie, or bearer credential in
+   D1, R2, logs, or an API response.
+4. Keep authorizer, assembler, and verifier keys under separate deployment
+   ownership. The RootAuth actor cannot also satisfy an assembler/verifier
+   role, and a different release owner must approve production promotion.
+5. Insert the authorization and immutable admin audit in one atomic D1
+   operation and perform exact authoritative readback. Only an unambiguous new
+   insert may return `created`; an exact replay, conflict, caught exception, or
+   indeterminate commit returns no collection authority.
+6. Return `Cache-Control: no-store`, stable redacted error classes, and no
+   secret-dependent detail. Rate-limit issuance independently from normal
+   admin traffic and alert on every rejection, replay, or trust-pin mismatch.
+
+**Exit gate**
+
+M1 passes only when concurrent issuance, stale RootAuth, stale or cloned
+WebAuthn assertions, cross-environment replay, changed fence/head, wrong
+candidate version, expired permit, key reuse, response loss, and malformed
+canonical payload tests all fail closed. Remote staging must show exactly one
+authorization plus one matching admin audit for a successful ceremony and no
+0071 source write. RootAuth alone is not sufficient, and the current 0072
+schema alone cannot satisfy this gate.
+
+### M2 - Add one-time consumption, collector, and terminal receipts
+
+M2 requires a separately reviewed follow-on migration and writer. It must not
+overload 0072 with an undocumented mutable status column.
+
+1. Add an append-preserved authorization claim keyed uniquely by
+   `authorization_id_sha256`, plus an append-preserved terminal receipt keyed
+   uniquely by the claim. The first-primary claim batch must include the
+   one-time claim, immutable admin/audit linkage, and exact readback. Only a
+   definite new claim with `changes = 1` grants this invocation permission to
+   write source evidence.
+2. Define terminal outcomes at least as `succeeded`, `rejected`,
+   `expired_unclaimed`, and `ambiguous`. Every persisted authorization must
+   eventually have exactly one terminal receipt. An ambiguous result is
+   terminal for mutation purposes: recovery may perform status-only readback,
+   but it cannot reclaim, rerun, or send another source write under the same
+   authorization. A bounded sweeper may append `expired_unclaimed` according
+   to D1 time, but has no claim or collection authority.
+3. Bind the claim to the exact root Worker service/version, deployment
+   provenance, execution nonce digest, credential digest, source scan ID,
+   collector run, D1 database identity, fence/head, page/shard limits, and
+   permit deadline. A process restart or Queue redelivery cannot create a new
+   authority.
+4. Extend the narrow D1 Session compatibility layer only with the minimum
+   documented atomic batch/readback capability needed by the collector. Catch
+   every JavaScript exception, reject missing/malformed result metadata, and
+   classify an unknown commit by stable first-primary readback before taking
+   another action.
+5. Collect members with `accepted_sequence > last_seen AND
+   accepted_sequence <= captured_high_watermark`. Commit bounded page evidence
+   atomically, retain the page-chain digest, materialize all configured shards
+   including empty shards, and recompute the complete member/page/shard/set
+   manifests.
+6. Run assembler and verifier as independently keyed roles. Each must reread
+   the authoritative source and sign the exact same snapshot contract. Insert
+   the attestations in assembler-then-verifier order and seal only after exact
+   first-primary authority readback.
+7. Write terminal success only after the source seal, immutable R2 evidence,
+   and all linked identities have exact readback. A failure before that point
+   receives a non-success terminal receipt and requires a new authorization,
+   scan, and generation.
+
+**Exit gate**
+
+M2 passes only when 32 concurrent claims produce exactly one winner and one
+source scan, every claimed authorization receives exactly one terminal
+receipt, and there are zero orphan claims or unclassified outcomes. The local
+and real-Workerd matrix must cover process loss at every phase, response loss
+before/after commit, Queue redelivery, bookmark loss, permit expiry, late
+admission, page reordering, missing/duplicate members, missing/empty shards,
+assembler/verifier key reuse, R2 conflict, and terminal-receipt replay.
+
+### Immutable R2 evidence contract
+
+The M2 writer and M3 remote ceremony must use a dedicated evidence path, not a
+general customer-file bucket.
+
+1. Build a canonical manifest containing candidate provenance, migration and
+   normalized-schema digests, authorization/claim/terminal-receipt identities,
+   WebAuthn action and admin-audit digests, source boundary, every page/shard
+   digest, both attestation identities, Session bookmark digests, Workerd and
+   remote test summaries, resource telemetry, and rollback evidence.
+2. Retain each canonical authorization/attestation subject, detached Ed25519
+   signature, signer key ID, and the exact public verification material or
+   immutable trust-policy reference required for offline revalidation. Exclude
+   private keys, raw bookmarks/nonces, session or bearer credentials, provider
+   credentials, request/response bodies, and unnecessary personal data.
+   Sensitive identifiers must be allowlisted and domain-separated before
+   hashing.
+3. Write the canonical manifest and referenced evidence objects to
+   deterministic generation-specific keys using create-only conditional
+   writes. Exact replay must match content SHA-256 and metadata; an existing
+   different object is a conflict, never an overwrite.
+4. Enable an approved R2 retention lock for the evidence prefix and ensure the
+   runtime principal has no delete path. Lifecycle expiration must be later
+   than the finance, security, privacy, rollback, and incident-response
+   retention requirement.
+5. Record the R2 bucket/prefix identity, object key digest, object version when
+   enabled, ETag, content SHA-256, byte length, retention-policy identity, and
+   successful post-write HEAD/readback in the D1 terminal receipt. Terminal
+   success is impossible when any required value is absent or mismatched.
+6. If R2 creation succeeds but the D1 terminal receipt is unknown, preserve
+   the object, classify by D1 first-primary readback, and emit no retry
+   authority. A reconciler may link or quarantine immutable evidence; it may
+   not delete, replace, or resume collection.
+
+### M3 - Remote isolated staging, budgets, and rollback
+
+M3 runs only in a dedicated staging Worker/D1/R2/Queue namespace with no
+production route, DNS, customer traffic, production secret, or production
+Service Binding.
+
+The mandatory remote matrix includes:
+
+- N/N-1 mixed-version fail-closed behavior and stopped-writer preflight;
+- empty, one-row, multi-page, maximum configured page, all-empty-shard, and
+  1024-shard captures;
+- at least 20 repetitions of concurrent claim, late-admission, process-kill,
+  response-loss-before-commit, response-loss-after-commit, Queue redelivery,
+  stale permit, changed trust pin, and R2 create conflict;
+- D1 throttling/timeout, R2 timeout, Worker CPU exhaustion, malformed Session
+  result, missing bookmark, and unavailable verifier injection;
+- exact stable readback after every ambiguous fault, proving no second claim,
+  no second scan, no second terminal receipt, and no evidence overwrite; and
+- two complete rollback rehearsals from a claimed in-progress run, including
+  cancellation of Queue/cron/alarm producers and status-only classification.
+
+The release candidate must pin and satisfy these budgets:
+
+| Resource | Hard contract | M3 promotion threshold |
+| --- | --- | --- |
+| Authorization time | Permit lifetime 60-900 seconds; at least 30 seconds remaining at verification | No mutation begins unless the measured worst-case run plus rollback margin fits before expiry |
+| Attestation time | Lifetime 30-900 seconds; D1 receipt no more than 120 seconds after signed attestation | Zero expired or skew-violating successful receipts |
+| Pagination | `page_size` 1-512; keyset upper-bounded by captured high watermark | Pin one tested value; no runtime auto-escalation and no page exceeds the candidate budget |
+| Shards | `shard_count` 1-1024, including empty manifests | All configured indices materialized exactly once |
+| Bookmark | Opaque value 1-4096 bytes; only SHA-256 leaves the Session bridge | Zero raw bookmark occurrences in logs, D1, R2, or responses |
+| Worker CPU | Candidate `[limits] cpu_ms` and current plan limit recorded in evidence | p99 at or below 60% of the configured CPU budget in three full runs |
+| Worker memory | Current platform limit recorded in evidence | Peak at or below 70% of the available limit; no unbounded page/materialization buffer |
+| D1 operations | Current account statement, row-read, row-write, query-duration, and database-size limits recorded before each run | Every invocation at or below 50% of each applicable limit, zero throttles in three full runs |
+| R2 operations | One create-only evidence generation and bounded HEAD/readback per claim | Zero overwrite/delete, zero digest drift, and 100% terminal-receipt linkage |
+| Test scale | Sanitized set at least as large as the current production p99 accepted-set cardinality or twice the planned canary, whichever is greater | Three consecutive full campaigns with identical canonical source-manifest digests for the same fixture and no unclassified outcome |
+
+These percentage gates are intentionally below platform maxima. If the
+account plan, Cloudflare limit, dataset, or configured CPU budget changes, the
+evidence contract must record the new values and M3 must rerun; a remembered
+or documentation-only limit is not release evidence.
+
+Rollback is disable-first and evidence-preserving:
+
+1. disable issuance and claim gates and stop every collector producer within
+   five minutes;
+2. route or retain all authority at Go/VPS, with authority RPO zero because no
+   production-authoritative mutation moved to Rust;
+3. classify any claimed generation by first-primary readback only, writing at
+   most its terminal ambiguity receipt;
+4. deploy the pinned reader-only rollback build within 15 minutes;
+5. never drop 0072, delete 0071/0072 rows, unlock/delete R2 evidence, reopen a
+   0068 fence, or reuse an authorization; and
+6. repair forward with a new migration and a new authorization generation
+   after root-cause review.
+
+M3 passes only after the three full campaigns, a 24-hour reader-only soak,
+both rollback rehearsals, exact immutable evidence, budget compliance, and
+independent security, SRE, database, finance, privacy, release, and rollback
+sign-off.
+
+### M4 - Production evidence ceremony, not traffic cutover
+
+M4 may begin only from the exact M3 candidate and evidence digest. Any code,
+migration, binding, trust root, compatibility bridge, resource limit, or
+Cloudflare account-policy drift returns the candidate to M0 or M3.
+
+1. Retain production D1 recovery evidence and verify the complete writer
+   inventory again while Go/VPS remains authoritative.
+2. Apply 0072 and every separately reviewed M1/M2 claim/receipt follow-on
+   migration with issuer and collector gates false. Read back the exact
+   candidate schema and hold a minimum 24-hour reader-only observation period
+   with zero unexpected source, authorization, claim, attestation, or terminal
+   receipt rows.
+3. Require a new RootAuth plus fresh WebAuthn ceremony, a different release
+   owner approval, the exact M3 candidate digest, and an immutable production
+   authorization/claim/evidence contract.
+4. Permit at most one bounded source-evidence generation. Do not submit the
+   0070 close command, change DNS/routes, enable Rust customer admission,
+   return traffic, or disable Go/VPS during this ceremony.
+5. Accept the generation only when one claim, one source scan, two independent
+   attestations, one seal, one terminal-success receipt, and one locked R2
+   evidence manifest agree exactly and all M3 resource/error budgets hold.
+6. On any rejection, expiry, drift, ambiguity, alert, budget breach, or
+   missing evidence, disable both gates immediately and execute the M3
+   rollback. Never continue to close or cutover from partial evidence.
+
+Passing M4 means only that the 0072 source-authorization collector is eligible
+for a separate production review. It is not authorization to execute 0070,
+close the 0068 fence, move billing or settlement ownership, perform operation
+14, return traffic, change DNS, or retire Go/VPS. Those actions still require
+their own authenticated write gates, remote fault evidence, billing/reverse-
+sync closure, rollback proof, and independent go/no-go decision. Until every
+broader migration gate passes, Go/VPS remains authoritative and production
+remains **NO-GO**.
+
+### worker-rs Session compatibility lifecycle
+
+The current workspace pins `worker = "0.5"` and `worker-sys = "0.5"`. Because
+that generation has no typed D1 Sessions wrapper, 0072 uses a private,
+structural wasm-bindgen bridge limited to the documented `withSession`,
+`prepare`, and `getBookmark` methods. The bridge fixes the constraint to
+`first-primary`, bounds the opaque bookmark, returns only its SHA-256 digest,
+and is covered by Rust plus real-Workerd capability tests.
+
+This compatibility bridge is acceptable only for the current read-only
+schema/readback slice. Before M2, any added Session batch surface requires
+focused Workerd tests for successful results, JavaScript exceptions, malformed
+result arrays, unknown commits, missing bookmarks, exact readback, and
+concurrent claims. The bridge must remain private and narrow; ordinary
+`D1Database` queries, unconstrained reads, or ad hoc JavaScript reflection
+cannot bypass it.
+
+Upgrading to `worker-rs` 0.8.x is a separate dependency and Durable Object
+refactor, not part of the 0072 collector/write-gate rollout. That work must
+have its own branch/ADR and independently:
+
+1. inventory D1, Queue, WebSocket, Service Binding, Worker metadata, and every
+   Durable Object trait/storage/alarm API change;
+2. migrate the complete workspace and wasm targets without mixing 0.5 and 0.8
+   runtime assumptions;
+3. prove behavioral parity with the full Rust, SQLite, Workerd, frontend, P5,
+   migration-discovery, N/N-1, and remote staging suites;
+4. replace the compatibility bridge only after the typed 0.8 Session API
+   demonstrates the same `first-primary`, batch, bookmark-hygiene, exception,
+   and exact-readback contract; and
+5. ship reader-first with all mutation gates false before repeating M0-M3.
+
+Combining the dependency upgrade with first collector enablement would make a
+D1 consistency regression, Durable Object lifecycle regression, and mutation
+authority regression indistinguishable during rollback. The two changes
+therefore cannot share one production candidate or one go/no-go decision.
+
+### Audit decision
+
+- **GO** only for local development and verification of the 0072 schema,
+  fail-closed Rust signature verifier, private read-only Session bridge, and
+  first-primary authority readback.
+- **CONDITIONAL GO** for M0 remote isolated-staging reader deployment only
+  after the exact preflight, backups, test suites, schema readback, and
+  reader-only rollback evidence pass.
+- **NO-GO** for authorization issuance, collector/source writes, a write gate,
+  source seal in production, close command, traffic change, or retirement of
+  Go/VPS until M1-M4 and every broader migration gate pass.
+
+No remote D1, R2, Cloudflare API, credential, deployment, route, DNS, runtime
+gate, customer traffic, or Go/VPS state was accessed or changed by this
+planning increment. Production remains **NO-GO**.

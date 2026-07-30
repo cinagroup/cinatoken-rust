@@ -26,6 +26,8 @@ mod cache_invalidation;
 mod channel_upstream_update;
 mod container_artifacts;
 mod container_controller;
+#[allow(dead_code)]
+mod container_drain_source_authorization;
 mod container_r2_inventory;
 mod container_r2_inventory_admin;
 mod container_reconciliation;
@@ -44,6 +46,8 @@ pub(crate) mod container_shard_placement_mutation_authorization;
 mod container_terminal_outbox;
 mod container_terminal_outbox_admin;
 mod d1_repositories;
+#[allow(dead_code)]
+mod d1_session;
 // Foundational mutable-flow-state substrate (item 2.1). Its consumers
 // (secure-verification step-up, Turnstile, OAuth/2FA/passkey) land in following
 // increments; allow dead_code until the first one is wired.

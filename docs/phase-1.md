@@ -4758,3 +4758,35 @@ classification, and isolated-staging N/N-1 fault campaign. No route, secret,
 gate, or remote apply is included here. Billing-expression and settlement
 semantics are unchanged. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-07-30 Accepted-Source Authorization Boundary
+
+Application D1 head is now
+`0072_relay_container_drain_source_authorization.sql`, with 72 migrations, 99
+required tables, 1611 checked incremental columns, and 148 key indexes.
+
+0072 is a reader-first, default-inert authority boundary. Its migration
+requires an empty 0071 source ledger before apply and then enforces one exact,
+short-lived source authorization plus ordered, independently keyed assembler
+and verifier attestations before a source seal. Rust verifies canonical
+Ed25519 subjects against three deployment-pinned SPKI roles and hashes the raw
+execution nonce without returning it.
+
+The repository uses a private worker-rs 0.5 D1 Sessions bridge for exact
+schema and authority readback through `withSession("first-primary")`. Only the
+bookmark SHA-256 leaves the bridge. Real Workerd validates that capability.
+Sequential consistency does not freeze the source; a future collector still
+needs a captured high watermark, bounded keyset pagination, phase-boundary
+fence/head/cardinality rereads and independent source recomputation.
+
+Phase 1 still has no 0072 issuer, one-time authorization claim, collector,
+terminal receipt, R2 evidence writer, route, credential, write gate, close,
+traffic-return or reopen authority. The next production boundary requires
+RootAuth plus fresh phishing-resistant second-factor issuance, atomic claim
+and admin audit, exactly one terminal outcome, Session batch and
+unknown-commit handling, create-only retention-locked R2 evidence, and remote
+isolated-staging concurrency/fault/rollback proof.
+
+No billing-expression or settlement semantics changed, and no remote
+Cloudflare state or Go/VPS authority changed. Go/VPS remains authoritative and
+production remains **NO-GO**.

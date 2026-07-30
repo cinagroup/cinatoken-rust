@@ -18,6 +18,7 @@ use crate::container_artifacts::{
     container_client_response_key, validate_container_client_response_headers_json,
     MAX_CONTAINER_CLIENT_RESPONSE_BYTES,
 };
+use crate::d1_session::D1Session;
 
 pub(crate) const BILLING_MODE_OPTION_KEY: &str = "billing_setting.billing_mode";
 pub(crate) const BILLING_EXPR_OPTION_KEY: &str = "billing_setting.billing_expr";
@@ -94,6 +95,8 @@ pub(crate) const RELAY_CONTAINER_DRAIN_CLOSE_COMMAND_MIGRATION: &str =
     "0070_relay_container_drain_close_command.sql";
 pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION: &str =
     "0071_relay_container_drain_accepted_set_source_seal.sql";
+pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_MIGRATION: &str =
+    "0072_relay_container_drain_source_authorization.sql";
 pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256: &str =
     "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50";
 pub(crate) const RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256: &str =
@@ -1104,6 +1107,98 @@ struct RelayContainerDrainSourceSealSchemaProbe {
     index_names: Option<String>,
     trigger_names: Option<String>,
     trigger_contract: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerDrainSourceAuthorizationSchemaProbe {
+    migration_count: i64,
+    authorization_columns: Option<String>,
+    attestation_columns: Option<String>,
+    table_names: Option<String>,
+    index_names: Option<String>,
+    trigger_names: Option<String>,
+    trigger_contract: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read-only 0072 authority contract; no route is enabled
+pub struct RelayContainerDrainSourceAuthorizationRow {
+    pub authorization_id_sha256: String,
+    pub contract_version: i64,
+    pub authorization_contract: String,
+    pub authorization_migration: String,
+    pub environment: String,
+    pub scope_kind: String,
+    pub scope_id_sha256: String,
+    pub admission_fence_id_sha256: String,
+    pub fence_generation: i64,
+    pub expected_fence_state_digest_sha256: String,
+    pub expected_head_version: i64,
+    pub expected_head_digest_sha256: String,
+    pub source_scan_id_sha256: String,
+    pub collector_service_name: String,
+    pub collector_version_id: String,
+    pub collector_run_id_sha256: String,
+    pub started_by_credential_id_sha256: String,
+    pub page_size: i64,
+    pub shard_count: i64,
+    pub accepted_source_schema_sha256: String,
+    pub authorizer_issuer: String,
+    pub authorizer_key_id: String,
+    pub authorizer_identity_sha256: String,
+    pub authorizer_spki_sha256: String,
+    pub authorization_subject_sha256: String,
+    pub authorization_signature_envelope_sha256: String,
+    pub execution_nonce_sha256: String,
+    pub permit_issued_at: i64,
+    pub permit_expires_at: i64,
+    pub authorized_by_admin_id: i64,
+    pub recorded_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read-only 0072 attestation contract; no route is enabled
+pub struct RelayContainerDrainSourceAttestationRow {
+    pub authorization_id_sha256: String,
+    pub attestation_role: String,
+    pub contract_version: i64,
+    pub attestation_contract: String,
+    pub attestation_migration: String,
+    pub source_scan_id_sha256: String,
+    pub source_seal_id_sha256: String,
+    pub issuer: String,
+    pub key_id: String,
+    pub identity_sha256: String,
+    pub signer_spki_sha256: String,
+    pub attestation_subject_sha256: String,
+    pub signature_envelope_sha256: String,
+    pub accepted_bookmark_sha256: String,
+    pub accepted_set_manifest_sha256: String,
+    pub accepted_source_schema_sha256: String,
+    pub accepted_source_readback_sha256: String,
+    pub page_count: i64,
+    pub first_page_digest_sha256: Option<String>,
+    pub last_page_digest_sha256: Option<String>,
+    pub shard_set_manifest_sha256: String,
+    pub captured_high_watermark: i64,
+    pub captured_member_count: i64,
+    pub captured_first_sequence: i64,
+    pub captured_first_operation_id: Option<String>,
+    pub captured_last_sequence: i64,
+    pub captured_last_operation_id: Option<String>,
+    pub attested_at: i64,
+    pub valid_until: i64,
+    pub recorded_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[allow(dead_code)] // read-only 0072 authority contract; no route is enabled
+pub struct RelayContainerDrainSourceAuthorityReadback {
+    pub authorization: RelayContainerDrainSourceAuthorizationRow,
+    pub attestations: Vec<RelayContainerDrainSourceAttestationRow>,
+    pub read_bookmark_sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -15969,16 +16064,23 @@ pub async fn relay_container_drain_source_seal_schema_ready(
                  SELECT name
                  FROM sqlite_master
                  WHERE type = 'trigger'
-                   AND (
-                     tbl_name IN (
-                       'relay_container_drain_source_scans',
-                       'relay_container_drain_source_members',
-                       'relay_container_drain_source_pages',
-                       'relay_container_drain_source_shards',
-                       'relay_container_drain_source_seals'
-                     )
-                     OR name =
-                       'relay_container_drain_close_command_source_seal_guard'
+                   AND name IN (
+                     'relay_container_drain_close_command_source_seal_guard',
+                     'relay_container_drain_source_member_delete_guard',
+                     'relay_container_drain_source_member_insert_guard',
+                     'relay_container_drain_source_member_update_guard',
+                     'relay_container_drain_source_page_delete_guard',
+                     'relay_container_drain_source_page_insert_guard',
+                     'relay_container_drain_source_page_update_guard',
+                     'relay_container_drain_source_scan_delete_guard',
+                     'relay_container_drain_source_scan_insert_guard',
+                     'relay_container_drain_source_scan_update_guard',
+                     'relay_container_drain_source_seal_delete_guard',
+                     'relay_container_drain_source_seal_insert_guard',
+                     'relay_container_drain_source_seal_update_guard',
+                     'relay_container_drain_source_shard_delete_guard',
+                     'relay_container_drain_source_shard_insert_guard',
+                     'relay_container_drain_source_shard_update_guard'
                    )
                  ORDER BY name
                )) AS trigger_names,
@@ -16151,6 +16253,545 @@ pub async fn relay_container_drain_source_seal_schema_ready(
             && row.trigger_names.as_deref() == Some(TRIGGER_NAMES)
             && row.trigger_contract == Some(1)
     }))
+}
+
+#[allow(dead_code)] // fail-closed 0072 probe; no route or production gate is enabled
+pub async fn relay_container_drain_source_authorization_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    const AUTHORIZATION_COLUMNS: &str = "authorization_id_sha256,contract_version,authorization_contract,authorization_migration,environment,scope_kind,scope_id_sha256,admission_fence_id_sha256,fence_generation,expected_fence_state_digest_sha256,expected_head_version,expected_head_digest_sha256,source_scan_id_sha256,collector_service_name,collector_version_id,collector_run_id_sha256,started_by_credential_id_sha256,page_size,shard_count,accepted_source_schema_sha256,authorizer_issuer,authorizer_key_id,authorizer_identity_sha256,authorizer_spki_sha256,authorization_subject_sha256,authorization_signature_envelope_sha256,execution_nonce_sha256,permit_issued_at,permit_expires_at,authorized_by_admin_id,recorded_at";
+    const ATTESTATION_COLUMNS: &str = "authorization_id_sha256,attestation_role,contract_version,attestation_contract,attestation_migration,source_scan_id_sha256,source_seal_id_sha256,issuer,key_id,identity_sha256,signer_spki_sha256,attestation_subject_sha256,signature_envelope_sha256,accepted_bookmark_sha256,accepted_set_manifest_sha256,accepted_source_schema_sha256,accepted_source_readback_sha256,page_count,first_page_digest_sha256,last_page_digest_sha256,shard_set_manifest_sha256,captured_high_watermark,captured_member_count,captured_first_sequence,captured_first_operation_id,captured_last_sequence,captured_last_operation_id,attested_at,valid_until,recorded_at";
+    const TABLE_NAMES: &str =
+        "relay_container_drain_source_attestations|relay_container_drain_source_authorizations";
+    const INDEX_NAMES: &str = "idx_relay_container_drain_source_attestation_audit|idx_relay_container_drain_source_attestation_seal|idx_relay_container_drain_source_authorization_audit|idx_relay_container_drain_source_authorization_expiry";
+    const TRIGGER_NAMES: &str = "relay_container_drain_source_attestation_delete_guard|relay_container_drain_source_attestation_insert_guard|relay_container_drain_source_attestation_update_guard|relay_container_drain_source_authorization_delete_guard|relay_container_drain_source_authorization_insert_guard|relay_container_drain_source_authorization_update_guard|relay_container_drain_source_scan_authorization_guard|relay_container_drain_source_seal_authorization_guard";
+    let migrations = [
+        D1Type::Text(RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_TRAFFIC_RETURN_EVIDENCE_ENFORCE_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_CLOSE_COMMAND_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_MIGRATION),
+    ];
+    let session = D1Session::first_primary(db)?;
+    let row = session
+        .prepare(
+            r#"
+            SELECT
+              (SELECT COUNT(1)
+               FROM d1_migrations
+               WHERE name IN (?1, ?2, ?3, ?4, ?5, ?6)) AS migration_count,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_drain_source_authorizations'
+                 )
+                 ORDER BY cid
+               )) AS authorization_columns,
+              (SELECT group_concat(name, ',') FROM (
+                 SELECT name
+                 FROM pragma_table_info(
+                   'relay_container_drain_source_attestations'
+                 )
+                 ORDER BY cid
+               )) AS attestation_columns,
+              (SELECT group_concat(name, '|') FROM (
+                 SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN (
+                     'relay_container_drain_source_authorizations',
+                     'relay_container_drain_source_attestations'
+                   )
+                 ORDER BY name
+               )) AS table_names,
+              (SELECT group_concat(name, '|') FROM (
+                 SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'index'
+                   AND tbl_name IN (
+                     'relay_container_drain_source_authorizations',
+                     'relay_container_drain_source_attestations'
+                   )
+                   AND name NOT LIKE 'sqlite_autoindex_%'
+                 ORDER BY name
+               )) AS index_names,
+              (SELECT group_concat(name, '|') FROM (
+                 SELECT name
+                 FROM sqlite_master
+                 WHERE type = 'trigger'
+                   AND name IN (
+                     'relay_container_drain_source_authorization_insert_guard',
+                     'relay_container_drain_source_authorization_update_guard',
+                     'relay_container_drain_source_authorization_delete_guard',
+                     'relay_container_drain_source_scan_authorization_guard',
+                     'relay_container_drain_source_attestation_insert_guard',
+                     'relay_container_drain_source_attestation_update_guard',
+                     'relay_container_drain_source_attestation_delete_guard',
+                     'relay_container_drain_source_seal_authorization_guard'
+                   )
+                 ORDER BY name
+               )) AS trigger_names,
+              (SELECT CASE WHEN
+                 EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'table'
+                     AND name = 'relay_container_drain_source_seals'
+                     AND instr(
+                       sql,
+                       'd1-session-first-primary-bookmark-v1'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'accepted-sequence-keyset-v1'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_seal_insert_guard'
+                     AND instr(
+                       sql,
+                       'drain source seal is incomplete, stale, or detached'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_authorization_insert_guard'
+                     AND instr(
+                       sql,
+                       'complete 0067 through 0072 chain'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'authorization time must come from D1'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'lost the current admission fence'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_scan_authorization_guard'
+                     AND instr(
+                       sql,
+                       'exact unexpired authorization'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_attestation_insert_guard'
+                     AND instr(
+                       sql,
+                       'attestation receipt time must come from D1'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'NEW.recorded_at - NEW.attested_at'
+                     ) = 0
+                     AND instr(
+                       sql,
+                       'ordered independent roles'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'SUM(page.page_member_count)'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'SUM(shard.shard_member_count)'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'table'
+                     AND name =
+                       'relay_container_drain_source_attestations'
+                     AND instr(
+                       sql,
+                       'recorded_at - attested_at BETWEEN 0 AND 120'
+                     ) > 0
+                 )
+                 AND EXISTS (
+                   SELECT 1
+                   FROM sqlite_master
+                   WHERE type = 'trigger'
+                     AND name =
+                       'relay_container_drain_source_seal_authorization_guard'
+                     AND instr(
+                       sql,
+                       'exact authorized independent attestations'
+                     ) > 0
+                     AND instr(
+                       sql,
+                       'NEW.sealed_at >= verifier.recorded_at'
+                     ) > 0
+                 )
+                THEN 1 ELSE 0 END) AS trigger_contract
+            "#,
+        )?
+        .bind_refs(&migrations)?
+        .first::<RelayContainerDrainSourceAuthorizationSchemaProbe>(None)
+        .await?;
+    let read_bookmark_sha256 = session.bookmark_sha256()?;
+    Ok(row.is_some_and(|row| {
+        read_bookmark_sha256.len() == 64
+            && row.migration_count == 6
+            && row.authorization_columns.as_deref() == Some(AUTHORIZATION_COLUMNS)
+            && row.attestation_columns.as_deref() == Some(ATTESTATION_COLUMNS)
+            && row.table_names.as_deref() == Some(TABLE_NAMES)
+            && row.index_names.as_deref() == Some(INDEX_NAMES)
+            && row.trigger_names.as_deref() == Some(TRIGGER_NAMES)
+            && row.trigger_contract == Some(1)
+    }))
+}
+
+#[allow(dead_code)] // first-primary 0072 readback; no route or write path is enabled
+pub async fn relay_container_drain_source_authority_readback(
+    db: &D1Database,
+    authorization_id_sha256: &str,
+) -> worker::Result<Option<RelayContainerDrainSourceAuthorityReadback>> {
+    validate_relay_container_sha256(authorization_id_sha256, "drain source authorization ID")?;
+    let args = [D1Type::Text(authorization_id_sha256)];
+    let session = D1Session::first_primary(db)?;
+    let Some(authorization) = session
+        .prepare(
+            r#"
+            SELECT authorization_id_sha256, contract_version,
+                   authorization_contract, authorization_migration,
+                   environment, scope_kind, scope_id_sha256,
+                   admission_fence_id_sha256, fence_generation,
+                   expected_fence_state_digest_sha256,
+                   expected_head_version, expected_head_digest_sha256,
+                   source_scan_id_sha256, collector_service_name,
+                   collector_version_id, collector_run_id_sha256,
+                   started_by_credential_id_sha256, page_size, shard_count,
+                   accepted_source_schema_sha256, authorizer_issuer,
+                   authorizer_key_id, authorizer_identity_sha256,
+                   authorizer_spki_sha256, authorization_subject_sha256,
+                   authorization_signature_envelope_sha256,
+                   execution_nonce_sha256, permit_issued_at,
+                   permit_expires_at, authorized_by_admin_id, recorded_at
+            FROM relay_container_drain_source_authorizations
+            WHERE authorization_id_sha256 = ?1
+            LIMIT 1
+            "#,
+        )?
+        .bind_refs(&args)?
+        .first::<RelayContainerDrainSourceAuthorizationRow>(None)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let mut attestations = Vec::with_capacity(2);
+    for role in ["assembler", "verifier"] {
+        let attestation_args = [D1Type::Text(authorization_id_sha256), D1Type::Text(role)];
+        let attestation = session
+            .prepare(
+                r#"
+                SELECT authorization_id_sha256, attestation_role,
+                       contract_version, attestation_contract,
+                       attestation_migration, source_scan_id_sha256,
+                       source_seal_id_sha256, issuer, key_id,
+                       identity_sha256, signer_spki_sha256,
+                       attestation_subject_sha256,
+                       signature_envelope_sha256,
+                       accepted_bookmark_sha256,
+                       accepted_set_manifest_sha256,
+                       accepted_source_schema_sha256,
+                       accepted_source_readback_sha256, page_count,
+                       first_page_digest_sha256, last_page_digest_sha256,
+                       shard_set_manifest_sha256,
+                       captured_high_watermark, captured_member_count,
+                       captured_first_sequence,
+                       captured_first_operation_id,
+                       captured_last_sequence,
+                       captured_last_operation_id, attested_at,
+                       valid_until, recorded_at
+                FROM relay_container_drain_source_attestations
+                WHERE authorization_id_sha256 = ?1
+                  AND attestation_role = ?2
+                LIMIT 1
+                "#,
+            )?
+            .bind_refs(&attestation_args)?
+            .first::<RelayContainerDrainSourceAttestationRow>(None)
+            .await?;
+        if let Some(attestation) = attestation {
+            attestations.push(attestation);
+        }
+    }
+    let read_bookmark_sha256 = session.bookmark_sha256()?;
+    validate_relay_container_drain_source_authority_readback(
+        &authorization,
+        &attestations,
+        &read_bookmark_sha256,
+    )?;
+    Ok(Some(RelayContainerDrainSourceAuthorityReadback {
+        authorization,
+        attestations,
+        read_bookmark_sha256,
+    }))
+}
+
+fn validate_relay_container_drain_source_authority_readback(
+    authorization: &RelayContainerDrainSourceAuthorizationRow,
+    attestations: &[RelayContainerDrainSourceAttestationRow],
+    read_bookmark_sha256: &str,
+) -> worker::Result<()> {
+    for (value, field) in [
+        (
+            authorization.authorization_id_sha256.as_str(),
+            "drain source authorization ID",
+        ),
+        (
+            authorization.admission_fence_id_sha256.as_str(),
+            "drain source authorization fence ID",
+        ),
+        (
+            authorization.expected_fence_state_digest_sha256.as_str(),
+            "drain source authorization fence state",
+        ),
+        (
+            authorization.expected_head_digest_sha256.as_str(),
+            "drain source authorization head",
+        ),
+        (
+            authorization.source_scan_id_sha256.as_str(),
+            "drain source authorization scan ID",
+        ),
+        (
+            authorization.collector_run_id_sha256.as_str(),
+            "drain source authorization run ID",
+        ),
+        (
+            authorization.started_by_credential_id_sha256.as_str(),
+            "drain source authorization credential ID",
+        ),
+        (
+            authorization.authorizer_identity_sha256.as_str(),
+            "drain source authorizer identity",
+        ),
+        (
+            authorization.authorizer_spki_sha256.as_str(),
+            "drain source authorizer SPKI",
+        ),
+        (
+            authorization.authorization_subject_sha256.as_str(),
+            "drain source authorization subject",
+        ),
+        (
+            authorization
+                .authorization_signature_envelope_sha256
+                .as_str(),
+            "drain source authorization signature envelope",
+        ),
+        (
+            authorization.execution_nonce_sha256.as_str(),
+            "drain source authorization nonce",
+        ),
+        (read_bookmark_sha256, "drain source authority read bookmark"),
+    ] {
+        validate_relay_container_sha256(value, field)?;
+    }
+    let permit_lifetime = authorization
+        .permit_expires_at
+        .checked_sub(authorization.permit_issued_at);
+    if authorization.contract_version != 1
+        || authorization.authorization_contract != "relay-container-drain-source-authorization-v1"
+        || authorization.authorization_migration
+            != RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_MIGRATION
+        || !matches!(authorization.environment.as_str(), "staging" | "production")
+        || authorization.scope_kind != "global"
+        || authorization.scope_id_sha256 != RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256
+        || authorization.fence_generation != 1
+        || authorization.expected_head_version != 1
+        || authorization.accepted_source_schema_sha256 != RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256
+        || !(1..=512).contains(&authorization.page_size)
+        || !(1..=1024).contains(&authorization.shard_count)
+        || authorization.authorized_by_admin_id <= 0
+        || authorization.permit_issued_at <= 0
+        || !matches!(permit_lifetime, Some(60..=900))
+        || authorization.recorded_at < authorization.permit_issued_at
+        || authorization.recorded_at >= authorization.permit_expires_at
+        || authorization.authorizer_identity_sha256 == authorization.authorizer_spki_sha256
+        || authorization.authorization_subject_sha256
+            == authorization.authorization_signature_envelope_sha256
+        || attestations.len() != 2
+    {
+        return Err(worker::Error::RustError(
+            "relay container drain source authority readback is non-canonical".to_string(),
+        ));
+    }
+    let assembler = &attestations[0];
+    let verifier = &attestations[1];
+    validate_relay_container_drain_source_attestation_row(authorization, assembler, "assembler")?;
+    validate_relay_container_drain_source_attestation_row(authorization, verifier, "verifier")?;
+    if assembler.source_seal_id_sha256 != verifier.source_seal_id_sha256
+        || assembler.identity_sha256 == verifier.identity_sha256
+        || assembler.signer_spki_sha256 == verifier.signer_spki_sha256
+        || assembler.signature_envelope_sha256 == verifier.signature_envelope_sha256
+        || assembler.attested_at > verifier.attested_at
+        || assembler.accepted_bookmark_sha256 != verifier.accepted_bookmark_sha256
+        || assembler.accepted_set_manifest_sha256 != verifier.accepted_set_manifest_sha256
+        || assembler.accepted_source_schema_sha256 != verifier.accepted_source_schema_sha256
+        || assembler.accepted_source_readback_sha256 != verifier.accepted_source_readback_sha256
+        || assembler.page_count != verifier.page_count
+        || assembler.first_page_digest_sha256 != verifier.first_page_digest_sha256
+        || assembler.last_page_digest_sha256 != verifier.last_page_digest_sha256
+        || assembler.shard_set_manifest_sha256 != verifier.shard_set_manifest_sha256
+        || assembler.captured_high_watermark != verifier.captured_high_watermark
+        || assembler.captured_member_count != verifier.captured_member_count
+        || assembler.captured_first_sequence != verifier.captured_first_sequence
+        || assembler.captured_first_operation_id != verifier.captured_first_operation_id
+        || assembler.captured_last_sequence != verifier.captured_last_sequence
+        || assembler.captured_last_operation_id != verifier.captured_last_operation_id
+    {
+        return Err(worker::Error::RustError(
+            "relay container drain source attestations diverge".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_drain_source_attestation_row(
+    authorization: &RelayContainerDrainSourceAuthorizationRow,
+    attestation: &RelayContainerDrainSourceAttestationRow,
+    expected_role: &str,
+) -> worker::Result<()> {
+    for (value, field) in [
+        (
+            attestation.authorization_id_sha256.as_str(),
+            "drain source attestation authorization ID",
+        ),
+        (
+            attestation.source_scan_id_sha256.as_str(),
+            "drain source attestation scan ID",
+        ),
+        (
+            attestation.source_seal_id_sha256.as_str(),
+            "drain source attestation seal ID",
+        ),
+        (
+            attestation.identity_sha256.as_str(),
+            "drain source attestation identity",
+        ),
+        (
+            attestation.signer_spki_sha256.as_str(),
+            "drain source attestation SPKI",
+        ),
+        (
+            attestation.attestation_subject_sha256.as_str(),
+            "drain source attestation subject",
+        ),
+        (
+            attestation.signature_envelope_sha256.as_str(),
+            "drain source attestation signature envelope",
+        ),
+        (
+            attestation.accepted_bookmark_sha256.as_str(),
+            "drain source attestation bookmark",
+        ),
+        (
+            attestation.accepted_set_manifest_sha256.as_str(),
+            "drain source attestation accepted set",
+        ),
+        (
+            attestation.accepted_source_readback_sha256.as_str(),
+            "drain source attestation readback",
+        ),
+        (
+            attestation.shard_set_manifest_sha256.as_str(),
+            "drain source attestation shard set",
+        ),
+    ] {
+        validate_relay_container_sha256(value, field)?;
+    }
+    let page_shape = if attestation.page_count == 0 {
+        attestation.first_page_digest_sha256.is_none()
+            && attestation.last_page_digest_sha256.is_none()
+    } else {
+        attestation.page_count > 0
+            && attestation
+                .first_page_digest_sha256
+                .as_deref()
+                .is_some_and(|value| {
+                    validate_relay_container_sha256(value, "first source page").is_ok()
+                })
+            && attestation
+                .last_page_digest_sha256
+                .as_deref()
+                .is_some_and(|value| {
+                    validate_relay_container_sha256(value, "last source page").is_ok()
+                })
+    };
+    let member_shape = if attestation.captured_member_count == 0 {
+        attestation.captured_high_watermark == 0
+            && attestation.captured_first_sequence == 0
+            && attestation.captured_first_operation_id.is_none()
+            && attestation.captured_last_sequence == 0
+            && attestation.captured_last_operation_id.is_none()
+    } else {
+        attestation.captured_member_count > 0
+            && attestation.captured_high_watermark == attestation.captured_member_count
+            && attestation.captured_first_sequence == 1
+            && attestation.captured_first_operation_id.is_some()
+            && attestation.captured_last_sequence == attestation.captured_high_watermark
+            && attestation.captured_last_operation_id.is_some()
+    };
+    let receipt_delay = attestation.recorded_at.checked_sub(attestation.attested_at);
+    let attestation_lifetime = attestation.valid_until.checked_sub(attestation.attested_at);
+    if attestation.authorization_id_sha256 != authorization.authorization_id_sha256
+        || attestation.source_scan_id_sha256 != authorization.source_scan_id_sha256
+        || attestation.attestation_role != expected_role
+        || attestation.contract_version != 1
+        || attestation.attestation_contract != "relay-container-drain-source-attestation-v1"
+        || attestation.attestation_migration != RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_MIGRATION
+        || attestation.accepted_source_schema_sha256 != RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256
+        || attestation.identity_sha256 == attestation.signer_spki_sha256
+        || attestation.identity_sha256 == authorization.authorizer_identity_sha256
+        || attestation.signer_spki_sha256 == authorization.authorizer_spki_sha256
+        || attestation.attestation_subject_sha256 == attestation.signature_envelope_sha256
+        || attestation.attested_at < authorization.recorded_at
+        || attestation.recorded_at < attestation.attested_at
+        || !matches!(receipt_delay, Some(0..=120))
+        || !matches!(attestation_lifetime, Some(30..=900))
+        || attestation.recorded_at >= attestation.valid_until
+        || attestation.valid_until > authorization.permit_expires_at
+        || !page_shape
+        || !member_shape
+    {
+        return Err(worker::Error::RustError(
+            "relay container drain source attestation is non-canonical".to_string(),
+        ));
+    }
+    for operation_id in [
+        attestation.captured_first_operation_id.as_deref(),
+        attestation.captured_last_operation_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        validate_relay_container_drain_source_operation_id(
+            operation_id,
+            "drain source attestation operation ID",
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_relay_container_drain_source_operation_id(
@@ -36654,6 +37295,9 @@ mod tests {
         let readiness_start = source
             .find("pub async fn relay_container_drain_source_seal_schema_ready")
             .unwrap();
+        let authorization_start = source
+            .find("pub async fn relay_container_drain_source_authorization_schema_ready")
+            .unwrap();
         let readback_start = source
             .find("pub async fn relay_container_drain_accepted_set_source_readback")
             .unwrap();
@@ -36661,7 +37305,7 @@ mod tests {
             .find("fn validate_relay_container_drain_close_command")
             .map(|offset| readback_start + offset)
             .unwrap();
-        let readiness = &source[readiness_start..readback_start];
+        let readiness = &source[readiness_start..authorization_start];
         let readback = &source[readback_start..close_validation_start];
         for fragment in [
             "relay_container_drain_close_command_schema_ready(db).await?",
@@ -36710,6 +37354,93 @@ mod tests {
     }
 
     #[test]
+    fn relay_container_drain_source_authority_repository_is_first_primary_and_read_only() {
+        let migration = include_str!(
+            "../../../migrations/d1/0072_relay_container_drain_source_authorization.sql"
+        );
+        assert_eq!(
+            RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_MIGRATION,
+            "0072_relay_container_drain_source_authorization.sql"
+        );
+        for fragment in [
+            "0072 requires empty 0071 source tables and a stopped 0071 writer",
+            "CREATE TABLE relay_container_drain_source_authorizations",
+            "CREATE TABLE relay_container_drain_source_attestations",
+            "complete 0067 through 0072 chain",
+            "authorization time must come from D1",
+            "exact unexpired authorization",
+            "attestation receipt time must come from D1",
+            "ordered independent roles",
+            "recorded_at - attested_at BETWEEN 0 AND 120",
+            "exact authorized independent attestations",
+        ] {
+            assert!(
+                migration.contains(fragment),
+                "missing 0072 authority invariant: {fragment}"
+            );
+        }
+
+        let source = include_str!("d1_repositories.rs");
+        let readiness_start = source
+            .find("pub async fn relay_container_drain_source_authorization_schema_ready")
+            .unwrap();
+        let readback_start = source
+            .find("pub async fn relay_container_drain_source_authority_readback")
+            .unwrap();
+        let validation_start = source[readback_start..]
+            .find("fn validate_relay_container_drain_source_authority_readback")
+            .map(|offset| readback_start + offset)
+            .unwrap();
+        let readiness = &source[readiness_start..readback_start];
+        let readback = &source[readback_start..validation_start];
+
+        for fragment in [
+            "D1Session::first_primary(db)?",
+            "RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION",
+            "RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION",
+            "RELAY_CONTAINER_TRAFFIC_RETURN_EVIDENCE_ENFORCE_MIGRATION",
+            "RELAY_CONTAINER_DRAIN_CLOSE_COMMAND_MIGRATION",
+            "RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION",
+            "RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_MIGRATION",
+            "AUTHORIZATION_COLUMNS",
+            "ATTESTATION_COLUMNS",
+            "TABLE_NAMES",
+            "INDEX_NAMES",
+            "TRIGGER_NAMES",
+            "session.bookmark_sha256()?",
+            "row.migration_count == 6",
+            "row.trigger_contract == Some(1)",
+        ] {
+            assert!(
+                readiness.contains(fragment),
+                "missing strict first-primary 0072 schema probe: {fragment}"
+            );
+        }
+        for fragment in [
+            "D1Session::first_primary(db)?",
+            "FROM relay_container_drain_source_authorizations",
+            "FROM relay_container_drain_source_attestations",
+            "for role in [\"assembler\", \"verifier\"]",
+            ".first::<RelayContainerDrainSourceAuthorizationRow>",
+            ".first::<RelayContainerDrainSourceAttestationRow>",
+            "session.bookmark_sha256()?",
+            "validate_relay_container_drain_source_authority_readback",
+        ] {
+            assert!(
+                readback.contains(fragment),
+                "missing first-primary 0072 authority readback: {fragment}"
+            );
+        }
+        for read_only_slice in [readiness, readback] {
+            assert!(!read_only_slice.contains(".all()"));
+            assert!(!read_only_slice.contains(".results::<"));
+            assert!(!read_only_slice.contains("INSERT INTO"));
+            assert!(!read_only_slice.contains("UPDATE relay_container"));
+            assert!(!read_only_slice.contains("DELETE FROM"));
+        }
+    }
+
+    #[test]
     fn relay_container_drain_source_completion_guards_reject_weakened_sql() {
         let migration = include_str!(
             "../../../migrations/d1/0071_relay_container_drain_accepted_set_source_seal.sql"
@@ -36754,10 +37485,10 @@ mod tests {
         let readiness_start = source
             .find("pub async fn relay_container_drain_source_seal_schema_ready")
             .unwrap();
-        let readback_start = source
-            .find("pub async fn relay_container_drain_accepted_set_source_readback")
+        let authorization_start = source
+            .find("pub async fn relay_container_drain_source_authorization_schema_ready")
             .unwrap();
-        let readiness = &source[readiness_start..readback_start];
+        let readiness = &source[readiness_start..authorization_start];
         assert_eq!(
             readiness
                 .matches("'scan.captured_member_count = ('")

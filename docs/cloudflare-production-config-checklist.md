@@ -2265,7 +2265,7 @@ authoritative and production remains **NO-GO**.
 - [x] Advance the Application migration head to 0067 while preserving 0063 as
   immutable shard-placement authorization storage provenance.
 
-### Remote 0067 through 0071 promotion
+### Remote 0067 through 0072 promotion
 
 - [ ] Inventory every admission writer, version, queue consumer, cron,
   workflow, replay path, and direct D1 client.
@@ -2286,6 +2286,22 @@ authoritative and production remains **NO-GO**.
   require an exact, still-current seal before the 0070 close command.
 - [x] Require ordered keyset members, complete chained pages, all shard
   manifests including empty shards, and final source MAX/count recheck.
+- [x] Add the 0072 apply-time empty-source preflight, append-preserved
+  authorization and attestation tables, independent assembler/verifier
+  guards, fail-closed Ed25519 verifier, and read-only `first-primary`
+  capability.
+- [ ] Before remote 0072 apply, stop and inventory every 0071 writer and prove
+  all five source tables are empty without deleting evidence to pass the
+  preflight.
+- [ ] Implement RootAuth plus fresh phishing-resistant second-factor issuance,
+  one-time authorization consumption, atomic admin audit, and exactly one
+  terminal receipt for every authorization.
+- [ ] Extend the private D1 Session bridge with only the reviewed batch and
+  unknown-commit readback surface required by the collector; do not treat
+  `first-primary` as a frozen snapshot.
+- [ ] Retain canonical subjects, detached signatures, public verification
+  material, source manifests and terminal linkage in create-only,
+  retention-locked R2 evidence.
 - [ ] Add authenticated authorization and the mandatory admin audit statement
   around the otherwise unreachable 0070 repository command.
 - [ ] Inventory historical 0050 cardinality and first/last keys, then rehearse
@@ -2315,7 +2331,7 @@ authoritative and production remains **NO-GO**.
   linearizable outcome.
 - [ ] Prove old writers and in-flight transactions are drained before 0068.
 - [ ] Apply 0068 only through a reviewed isolated-staging ceremony.
-- [ ] Before each 0068/0069/0070/0071 candidate, advance the Worker expected
+- [ ] Before each 0068/0069/0070/0071/0072 candidate, advance the Worker expected
   migration set, D1 audit, SQLite inventory, P5 head/counts, and frozen
   foundation candidate together; prove the previous reader fails closed.
 - [x] Add manifest-v3 independent P5 admission-fence evidence, an offline
@@ -2335,11 +2351,13 @@ authoritative and production remains **NO-GO**.
 - [ ] Do not run operation 14 or issue a traffic-return eligibility receipt
   during schema promotion.
 
-Current Application inventory is 71 migrations / 97 required tables / 1550
-checked columns / 144 key indexes. 0068 admission enforcement, 0069 typed
+Current Application inventory is 72 migrations / 99 required tables / 1611
+checked columns / 148 key indexes. 0068 admission enforcement, 0069 typed
 evidence enforcement, the default-unreachable 0070 close command, and the
-0071 accepted-source seal exist and are locally verified, but no authenticated
-fence/source/evidence lifecycle route exists and no remote
-0068/0069/0070/0071 application is claimed. This checklist records no remote
+0071 accepted-source seal plus 0072 source authorization boundary exist and
+are locally verified. The 0072 capability remains schema/readback-only: no
+issuer, claim, collector, terminal receipt, R2 evidence writer, write gate,
+close/traffic/reopen authority, or authenticated lifecycle route exists, and
+no remote 0068/0069/0070/0071/0072 application is claimed. This checklist records no remote
 application, secret operation, route change, traffic change, or authority
 transfer. Go/VPS remains authoritative and production remains **NO-GO**.

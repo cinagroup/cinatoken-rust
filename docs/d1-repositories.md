@@ -345,3 +345,48 @@ and classify ambiguous mutation responses through stable readback. A
 service-bound controller may orchestrate but must not gain an independent D1
 or bypass authentication. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## Migration 0072 Source-Authorization Read Boundary
+
+Migration
+`0072_relay_container_drain_source_authorization.sql` advances the local
+Application head to 72 migrations, 99 required tables, 1611 checked
+incremental columns, and 148 key indexes. Its apply-time preflight rejects any
+pre-existing row in the five 0071 source tables; the deployment ceremony must
+separately prove every 0071 writer is stopped.
+
+`relay_container_drain_source_authorization_schema_ready()` opens one private
+`D1Session::first_primary()` and checks the complete 0067-0072 marker chain,
+exact ordered authorization/attestation columns, two table names, four
+indexes, eight persistent trigger names, critical trigger bodies and the
+existing 0071 seal contract. It requires a nonempty D1 bookmark after the
+query and returns only its SHA-256 digest.
+
+`relay_container_drain_source_authority_readback()` uses the same Session for
+the authorization, assembler attestation and verifier attestation. Each role
+is read through a strict single-row decode rather than worker-rs 0.5
+`D1Result.results<T>()`, whose row decode can panic on schema/type drift. The
+repository validates every contract, digest, bound, D1-time relationship,
+role order and cross-attestation snapshot field before returning a redacted
+aggregate plus read-bookmark digest.
+
+The private compatibility bridge exists because worker-rs 0.5 has no typed D1
+Sessions API. It exposes only documented `withSession`, `prepare` and
+`getBookmark`, fixes the constraint to `first-primary`, bounds the opaque
+bookmark to 4096 bytes and never returns or logs the raw value. Real Workerd
+tests cover the current read path. It has no `batch` surface and cannot be
+used as a collector mutation authority.
+
+The Rust Ed25519 verifier is likewise default-inert. It verifies one
+short-lived authorization and two independently keyed attestations against
+three deployment-pinned SPKI roots, but no route or repository method writes
+the verified rows. There is deliberately no 0072 issuer, claim, collector,
+terminal receipt, R2 writer, mutation route, credential or environment write
+gate.
+
+Before any writer exists, a follow-on reviewed boundary must add RootAuth plus
+fresh second-factor issuance, atomic one-time consumption/admin audit, exactly
+one terminal receipt, bounded Session batch and unknown-commit readback,
+independent keyset recomputation, create-only locked R2 evidence and remote
+staging fault campaigns. The root Application Worker remains the sole D1
+owner. Go/VPS remains authoritative and production remains **NO-GO**.

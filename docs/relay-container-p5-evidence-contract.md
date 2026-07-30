@@ -6,15 +6,15 @@ Status: local, credential-free, campaign-aware evidence-verifier candidate. It a
 remote mutation, customer traffic, production cutover, or Go/VPS shutdown.
 
 Current candidate baseline: migration head
-`0071_relay_container_drain_accepted_set_source_seal.sql`, migration count 71,
-and the locally verified schema shape of 97 required tables, 1550 checked
-incremental columns, and 144 key indexes. This baseline supersedes every
+`0072_relay_container_drain_source_authorization.sql`, migration count 72,
+and the locally verified schema shape of 99 required tables, 1611 checked
+incremental columns, and 148 key indexes. This baseline supersedes every
 earlier current-candidate head/count retained below. Nothing in this document
-claims that 0071 was applied, deployed, or read back from Cloudflare.
+claims that 0072 was applied, deployed, or read back from Cloudflare.
 
 Migration 0068 remains the immutable admission-fence evidence identity, and
 0063 remains shard-placement authorization storage provenance. Advancing the
-current schema head to 0071 does not relabel either historical authority.
+current schema head to 0072 does not relabel either historical authority.
 
 Historical activation baseline, retained for continuity: 0054 ended at 54
 migrations with 58 tables, 694 incremental columns, and 83 key indexes. Those
@@ -221,8 +221,8 @@ The signed subject binds:
 - Container SBOM digest and image signature result;
 - exact D1 name/UUID, R2 bucket, KV namespace digest, Controller/egress service,
   DO namespace digest, binding, class, shard count, and ring generation;
-- D1 head 0071 and count 71, with exact 97-table, 1550-column, and
-  144-index readback totals;
+- D1 head 0072 and count 72, with exact 99-table, 1611-column, and
+  148-index readback totals;
 - response protocol 3, status contract 4, financial terminal contract 2, and
   terminal ACK contract 3;
 - a bounded, non-streaming, synthetic `/v1/chat/completions` cohort with no
@@ -828,11 +828,11 @@ only. P5 remains incomplete until a real release owner signs one candidate,
 the operator-owned filesystem produces retained create-new/ACL/durability
 evidence, and the exact installed launcher independently authorizes itself.
 
-## 0068 Admission Evidence On The 0071 Schema Head
+## 0068 Admission Evidence On The 0072 Schema Head
 
 The frozen P5 candidate and schema-readback evidence now require Application
-head `0071_relay_container_drain_accepted_set_source_seal.sql`, 71 migrations,
-97 required tables, 1550 checked incremental columns, and 144 key
+head `0072_relay_container_drain_source_authorization.sql`, 72 migrations,
+99 required tables, 1611 checked incremental columns, and 148 key
 indexes. The `admission-fence` item still requires the exact 0068 migration
 name and pinned SQL digest. Placement-mutation authorization storage
 provenance remains exactly 0063.

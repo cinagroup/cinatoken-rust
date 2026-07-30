@@ -12258,3 +12258,83 @@ These are local results only. No remote D1/Cloudflare migration, Session,
 credential, route, deployment, DNS, gate, customer traffic, provider request,
 or Go/VPS state was accessed or changed. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-07-30 Source-Authorization Verification Overlay
+
+The canonical local schema baseline advances to:
+
+```text
+0072_relay_container_drain_source_authorization.sql
+72 migrations
+99 required tables
+1611 checked incremental columns
+148 key indexes
+```
+
+Current-tree verification passed:
+
+```text
+bun run verify:sqlite
+  72 migrations / 99 tables / 1611 incremental columns / 148 key indexes
+  0072 authorization, independent attestation and migration-preflight guards passed
+
+bun run test:relay-container-atomic-admission:runtime
+  1 Workerd test file passed; 28 tests passed
+
+bun run check:do-lifecycle-runtime
+  release-built all three Workers; 1 Workerd test file passed; 54 tests passed
+
+cargo test -p cinatoken-worker --lib
+  949 tests passed
+
+cargo test --workspace --exclude cinatoken-worker
+  all workspace unit, integration and doc tests passed
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+  passed
+
+bun run check:d1:migration-config
+  72 contiguous migrations; runtime set matched
+
+bun run check:relay-container:p5-evidence
+  68 tests passed; admission-fence collector self-test passed
+
+bun run check:relay-container:p5-foundation
+  foundation tests and collector self-test passed
+
+bun run check:relay-container:ring-transition
+  132 tests passed
+```
+
+The SQLite verifier now rejects applying 0072 across any pre-existing 0071
+source row, every missing 0067-0072 marker, scan without exact unexpired
+authorization, stale head, expired permit, verifier-before-assembler,
+authorizer/attester identity or SPKI reuse, snapshot drift, excessive D1
+receipt skew, incomplete attestations before seal, late admission and
+update/delete/`INSERT OR REPLACE` mutation. The positive path performs
+authorization, scan/member/page/shard materialization, assembler/verifier
+attestation and seal.
+
+Rust verification covers strict canonical Ed25519 authorization and
+attestation subjects, short time windows, exact fence/head/scan/run bindings,
+three-role independence, raw nonce hashing and secret-free verified outputs.
+The D1 repository regression locks schema and authority readback to one
+`first-primary` Session, strict single-row decoding and a bookmark digest;
+`.all().results<T>()` is forbidden in this critical read path.
+
+Real Workerd confirms the narrow worker-rs 0.5 structural Session bridge can
+execute `withSession("first-primary")`, prepare the schema/readback query and
+obtain a bookmark. This proves the current read-only capability, not remote
+replica semantics or a frozen snapshot.
+
+The aggregate `bun run check` subsequently passed with exit code zero after
+the 0072 overlay, including release builds, complete Workerd suites, Web/Bun
+checks, SQLite verification, P5 contracts, Rust workspace tests, formatting,
+Wrangler dry-runs and all three configured wasm32 targets.
+
+No authorization issuer, one-time claim, Session batch collector, terminal
+receipt, R2 evidence writer, route, write gate, close, traffic-return or
+reopen authority was added or tested. No remote migration, credential,
+deployment, DNS, customer traffic, provider request or Go/VPS state was
+accessed or changed. Go/VPS remains authoritative and production remains
+**NO-GO**.

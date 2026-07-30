@@ -15,11 +15,11 @@ are ready for independent evidence assembly and owner review. The other nine
 P5 evidence kinds, the signed manifest, and all five independent approvals are
 still mandatory.
 
-Current local candidate baseline: D1 head 0071/count 71, 97 required tables,
-1550 checked incremental columns, and 144 key indexes. Migration 0055 remains
+Current local candidate baseline: D1 head 0072/count 72, 99 required tables,
+1611 checked incremental columns, and 148 key indexes. Migration 0055 remains
 the historical shard-activation campaign baseline, 0063 remains placement
 authorization storage provenance, and 0068 remains admission-fence evidence
-provenance; a new candidate must bind 0071. No live
+provenance; a new candidate must bind 0072. No live
 Cloudflare readback, migration application,
 deployment, Durable Object/Container wake, or traffic change is claimed.
 
@@ -375,7 +375,7 @@ unverified isolation, action gate, SBOM/signature issue, or source timestamp
 outside the observation window.
 
 Passing local tests proves only the collector contract and redaction boundary.
-The current focused baseline passes 24 foundation collector tests with 267
+The current focused baseline passes 24 foundation collector tests with 277
 assertions plus the offline self-test and 13 shard-registry/campaign collector
 tests. The fixtures prove local page-number, opaque-token, single-response,
 duplicate, drift, credential-reflection, timeout/envelope, and streamed-size
@@ -425,3 +425,20 @@ assembler/verifier signatures are valid, or that any remote 0071 row exists.
 Remote 0067-0071 apply/readback and one immutable authenticated P5 packet
 remain required. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 0072 Foundation Candidate Overlay
+
+The current offline foundation candidate reports
+`0072_relay_container_drain_source_authorization.sql`, count 72, and the exact
+`99/1611/148` schema vector. This supersedes only the 0071 current-candidate
+paragraph; 0055, 0063, 0068 and 0071 retain their historical authority
+identities.
+
+0072 adds authorization and independent-attestation storage plus a read-only
+`first-primary` capability. It does not add an issuer, one-time authorization
+claim, collector, terminal receipt, R2 evidence writer, route, runtime write
+gate, close authority, traffic-return authority, or reopen path. A production
+candidate still requires RootAuth plus fresh second-factor authorization,
+Session batch/unknown-commit handling, independently recomputed source
+evidence, create-only retained R2 evidence, and remote isolated-staging fault
+campaigns. Go/VPS remains authoritative and production remains **NO-GO**.

@@ -106,6 +106,7 @@ pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_MIGRATION: &str =
     "0073_relay_container_drain_source_authorization_consumption.sql";
 pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION: &str =
     DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION;
+pub(crate) const ROOT_AUTHORITY_EXACTNESS_MIGRATION: &str = "0075_root_authority_exactness.sql";
 pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256: &str =
     "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50";
 pub(crate) const RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256: &str =
@@ -1602,6 +1603,12 @@ const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS:
         table_name: "relay_container_drain_source_registration_commands",
         normalized_sql_sha256: "717871d2996d7bdf4e20c57714b73e82c30488b3ee5d84a66522b13e9318b1ef",
     },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_exact_root_guard",
+        table_name: "relay_container_drain_source_authorization_registrations",
+        normalized_sql_sha256: "60c4bf6334af4b3c4e9884535c49d25cca734cc587f65bf23b4e44196d095ceb",
+    },
 ];
 
 const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS:
@@ -1698,6 +1705,12 @@ const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS:
     },
     RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
         object_type: "trigger",
+        object_name: "relay_container_drain_source_command_exact_root_guard",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "8b5e943f2c3df3490291895c0d9e99ace7d8576b96336a336630521f203236fd",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
         object_name: "relay_container_drain_source_registration_command_insert_guard",
         table_name: "relay_container_drain_source_registration_commands",
         normalized_sql_sha256: "0e37e8ebdc604f2c50513f90f5637274d78ad21fc88901592cc9d14bb2b69e0a",
@@ -1719,6 +1732,12 @@ const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS:
         object_name: "relay_container_drain_source_registration_insert_guard",
         table_name: "relay_container_drain_source_authorization_registrations",
         normalized_sql_sha256: "763f037f27d5c0b11b72d6038023da6b61b8d41cc03bbb3fd15479e599f6301a",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_exact_root_guard",
+        table_name: "relay_container_drain_source_authorization_registrations",
+        normalized_sql_sha256: "60c4bf6334af4b3c4e9884535c49d25cca734cc587f65bf23b4e44196d095ceb",
     },
     RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
         object_type: "trigger",
@@ -18514,7 +18533,7 @@ fn relay_container_drain_source_registration_projections_match(
     let Some(admin_role) = audit_other
         .pointer("/admin_info/admin_role")
         .and_then(Value::as_i64)
-        .filter(|role| *role >= 100)
+        .filter(|role| *role == 100)
     else {
         return false;
     };
@@ -19117,19 +19136,20 @@ async fn relay_container_drain_source_registration_command_schema_ready_in_sessi
         D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION),
+        D1Type::Text(ROOT_AUTHORITY_EXACTNESS_MIGRATION),
     ];
     let migration_probe = session
         .prepare(
             r#"
             SELECT COUNT(1) AS migration_count
             FROM d1_migrations
-            WHERE name IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            WHERE name IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
             "#,
         )?
         .bind_refs(&migrations)?
         .first::<RelayContainerDrainSourceConsumptionSchemaProbe>(None)
         .await?;
-    if !migration_probe.is_some_and(|probe| probe.migration_count == 8) {
+    if !migration_probe.is_some_and(|probe| probe.migration_count == 9) {
         return Ok(false);
     }
 
@@ -19167,6 +19187,7 @@ async fn relay_container_drain_source_registration_command_schema_ready_in_sessi
                   'idx_relay_container_drain_source_registration_command_expiry',
                   'relay_container_drain_source_registration_commands',
                   'relay_container_drain_source_registration_insert_guard',
+                  'relay_container_drain_source_registration_exact_root_guard',
                   'relay_http_stream_finalization_receipt_insert_guard'
                 )
                 OR (
@@ -29066,6 +29087,7 @@ pub struct AdminUserRow {
     pub aff_history_quota: i64,
     pub created_at: i64,
     pub last_login_at: i64,
+    pub session_epoch: i64,
 }
 
 /// Columns selected for `/api/user/self`. The shape matches Go
@@ -29076,7 +29098,7 @@ const ADMIN_USER_SELF_COLUMNS: &str = r#"
   id, username, display_name, role, status, email, github_id, discord_id,
   oidc_id, wechat_id, telegram_id, linux_do_id, password, quota, used_quota,
   request_count, "group", aff_count, aff_quota, aff_history AS aff_history_quota,
-  created_at, last_login_at
+  created_at, last_login_at, session_epoch
 "#;
 
 /// Find an enabled user by username or email (login lookup). Mirrors Go
@@ -34249,16 +34271,25 @@ pub async fn reset_user_password_by_email(
     password_hash: &str,
 ) -> worker::Result<bool> {
     let result = db
-        .prepare("UPDATE users SET password = ?1 WHERE email = ?2 AND deleted_at IS NULL")
+        .prepare(
+            r#"
+            UPDATE users
+            SET password = ?1,
+                session_epoch = session_epoch + 1
+            WHERE email = ?2
+              AND deleted_at IS NULL
+              AND session_epoch >= 0
+              AND session_epoch < 9007199254740991
+            "#,
+        )
         .bind_refs(&[D1Type::Text(password_hash), D1Type::Text(email.trim())])?
         .run()
         .await?;
     Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) > 0)
 }
 
-/// Edit a subset of user fields. Mirrors Go `Edit`: only username,
-/// display_name, group, remark, and (optionally) password are updated.
-/// role/status/quota are intentionally NOT touched here.
+/// Edit a subset of user fields. Password and role changes atomically advance
+/// the exact session generation in the same D1 statement.
 pub async fn edit_user(
     db: &D1Database,
     id: i64,
@@ -34267,9 +34298,11 @@ pub async fn edit_user(
     group: Option<&str>,
     remark: Option<&str>,
     password_hash: Option<&str>,
+    role: Option<i32>,
 ) -> worker::Result<bool> {
     let mut sets: Vec<String> = Vec::new();
     let mut args: Vec<D1Type<'_>> = Vec::new();
+    let revoke_sessions = password_hash.is_some() || role.is_some();
     let mut idx;
     if let Some(username) = username {
         idx = args.len() + 1;
@@ -34296,14 +34329,27 @@ pub async fn edit_user(
         sets.push(format!("password = ?{idx}"));
         args.push(D1Type::Text(password_hash));
     }
+    if let Some(role) = role {
+        idx = args.len() + 1;
+        sets.push(format!("role = ?{idx}"));
+        args.push(D1Type::Integer(role));
+    }
+    if revoke_sessions {
+        sets.push("session_epoch = session_epoch + 1".to_string());
+    }
     if sets.is_empty() {
         return Ok(false);
     }
     idx = args.len() + 1;
     let id_index = idx;
     args.push(D1Type::Integer(d1_i32(id)));
+    let session_epoch_guard = if revoke_sessions {
+        " AND session_epoch >= 0 AND session_epoch < 9007199254740991"
+    } else {
+        ""
+    };
     let sql = format!(
-        "UPDATE users SET {} WHERE id = ?{id_index}",
+        "UPDATE users SET {} WHERE id = ?{id_index}{session_epoch_guard}",
         sets.join(", ")
     );
     let result = db.prepare(&sql).bind_refs(&args)?.run().await?;
@@ -34311,13 +34357,24 @@ pub async fn edit_user(
     Ok(changes > 0)
 }
 
+/// Soft-delete a user and revoke every existing browser session atomically.
 pub async fn soft_delete_user(db: &D1Database, id: i64, now_unix: i64) -> worker::Result<bool> {
     let args = [
         D1Type::Integer(d1_i32(now_unix)),
         D1Type::Integer(d1_i32(id)),
     ];
     let result = db
-        .prepare("UPDATE users SET deleted_at = ?1 WHERE id = ?2 AND deleted_at IS NULL")
+        .prepare(
+            r#"
+            UPDATE users
+            SET deleted_at = ?1,
+                session_epoch = session_epoch + 1
+            WHERE id = ?2
+              AND deleted_at IS NULL
+              AND session_epoch >= 0
+              AND session_epoch < 9007199254740991
+            "#,
+        )
         .bind_refs(&args)?
         .run()
         .await?;
@@ -34336,10 +34393,27 @@ pub async fn set_user_status(db: &D1Database, id: i64, status: i32) -> worker::R
     Ok(changes > 0)
 }
 
-pub async fn set_user_role(db: &D1Database, id: i64, role: i32) -> worker::Result<bool> {
-    let args = [D1Type::Integer(role), D1Type::Integer(d1_i32(id))];
+/// Disable a user and revoke every existing browser session atomically.
+pub async fn disable_user_and_bump_session_epoch(
+    db: &D1Database,
+    id: i64,
+    disabled_status: i32,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Integer(disabled_status),
+        D1Type::Integer(d1_i32(id)),
+    ];
     let result = db
-        .prepare("UPDATE users SET role = ?1 WHERE id = ?2")
+        .prepare(
+            r#"
+            UPDATE users
+            SET status = ?1,
+                session_epoch = session_epoch + 1
+            WHERE id = ?2
+              AND session_epoch >= 0
+              AND session_epoch < 9007199254740991
+            "#,
+        )
         .bind_refs(&args)?
         .run()
         .await?;
@@ -34347,24 +34421,18 @@ pub async fn set_user_role(db: &D1Database, id: i64, role: i32) -> worker::Resul
     Ok(changes > 0)
 }
 
-pub async fn bump_user_session_epoch(
-    db: &D1Database,
-    id: i64,
-    session_epoch: i64,
-) -> worker::Result<bool> {
-    let args = [
-        D1Type::Integer(d1_i32(session_epoch)),
-        D1Type::Integer(d1_i32(id)),
-    ];
+/// Change a user's role and revoke every existing browser session atomically.
+pub async fn set_user_role(db: &D1Database, id: i64, role: i32) -> worker::Result<bool> {
+    let args = [D1Type::Integer(role), D1Type::Integer(d1_i32(id))];
     let result = db
         .prepare(
             r#"
             UPDATE users
-            SET session_epoch = CASE
-                WHEN session_epoch > ?1 THEN session_epoch
-                ELSE ?1
-            END
+            SET role = ?1,
+                session_epoch = session_epoch + 1
             WHERE id = ?2
+              AND session_epoch >= 0
+              AND session_epoch < 9007199254740991
             "#,
         )
         .bind_refs(&args)?
@@ -36630,6 +36698,56 @@ pub async fn ranking_quota_buckets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revoking_user_mutations_advance_generation_in_the_same_statement() {
+        let source = include_str!("d1_repositories.rs");
+        let function = |start: &str, end: &str| {
+            let start = source.find(start).unwrap();
+            let end = source[start..]
+                .find(end)
+                .map(|offset| start + offset)
+                .unwrap();
+            &source[start..end]
+        };
+        let reset_password = function(
+            "pub async fn reset_user_password_by_email(",
+            "pub async fn edit_user(",
+        );
+        let edit_user = function("pub async fn edit_user(", "pub async fn soft_delete_user(");
+        let soft_delete = function(
+            "pub async fn soft_delete_user(",
+            "pub async fn set_user_status(",
+        );
+        let disable = function(
+            "pub async fn disable_user_and_bump_session_epoch(",
+            "pub async fn set_user_role(",
+        );
+        let set_role = function(
+            "pub async fn set_user_role(",
+            "pub async fn increase_user_quota(",
+        );
+
+        for (name, body, mutation) in [
+            ("password reset", reset_password, "SET password = ?1,"),
+            ("self/admin edit", edit_user, "let revoke_sessions ="),
+            ("soft delete", soft_delete, "SET deleted_at = ?1,"),
+            ("disable", disable, "SET status = ?1,"),
+            ("role", set_role, "SET role = ?1,"),
+        ] {
+            assert!(body.contains(mutation), "{name} mutation is missing");
+            assert!(
+                body.contains("session_epoch = session_epoch + 1"),
+                "{name} does not atomically revoke sessions"
+            );
+            assert!(
+                body.contains("session_epoch < 9007199254740991"),
+                "{name} does not fail closed at the generation ceiling"
+            );
+        }
+        let removed_helper = ["pub async fn bump_user_", "session_epoch("].concat();
+        assert!(!source.contains(&removed_helper));
+    }
 
     #[test]
     fn passkey_migration_has_go_compatible_fields_and_uniqueness() {
@@ -41888,10 +42006,12 @@ mod tests {
         }
         for fragment in [
             "relay_container_drain_source_consumption_schema_ready_in_session(session).await?",
-            "probe.migration_count == 8",
+            "D1Type::Text(ROOT_AUTHORITY_EXACTNESS_MIGRATION)",
+            "probe.migration_count == 9",
             "RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS",
             "RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_TABLE_PRAGMAS",
             "relay_container_drain_source_registration_command_preflight_guard",
+            "relay_container_drain_source_registration_exact_root_guard",
             "probe.conflict_count == 0",
             "tbl_name IN (",
             "'passkey_credentials',",
@@ -42020,7 +42140,7 @@ mod tests {
         }
         assert_eq!(
             RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS.len(),
-            20
+            22
         );
         assert_eq!(
             RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_TABLE_PRAGMAS.len(),

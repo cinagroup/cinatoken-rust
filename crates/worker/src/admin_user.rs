@@ -16,8 +16,8 @@
 //! differing from the Go gateway's hard delete.
 
 use cinatoken_auth::{
-    hash_password, is_root, outranks, verify_password, ROLE_ADMIN_USER, ROLE_COMMON_USER,
-    ROLE_ROOT_USER, USER_STATUS_DISABLED, USER_STATUS_ENABLED,
+    hash_password, is_admin, is_root, is_valid_role, outranks, verify_password, ROLE_ADMIN_USER,
+    ROLE_COMMON_USER, ROLE_ROOT_USER, USER_STATUS_DISABLED, USER_STATUS_ENABLED,
 };
 use cinatoken_providers::{channel_types_for_relay_route, ProviderRelayRoute};
 use cinatoken_session::build_clear_cookie_value;
@@ -432,7 +432,12 @@ pub async fn delete_self(req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(envelope_error_response(403, "cannot delete the root user"));
     }
     let db = env.d1("DB")?;
-    d1_repositories::soft_delete_user(&db, claims.id, unix_timestamp()).await?;
+    if !d1_repositories::soft_delete_user(&db, claims.id, unix_timestamp()).await? {
+        return Ok(envelope_error_response(
+            409,
+            "user deletion lost its session-generation fence",
+        ));
+    }
     let mut response = envelope_ok_response(&serde_json::Value::Null)?;
     response
         .headers_mut()
@@ -658,7 +663,7 @@ pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
         None
     };
 
-    d1_repositories::edit_user(
+    let updated = d1_repositories::edit_user(
         &db,
         claims.id,
         username,
@@ -666,13 +671,13 @@ pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
         None,
         None,
         password_hash.as_deref(),
+        None,
     )
     .await?;
 
     let mut response = envelope_ok_response(&serde_json::Value::Null)?;
     if update_password {
-        let session_epoch = unix_timestamp();
-        if !d1_repositories::bump_user_session_epoch(&db, claims.id, session_epoch).await? {
+        if !updated {
             return Ok(envelope_error_response(
                 401,
                 "session user no longer exists",
@@ -682,20 +687,22 @@ pub async fn update_self(mut req: Request, env: Env) -> WorkerResult<Response> {
             Ok(codec) => codec,
             Err(response) => return Ok(response),
         };
-        let mut refreshed_user = user;
-        if let Some(username) = username {
-            refreshed_user.username = username.to_string();
-        }
-        let cookie_value =
-            match codec.issue(session_claims_from_user(&refreshed_user), session_epoch) {
-                Ok(value) => value,
-                Err(err) => {
-                    return Ok(envelope_error_response(
-                        500,
-                        &format!("failed to issue session: {err}"),
-                    ));
-                }
-            };
+        let Some(refreshed_user) = d1_repositories::find_user_by_id(&db, claims.id).await? else {
+            return Ok(envelope_error_response(
+                401,
+                "session user no longer exists",
+            ));
+        };
+        let issued_at = unix_timestamp();
+        let cookie_value = match codec.issue(session_claims_from_user(&refreshed_user), issued_at) {
+            Ok(value) => value,
+            Err(err) => {
+                return Ok(envelope_error_response(
+                    500,
+                    &format!("failed to issue session: {err}"),
+                ));
+            }
+        };
         attach_session_cookie(&mut response, &cookie_value, codec.ttl_seconds())?;
     }
     Ok(response)
@@ -993,7 +1000,7 @@ pub async fn update_user_setting(mut req: Request, env: Env) -> WorkerResult<Res
                 .and_then(serde_json::Value::as_bool)
         })
         .unwrap_or(false);
-    let upstream_notify = if claims.role >= ROLE_ADMIN_USER {
+    let upstream_notify = if is_admin(claims.role) {
         payload
             .upstream_model_update_notify_enabled
             .unwrap_or(existing_upstream)
@@ -1357,6 +1364,12 @@ pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
     let Some(origin) = d1_repositories::find_user_role_status(&db, id).await? else {
         return Ok(envelope_error_response(404, "user not found"));
     };
+    if !is_valid_role(origin.role) {
+        return Ok(envelope_error_response(
+            409,
+            "target user has an invalid role",
+        ));
+    }
     // Caller must outrank the origin role.
     if !is_root(claims.role) && !outranks(claims.role, origin.role) {
         return Ok(envelope_error_response(
@@ -1367,6 +1380,9 @@ pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
     // Caller must also outrank the new role if the body attempts to change it.
     // (Edit itself does not persist role, but we check defensively.)
     if let Some(new_role) = payload.role {
+        if !is_valid_role(new_role) {
+            return Ok(envelope_error_response(400, "invalid user role"));
+        }
         if !is_root(claims.role) && !outranks(claims.role, new_role) {
             return Ok(envelope_error_response(
                 403,
@@ -1395,6 +1411,7 @@ pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
         payload.group.as_deref(),
         payload.remark.as_deref(),
         password_hash.as_deref(),
+        payload.role,
     )
     .await?;
     if !updated {
@@ -1403,13 +1420,8 @@ pub async fn update_user(mut req: Request, env: Env) -> WorkerResult<Response> {
             "user not found or no fields to update",
         ));
     }
-    // If a role change was requested, persist it via a dedicated update.
-    if let Some(new_role) = payload.role {
-        let _ = d1_repositories::set_user_role(&db, id, new_role).await;
+    if payload.role.is_some() {
         let _ = invalidate_token_cache(&env).await;
-    }
-    if password_hash.is_some() || payload.role.is_some() {
-        let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
     }
     let _ = crate::d1_repositories::insert_admin_audit_log(
         &db,
@@ -1443,6 +1455,12 @@ pub async fn delete_user(
     let Some(target) = d1_repositories::find_user_role_status(&db, id).await? else {
         return Ok(envelope_error_response(404, "user not found"));
     };
+    if !is_valid_role(target.role) {
+        return Ok(envelope_error_response(
+            409,
+            "target user has an invalid role",
+        ));
+    }
     // Strict outrank: caller's role must be STRICTLY GREATER than the
     // target's role. This is stricter than the `outranks` helper (which lets
     // root bypass equality) and matches Go's `myRole <= originUser.Role`
@@ -1461,7 +1479,6 @@ pub async fn delete_user(
         ));
     }
     let _ = invalidate_token_cache(&env).await;
-    let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
     let _ = crate::d1_repositories::insert_admin_audit_log(
         &db,
         Some(id),
@@ -1598,7 +1615,13 @@ pub async fn manage_user(mut req: Request, env: Env) -> WorkerResult<Response> {
         return Ok(envelope_error_response(404, "user not found"));
     };
     let action = payload.action.trim().to_ascii_lowercase();
-    let target_is_root = target.role >= ROLE_ROOT_USER;
+    if !is_valid_role(target.role) {
+        return Ok(envelope_error_response(
+            409,
+            "target user has an invalid role",
+        ));
+    }
+    let target_is_root = is_root(target.role);
 
     // Permission gate shared by most actions: caller must outrank the target.
     let can_manage = is_root(claims.role) || outranks(claims.role, target.role);
@@ -1612,15 +1635,20 @@ pub async fn manage_user(mut req: Request, env: Env) -> WorkerResult<Response> {
             if target_is_root {
                 return Ok(envelope_error_response(403, "cannot disable a root user"));
             }
-            let _ = d1_repositories::set_user_status(&db, id, USER_STATUS_DISABLED).await;
-            let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
+            if !d1_repositories::disable_user_and_bump_session_epoch(&db, id, USER_STATUS_DISABLED)
+                .await?
+            {
+                return Ok(envelope_error_response(404, "user no longer exists"));
+            }
             invalidate = true;
         }
         "enable" => {
             if !can_manage {
                 return Ok(forbidden());
             }
-            let _ = d1_repositories::set_user_status(&db, id, USER_STATUS_ENABLED).await;
+            if !d1_repositories::set_user_status(&db, id, USER_STATUS_ENABLED).await? {
+                return Ok(envelope_error_response(404, "user no longer exists"));
+            }
             // Go does not invalidate on enable.
         }
         "delete" => {
@@ -1630,19 +1658,24 @@ pub async fn manage_user(mut req: Request, env: Env) -> WorkerResult<Response> {
             if target_is_root {
                 return Ok(envelope_error_response(403, "cannot delete a root user"));
             }
-            let _ = d1_repositories::soft_delete_user(&db, id, unix_timestamp()).await;
-            let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
+            if !d1_repositories::soft_delete_user(&db, id, unix_timestamp()).await? {
+                return Ok(envelope_error_response(
+                    404,
+                    "user not found or already deleted",
+                ));
+            }
             invalidate = true;
         }
         "promote" => {
             if !is_root(claims.role) {
                 return Ok(envelope_error_response(403, "only root can promote users"));
             }
-            if target.role >= ROLE_ADMIN_USER {
+            if is_admin(target.role) {
                 return Ok(envelope_error_response(400, "user is already an admin"));
             }
-            let _ = d1_repositories::set_user_role(&db, id, ROLE_ADMIN_USER).await;
-            let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
+            if !d1_repositories::set_user_role(&db, id, ROLE_ADMIN_USER).await? {
+                return Ok(envelope_error_response(404, "user no longer exists"));
+            }
             invalidate = true;
         }
         "demote" => {
@@ -1652,14 +1685,15 @@ pub async fn manage_user(mut req: Request, env: Env) -> WorkerResult<Response> {
             if target_is_root {
                 return Ok(envelope_error_response(403, "cannot demote a root user"));
             }
-            if target.role <= ROLE_COMMON_USER {
+            if matches!(target.role, cinatoken_auth::ROLE_GUEST | ROLE_COMMON_USER) {
                 return Ok(envelope_error_response(
                     400,
                     "user is already a common user",
                 ));
             }
-            let _ = d1_repositories::set_user_role(&db, id, ROLE_COMMON_USER).await;
-            let _ = d1_repositories::bump_user_session_epoch(&db, id, unix_timestamp()).await;
+            if !d1_repositories::set_user_role(&db, id, ROLE_COMMON_USER).await? {
+                return Ok(envelope_error_response(404, "user no longer exists"));
+            }
             invalidate = true;
         }
         "add_quota" => {
@@ -1959,6 +1993,20 @@ struct ManageUserRequest {
 mod tests {
     use super::*;
     use cinatoken_auth::{ROLE_ADMIN_USER, ROLE_COMMON_USER, ROLE_ROOT_USER};
+
+    #[test]
+    fn self_delete_propagates_the_atomic_generation_fence() {
+        let source = include_str!("admin_user.rs");
+        let start = source.find("pub async fn delete_self(").unwrap();
+        let end = source[start..]
+            .find("pub async fn generate_access_token(")
+            .map(|offset| start + offset)
+            .unwrap();
+        let delete_self = &source[start..end];
+
+        assert!(delete_self.contains("if !d1_repositories::soft_delete_user("));
+        assert!(delete_self.contains("user deletion lost its session-generation fence"));
+    }
 
     #[test]
     fn permission_rules_match_go_canmanage() {

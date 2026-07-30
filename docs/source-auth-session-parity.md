@@ -27,18 +27,38 @@ Go uses `gin-contrib/sessions` cookie store: session serialized with
 
 Rust (`crates/session`) uses a **stateless HMAC-SHA256-signed** cookie
 (`base64url(payload).base64url(hmac)`), same cookie name `session`, same 30-day
-TTL, payload fields mirroring the Go session keys plus `iat` and `exp`. The
-format is **deliberately not Go-compatible**.
+TTL, payload fields mirroring the Go session keys plus exact
+`session_epoch`, random per-issue `sid`, `iat`, and `exp`. The format is
+**deliberately not Go-compatible**.
 
-2026-07-07 update: Rust session authorization now treats cookie claims as a
+2026-07-07 update, superseded for generation comparison by the 2026-07-30
+update below: Rust session authorization now treats cookie claims as a
 signed identity hint rather than as the final authorization source. Each
 protected request reloads the live D1 user row, refreshes username/role/status
-and group from that row, rejects disabled or soft-deleted users, and rejects
-cookies whose `iat` is older than `users.session_epoch`. Migration
+and group from that row, rejects disabled or soft-deleted users, and uses
+`users.session_epoch` to revoke stale Cookies. Migration
 `0017_user_session_epoch.sql` adds that epoch. Password changes reissue the
 current browser session after bumping the epoch; admin password reset,
 disable/delete, and role promote/demote bump the target user's epoch so old
 browser cookies do not survive account recovery or re-enable.
+
+2026-07-30 update: `session_epoch` is now an exact monotonic generation, not a
+timestamp surrogate. Every protected request requires equality between the
+signed Cookie generation and live D1 generation. Every Cookie issue obtains a
+fresh 32-byte random `sid`, including multiple issues in the same second.
+Legacy Rust cookies without a valid generation/`sid` fail closed and force
+reauthentication. Migration `0075_root_authority_exactness.sql` prevents
+generation rollback, constrains the role enum to `0/1/10/100`, and adds exact
+Root/generation guards to the drain-source registration write boundaries.
+Password changes and resets, role changes, disable, and soft delete increment
+the generation in the same D1 statement as the account mutation.
+
+The live Rust session, action/permit, and issuer paths never compare this
+generation to `iat`. The immutable 0074 drain-source command migration retains
+one historical generation/time comparison in its table and trigger schema.
+It remains a hard NO-GO until a later additive, empty-table rebuild migration
+removes that relationship and refreezes schema fingerprints; 0074 itself must
+remain byte-stable.
 
 > **Decision (already made): forced re-auth.** Go-issued cookies are not readable
 > by Rust. Cutover logs every browser session out; users sign in again. This is

@@ -27479,17 +27479,31 @@ def verify_relay_container_drain_source_registration_command_rollout(
         ),
         None,
     )
-    if command_path is None or consumption_path is None:
-        raise SystemExit("0073/0074 drain registration command chain not found")
+    exactness_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name == "0075_root_authority_exactness.sql"
+        ),
+        None,
+    )
+    if (
+        command_path is None
+        or consumption_path is None
+        or exactness_path is None
+    ):
+        raise SystemExit("0073/0074/0075 drain registration command chain not found")
     command_index = schema_paths.index(command_path)
     if (
         command_index == 0
         or schema_paths[command_index - 1] != consumption_path
-        or command_index != len(schema_paths) - 1
+        or command_index + 1 >= len(schema_paths)
+        or schema_paths[command_index + 1] != exactness_path
+        or schema_paths[-1] != exactness_path
     ):
         raise SystemExit(
             "0074 drain registration command must immediately follow 0073 "
-            "and be the current head"
+            "and immediately precede the 0075 current head"
         )
 
     command_sql = command_path.read_text(encoding="utf-8")
@@ -27532,6 +27546,24 @@ def verify_relay_container_drain_source_registration_command_rollout(
             raise SystemExit(f"0074 command migration missing {fragment!r}")
     if "admin_audit_ip" in command_sql:
         raise SystemExit("0074 command migration persists a plaintext audit IP field")
+    exactness_sql = exactness_path.read_text(encoding="utf-8")
+    for fragment in (
+        "typeof(role) <> 'integer'",
+        "role NOT IN (0, 1, 10, 100)",
+        "typeof(session_epoch) <> 'integer'",
+        "users_authority_insert_guard",
+        "users_role_update_guard",
+        "users_session_epoch_update_guard",
+        "NEW.session_epoch < OLD.session_epoch",
+        "relay_container_drain_source_command_exact_root_guard",
+        "relay_container_drain_source_registration_exact_root_guard",
+        "root_user.role = 100",
+        "root_user.session_epoch = NEW.root_session_epoch",
+    ):
+        if fragment not in exactness_sql:
+            raise SystemExit(f"0075 exact Root migration missing {fragment!r}")
+    if "if not exists" in exactness_sql.lower():
+        raise SystemExit("0075 critical authority guards must fail duplicate DDL")
 
     def apply_paths(
         connection: sqlite3.Connection,
@@ -27565,6 +27597,30 @@ def verify_relay_container_drain_source_registration_command_rollout(
     )
     preflight_conn.close()
 
+    exactness_preflight_conn = sqlite3.connect(":memory:")
+    apply_paths(
+        exactness_preflight_conn,
+        schema_paths[: schema_paths.index(exactness_path)],
+    )
+    exactness_preflight_conn.execute(
+        """
+        INSERT INTO users (
+          id, username, password, display_name, role, status,
+          session_epoch, aff_code
+        ) VALUES (
+          75000, 'legacy-invalid-role-75000', 'unused', 'Legacy Invalid Role',
+          101, 1, 0, 'legacy-invalid-role-75000'
+        )
+        """
+    )
+    exactness_preflight_conn.commit()
+    expect_integrity_error(
+        lambda: exactness_preflight_conn.executescript(exactness_sql),
+        "0075 allowed an existing out-of-enum user role",
+        "0075 requires valid user roles and session generations",
+    )
+    exactness_preflight_conn.close()
+
     schema_conn = sqlite3.connect(":memory:")
     apply_paths(schema_conn, schema_paths)
     expected_triggers = {
@@ -27576,10 +27632,12 @@ def verify_relay_container_drain_source_registration_command_rollout(
         "relay_container_drain_source_registration_command_project",
         "relay_container_drain_source_registration_command_update_guard",
         "relay_container_drain_source_registration_command_delete_guard",
+        "relay_container_drain_source_command_exact_root_guard",
         "relay_container_drain_source_protected_audit_insert_guard",
         "relay_container_drain_source_protected_audit_update_guard",
         "relay_container_drain_source_protected_audit_delete_guard",
         "relay_container_drain_source_registration_insert_guard",
+        "relay_container_drain_source_registration_exact_root_guard",
     }
     actual_triggers = {
         row[0]
@@ -27620,9 +27678,9 @@ def verify_relay_container_drain_source_registration_command_rollout(
             object_fingerprint_pattern.findall(command_object_contract_source)
         )
     }
-    if len(expected_command_object_fingerprints) != 20:
+    if len(expected_command_object_fingerprints) != 22:
         raise SystemExit(
-            "0074 Rust schema contract must contain exactly 20 stable object fingerprints"
+            "0075 Rust registration schema contract must contain exactly 22 stable object fingerprints"
         )
     command_object_names = sorted(
         object_name
@@ -27637,6 +27695,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
             "idx_relay_container_drain_source_registration_command_expiry",
             "relay_container_drain_source_registration_commands",
             "relay_container_drain_source_registration_insert_guard",
+            "relay_container_drain_source_registration_exact_root_guard",
             "relay_http_stream_finalization_receipt_insert_guard",
         }
     )
@@ -27742,6 +27801,18 @@ def verify_relay_container_drain_source_registration_command_rollout(
     ).fetchone()
     if preflight_objects != (0,):
         raise SystemExit("0074 preflight objects survived the migration")
+    exactness_preflight_objects = schema_conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE name IN (
+          'root_authority_exactness_preflight',
+          'root_authority_exactness_preflight_guard'
+        )
+        """
+    ).fetchone()
+    if exactness_preflight_objects != (0,):
+        raise SystemExit("0075 preflight objects survived the migration")
 
     base_consumption_contract_source = repositories_source[
         repositories_source.index(
@@ -27781,6 +27852,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
     for trigger_name in (
         "relay_container_drain_source_registration_command_insert_guard",
         "relay_container_drain_source_registration_command_project",
+        "relay_container_drain_source_registration_exact_root_guard",
     ):
         key = next(
             key
@@ -27862,12 +27934,12 @@ def verify_relay_container_drain_source_registration_command_rollout(
             upgraded_consumption_rows
         )
     }
-    if len(expected_upgraded_consumption_fingerprints) != 36 or (
+    if len(expected_upgraded_consumption_fingerprints) != 37 or (
         actual_upgraded_consumption_fingerprints
         != expected_upgraded_consumption_fingerprints
     ):
         raise SystemExit(
-            "0073 Rust dual-profile schema contract does not match 0074 SQLite"
+            "0073 Rust dual-profile schema contract does not match 0075 SQLite"
         )
 
     table_pragma_pattern = re.compile(
@@ -28057,12 +28129,92 @@ def verify_relay_container_drain_source_registration_command_rollout(
     )
     schema_conn.rollback()
 
+    expect_integrity_error(
+        lambda: schema_conn.execute(
+            """
+            INSERT INTO users (
+              id, username, password, display_name, role, status,
+              session_epoch, aff_code
+            ) VALUES (
+              75001, 'invalid-role-75001', 'unused', 'Invalid Role',
+              101, 1, 0, 'invalid-role-75001'
+            )
+            """
+        ),
+        "0075 allowed an out-of-enum user role",
+        "user authority fields are invalid",
+    )
+    schema_conn.rollback()
+    expect_integrity_error(
+        lambda: schema_conn.execute(
+            """
+            INSERT INTO users (
+              id, username, password, display_name, role, status,
+              session_epoch, aff_code
+            ) VALUES (
+              75003, 'fractional-epoch-75003', 'unused', 'Fractional Epoch',
+              1, 1, 1.5, 'fractional-epoch-75003'
+            )
+            """
+        ),
+        "0075 allowed a fractional session generation",
+        "user authority fields are invalid",
+    )
+    schema_conn.rollback()
+    schema_conn.execute(
+        """
+        INSERT INTO users (
+          id, username, password, display_name, role, status,
+          session_epoch, aff_code
+        ) VALUES (
+          75002, 'valid-root-75002', 'unused', 'Valid Root',
+          100, 1, 7, 'valid-root-75002'
+        )
+        """
+    )
+    schema_conn.execute(
+        "UPDATE users SET session_epoch = 8 WHERE id = 75002"
+    )
+    expect_integrity_error(
+        lambda: schema_conn.execute(
+            "UPDATE users SET session_epoch = 7 WHERE id = 75002"
+        ),
+        "0075 allowed a session generation rollback",
+        "user session generation must be monotonic",
+    )
+    schema_conn.rollback()
+    schema_conn.execute(
+        """
+        INSERT INTO users (
+          id, username, password, display_name, role, status,
+          session_epoch, aff_code
+        ) VALUES (
+          75004, 'fractional-update-75004', 'unused', 'Fractional Update',
+          1, 1, 8, 'fractional-update-75004'
+        )
+        """
+    )
+    expect_integrity_error(
+        lambda: schema_conn.execute(
+            "UPDATE users SET session_epoch = 8.5 WHERE id = 75004"
+        ),
+        "0075 allowed a fractional session generation update",
+        "user session generation must be monotonic",
+    )
+    schema_conn.rollback()
+
     try:
         schema_conn.executescript(command_sql)
     except sqlite3.Error:
         pass
     else:
         raise SystemExit("0074 migration did not fail duplicate DDL")
+    try:
+        schema_conn.executescript(exactness_sql)
+    except sqlite3.Error:
+        pass
+    else:
+        raise SystemExit("0075 migration did not fail duplicate DDL")
     schema_conn.close()
 
 

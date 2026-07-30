@@ -7417,21 +7417,23 @@ Remaining migration gaps:
   use `--expect-runtime js-fallback` and cannot satisfy Rust/Wasm tenant
   cutover proof.
 
-### 22.116 2026-07-07 Session Revocation Epoch
+### 22.116 2026-07-07 Session Revocation Epoch (Historical)
 
-This increment closes the browser-session all-devices revocation gap while
-preserving the Worker-native stateless cookie strategy. Rust sessions now carry
-an `iat` issue timestamp, and D1 `users.session_epoch` acts as the authoritative
-not-before timestamp for that user's browser sessions.
+This records the mechanism as first implemented. The 2026-07-30 0075 overlay
+supersedes its timestamp comparison: current Rust sessions carry an exact
+generation and random `sid`, and D1 `users.session_epoch` is a monotonic
+generation rather than a not-before timestamp.
 
 Implemented:
 
 - Added D1 migration `0017_user_session_epoch.sql` with
   `users.session_epoch INTEGER NOT NULL DEFAULT 0` and an index.
-- `crates/session` now includes `iat` in signed session claims. The parser
-  still accepts legacy Rust cookies without `iat`, defaulting them to `0`.
-- `require_user_auth` now rejects signed cookies whose `iat` is older than the
-  live D1 `session_epoch`, in addition to the existing live D1
+- At this historical checkpoint, `crates/session` added `iat` and accepted
+  legacy Rust cookies without that field. Current validation instead requires
+  exact generation and a valid random `sid`; legacy cookies fail closed.
+- At this historical checkpoint, `require_user_auth` compared Cookie `iat`
+  with D1 `session_epoch`. Current authorization requires exact equality
+  between Cookie and D1 generations in addition to the live
   role/status/group/deleted-user recheck.
 - Password login, 2FA login, GitHub/OIDC/Discord OAuth login, and WeChat login
   share one session-claims helper so future session fields are not missed.
@@ -7550,9 +7552,9 @@ Remaining migration gaps:
 - This is a live authorization recheck, not a complete server-side session
   revocation system. A `session_epoch`/`session_version` column embedded in
   `SessionClaims`, bumped on password change and "log out everywhere", is still
-  needed to fully close F4. Superseded by 22.116: Rust now uses signed
-  `iat` claims plus D1 `users.session_epoch` for stale-cookie revocation; live
-  staging smoke remains required.
+  needed to fully close F4. Superseded first by 22.116 and then by the
+  2026-07-30 0075 overlay: Rust now carries the exact D1 generation plus a
+  random per-issue `sid`; live staging smoke remains required.
 - Because every session-authenticated request now reads D1, staging should
   measure admin/frontend latency and decide whether a very short, explicitly
   invalidated edge cache is worthwhile. Do not reintroduce cookie-only
@@ -26359,13 +26361,14 @@ claim/terminal collection, P5, billing/reconciliation, reverse sync,
 traffic/DNS, and independent approvals remain open. No remote Cloudflare
 resource, credential, deployment, route, traffic, or Go/VPS state was changed.
 
-The next route-free boundary must first close three P0/P1 protocol gaps:
-Application-issued short-lived Root session phase proof because the Cookie
-does not carry a coordinator-verifiable epoch; a dedicated persistent
-coordinator DO because the generic Passkey take cannot recover a lost finish
-response; and full winner recovery by command ID plus every stable alias
-before any unknown-outcome retry. The public main Worker's `/internal/*`
-router is not a private transport boundary.
+The Application-issued short-lived Root session phase proof is now a frozen
+route-free protocol, and Rust Cookies now carry an exact D1 revocation
+generation plus random per-issue `sid`. The next route-free boundary must
+close the remaining P0/P1 gaps: Application/private-transport proof wiring, a
+dedicated persistent coordinator DO because the generic Passkey take cannot
+recover a lost finish response, and full winner recovery by command ID plus
+every stable alias before any unknown-outcome retry. The public main Worker's
+`/internal/*` router is not a private transport boundary.
 The disabled local issuer is a build/test surface only while the Application
 verifier remains staging-only. The repository also still lacks a
 version-controlled, read-only-by-default 0074 remote
@@ -26373,3 +26376,110 @@ preflight/apply/readback/fault-campaign evidence command. Exact replay may
 return only the existing registration result and must never mint fresh
 downstream authority.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+### 0075 exact Root authority and phase-proof overlay (2026-07-30)
+
+This overlay supersedes the prior assumption that `users.session_epoch` is a
+timestamp boundary compared with Cookie `iat`. It is an independent monotonic
+generation:
+
+```text
+cookie.session_epoch == live D1 users.session_epoch
+```
+
+Every password/role/status/deletion revocation increments the generation.
+Every Cookie issue generates a fresh 32-byte random `sid`, even within the
+same second. Cookie validation requires positive identity and time fields,
+nonnegative generation, `exp > iat`, a canonical 32-byte Base64URL `sid`, and
+no more than five seconds of future issue-time skew. Cookies predating these
+claims force reauthentication.
+
+Migration `0075_root_authority_exactness.sql` is additive and default-inert.
+Its preflight rejects any existing role outside `0/1/10/100`, negative
+generation, or generation above `Number.MAX_SAFE_INTEGER`. Persistent guards
+then enforce that enum, prevent generation rollback, and independently require
+exact live Root role `100`, enabled status, no deletion, and exact generation
+at both 0074 command and 0073 registration insertion. If any guard fails, the
+complete five-effect statement rolls back.
+
+The runtime session, action, permit, issuer, and phase-proof contracts now
+keep generation completely independent from time. Migration 0074 is already
+an immutable historical migration and still contains
+`root_session_issued_at >= root_session_epoch` in the command-table `CHECK`
+and insert guard. It must not be edited in place. Before the candidate schema
+is applied to isolated staging, a new additive migration must require an empty
+command table, rebuild the table and trigger contract without that
+relationship, and refreeze the normalized SQL/PRAGMA fingerprints. This is a
+hard NO-GO gate for remote apply and every registration command write.
+
+The frozen `RootSessionPhaseProofV1` has these properties:
+
+- dedicated three-segment HMAC-SHA256 framing, not generic JWT authority;
+- canonical unpadded Base64URL and exact struct-order JSON;
+- claims deserialized only after successful signature verification;
+- exact issuer, audience, Application version, staging environment, method,
+  path, phase, global scope, operation, authorization, ceremony, request
+  intent, phase subject, and semantic D1 authority;
+- exact Root ID/role/status/deletion and five-part session anchor;
+- 10-second default TTL, 15-second hard maximum, bounded by session and
+  authority expiry;
+- exact `before_challenge -> before_issuer -> before_commit` parent chain;
+- one current plus one distinct strictly older previous key; and
+- opaque verified output consumed by the pure coordinator.
+
+The Cookie, raw `sid`, `SESSION_SECRET`, raw network identity, username,
+WebAuthn assertion, and proof signing secret are excluded from private
+transport and persistence. Domain-separated digests bind the values that must
+cross.
+
+The version-controlled fixed vector is verified by both Rust and an
+independent Bun/WebCrypto implementation. It freezes header and claim byte
+order, HMAC output, and the complete-token digest. Focused tests cover
+canonicality, tampering, key rotation, TTL and clock boundaries, exact session
+matching, invalid Root state, application/phase/operation drift, pairwise
+digest separation, and the three-proof parent chain.
+
+#### Promotion sequence from local to isolated staging
+
+| Order | Required action | Fail-closed evidence |
+|---:|---|---|
+| 1 | Finish protocol review | Frozen V1 document, fixed vector, security/privacy review |
+| 2 | Implement coordinator DO | Persisted create-only operation and monotonic phase state |
+| 3 | Implement winner recovery | Command ID plus every stable alias classifies response loss before retry |
+| 4 | Freeze private transport | No route/workers.dev/preview; authenticated Service Binding or named entrypoint only |
+| 5 | Wire Application issuance | Cookie plus fresh first-primary D1 Root/session check precedes every proof |
+| 6 | Provision staging keys | Current/previous metadata, secret-to-stdin workflow, redaction and rotation rehearsal |
+| 7 | Add and verify the immutable-0074 corrective migration | Empty-table preflight, rebuilt table/trigger contract, refrozen SQL/PRAGMA and SQLite/Workerd fault matrix |
+| 8 | Apply the complete candidate schema in isolated staging | Backup/Time Travel, preflight, normalized trigger/PRAGMA readback, N/N-1 checks |
+| 9 | Run adversarial campaign | Replay, concurrency, response/process loss, revocation, expiry, schema and deployment drift |
+| 10 | Prove atomic command | Remote exact `5/0`, alias recovery, no duplicated downstream authority |
+| 11 | Retain signed evidence | Immutable bundle, offline verifier, cost/SLO/alert and rollback results |
+| 12 | Independent approval | Security, SRE, database, privacy/legal, finance, release and rollback owners |
+
+Steps are strictly ordered. A later step cannot compensate for missing
+earlier evidence. Production configuration must continue to omit proof-issuer,
+coordinator, permit-issuer, and registration mutation authority until the
+complete staging packet is approved.
+
+#### Remaining hard blockers
+
+- immutable 0074 still carries a historical generation/time table and trigger
+  relationship; the additive empty-table rebuild migration is not implemented;
+- phase-specific canonical subjects are not frozen, and commit verification
+  does not yet derive its proof binding from the verified permit;
+- no dedicated replay/state coordinator DO;
+- no Application issue path or private transport;
+- no current/previous staging secret lifecycle evidence;
+- password changes/resets, role changes, disable, and soft delete now mutate
+  the account and increment its generation in one D1 statement; remote
+  concurrency and browser revocation evidence is still required;
+- no remote 0075 apply/readback or 0074 `5/0` campaign;
+- no full response-loss winner recovery;
+- no retained load, duration, cost, SLO, alert, redaction, and rollback
+  evidence; and
+- no independent production approvals.
+
+This increment changes local protocol, session, schema, and verification
+contracts only. It does not create a Cloudflare resource, route, credential,
+deployment, runtime gate, traffic shift, or Go/VPS state change. Go/VPS
+remains authoritative and production remains **NO-GO**.

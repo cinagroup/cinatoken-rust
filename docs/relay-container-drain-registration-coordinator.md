@@ -63,24 +63,33 @@ authentication. The coordinator then requires:
 - a positive Root user ID;
 - exact role `100`, not merely an Admin role;
 - enabled status and no deletion timestamp;
-- the current D1 `session_epoch`;
-- `session_iat >= session_epoch`;
+- an exact match between the signed Cookie `session_epoch` and current D1
+  `session_epoch`;
+- a canonical random per-issue Cookie `sid`;
 - D1 time within `[session_iat, session_exp)`;
-- a canonical 64-character lowercase session-binding digest; and
+- canonical 64-character lowercase Cookie-binding and session-ID digests; and
 - authorization ownership by that same Root ID.
 
 An API key, bearer token, `New-Api-User`, caller-carried role, or cached user
 row is not sufficient. The future entrypoint must reject bearer-based use
 before invoking this module.
 
-The current `DrainSourceRegistrationRootSession` is only a route-free
-validated-data type. It is not yet a transport proof. Existing session Cookie
-claims carry iat/exp but not a coordinator-verifiable epoch assertion. Before
-the coordinator becomes a separate Service Binding target, Application must
-remain the session authority and mint a short-lived,
-authorization-and-phase-bound `RootSessionPhaseProofV1` after each fresh D1
-Root/session check. The proof must include a non-secret signing key ID/version
-and must not expose the Cookie or `SESSION_SECRET`.
+`crates/root-session-phase-proof` now implements the route-free
+`RootSessionPhaseProofV1` issue/verify protocol. Application remains the
+session authority and mints a short-lived, authorization-, operation-,
+session-, phase-, and semantic-authority-bound proof after each fresh D1
+Root/session check. The coordinator accepts only the opaque verified type,
+not caller-carried claims. The proof includes non-secret signing key
+ID/version metadata and never exposes the Cookie, raw `sid`, or
+`SESSION_SECRET`. See
+[`root-session-phase-proof-v1.md`](root-session-phase-proof-v1.md).
+
+The runtime coordinator treats `session_epoch` only as a generation. The
+immutable 0074 command schema still contains a historical
+`root_session_issued_at >= root_session_epoch` table/trigger relationship.
+The next additive migration must rebuild that empty command-table contract
+without the comparison before isolated-staging apply. Until then, this
+coordinator cannot be wired to a command writer.
 
 ## One-statement phase snapshot
 
@@ -365,13 +374,17 @@ Local implemented coverage includes:
 - authorization expiry and production rejection;
 - domain-separated credential-ID regression;
 - source-contract proof of one first-primary, one statement, and no writes;
-- exact SQL prepare against migrations 0001 through 0074; and
+- exact SQL prepare against migrations 0001 through 0075;
 - fixture projection of every nested authority component and terminal ledger
-  head.
+  head;
+- strict signed phase proof issue/verify, canonical encoding, current/previous
+  rotation, exact session anchoring, and parent-chain coverage; and
+- independent Rust and Bun/WebCrypto fixed-vector verification.
 
 Still required before staging enablement:
 
-- signed `RootSessionPhaseProofV1` issue/verify and rotation protocol;
+- Application issuance wiring and private transport key provisioning for the
+  implemented `RootSessionPhaseProofV1` protocol;
 - dedicated recoverable coordinator DO and its persistent transition log;
 - full winner recovery by command ID and every stable 0074 alias;
 - immutable issuer-auth HMAC key ID/version evidence, likely through an
@@ -397,19 +410,25 @@ Still required before staging enablement:
 The next code increment is not a public route and not a production gate. It
 must:
 
-1. freeze the private caller protocol;
-2. implement and test the Application-issued Root session phase proof;
-3. implement the dedicated durable coordinator state machine and alias-winner
+1. add the empty-table corrective migration for 0074's historical
+   generation/time comparison and refreeze schema fingerprints;
+2. freeze typed challenge/issuer/commit phase subjects, with commit derived
+   from the verified action, issuer request, and permit rather than a
+   caller-carried digest;
+3. freeze the private caller protocol;
+4. wire the implemented Application-issued Root session phase proof only
+   behind that private boundary;
+5. implement the dedicated durable coordinator state machine and alias-winner
    recovery without any public route;
-4. choose and test the Service-Binding-only or named-entrypoint boundary;
-5. add default-off staging configuration while keeping production authority
+6. choose and test the Service-Binding-only or named-entrypoint boundary;
+7. add default-off staging configuration while keeping production authority
    absent;
-6. wire begin to the first phase snapshot and durable `ChallengeIssued`;
-7. wire finish through durable claim, WebAuthn verification, issuer reread/call,
+8. wire begin to the first phase snapshot and durable `ChallengeIssued`;
+9. wire finish through durable claim, WebAuthn verification, issuer reread/call,
    final reread, and 0074 command;
-8. preserve the four-state
+10. preserve the four-state
    `FreshApplied`/`ExactReplay`/`Conflict`/`OutcomeUnknown` result model; and
-9. add a version-controlled isolated-staging fault campaign before any remote
+11. add a version-controlled isolated-staging fault campaign before any remote
    mutation is attempted.
 
 Until those gates and the broader migration gates pass, Cloudflare production

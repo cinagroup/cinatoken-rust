@@ -2684,6 +2684,32 @@ pre-dispatch fields above. Earlier tables remain checkpoint history.
 | Go/VPS authority | **RETAINED** |
 | Production eligibility | **NO-GO** |
 
+## 2026-07-30 Root Session Phase-Proof Status
+
+This table supersedes only older rows that describe the phase proof or exact
+session-generation mechanism as absent.
+
+| Item | Current status |
+|---|---|
+| Session revocation authority | **EXACT MONOTONIC D1 GENERATION; COOKIE EQUALITY REQUIRED** |
+| Revoking account mutations | **PASSWORD CHANGE/RESET, ROLE, DISABLE, DELETE ATOMIC WITH GENERATION INCREMENT** |
+| Per-session identity | **32 RANDOM BYTES ON EVERY ISSUE; CANONICAL BASE64URL `sid`** |
+| Legacy Rust Cookie policy | **FAIL CLOSED; FORCED REAUTHENTICATION** |
+| Role authority | **ENUM `0/1/10/100`; ROOT IS EXACTLY `100`** |
+| Migration 0075 | **LOCAL VERIFIED; ROLE/GENERATION AND BOTH FINAL ROOT WRITE GUARDS** |
+| Immutable 0074 generation/time residual | **BLOCKED; ADDITIVE EMPTY-TABLE REBUILD REQUIRED BEFORE REMOTE APPLY/WRITE** |
+| RootSessionPhaseProofV1 | **IMPLEMENTED; CANONICAL HMAC, 10-SECOND DEFAULT/15-SECOND MAXIMUM** |
+| Cross-language vector | **RUST + INDEPENDENT BUN/WEBCRYPTO PASS** |
+| Coordinator consumption | **OPAQUE VERIFIED TYPE; ROUTE-FREE PURE VALIDATION** |
+| Phase chain | **CHALLENGE -> ISSUER -> COMMIT PARENT DIGESTS VERIFIED** |
+| Application issuance route | **ABSENT** |
+| Private Service Binding / named entrypoint | **ABSENT** |
+| Persistent replay/recovery DO | **ABSENT** |
+| Staging proof-key lifecycle | **NOT PROVISIONED OR REHEARSED** |
+| Remote 0075 / exact `5/0` evidence | **NOT COLLECTED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
 The grant is the final Application-owned pre-enable decision, but it is not a
 send token. A later seal, revocation, expiry, fence drift, or version drift
 must prevent future dispatch even though the immutable grant remains as audit

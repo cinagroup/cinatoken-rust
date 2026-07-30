@@ -4952,6 +4952,7 @@ mod tests {
             aff_history_quota: 0,
             created_at: 100,
             last_login_at: 100,
+            session_epoch: 0,
         }
     }
 

@@ -5,6 +5,10 @@
 //! and the final atomic command.
 
 use cinatoken_auth::{ROLE_ROOT_USER, USER_STATUS_ENABLED};
+use cinatoken_root_session_phase_proof::{
+    RootSessionPhase, RootSessionPhaseClaims, RootSessionPhaseKeySlot,
+    VerifiedRootSessionPhaseProof,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -37,15 +41,6 @@ pub(crate) enum DrainSourceRegistrationCoordinatorPhase {
     BeforeChallenge,
     BeforeIssuer,
     BeforeCommit,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct DrainSourceRegistrationRootSession {
-    pub(crate) root_admin_id: i64,
-    pub(crate) session_epoch: i64,
-    pub(crate) issued_at: i64,
-    pub(crate) expires_at: i64,
-    pub(crate) binding_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,6 +81,15 @@ impl ValidatedDrainSourceRegistrationPasskey {
 pub(crate) struct ValidatedDrainSourceRegistrationPhase {
     pub(crate) phase: DrainSourceRegistrationCoordinatorPhase,
     pub(crate) semantic_fingerprint_sha256: String,
+    pub(crate) operation_id_sha256: String,
+    pub(crate) ceremony_id_sha256: String,
+    pub(crate) request_intent_sha256: String,
+    pub(crate) parent_session_phase_proof_sha256: Option<String>,
+    pub(crate) phase_binding_sha256: String,
+    pub(crate) session_phase_proof_id_sha256: String,
+    pub(crate) session_phase_proof_key_id: String,
+    pub(crate) session_phase_proof_key_version: u32,
+    pub(crate) session_phase_proof_key_slot: RootSessionPhaseKeySlot,
     pub(crate) authorization: VerifiedDrainSourceAuthorization,
     pub(crate) passkey: ValidatedDrainSourceRegistrationPasskey,
     pub(crate) receipt_sequence: i64,
@@ -142,13 +146,13 @@ pub(crate) fn validate_before_challenge(
     snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
     expected_environment: &str,
     expected_authorization_id_sha256: &str,
-    session: &DrainSourceRegistrationRootSession,
+    session_proof: &VerifiedRootSessionPhaseProof,
 ) -> Result<ValidatedDrainSourceRegistrationPhase, DrainSourceRegistrationCoordinatorError> {
     validate_phase(
         snapshot,
         expected_environment,
         expected_authorization_id_sha256,
-        session,
+        session_proof,
         DrainSourceRegistrationCoordinatorPhase::BeforeChallenge,
         None,
         None,
@@ -159,7 +163,7 @@ pub(crate) fn validate_before_issuer(
     snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
     expected_environment: &str,
     expected_authorization_id_sha256: &str,
-    session: &DrainSourceRegistrationRootSession,
+    session_proof: &VerifiedRootSessionPhaseProof,
     action: &DrainSourceRegistrationActionV1,
     expected_semantic_fingerprint_sha256: &str,
 ) -> Result<ValidatedDrainSourceRegistrationPhase, DrainSourceRegistrationCoordinatorError> {
@@ -167,7 +171,7 @@ pub(crate) fn validate_before_issuer(
         snapshot,
         expected_environment,
         expected_authorization_id_sha256,
-        session,
+        session_proof,
         DrainSourceRegistrationCoordinatorPhase::BeforeIssuer,
         Some(action),
         Some(expected_semantic_fingerprint_sha256),
@@ -178,7 +182,7 @@ pub(crate) fn validate_before_commit(
     snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
     expected_environment: &str,
     expected_authorization_id_sha256: &str,
-    session: &DrainSourceRegistrationRootSession,
+    session_proof: &VerifiedRootSessionPhaseProof,
     action: &DrainSourceRegistrationActionV1,
     expected_semantic_fingerprint_sha256: &str,
 ) -> Result<ValidatedDrainSourceRegistrationPhase, DrainSourceRegistrationCoordinatorError> {
@@ -186,7 +190,7 @@ pub(crate) fn validate_before_commit(
         snapshot,
         expected_environment,
         expected_authorization_id_sha256,
-        session,
+        session_proof,
         DrainSourceRegistrationCoordinatorPhase::BeforeCommit,
         Some(action),
         Some(expected_semantic_fingerprint_sha256),
@@ -198,25 +202,45 @@ fn validate_phase(
     snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
     expected_environment: &str,
     expected_authorization_id_sha256: &str,
-    session: &DrainSourceRegistrationRootSession,
+    session_proof: &VerifiedRootSessionPhaseProof,
     phase: DrainSourceRegistrationCoordinatorPhase,
     action: Option<&DrainSourceRegistrationActionV1>,
     expected_semantic_fingerprint_sha256: Option<&str>,
 ) -> Result<ValidatedDrainSourceRegistrationPhase, DrainSourceRegistrationCoordinatorError> {
+    let session = session_proof.claims();
+    let expected_proof_phase = match phase {
+        DrainSourceRegistrationCoordinatorPhase::BeforeChallenge => {
+            RootSessionPhase::BeforeChallenge
+        }
+        DrainSourceRegistrationCoordinatorPhase::BeforeIssuer => RootSessionPhase::BeforeIssuer,
+        DrainSourceRegistrationCoordinatorPhase::BeforeCommit => RootSessionPhase::BeforeCommit,
+    };
     if expected_environment != "staging"
         || snapshot.authorization.environment == "production"
         || expected_authorization_id_sha256 != expected_authorization_id_sha256.trim()
         || !valid_sha256(expected_authorization_id_sha256)
-        || !valid_sha256(&session.binding_sha256)
+        || session.environment != expected_environment
+        || session.authorization_id_sha256 != expected_authorization_id_sha256
+        || session.phase != expected_proof_phase
+        || !valid_sha256(&session.root_session_binding_sha256)
+        || !valid_sha256(&session.root_session_id_sha256)
+        || !valid_sha256(&session.operation_id_sha256)
+        || !valid_sha256(&session.phase_binding_sha256)
+        || !valid_sha256(&session.semantic_authority_fingerprint_sha256)
         || session.root_admin_id <= 0
         || session.root_admin_id > MAXIMUM_SAFE_INTEGER
-        || session.session_epoch < 0
-        || session.session_epoch > MAXIMUM_SAFE_INTEGER
-        || session.issued_at <= 0
-        || session.issued_at > MAXIMUM_SAFE_INTEGER
-        || session.expires_at <= session.issued_at
-        || session.expires_at > MAXIMUM_SAFE_INTEGER
-        || session.issued_at < session.session_epoch
+        || session.root_role != ROLE_ROOT_USER
+        || session.root_status != USER_STATUS_ENABLED
+        || session.root_deleted_at.is_some()
+        || session.root_session_epoch < 0
+        || session.root_session_epoch > MAXIMUM_SAFE_INTEGER
+        || session.root_session_issued_at <= 0
+        || session.root_session_issued_at > MAXIMUM_SAFE_INTEGER
+        || session.root_session_expires_at <= session.root_session_issued_at
+        || session.root_session_expires_at > MAXIMUM_SAFE_INTEGER
+        || session.d1_observed_at != session.issued_at
+        || session.not_before != session.issued_at
+        || session.authority_expires_at <= session.d1_observed_at
     {
         return Err(
             if expected_environment != "staging"
@@ -278,8 +302,12 @@ fn validate_phase(
     )?;
     if expected_semantic_fingerprint_sha256
         .is_some_and(|expected| expected != semantic_fingerprint_sha256)
+        || session.semantic_authority_fingerprint_sha256 != semantic_fingerprint_sha256
     {
         return Err(DrainSourceRegistrationCoordinatorError::AuthorityDrift);
+    }
+    if session.authority_expires_at > authorization.permit_expires_at {
+        return Err(DrainSourceRegistrationCoordinatorError::AuthorityExpired);
     }
 
     if let Some(action) = action {
@@ -297,6 +325,15 @@ fn validate_phase(
     Ok(ValidatedDrainSourceRegistrationPhase {
         phase,
         semantic_fingerprint_sha256,
+        operation_id_sha256: session.operation_id_sha256.clone(),
+        ceremony_id_sha256: session.ceremony_id_sha256.clone(),
+        request_intent_sha256: session.request_intent_sha256.clone(),
+        parent_session_phase_proof_sha256: session.parent_proof_sha256.clone(),
+        phase_binding_sha256: session.phase_binding_sha256.clone(),
+        session_phase_proof_id_sha256: session.proof_id_sha256.clone(),
+        session_phase_proof_key_id: session_proof.protected().kid.clone(),
+        session_phase_proof_key_version: session_proof.protected().key_version,
+        session_phase_proof_key_slot: session_proof.key_slot(),
         authorization,
         passkey,
         receipt_sequence,
@@ -402,7 +439,7 @@ fn validate_authorization(
 fn validate_root<'a>(
     root: Option<&'a RelayContainerDrainSourceRegistrationRootState>,
     authorization: &VerifiedDrainSourceAuthorization,
-    session: &DrainSourceRegistrationRootSession,
+    session: &RootSessionPhaseClaims,
 ) -> Result<
     &'a RelayContainerDrainSourceRegistrationRootState,
     DrainSourceRegistrationCoordinatorError,
@@ -411,8 +448,11 @@ fn validate_root<'a>(
     if root.id != session.root_admin_id
         || root.id != authorization.authorized_by_admin_id
         || root.role != i64::from(ROLE_ROOT_USER)
+        || i64::from(session.root_role) != root.role
         || root.status != i64::from(USER_STATUS_ENABLED)
+        || i64::from(session.root_status) != root.status
         || root.deleted_at.is_some()
+        || session.root_deleted_at != root.deleted_at
         || root.session_epoch < 0
         || root.session_epoch > MAXIMUM_SAFE_INTEGER
     {
@@ -423,11 +463,15 @@ fn validate_root<'a>(
 
 fn validate_session(
     database_now: i64,
-    session: &DrainSourceRegistrationRootSession,
+    session: &RootSessionPhaseClaims,
     root: &RelayContainerDrainSourceRegistrationRootState,
 ) -> Result<(), DrainSourceRegistrationCoordinatorError> {
-    if root.session_epoch != session.session_epoch
-        || session.issued_at < root.session_epoch
+    if root.session_epoch != session.root_session_epoch
+        || database_now < session.root_session_issued_at
+        || database_now >= session.root_session_expires_at
+        || session.d1_observed_at < session.root_session_issued_at
+        || session.d1_observed_at >= session.root_session_expires_at
+        || session.d1_observed_at > database_now
         || database_now < session.issued_at
         || database_now >= session.expires_at
     {
@@ -641,7 +685,7 @@ fn semantic_fingerprint(
 fn validate_action(
     action: &DrainSourceRegistrationActionV1,
     authorization: &VerifiedDrainSourceAuthorization,
-    session: &DrainSourceRegistrationRootSession,
+    session: &RootSessionPhaseClaims,
     passkey: &ValidatedDrainSourceRegistrationPasskey,
     receipt_sequence: i64,
     ledger_head_before_sha256: &str,
@@ -683,10 +727,10 @@ fn validate_action(
         || action.receipt_sequence() != receipt_sequence
         || action.ledger_head_before_sha256() != ledger_head_before_sha256
         || action.root_admin_id() != session.root_admin_id
-        || action.root_session_epoch() != session.session_epoch
-        || action.root_session_issued_at() != session.issued_at
-        || action.root_session_expires_at() != session.expires_at
-        || action.root_session_binding_sha256() != session.binding_sha256
+        || action.root_session_epoch() != session.root_session_epoch
+        || action.root_session_issued_at() != session.root_session_issued_at
+        || action.root_session_expires_at() != session.root_session_expires_at
+        || action.root_session_binding_sha256() != session.root_session_binding_sha256
         || action.passkey_credential_row_id() != passkey.row_id
         || action.passkey_credential_id_sha256() != passkey.credential_id_sha256
         || action.passkey_credential_registration_id_sha256()
@@ -695,7 +739,8 @@ fn validate_action(
         || action.passkey_previous_use_generation() != passkey.use_generation
         || database_now >= action.verification_expires_at()
         || action.verification_expires_at() > authorization.permit_expires_at
-        || action.verification_expires_at() > session.expires_at
+        || action.verification_expires_at() > session.root_session_expires_at
+        || session.authority_expires_at > action.verification_expires_at()
     {
         return Err(DrainSourceRegistrationCoordinatorError::ActionMismatch);
     }
@@ -728,6 +773,11 @@ fn valid_service_token(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use cinatoken_root_session_phase_proof::{
+        sign_root_session_phase_proof, verify_root_session_phase_proof,
+        RootSessionAnchorExpectation, RootSessionPhaseExpectation, RootSessionPhaseInput,
+        RootSessionPhaseKey, RootSessionPhaseKeyRing, STAGING_ENVIRONMENT,
+    };
 
     use super::*;
     use crate::container_drain_source_registration_action::{
@@ -735,18 +785,30 @@ mod tests {
     };
 
     const NOW: i64 = 2_100_000_000;
+    const PHASE_PROOF_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
 
     fn digest(label: &str) -> String {
         format!("{:x}", Sha256::digest(label.as_bytes()))
     }
 
-    fn session() -> DrainSourceRegistrationRootSession {
-        DrainSourceRegistrationRootSession {
+    #[derive(Clone)]
+    struct TestSession {
+        root_admin_id: i64,
+        session_epoch: i64,
+        issued_at: i64,
+        expires_at: i64,
+        binding_sha256: String,
+        session_id_sha256: String,
+    }
+
+    fn session() -> TestSession {
+        TestSession {
             root_admin_id: 1,
             session_epoch: 7,
             issued_at: NOW - 60,
             expires_at: NOW + 600,
             binding_sha256: digest("session-binding"),
+            session_id_sha256: digest("session-id"),
         }
     }
 
@@ -845,6 +907,122 @@ mod tests {
         }
     }
 
+    fn fingerprint(snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot) -> String {
+        let authorization = validate_authorization(
+            snapshot,
+            "staging",
+            &snapshot.authorization.authorization_id_sha256,
+        )
+        .unwrap();
+        let root = snapshot.root.as_ref().unwrap();
+        let passkey = snapshot.passkey.as_ref().unwrap();
+        let (head, fence) = validate_fence(
+            snapshot.head.as_ref(),
+            snapshot.fence.as_ref(),
+            &authorization,
+        )
+        .unwrap();
+        let (receipt_sequence, ledger_head_before_sha256) =
+            validate_consumption_and_ledger(snapshot, &authorization).unwrap();
+        semantic_fingerprint(
+            snapshot,
+            root,
+            passkey,
+            head,
+            fence,
+            receipt_sequence,
+            &ledger_head_before_sha256,
+        )
+        .unwrap()
+    }
+
+    fn phase_proof(
+        snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
+        phase: RootSessionPhase,
+        test_session: &TestSession,
+        semantic_fingerprint_sha256: &str,
+    ) -> VerifiedRootSessionPhaseProof {
+        let operation_id_sha256 = digest("operation");
+        let ceremony_id_sha256 = digest("ceremony");
+        let request_intent_sha256 = digest("request-intent");
+        let proof_id_sha256 = digest(&format!("proof-{phase:?}"));
+        let parent_proof_sha256 =
+            (phase != RootSessionPhase::BeforeChallenge).then(|| digest("parent-proof"));
+        let phase_binding_sha256 = digest(&format!("phase-binding-{phase:?}"));
+        let authority_expires_at = if phase == RootSessionPhase::BeforeChallenge {
+            snapshot.authorization.permit_expires_at
+        } else {
+            NOW + 120
+        };
+        let key = RootSessionPhaseKey {
+            kid: "application-root-session-v1",
+            key_version: 1,
+            secret: PHASE_PROOF_SECRET,
+        };
+        let token = sign_root_session_phase_proof(
+            key,
+            RootSessionPhaseInput {
+                issuer: "cinatoken-application",
+                audience: "cinatoken-drain-source-registration-coordinator",
+                application_version_id: "application-build-1",
+                environment: STAGING_ENVIRONMENT,
+                phase,
+                operation_id_sha256: &operation_id_sha256,
+                authorization_id_sha256: &snapshot.authorization.authorization_id_sha256,
+                ceremony_id_sha256: &ceremony_id_sha256,
+                request_intent_sha256: &request_intent_sha256,
+                proof_id_sha256: &proof_id_sha256,
+                root_admin_id: test_session.root_admin_id,
+                root_role: ROLE_ROOT_USER,
+                root_status: USER_STATUS_ENABLED,
+                root_deleted_at: None,
+                root_session_epoch: test_session.session_epoch,
+                root_session_issued_at: test_session.issued_at,
+                root_session_expires_at: test_session.expires_at,
+                root_session_binding_sha256: &test_session.binding_sha256,
+                root_session_id_sha256: &test_session.session_id_sha256,
+                d1_observed_at: snapshot.database_now,
+                parent_proof_sha256: parent_proof_sha256.as_deref(),
+                phase_binding_sha256: &phase_binding_sha256,
+                semantic_authority_fingerprint_sha256: semantic_fingerprint_sha256,
+                authority_expires_at,
+            },
+        )
+        .unwrap();
+        verify_root_session_phase_proof(
+            RootSessionPhaseKeyRing {
+                current: key,
+                previous: None,
+            },
+            &token,
+            RootSessionPhaseExpectation {
+                issuer: "cinatoken-application",
+                audience: "cinatoken-drain-source-registration-coordinator",
+                application_version_id: "application-build-1",
+                environment: STAGING_ENVIRONMENT,
+                phase,
+                operation_id_sha256: &operation_id_sha256,
+                authorization_id_sha256: &snapshot.authorization.authorization_id_sha256,
+                ceremony_id_sha256: &ceremony_id_sha256,
+                request_intent_sha256: &request_intent_sha256,
+                parent_proof_sha256: parent_proof_sha256.as_deref(),
+                phase_binding_sha256: &phase_binding_sha256,
+                semantic_authority_fingerprint_sha256: semantic_fingerprint_sha256,
+                authority_expires_at,
+                root_admin_id: test_session.root_admin_id,
+                expected_session: Some(RootSessionAnchorExpectation {
+                    root_session_epoch: test_session.session_epoch,
+                    root_session_issued_at: test_session.issued_at,
+                    root_session_expires_at: test_session.expires_at,
+                    root_session_binding_sha256: &test_session.binding_sha256,
+                    root_session_id_sha256: &test_session.session_id_sha256,
+                }),
+                now: snapshot.database_now,
+            },
+        )
+        .unwrap()
+    }
+
     fn action(
         validated: &ValidatedDrainSourceRegistrationPhase,
     ) -> DrainSourceRegistrationActionV1 {
@@ -890,11 +1068,18 @@ mod tests {
 
     fn begin() -> ValidatedDrainSourceRegistrationPhase {
         let snapshot = snapshot();
+        let fingerprint = fingerprint(&snapshot);
+        let proof = phase_proof(
+            &snapshot,
+            RootSessionPhase::BeforeChallenge,
+            &session(),
+            &fingerprint,
+        );
         validate_before_challenge(
             &snapshot,
             "staging",
             &snapshot.authorization.authorization_id_sha256,
-            &session(),
+            &proof,
         )
         .unwrap()
     }
@@ -902,11 +1087,18 @@ mod tests {
     #[test]
     fn three_phase_validation_ignores_only_time_and_bookmark_evidence() {
         let snapshot = snapshot();
+        let expected_fingerprint = fingerprint(&snapshot);
+        let begin_proof = phase_proof(
+            &snapshot,
+            RootSessionPhase::BeforeChallenge,
+            &session(),
+            &expected_fingerprint,
+        );
         let begin = validate_before_challenge(
             &snapshot,
             "staging",
             &snapshot.authorization.authorization_id_sha256,
-            &session(),
+            &begin_proof,
         )
         .unwrap();
         let action = action(&begin);
@@ -914,20 +1106,32 @@ mod tests {
         let mut later = snapshot.clone();
         later.database_now += 1;
         later.read_bookmark_sha256 = digest("later-bookmark");
+        let issuer_proof = phase_proof(
+            &later,
+            RootSessionPhase::BeforeIssuer,
+            &session(),
+            &expected_fingerprint,
+        );
         let issuer = validate_before_issuer(
             &later,
             "staging",
             &later.authorization.authorization_id_sha256,
-            &session(),
+            &issuer_proof,
             &action,
             &begin.semantic_fingerprint_sha256,
         )
         .unwrap();
+        let commit_proof = phase_proof(
+            &later,
+            RootSessionPhase::BeforeCommit,
+            &session(),
+            &expected_fingerprint,
+        );
         let commit = validate_before_commit(
             &later,
             "staging",
             &later.authorization.authorization_id_sha256,
-            &session(),
+            &commit_proof,
             &action,
             &begin.semantic_fingerprint_sha256,
         )
@@ -960,15 +1164,23 @@ mod tests {
     fn root_session_and_production_drift_fail_closed() {
         let baseline = begin();
         let action = action(&baseline);
+        let baseline_snapshot = snapshot();
+        let expected_fingerprint = fingerprint(&baseline_snapshot);
+        let commit_proof = phase_proof(
+            &baseline_snapshot,
+            RootSessionPhase::BeforeCommit,
+            &session(),
+            &expected_fingerprint,
+        );
         let assert_error = |snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
-                            session: &DrainSourceRegistrationRootSession,
+                            proof: &VerifiedRootSessionPhaseProof,
                             expected| {
             assert_eq!(
                 validate_before_commit(
                     snapshot,
                     "staging",
                     &snapshot.authorization.authorization_id_sha256,
-                    session,
+                    proof,
                     &action,
                     &baseline.semantic_fingerprint_sha256,
                 ),
@@ -980,7 +1192,7 @@ mod tests {
         changed.root.as_mut().unwrap().role -= 1;
         assert_error(
             &changed,
-            &session(),
+            &commit_proof,
             DrainSourceRegistrationCoordinatorError::RootStateChanged,
         );
 
@@ -988,7 +1200,7 @@ mod tests {
         changed.root.as_mut().unwrap().status = 0;
         assert_error(
             &changed,
-            &session(),
+            &commit_proof,
             DrainSourceRegistrationCoordinatorError::RootStateChanged,
         );
 
@@ -996,7 +1208,7 @@ mod tests {
         changed.root.as_mut().unwrap().deleted_at = Some(NOW);
         assert_error(
             &changed,
-            &session(),
+            &commit_proof,
             DrainSourceRegistrationCoordinatorError::RootStateChanged,
         );
 
@@ -1004,26 +1216,32 @@ mod tests {
         changed.root.as_mut().unwrap().session_epoch += 1;
         assert_error(
             &changed,
-            &session(),
+            &commit_proof,
             DrainSourceRegistrationCoordinatorError::SessionStateChanged,
         );
 
-        let mut expired_session = session();
-        expired_session.expires_at = NOW;
+        let mut expired_proof_snapshot = snapshot();
+        expired_proof_snapshot.database_now = NOW + 11;
         assert_error(
-            &snapshot(),
-            &expired_session,
+            &expired_proof_snapshot,
+            &commit_proof,
             DrainSourceRegistrationCoordinatorError::SessionStateChanged,
         );
 
         let mut production = snapshot();
         production.authorization.environment = "production".to_owned();
+        let begin_proof = phase_proof(
+            &baseline_snapshot,
+            RootSessionPhase::BeforeChallenge,
+            &session(),
+            &expected_fingerprint,
+        );
         assert_eq!(
             validate_before_challenge(
                 &production,
                 "production",
                 &production.authorization.authorization_id_sha256,
-                &session(),
+                &begin_proof,
             ),
             Err(DrainSourceRegistrationCoordinatorError::UnsupportedEnvironment)
         );
@@ -1033,13 +1251,21 @@ mod tests {
     fn passkey_fence_and_consumption_drift_fail_closed() {
         let baseline = begin();
         let action = action(&baseline);
+        let baseline_snapshot = snapshot();
+        let expected_fingerprint = fingerprint(&baseline_snapshot);
+        let issuer_proof = phase_proof(
+            &baseline_snapshot,
+            RootSessionPhase::BeforeIssuer,
+            &session(),
+            &expected_fingerprint,
+        );
         let check = |changed: &RelayContainerDrainSourceRegistrationPhaseSnapshot, expected| {
             assert_eq!(
                 validate_before_issuer(
                     changed,
                     "staging",
                     &changed.authorization.authorization_id_sha256,
-                    &session(),
+                    &issuer_proof,
                     &action,
                     &baseline.semantic_fingerprint_sha256,
                 ),
@@ -1136,11 +1362,18 @@ mod tests {
             receipt_digest_sha256: digest("previous-terminal"),
             recorded_at: NOW - 20,
         });
+        let expected_fingerprint = fingerprint(&snapshot);
+        let proof = phase_proof(
+            &snapshot,
+            RootSessionPhase::BeforeChallenge,
+            &session(),
+            &expected_fingerprint,
+        );
         let validated = validate_before_challenge(
             &snapshot,
             "staging",
             &snapshot.authorization.authorization_id_sha256,
-            &session(),
+            &proof,
         )
         .unwrap();
         assert_eq!(validated.receipt_sequence, 4);
@@ -1155,7 +1388,7 @@ mod tests {
                 &snapshot,
                 "staging",
                 &snapshot.authorization.authorization_id_sha256,
-                &session(),
+                &proof,
             ),
             Err(DrainSourceRegistrationCoordinatorError::LedgerStateChanged)
         );
@@ -1164,6 +1397,14 @@ mod tests {
     #[test]
     fn action_and_validity_windows_are_rechecked_at_each_later_phase() {
         let baseline = begin();
+        let baseline_snapshot = snapshot();
+        let expected_fingerprint = fingerprint(&baseline_snapshot);
+        let begin_proof = phase_proof(
+            &baseline_snapshot,
+            RootSessionPhase::BeforeChallenge,
+            &session(),
+            &expected_fingerprint,
+        );
 
         let mut expired = snapshot();
         expired.database_now = expired.authorization.permit_expires_at;
@@ -1172,19 +1413,25 @@ mod tests {
                 &expired,
                 "staging",
                 &expired.authorization.authorization_id_sha256,
-                &session(),
+                &begin_proof,
             ),
-            Err(DrainSourceRegistrationCoordinatorError::AuthorityExpired)
+            Err(DrainSourceRegistrationCoordinatorError::SessionStateChanged)
         );
 
         let mut different_session = session();
         different_session.binding_sha256 = digest("other-session");
+        let different_proof = phase_proof(
+            &baseline_snapshot,
+            RootSessionPhase::BeforeCommit,
+            &different_session,
+            &expected_fingerprint,
+        );
         assert_eq!(
             validate_before_commit(
                 &snapshot(),
                 "staging",
                 &snapshot().authorization.authorization_id_sha256,
-                &different_session,
+                &different_proof,
                 &action(&baseline),
                 &baseline.semantic_fingerprint_sha256,
             ),

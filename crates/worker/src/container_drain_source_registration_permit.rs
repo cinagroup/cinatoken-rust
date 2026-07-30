@@ -486,7 +486,6 @@ fn validate_subject_shape(
         || subject.root_session_epoch > MAXIMUM_SAFE_INTEGER
         || subject.root_session_issued_at <= 0
         || subject.root_session_issued_at > MAXIMUM_SAFE_INTEGER
-        || subject.root_session_issued_at < subject.root_session_epoch
         || subject.root_session_expires_at <= subject.root_session_issued_at
         || subject.root_session_expires_at > MAXIMUM_SAFE_INTEGER
         || subject.passkey_credential_row_id <= 0
@@ -747,7 +746,6 @@ fn validate_validity(
         || subject.verification_expires_at > MAXIMUM_SAFE_INTEGER
         || subject.root_session_issued_at > MAXIMUM_SAFE_INTEGER
         || subject.root_session_expires_at > MAXIMUM_SAFE_INTEGER
-        || subject.root_session_issued_at < subject.root_session_epoch
         || subject.root_session_expires_at <= subject.root_session_issued_at
         || subject.verified_at < subject.root_session_issued_at
         || !matches!(
@@ -1579,11 +1577,10 @@ mod tests {
         }
 
         let (mut envelope, trust) = signed_envelope(&expected);
-        envelope.subject.root_session_issued_at = envelope.subject.root_session_epoch - 1;
-        assert_eq!(
-            validate_subject_shape(&envelope.subject, &trust),
-            Err(DrainSourceRegistrationPermitError::InvalidPermit)
-        );
+        envelope.subject.root_session_epoch = MAXIMUM_SAFE_INTEGER;
+        assert_eq!(validate_subject_shape(&envelope.subject, &trust), Ok(()));
+
+        let (mut envelope, trust) = signed_envelope(&expected);
         envelope.subject.root_session_issued_at = NOW - 60;
         envelope.subject.root_session_expires_at = envelope.subject.root_session_issued_at;
         assert_eq!(

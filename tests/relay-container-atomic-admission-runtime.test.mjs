@@ -89,6 +89,11 @@ const registrationCommandSchemaFingerprints = {
     "relay_container_drain_source_registration_commands",
     "df11cfbecb1def93427d39ede115b601101fb40d2b2519ebfd51d1a363a2dfd7",
   ],
+  relay_container_drain_source_command_exact_root_guard: [
+    "trigger",
+    "relay_container_drain_source_registration_commands",
+    "8b5e943f2c3df3490291895c0d9e99ace7d8576b96336a336630521f203236fd",
+  ],
   relay_container_drain_source_registration_command_insert_guard: [
     "trigger",
     "relay_container_drain_source_registration_commands",
@@ -108,6 +113,11 @@ const registrationCommandSchemaFingerprints = {
     "trigger",
     "relay_container_drain_source_authorization_registrations",
     "763f037f27d5c0b11b72d6038023da6b61b8d41cc03bbb3fd15479e599f6301a",
+  ],
+  relay_container_drain_source_registration_exact_root_guard: [
+    "trigger",
+    "relay_container_drain_source_authorization_registrations",
+    "60c4bf6334af4b3c4e9884535c49d25cca734cc587f65bf23b4e44196d095ceb",
   ],
   relay_http_stream_finalization_receipt_insert_guard: [
     "trigger",
@@ -415,7 +425,7 @@ describe("migration 0050 atomic relay Container admission", () => {
     )
       .bind(...objectNames)
       .all();
-    expect(objects.results).toHaveLength(20);
+    expect(objects.results).toHaveLength(22);
     for (const object of objects.results) {
       const expected = registrationCommandSchemaFingerprints[object.name];
       expect(expected, `unexpected 0074 object ${object.name}`).toBeDefined();
@@ -498,6 +508,63 @@ describe("migration 0050 atomic relay Container admission", () => {
     );
   });
 
+  it("enforces the 0075 role enum and monotonic session generation", async () => {
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO users (
+           id, username, password, display_name, role, status,
+           session_epoch, aff_code
+         ) VALUES (
+           75001, 'invalid-role-75001', 'unused', 'Invalid Role',
+           101, 1, 0, 'invalid-role-75001'
+         )`,
+      ).run(),
+    ).rejects.toThrow(/user authority fields are invalid/);
+    await expect(
+      env.DB.prepare(
+        `INSERT INTO users (
+           id, username, password, display_name, role, status,
+           session_epoch, aff_code
+         ) VALUES (
+           75003, 'fractional-epoch-75003', 'unused', 'Fractional Epoch',
+           1, 1, 1.5, 'fractional-epoch-75003'
+         )`,
+      ).run(),
+    ).rejects.toThrow(/user authority fields are invalid/);
+
+    try {
+      await env.DB.prepare(
+        `INSERT INTO users (
+           id, username, password, display_name, role, status,
+           session_epoch, aff_code
+         ) VALUES (
+           75002, 'valid-root-75002', 'unused', 'Valid Root',
+           100, 1, 7, 'valid-root-75002'
+         )`,
+      ).run();
+      await expect(
+        env.DB.prepare(
+          "UPDATE users SET role = 101 WHERE id = 75002",
+        ).run(),
+      ).rejects.toThrow(/user role is invalid/);
+      await env.DB.prepare(
+        "UPDATE users SET session_epoch = 8 WHERE id = 75002",
+      ).run();
+      await expect(
+        env.DB.prepare(
+          "UPDATE users SET session_epoch = 7 WHERE id = 75002",
+        ).run(),
+      ).rejects.toThrow(/session generation must be monotonic/);
+      await expect(
+        env.DB.prepare(
+          "UPDATE users SET session_epoch = 8.5 WHERE id = 75002",
+        ).run(),
+      ).rejects.toThrow(/session generation must be monotonic/);
+    } finally {
+      await env.DB.prepare("DELETE FROM users WHERE id = 75002").run();
+    }
+  });
+
   it("accepts the maximum five-second registration permit issuance skew", async () => {
     await seedAuthorityState();
     const [intent] = await admitAcceptedSet(
@@ -535,6 +602,58 @@ describe("migration 0050 atomic relay Container admission", () => {
         await expect(
           sourceRegistrationCommandStatement(env.DB, candidate).run(),
         ).rejects.toThrow(/CHECK constraint failed/);
+      },
+    });
+    expect(source).toBeDefined();
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM relay_container_drain_source_registration_commands
+         WHERE command_id_sha256 = ?1`,
+      )
+        .bind(source.commandIdSha256)
+        .first(),
+    ).resolves.toEqual({ count: 0 });
+  });
+
+  it("rejects role 101 at the final registration command boundary", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet(
+      "drain-source-registration-exact-root",
+      [3],
+    );
+    let source;
+    await prepareAcceptedSource([intent], {
+      pageSize: 1,
+      includeClaim: false,
+      collectSource: false,
+      registerAuthorization: async (candidate) => {
+        source = candidate;
+        const roleGuard = await env.DB.prepare(
+          `SELECT sql
+           FROM sqlite_master
+           WHERE type = 'trigger'
+             AND name = 'users_role_update_guard'`,
+        ).first();
+        expect(roleGuard?.sql).toBeTruthy();
+        await env.DB.prepare("DROP TRIGGER users_role_update_guard").run();
+        try {
+          await env.DB.prepare(
+            "UPDATE users SET role = 101 WHERE id = ?1",
+          )
+            .bind(candidate.rootAdminId)
+            .run();
+          await expect(
+            sourceRegistrationCommandStatement(env.DB, candidate).run(),
+          ).rejects.toThrow(/requires exact live Root authority/);
+        } finally {
+          await env.DB.prepare(
+            "UPDATE users SET role = 100 WHERE id = ?1",
+          )
+            .bind(candidate.rootAdminId)
+            .run();
+          await env.DB.prepare(roleGuard.sql).run();
+        }
       },
     });
     expect(source).toBeDefined();

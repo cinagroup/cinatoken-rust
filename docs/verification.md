@@ -602,10 +602,12 @@ Last checked: 2026-07-17
   `cargo test -p cinatoken-worker --lib task_orchestration -- --nocapture`,
   `cargo check -p cinatoken-worker --target wasm32-unknown-unknown`,
   `git diff --check`, and `bun run check`: passed
-  after adding browser-session revocation epochs. Rust session claims now carry
-  `iat` while accepting legacy Rust cookies without that field, D1 migration
-  `0017_user_session_epoch.sql` adds `users.session_epoch`, live session
-  rechecks reject `iat < session_epoch`, password changes reissue the current
+  after adding the original browser-session revocation epoch. This is a
+  historical checkpoint superseded by the 2026-07-30 exact-generation
+  verification below. At this checkpoint Rust accepted legacy Cookies and
+  compared `iat` with D1 migration `0017_user_session_epoch.sql`; current
+  session validation requires exact generation plus a valid random `sid`.
+  Password changes reissue the current
   browser session after bumping the epoch, and admin disable/delete/role or
   password-reset paths revoke target users' stale cookies. Playground relay and
   video content session paths now use live auth instead of direct cookie
@@ -12504,18 +12506,19 @@ Targeted current-worktree verification:
 bun run check:drain-source-registration-permit-issuer
   local/staging generated Wrangler types: current
   TypeScript and local/staging dry-run bundles: passed
-  issuer protocol/index/config: 25 passed
-  real Workerd runtime: 2 passed
+  issuer protocol/index/config: 29 passed
+  real Workerd runtime: 7 passed
   structured config/production omission audit: 15 passed
-  Rust action plus permit verifier: 9 passed
+  Rust action/permit/command/coordinator contracts: 20 passed
 
 cargo check -p cinatoken-worker --target wasm32-unknown-unknown
   passed with existing dead-code warnings only
 ```
 
-The TypeScript and Rust tests pin one identical 43-field, LP-encoded Ed25519
-canary plus one identical 2,120-byte canonical issuer request with SHA-256
-`0af33ec080e15ee14f24877d805deed7fcf27fd5ebd8cda1a48313c0ba8416e1`.
+The TypeScript and Rust tests pin one identical 49-field, 2,122-byte
+LP-encoded Ed25519 subject canary plus one identical 39-field, 2,528-byte
+canonical issuer request with SHA-256
+`72f7cdc6d9e535626ed85fe6e852f43204fb1a5d8a20f5d9871497ccab00f755`.
 Issuance binds the authenticated HMAC credential to the registration
 credential, requires the WebAuthn verification to precede issuance by no more
 than five seconds, and derives `issuedAt`/`expiresAt` from the authenticated
@@ -12588,10 +12591,74 @@ primitive,
 The former plain-SHA comparison could reject a valid real D1 credential even
 though fixtures passed; a regression test now rejects the plain digest.
 
-This is still route-free local evidence. Existing Cookie claims do not form a
-coordinator-verifiable epoch proof, the generic Passkey Durable Object cannot
-recover a lost finish response, `/internal/*` is not a private transport
-boundary, and unknown outcomes still need full command/alias winner recovery.
-No Service Binding, coordinator DO, route, gate, issuer call, remote D1
-operation, deployment, or traffic change was tested. Go/VPS remains
+This is still route-free local evidence. The generic Passkey Durable Object
+cannot recover a lost finish response, `/internal/*` is not a private
+transport boundary, and unknown outcomes still need full command/alias winner
+recovery. No Service Binding, coordinator DO, route, gate, issuer call, remote
+D1 operation, deployment, or traffic change was tested. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-07-30 Root Session Phase Proof And Exactness Verification
+
+Targeted current-worktree verification:
+
+```text
+cargo test -p cinatoken-root-session-phase-proof
+  13 passed
+
+bun test tests/root-session-phase-proof.test.mjs
+  1 passed; 8 assertions
+
+cargo test -p cinatoken-session -p cinatoken-auth
+  session 14 passed
+  auth 10 passed
+
+bun run check:d1:migration-config
+  contiguous head 0075 passed
+
+python tools/verify_sqlite.py
+  75 migrations / 104 tables / 1759 incremental columns / 162 key indexes
+  exact schema/guard verification passed
+
+bun run check
+  complete repository gate passed
+  Worker 988 passed after the final fail-closed self-delete regression test
+  real-Workerd atomic admission 40 passed
+  all required wasm32 checks passed
+```
+
+The proof verifier rejects noncanonical Base64URL and JSON, unknown fields,
+tampering, wrong keys, expired or oversized windows, invalid Root state,
+session drift, phase/operation/Application-version drift, and broken parent
+chains. It accepts exactly one current key and optionally one distinct,
+strictly older previous key. Claims are parsed only after signature
+verification.
+
+The fixture freezes the header and claim byte order, HMAC signature, and
+domain-separated complete-token digest. The independent Bun/WebCrypto test
+reconstructs the protocol without calling Rust. This detects cross-language
+encoding drift rather than merely exercising two Rust code paths.
+
+Migration 0075 rejects invalid legacy user roles or generations before apply,
+guards future role and generation writes, and protects both registration
+write boundaries with exact live Root role/status/deletion/generation checks.
+The runtime test deliberately introduces role `101` after temporarily removing
+the general role guard and proves the final command still rolls back.
+
+The audit also found and removed every runtime
+`root_session_issued_at < root_session_epoch` rejection from Rust action,
+Rust permit, and TypeScript issuer validation. Cross-language tests now prove
+that a valid generation may be numerically greater than `iat`. The immutable
+0074 command table and insert trigger still retain the inverse historical
+comparison. No remote candidate apply or command write is eligible until a
+new additive migration rebuilds the empty table without that clause and the
+complete schema/fault matrix passes.
+
+Password changes and email resets, role changes, disable, and soft delete now
+advance the generation in the same D1 `UPDATE` as the security mutation.
+Generation exhaustion or guard failure therefore cannot leave a completed
+account mutation with an unrevoked old Cookie.
+
+No proof issuer route, private binding, persistent replay coordinator,
+production key, remote migration, or traffic change was exercised. The proof
+is not independently single-use. Production remains **NO-GO**.

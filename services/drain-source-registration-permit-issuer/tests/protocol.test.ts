@@ -305,24 +305,22 @@ describe("registration permit canonical protocol", () => {
     }
   });
 
-  test("enforces root session time boundaries", () => {
-    const atEpoch = parseRegistrationBindings(
+  test("keeps root session generation independent from time boundaries", () => {
+    const independentGeneration = parseRegistrationBindings(
       fixtureBody(
         fixtureBindings({
-          rootSessionEpoch: FIXTURE_NOW - 60,
+          rootSessionEpoch: Number.MAX_SAFE_INTEGER,
           rootSessionIssuedAt: FIXTURE_NOW - 60,
           rootSessionExpiresAt: FIXTURE_NOW + 24,
         }),
       ),
     );
-    expect(atEpoch.rootSessionIssuedAt).toBe(atEpoch.rootSessionEpoch);
-    expect(atEpoch.rootSessionExpiresAt).toBe(atEpoch.verificationExpiresAt);
+    expect(independentGeneration.rootSessionEpoch).toBe(Number.MAX_SAFE_INTEGER);
+    expect(independentGeneration.rootSessionExpiresAt).toBe(
+      independentGeneration.verificationExpiresAt,
+    );
 
     for (const overrides of [
-      {
-        rootSessionEpoch: FIXTURE_NOW - 59,
-        rootSessionIssuedAt: FIXTURE_NOW - 60,
-      },
       {
         rootSessionIssuedAt: FIXTURE_NOW - 60,
         rootSessionExpiresAt: FIXTURE_NOW - 60,

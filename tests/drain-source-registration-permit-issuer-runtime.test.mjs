@@ -223,13 +223,21 @@ describe("drain-source registration permit issuer Workerd runtime", () => {
     }
   });
 
-  it("enforces root session issue, expiry, and verification bounds", async () => {
+  it("keeps root session generation independent from time bounds", async () => {
     expectExpandedProtocolContract();
     const now = Math.floor(Date.now() / 1_000);
     const valid = runtimeBindings(now);
+    const independentGeneration = await postBindings(
+      runtimeBindings(now, { rootSessionEpoch: Number.MAX_SAFE_INTEGER }),
+      now,
+    );
+    expect(independentGeneration.status).toBe(201);
+    const independentEnvelope = await independentGeneration.json();
+    expect(independentEnvelope.envelope.subject.rootSessionEpoch).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
 
     for (const overrides of [
-      { rootSessionIssuedAt: valid.rootSessionEpoch - 1 },
       { rootSessionExpiresAt: valid.rootSessionIssuedAt },
       { verifiedAt: valid.rootSessionIssuedAt - 1 },
       { verificationExpiresAt: valid.rootSessionExpiresAt + 1 },

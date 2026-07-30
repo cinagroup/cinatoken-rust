@@ -120,19 +120,23 @@ strings.
 
 ## Session lifetime binding
 
-The Root session is represented by four distinct facts:
+The phase-proof layer represents the Root session with five distinct facts:
 
-- `root_session_epoch`: revocation/version boundary;
+- `root_session_epoch`: exact monotonic revocation generation;
 - `root_session_binding_sha256`: digest binding the exact authenticated
   session;
+- `root_session_id_sha256`: digest binding the random per-issue Cookie `sid`;
 - `root_session_issued_at`: session iat; and
 - `root_session_expires_at`: session exp.
 
-All four pass through the action, issuer request, signed permit, verified
-command, and D1 command row. The typed and SQL contracts require:
+The exact generation, Cookie-binding digest, iat, and exp continue through the
+action, issuer request, signed permit, verified command, and D1 command row.
+The separate session-ID digest remains in the proof/coordinator operation
+state; the downstream Cookie-binding digest also commits to the signed Cookie
+that contains that `sid`. The typed and SQL contracts require:
 
 ```text
-session_iat >= session_epoch
+cookie.session_epoch == live D1 session_epoch
 session_iat < session_exp
 session_iat <= verified_at
 verification_expires_at <= session_exp
@@ -144,6 +148,18 @@ D1 created_at < min(session_exp, permit_expires_at)
 
 `created_at` comes from D1 `unixepoch()`, not a caller. This prevents a valid
 passkey proof or permit from being used after the bound session lifetime.
+Generation is deliberately absent from every timestamp inequality.
+
+The immutable 0074 migration predates that correction and still has
+`root_session_issued_at >= root_session_epoch` in the command-table `CHECK`
+and `relay_container_drain_source_registration_command_insert_guard`.
+Application, Rust action/permit, and TypeScript issuer validation no longer
+carry that comparison. Before any isolated-staging schema apply or command
+write, a new additive migration must prove the command table is empty, rebuild
+it without the historical relationship, recreate the insert/project/update/
+delete trigger contract, and update the normalized SQL and PRAGMA
+fingerprints. Editing 0074 in place is forbidden because already-applied
+migration identity must remain stable.
 
 The timestamps do not replace a fresh session-authority lookup. The future
 private begin/finish coordinator must reread Root status, session epoch,
@@ -447,6 +463,11 @@ contracts. These are local implementation facts, not remote staging evidence.
 
 ### 0074-specific
 
+- Add the empty-table corrective migration for the legacy
+  `root_session_issued_at >= root_session_epoch` table and trigger clauses,
+  preserve 0074 byte-for-byte, and rerun the complete SQLite/Workerd schema,
+  rollback, concurrency, and `5/0` matrix. This is a hard blocker for remote
+  candidate apply and every command write.
 - The route-free coordinator foundation is implemented and documented in
   [`relay-container-drain-registration-coordinator.md`](relay-container-drain-registration-coordinator.md).
   It uses one first-primary SQL statement per phase, validates fresh Root,
@@ -456,10 +477,12 @@ contracts. These are local implementation facts, not remote staging evidence.
 - Wire that foundation only through a private, default-off begin/finish
   protocol after the Service-Binding-only or named-entrypoint caller boundary
   is frozen and tested. No coordinator route exists yet.
-- Add an Application-issued, short-lived Root session phase proof. Existing
-  Cookie claims do not themselves carry a coordinator-verifiable
-  `session_epoch`, and neither the Cookie nor `SESSION_SECRET` may cross the
-  Service Binding.
+- Wire the implemented Application-issued, short-lived
+  `RootSessionPhaseProofV1` after every fresh D1 phase snapshot. Rust Cookies
+  now carry an exact generation and random `sid`, while neither the Cookie,
+  raw `sid`, nor `SESSION_SECRET` may cross the Service Binding. The frozen
+  protocol and remaining replay boundary are documented in
+  [`root-session-phase-proof-v1.md`](root-session-phase-proof-v1.md).
 - Use a dedicated persistent coordinator DO. The generic Passkey ceremony and
   generic admin Passkey step-up paths cannot provide response-loss recovery
   while preserving 0074's atomic Passkey consumption.

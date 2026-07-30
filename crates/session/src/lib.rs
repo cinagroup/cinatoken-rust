@@ -12,9 +12,10 @@
 //! ```
 //!
 //! The payload is **signed but not encrypted**. It contains only public
-//! identity fields (`id`, `username`, `role`, `status`, `group`, `iat`, `exp`) that
-//! the server already returns via `/api/user/self`; encrypting them would add
-//! complexity without security benefit. The HMAC signature prevents tampering.
+//! identity fields (`id`, `username`, `role`, `status`, `group`, `iat`, `exp`)
+//! plus a revocation generation and random session id; encrypting them would
+//! add complexity without security benefit. The HMAC signature prevents
+//! tampering.
 //!
 //! ## Compatibility
 //!
@@ -38,6 +39,8 @@ use thiserror::Error;
 
 type HmacSha256 = Hmac<Sha256>;
 
+const MAXIMUM_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
 /// Cookie name used by both the Go gateway and this Rust port. Keeping the
 /// name stable lets the existing React dashboard read/write the same cookie.
 pub const COOKIE_NAME: &str = "session";
@@ -50,6 +53,13 @@ pub const DEFAULT_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// is rejected to avoid accidental weak-key configurations.
 pub const MIN_SECRET_BYTES: usize = 32;
 
+/// Entropy used for each independently revocable browser session.
+pub const SESSION_ID_BYTES: usize = 32;
+
+/// Small allowance for verifier clock skew. Sessions issued farther in the
+/// future are rejected even when their signature is valid.
+pub const CLOCK_SKEW_SECONDS: i64 = 5;
+
 /// Identity carried inside the signed cookie payload. Field names mirror the
 /// Go session keys (`id`, `username`, `role`, `status`, `group`) so a future
 /// compatible serialization stays close to the source.
@@ -60,6 +70,14 @@ pub struct SessionClaims {
     pub role: i32,
     pub status: i32,
     pub group: String,
+    /// Exact monotonic D1 revocation generation. It is deliberately separate
+    /// from `iat`; multiple revocations in one second must remain distinct.
+    #[serde(default)]
+    pub session_epoch: i64,
+    /// Random per-issue session identifier. The wire name stays compact and
+    /// conventional while Rust callers use an explicit field name.
+    #[serde(default, rename = "sid")]
+    pub session_id: String,
     /// Unix seconds when the cookie was issued. Defaults to 0 for cookies
     /// created before this field existed.
     #[serde(default)]
@@ -85,6 +103,10 @@ pub enum SessionError {
     InvalidSignature,
     #[error("session cookie has expired")]
     Expired,
+    #[error("session cookie claims are invalid")]
+    InvalidClaims,
+    #[error("session id entropy generation failed: {0}")]
+    Entropy(String),
     #[error("session cookie payload could not be decoded: {0}")]
     Decode(String),
 }
@@ -114,8 +136,16 @@ impl SessionCodec {
     /// issuing time in Unix seconds; the cookie expires at
     /// `now_unix + ttl_seconds`.
     pub fn issue(&self, mut claims: SessionClaims, now_unix: i64) -> Result<String, SessionError> {
+        if now_unix <= 0 || self.ttl_seconds <= 0 || claims.session_epoch < 0 {
+            return Err(SessionError::InvalidClaims);
+        }
+        let mut session_id = [0_u8; SESSION_ID_BYTES];
+        getrandom::getrandom(&mut session_id)
+            .map_err(|error| SessionError::Entropy(error.to_string()))?;
+        claims.session_id = URL_SAFE_NO_PAD.encode(session_id);
         claims.iat = now_unix;
         claims.exp = now_unix.saturating_add(self.ttl_seconds);
+        validate_claims(&claims)?;
         let payload_json =
             serde_json::to_string(&claims).map_err(|err| SessionError::Decode(err.to_string()))?;
         let payload_b64 = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
@@ -155,6 +185,10 @@ impl SessionCodec {
         let claims: SessionClaims = serde_json::from_slice(&payload_bytes)
             .map_err(|err| SessionError::Decode(err.to_string()))?;
 
+        validate_claims(&claims)?;
+        if claims.iat > now_unix.saturating_add(CLOCK_SKEW_SECONDS) {
+            return Err(SessionError::InvalidClaims);
+        }
         if now_unix >= claims.exp {
             return Err(SessionError::Expired);
         }
@@ -172,6 +206,26 @@ impl SessionCodec {
     pub fn ttl_seconds(&self) -> i64 {
         self.ttl_seconds
     }
+}
+
+fn validate_claims(claims: &SessionClaims) -> Result<(), SessionError> {
+    let session_id = URL_SAFE_NO_PAD
+        .decode(claims.session_id.as_bytes())
+        .map_err(|_| SessionError::InvalidClaims)?;
+    if claims.id <= 0
+        || claims.id > MAXIMUM_SAFE_INTEGER
+        || claims.session_epoch < 0
+        || claims.session_epoch > MAXIMUM_SAFE_INTEGER
+        || claims.iat <= 0
+        || claims.iat > MAXIMUM_SAFE_INTEGER
+        || claims.exp <= claims.iat
+        || claims.exp > MAXIMUM_SAFE_INTEGER
+        || session_id.len() != SESSION_ID_BYTES
+        || URL_SAFE_NO_PAD.encode(session_id) != claims.session_id
+    {
+        return Err(SessionError::InvalidClaims);
+    }
+    Ok(())
 }
 
 /// Build a `Set-Cookie` value for a session cookie. `Secure` is always
@@ -206,6 +260,8 @@ mod tests {
             role,
             status: 1,
             group: "default".to_string(),
+            session_epoch: 7,
+            session_id: String::new(),
             iat: 0,
             exp: 0,
         }
@@ -223,13 +279,21 @@ mod tests {
         assert_eq!(parsed.role, 10);
         assert_eq!(parsed.username, "user-42");
         assert_eq!(parsed.group, "default");
+        assert_eq!(parsed.session_epoch, 7);
+        assert_eq!(
+            URL_SAFE_NO_PAD
+                .decode(parsed.session_id.as_bytes())
+                .unwrap()
+                .len(),
+            SESSION_ID_BYTES
+        );
         assert_eq!(parsed.iat, now);
         // Expiry is now + default TTL.
         assert_eq!(parsed.exp, now + DEFAULT_TTL_SECONDS);
     }
 
     #[test]
-    fn parse_accepts_legacy_payload_without_iat() {
+    fn parse_rejects_legacy_payload_without_session_identity() {
         let codec = SessionCodec::with_default_ttl(test_secret()).unwrap();
         let now = 1_700_000_000;
         let payload_json = serde_json::json!({
@@ -245,9 +309,26 @@ mod tests {
         let sig_b64 = URL_SAFE_NO_PAD.encode(codec.sign(payload_b64.as_bytes()).unwrap());
         let cookie = format!("{payload_b64}.{sig_b64}");
 
-        let parsed = codec.parse(&cookie, now).unwrap();
-        assert_eq!(parsed.username, "legacy");
-        assert_eq!(parsed.iat, 0);
+        assert!(matches!(
+            codec.parse(&cookie, now).unwrap_err(),
+            SessionError::InvalidClaims
+        ));
+    }
+
+    #[test]
+    fn each_issue_gets_a_distinct_session_id_even_in_the_same_second() {
+        let codec = SessionCodec::with_default_ttl(test_secret()).unwrap();
+        let now = 1_700_000_000;
+        let first = codec
+            .parse(&codec.issue(sample_claims(42, 10), now).unwrap(), now)
+            .unwrap();
+        let second = codec
+            .parse(&codec.issue(sample_claims(42, 10), now).unwrap(), now)
+            .unwrap();
+
+        assert_ne!(first.session_id, second.session_id);
+        assert_eq!(first.iat, second.iat);
+        assert_eq!(first.session_epoch, second.session_epoch);
     }
 
     #[test]
@@ -293,6 +374,39 @@ mod tests {
         ));
         // One second before expiry is accepted.
         assert!(codec.parse(&cookie, now + 59).is_ok());
+    }
+
+    #[test]
+    fn parse_rejects_cookie_issued_too_far_in_the_future() {
+        let codec = SessionCodec::new(test_secret(), 60).unwrap();
+        let issued_at = 1_700_000_100;
+        let cookie = codec.issue(sample_claims(7, 100), issued_at).unwrap();
+
+        assert!(codec.parse(&cookie, issued_at - CLOCK_SKEW_SECONDS).is_ok());
+        assert!(matches!(
+            codec
+                .parse(&cookie, issued_at - CLOCK_SKEW_SECONDS - 1)
+                .unwrap_err(),
+            SessionError::InvalidClaims
+        ));
+    }
+
+    #[test]
+    fn issue_rejects_values_outside_the_cross_runtime_integer_bound() {
+        let codec = SessionCodec::new(test_secret(), 60).unwrap();
+        let mut claims = sample_claims(7, 100);
+        claims.session_epoch = MAXIMUM_SAFE_INTEGER + 1;
+        assert!(matches!(
+            codec.issue(claims, 1_700_000_000).unwrap_err(),
+            SessionError::InvalidClaims
+        ));
+
+        assert!(matches!(
+            codec
+                .issue(sample_claims(7, 100), MAXIMUM_SAFE_INTEGER)
+                .unwrap_err(),
+            SessionError::InvalidClaims
+        ));
     }
 
     #[test]

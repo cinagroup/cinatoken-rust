@@ -52,6 +52,8 @@ pub(crate) fn session_claims_from_user(
         role: user.role,
         status: user.status,
         group: user.group.clone(),
+        session_epoch: user.session_epoch,
+        session_id: String::new(),
         iat: 0,
         exp: 0,
     }
@@ -819,7 +821,12 @@ pub async fn parse_session_claims(
     };
     match codec.parse(&cookie_value, unix_timestamp()) {
         Ok(claims) => Ok(Ok(Some(claims))),
-        Err(SessionError::Expired | SessionError::InvalidSignature | SessionError::Malformed) => {
+        Err(
+            SessionError::Expired
+            | SessionError::InvalidClaims
+            | SessionError::InvalidSignature
+            | SessionError::Malformed,
+        ) => {
             // Treat any invalid cookie as "no session"; the route handler will
             // return 401.
             Ok(Ok(None))
@@ -831,6 +838,10 @@ pub async fn parse_session_claims(
         Err(SessionError::SecretTooShort { min }) => Ok(Err(envelope_error_response(
             500,
             &format!("SESSION_SECRET must be at least {min} bytes"),
+        ))),
+        Err(SessionError::Entropy(err)) => Ok(Err(envelope_error_response(
+            500,
+            &format!("session entropy unavailable: {err}"),
         ))),
     }
 }
@@ -852,7 +863,7 @@ fn refresh_session_claims_from_live_user(
     if user.status != USER_STATUS_ENABLED {
         return Err(LiveSessionRecheckError::Disabled);
     }
-    if user.session_epoch > 0 && claims.iat < user.session_epoch {
+    if user.session_epoch < 0 || claims.session_epoch != user.session_epoch {
         return Err(LiveSessionRecheckError::Revoked);
     }
     claims.id = user.id;
@@ -860,6 +871,7 @@ fn refresh_session_claims_from_live_user(
     claims.role = user.role;
     claims.status = user.status;
     claims.group = user.group.clone();
+    claims.session_epoch = user.session_epoch;
     Ok(claims)
 }
 
@@ -1884,6 +1896,7 @@ mod tests {
             aff_history_quota: 150,
             created_at: 1_700_000_000,
             last_login_at: 1_700_000_100,
+            session_epoch: 7,
         };
         let resp = SelfResponse::from_row(&row);
         let serialized = serde_json::to_string(&resp).unwrap();
@@ -1916,6 +1929,8 @@ mod tests {
             role: ROLE_ROOT_USER,
             status: USER_STATUS_ENABLED,
             group: "stale-group".to_string(),
+            session_epoch: 7,
+            session_id: "test-session-id".to_string(),
             iat: 1_700_000_000,
             exp: 2_000_000_000,
         }
@@ -1932,7 +1947,7 @@ mod tests {
             role,
             status,
             group: "live-group".to_string(),
-            session_epoch: 0,
+            session_epoch: 7,
             deleted_at,
         }
     }
@@ -1949,6 +1964,8 @@ mod tests {
         assert_eq!(refreshed.role, 1);
         assert_eq!(refreshed.status, USER_STATUS_ENABLED);
         assert_eq!(refreshed.group, "live-group");
+        assert_eq!(refreshed.session_epoch, 7);
+        assert_eq!(refreshed.session_id, "test-session-id");
         assert_eq!(refreshed.iat, 1_700_000_000);
         assert_eq!(refreshed.exp, 2_000_000_000);
     }
@@ -1976,14 +1993,20 @@ mod tests {
     #[test]
     fn live_session_recheck_rejects_revoked_session_epoch() {
         let mut live_user = test_user_role_status(1, USER_STATUS_ENABLED, None);
-        live_user.session_epoch = 1_700_000_001;
+        live_user.session_epoch = 8;
 
         let result = refresh_session_claims_from_live_user(test_session_claims(), &live_user);
 
         assert_eq!(result.unwrap_err(), LiveSessionRecheckError::Revoked);
 
-        live_user.session_epoch = 1_700_000_000;
+        live_user.session_epoch = 7;
         assert!(refresh_session_claims_from_live_user(test_session_claims(), &live_user).is_ok());
+
+        live_user.session_epoch = 6;
+        assert_eq!(
+            refresh_session_claims_from_live_user(test_session_claims(), &live_user).unwrap_err(),
+            LiveSessionRecheckError::Revoked
+        );
     }
 
     #[test]

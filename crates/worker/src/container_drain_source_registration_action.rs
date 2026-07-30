@@ -1103,7 +1103,6 @@ impl DrainSourceRegistrationActionV1 {
             || self.root_session_epoch > MAXIMUM_SAFE_INTEGER
             || self.root_session_issued_at <= 0
             || self.root_session_issued_at > MAXIMUM_SAFE_INTEGER
-            || self.root_session_issued_at < self.root_session_epoch
             || self.root_session_expires_at <= self.root_session_issued_at
             || self.root_session_expires_at > MAXIMUM_SAFE_INTEGER
             || self.passkey_credential_row_id <= 0
@@ -1837,17 +1836,16 @@ mod tests {
             Err(DrainSourceRegistrationCeremonyError::InvalidCeremony)
         );
 
-        let mut invalid = action();
-        invalid.root_session_issued_at = invalid.root_session_epoch - 1;
-        assert_eq!(
-            DrainSourceRegistrationCeremonyState::new(
-                invalid,
-                "cinatoken.com",
-                "https://admin.cinatoken.com",
-                NOW,
-            ),
-            Err(DrainSourceRegistrationCeremonyError::InvalidAction)
-        );
+        let mut independent_generation = action();
+        independent_generation.root_session_epoch =
+            independent_generation.root_session_issued_at + 1;
+        assert!(DrainSourceRegistrationCeremonyState::new(
+            independent_generation,
+            "cinatoken.com",
+            "https://admin.cinatoken.com",
+            NOW,
+        )
+        .is_ok());
 
         let mut invalid = action();
         invalid.root_session_expires_at = invalid.root_session_issued_at;

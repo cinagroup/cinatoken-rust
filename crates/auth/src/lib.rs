@@ -24,17 +24,16 @@ pub const ROLE_ROOT_USER: i32 = 100;
 pub const USER_STATUS_ENABLED: i32 = 1;
 pub const USER_STATUS_DISABLED: i32 = 2;
 
-/// Return `true` when `role` is at least `ROLE_ADMIN_USER`. Used by the
-/// admin route guards in the Worker.
+/// Return `true` only for the two valid privileged role values.
 pub fn is_admin(role: i32) -> bool {
-    role >= ROLE_ADMIN_USER
+    matches!(role, ROLE_ADMIN_USER | ROLE_ROOT_USER)
 }
 
 /// Return `true` when `role` is `ROLE_ROOT_USER`. Used by the root-only
 /// routes (`/api/option/*`, channel key reveal, fetch_models, custom OAuth
 /// provider management).
 pub fn is_root(role: i32) -> bool {
-    role >= ROLE_ROOT_USER
+    role == ROLE_ROOT_USER
 }
 
 /// Return `true` when `actor_role` outranks `target_role`. Root always
@@ -42,13 +41,24 @@ pub fn is_root(role: i32) -> bool {
 /// common users never outrank admins. Mirrors the implicit hierarchy in
 /// Go `controller/user.go` `ManageUser`/`UpdateUser`/`DeleteUser` guards.
 pub fn outranks(actor_role: i32, target_role: i32) -> bool {
-    if actor_role >= ROLE_ROOT_USER {
+    if !is_valid_role(actor_role) || !is_valid_role(target_role) {
+        return false;
+    }
+    if actor_role == ROLE_ROOT_USER {
         return true;
     }
-    if actor_role >= ROLE_ADMIN_USER {
-        return target_role < ROLE_ADMIN_USER;
+    if actor_role == ROLE_ADMIN_USER {
+        return matches!(target_role, ROLE_GUEST | ROLE_COMMON_USER);
     }
     false
+}
+
+/// Accept only role values defined by the Go data contract.
+pub const fn is_valid_role(role: i32) -> bool {
+    matches!(
+        role,
+        ROLE_GUEST | ROLE_COMMON_USER | ROLE_ADMIN_USER | ROLE_ROOT_USER
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +127,10 @@ mod tests {
         assert!(is_admin(ROLE_ROOT_USER));
         assert!(!is_root(ROLE_ADMIN_USER));
         assert!(is_root(ROLE_ROOT_USER));
+        for invalid in [11, 99, 101, i32::MAX] {
+            assert!(!is_admin(invalid));
+            assert!(!is_root(invalid));
+        }
     }
 
     #[test]
@@ -132,5 +146,7 @@ mod tests {
         // Common users never outrank admins.
         assert!(!outranks(ROLE_COMMON_USER, ROLE_ADMIN_USER));
         assert!(!outranks(ROLE_GUEST, ROLE_COMMON_USER));
+        assert!(!outranks(101, ROLE_COMMON_USER));
+        assert!(!outranks(ROLE_ROOT_USER, 101));
     }
 }

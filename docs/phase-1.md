@@ -320,9 +320,11 @@ This phase creates the Rust workspace and a Cloudflare Worker MVP.
   G5 batch. Session guards now re-fetch live D1 user role/status/group, and the
   fixed GitHub/Discord/OIDC OAuth callbacks require browser-bound single-use
   state before token exchange. Migration `0017_user_session_epoch.sql` adds
-  `users.session_epoch`; signed Rust cookies now carry `iat`, and auth rejects
-  cookies older than the live epoch so password changes and admin
-  disable/delete/role changes revoke stale browser sessions.
+  `users.session_epoch`, and migration 0075 freezes it as an exact monotonic
+  generation. Signed Rust Cookies carry that exact generation, a random
+  per-issue `sid`, `iat`, and `exp`; auth requires generation equality so
+  password changes and admin disable/delete/role changes revoke stale browser
+  sessions.
 - `GET /api/status` reports `session_auth: true` when `SESSION_SECRET` is
   configured.
 - Frontend deploy pipeline: `wrangler.toml` `[assets]` block + Worker SPA
@@ -4995,11 +4997,15 @@ credential/trust rotation, network-HMAC key provisioning/rotation and
 retention/legal approval, load/cost/SLO/alerts, rollback,
 collection/claim/terminal, P5, billing/reconciliation, reverse sync,
 traffic/DNS, and approvals remain open.
-The immediate route-free blockers are an Application-issued Root session
-phase proof, a dedicated response-loss-recoverable coordinator DO, complete
-command/alias winner recovery, and an immutable issuer-auth HMAC key
-ID/version. The public `/internal/*` router and generic Passkey step-up path
-are explicitly ineligible.
+The Application-issued Root session phase proof is now implemented and frozen
+as a route-free Rust protocol with an independent Bun/WebCrypto fixed vector.
+Rust Cookies carry the exact D1 revocation generation plus a random per-issue
+`sid`; legacy cookies fail closed. The remaining immediate blockers are
+Application/private-transport wiring, a dedicated response-loss-recoverable
+coordinator DO, complete command/alias winner recovery, and an immutable
+issuer-auth HMAC key ID/version. The public `/internal/*` router and generic
+Passkey step-up path are explicitly ineligible. See
+[`root-session-phase-proof-v1.md`](root-session-phase-proof-v1.md).
 The signed chain still needs an immutable non-secret network-HMAC key
 ID/version, and the disabled local issuer remains build/test-only while the
 Application verifier is staging-only. A version-controlled, read-only-by-
@@ -5012,3 +5018,44 @@ writer or generation-unaware passkey writer must never restart after 0074.
 No production issuer binding, route, gate, remote migration, deployment,
 credential, traffic, or Go/VPS authority changed. Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## 2026-07-30 Exact Root Session Authority Checkpoint
+
+The local candidate schema head advances to
+`0075_root_authority_exactness.sql`. The migration preflights all user roles
+and session generations, restricts future roles to `0/1/10/100`, prevents
+session-generation rollback, and rechecks exact role `100`, enabled status,
+no deletion, and exact generation at both final registration write
+boundaries. It adds no route, credential, or runtime gate.
+
+Session revocation no longer overloads Unix seconds. Every generation bump is
+an exact integer increment and every protected request requires equality with
+the signed Cookie generation. Every newly issued Cookie gets a fresh
+32-random-byte canonical Base64URL `sid`, so two sessions issued in the same
+second remain independently bindable.
+
+Password changes and email resets, role changes, disable, and soft delete now
+write the security mutation and `session_epoch = session_epoch + 1` in one D1
+statement. A generation-bound failure therefore leaves the account mutation
+unapplied instead of creating a stale-session window.
+
+The runtime validation paths no longer compare generation to time. Migration
+0074 remains immutable and still embeds its older
+`root_session_issued_at >= root_session_epoch` relationship in the command
+table and insert trigger. A later additive migration must require an empty
+command table, rebuild that schema without the comparison, and refreeze every
+SQL/PRAGMA fingerprint before isolated-staging apply. This is an explicit
+production blocker, not accepted technical debt.
+
+`RootSessionPhaseProofV1` now binds exact Root/session state, Cookie and
+session-ID digests, operation, authorization, ceremony, request intent,
+phase-specific subject, semantic D1 authority, Application version, and the
+preceding phase proof. It is staging-only, defaults to a 10-second TTL, has a
+15-second hard ceiling, accepts one current plus one strictly older rotation
+key, and exposes only an opaque verified type to the coordinator.
+
+This closes the local proof-format and exact-generation foundation only.
+Replay consumption, response-loss recovery, private transport authentication,
+secret provisioning, remote D1 `5/0`, fault campaigns, and production
+approvals remain open. Go/VPS remains authoritative and production remains
+**NO-GO**.

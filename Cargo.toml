@@ -16,6 +16,7 @@ members = [
   "crates/providers",
   "crates/relay",
   "crates/ring-transition-runner",
+  "crates/root-session-phase-proof",
   "crates/session",
   "crates/sharding",
   "crates/ssrf",

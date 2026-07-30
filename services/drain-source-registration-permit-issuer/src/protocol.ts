@@ -629,7 +629,6 @@ export function parseRegistrationBindings(
     !bindings.passkeyUserPresent ||
     !bindings.passkeyUserVerified ||
     (bindings.passkeyBackupState && !bindings.passkeyBackupEligible) ||
-    bindings.rootSessionIssuedAt < bindings.rootSessionEpoch ||
     bindings.rootSessionExpiresAt <= bindings.rootSessionIssuedAt ||
     bindings.verifiedAt < bindings.rootSessionIssuedAt ||
     bindings.verificationExpiresAt > bindings.rootSessionExpiresAt ||

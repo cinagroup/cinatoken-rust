@@ -24,6 +24,7 @@ cinatoken-gateway = { path = "../gateway" }
 cinatoken-payments = { path = "../payments" }
 cinatoken-providers = { path = "../providers" }
 cinatoken-relay = { path = "../relay" }
+cinatoken-root-session-phase-proof = { path = "../root-session-phase-proof" }
 cinatoken-session = { path = "../session" }
 cinatoken-sharding = { path = "../sharding" }
 cinatoken-ssrf = { path = "../ssrf" }

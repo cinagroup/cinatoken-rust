@@ -193,8 +193,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 ];
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
-pub const EXPECTED_D1_MIGRATION: &str =
-    "0074_relay_container_drain_source_registration_command.sql";
+pub const EXPECTED_D1_MIGRATION: &str = "0075_root_authority_exactness.sql";
 const CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED_ENV: &str = "CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED";
 const CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED_ENV: &str =
     "CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED";
@@ -315,6 +314,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0072_relay_container_drain_source_authorization.sql",
     "0073_relay_container_drain_source_authorization_consumption.sql",
     "0074_relay_container_drain_source_registration_command.sql",
+    "0075_root_authority_exactness.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -5356,15 +5356,11 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATIONS.len(), 74);
-        assert_eq!(
-            EXPECTED_D1_MIGRATION,
-            "0074_relay_container_drain_source_registration_command.sql"
-        );
+        assert_eq!(EXPECTED_D1_MIGRATIONS.len(), 75);
+        assert_eq!(EXPECTED_D1_MIGRATION, "0075_root_authority_exactness.sql");
         assert_eq!(
             &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 20..],
             &[
-                "0055_relay_container_shard_activation_campaigns.sql",
                 "0056_relay_http_stream_handoffs.sql",
                 "0057_relay_http_stream_dispatch_intents.sql",
                 "0058_relay_http_stream_client_abort_watchdogs.sql",
@@ -5384,6 +5380,7 @@ mod tests {
                 "0072_relay_container_drain_source_authorization.sql",
                 "0073_relay_container_drain_source_authorization_consumption.sql",
                 "0074_relay_container_drain_source_registration_command.sql",
+                "0075_root_authority_exactness.sql",
             ]
         );
         assert!(

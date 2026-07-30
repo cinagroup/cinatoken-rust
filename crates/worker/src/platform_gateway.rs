@@ -194,7 +194,7 @@ const RELAY_MODEL_FALLBACK_CUTOVER_GUARDS: &[&str] = &[
 pub const REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED_ENV: &str =
     "REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED";
 pub const EXPECTED_D1_MIGRATION: &str =
-    "0073_relay_container_drain_source_authorization_consumption.sql";
+    "0074_relay_container_drain_source_registration_command.sql";
 const CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED_ENV: &str = "CONTAINER_DRAIN_CAMPAIGN_WRITE_ENABLED";
 const CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED_ENV: &str =
     "CONTAINER_DRAIN_OBSERVATION_WRITE_ENABLED";
@@ -314,6 +314,7 @@ const EXPECTED_D1_MIGRATIONS: &[&str] = &[
     "0071_relay_container_drain_accepted_set_source_seal.sql",
     "0072_relay_container_drain_source_authorization.sql",
     "0073_relay_container_drain_source_authorization_consumption.sql",
+    "0074_relay_container_drain_source_registration_command.sql",
 ];
 #[cfg(test)]
 const INTERNAL_DISPATCH_PREFIX: &str = "/api/platform/dispatch/";
@@ -3473,6 +3474,11 @@ async fn cleanup_realtime_settlement_smoke_fixture(
     db: &D1Database,
     fixture: RealtimeSettlementSmokeFixture,
 ) -> WorkerResult<()> {
+    #[derive(Deserialize)]
+    struct Count {
+        count: i64,
+    }
+
     let replay_key = fixture.replay_key();
     let request_id = fixture.request_id();
     let log_args = [
@@ -3480,17 +3486,46 @@ async fn cleanup_realtime_settlement_smoke_fixture(
         D1Type::Integer(d1_i32(fixture.user_id)),
         D1Type::Integer(d1_i32(fixture.channel_id)),
     ];
-    db.prepare(
-        r#"
-        DELETE FROM logs
-        WHERE request_id = ?1
-           OR user_id = ?2
-           OR channel_id = ?3
-        "#,
-    )
-    .bind_refs(&log_args)?
-    .run()
-    .await?;
+    let protected_link_count = db
+        .prepare(
+            "SELECT COUNT(*) AS count \
+             FROM pragma_table_xinfo('logs') \
+             WHERE name = 'drain_source_registration_command_id_sha256'",
+        )
+        .first::<Count>(None)
+        .await?
+        .map(|row| row.count)
+        .unwrap_or(-1);
+    let delete_logs_sql = match protected_link_count {
+        0 => {
+            r#"
+            DELETE FROM logs
+            WHERE request_id = ?1
+               OR user_id = ?2
+               OR channel_id = ?3
+            "#
+        }
+        1 => {
+            r#"
+            DELETE FROM logs
+            WHERE drain_source_registration_command_id_sha256 IS NULL
+              AND (
+                request_id = ?1
+                OR user_id = ?2
+                OR channel_id = ?3
+              )
+            "#
+        }
+        _ => {
+            return Err(worker::Error::RustError(
+                "realtime settlement smoke log schema profile is invalid".to_string(),
+            ))
+        }
+    };
+    db.prepare(delete_logs_sql)
+        .bind_refs(&log_args)?
+        .run()
+        .await?;
 
     let replay_args = [D1Type::Text(replay_key.as_str())];
     db.prepare("DELETE FROM realtime_settlement_replays WHERE replay_key = ?1")
@@ -5321,15 +5356,14 @@ mod tests {
         let mut extra = expected;
         extra.push("0023_unexpected.sql".to_string());
         assert!(!d1_migration_set_matches(&extra));
-        assert_eq!(EXPECTED_D1_MIGRATIONS.len(), 73);
+        assert_eq!(EXPECTED_D1_MIGRATIONS.len(), 74);
         assert_eq!(
             EXPECTED_D1_MIGRATION,
-            "0073_relay_container_drain_source_authorization_consumption.sql"
+            "0074_relay_container_drain_source_registration_command.sql"
         );
         assert_eq!(
             &EXPECTED_D1_MIGRATIONS[EXPECTED_D1_MIGRATIONS.len() - 20..],
             &[
-                "0054_relay_container_shard_activations.sql",
                 "0055_relay_container_shard_activation_campaigns.sql",
                 "0056_relay_http_stream_handoffs.sql",
                 "0057_relay_http_stream_dispatch_intents.sql",
@@ -5349,6 +5383,7 @@ mod tests {
                 "0071_relay_container_drain_accepted_set_source_seal.sql",
                 "0072_relay_container_drain_source_authorization.sql",
                 "0073_relay_container_drain_source_authorization_consumption.sql",
+                "0074_relay_container_drain_source_registration_command.sql",
             ]
         );
         assert!(

@@ -19,6 +19,10 @@ use crate::container_artifacts::{
     container_client_response_key, validate_container_client_response_headers_json,
     MAX_CONTAINER_CLIENT_RESPONSE_BYTES,
 };
+use crate::container_drain_source_registration_command::{
+    VerifiedDrainSourceRegistrationCommand, DRAIN_SOURCE_REGISTRATION_COMMAND_CONTRACT,
+    DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION,
+};
 use crate::d1_session::{D1Session, D1SessionBatchResult};
 
 pub(crate) const BILLING_MODE_OPTION_KEY: &str = "billing_setting.billing_mode";
@@ -100,6 +104,8 @@ pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_MIGRATION: &str =
     "0072_relay_container_drain_source_authorization.sql";
 pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_MIGRATION: &str =
     "0073_relay_container_drain_source_authorization_consumption.sql";
+pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION: &str =
+    DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION;
 pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256: &str =
     "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50";
 pub(crate) const RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256: &str =
@@ -1210,6 +1216,16 @@ struct RelayContainerDrainSourceConsumptionSchemaProbe {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerDrainSourceRegistrationConflictProbe {
+    conflict_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct RelayContainerDrainSourceRegistrationMigrationProfileProbe {
+    registration_command_count: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct RelayContainerDrainSourceConsumptionSchemaObjectProbe {
     object_type: String,
     object_name: String,
@@ -1458,6 +1474,149 @@ const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_SCHEMA_FINGERPRINTS:
     },
 ];
 
+const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_INSERT_GUARD_0074_SHA256: &str =
+    "763f037f27d5c0b11b72d6038023da6b61b8d41cc03bbb3fd15479e599f6301a";
+
+const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS:
+    &[RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint] = &[
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_command_insert_guard",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "0e37e8ebdc604f2c50513f90f5637274d78ad21fc88901592cc9d14bb2b69e0a",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_command_project",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "717871d2996d7bdf4e20c57714b73e82c30488b3ee5d84a66522b13e9318b1ef",
+    },
+];
+
+const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS:
+    &[RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint] = &[
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "index",
+        object_name: "idx_logs_drain_source_registration_command",
+        table_name: "logs",
+        normalized_sql_sha256: "da02077714ba816b35b9de20ab843b74067eb7fe04f7c15317e8e007950b42fa",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "index",
+        object_name: "idx_passkey_credentials_binding_digest",
+        table_name: "passkey_credentials",
+        normalized_sql_sha256: "5676d858402a30884a8518c43ff9c58c0e303bb9f7c9999ed0039d656d3c46b9",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "index",
+        object_name: "idx_passkey_credentials_id_digest",
+        table_name: "passkey_credentials",
+        normalized_sql_sha256: "03b39a869b2741ad025d80dab77f060808d5cb63e2f4479cafc38b2c0292fb69",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "index",
+        object_name: "idx_passkey_credentials_registration_identity",
+        table_name: "passkey_credentials",
+        normalized_sql_sha256: "571ade6b670ea940e8e4f4eb8eb7d111381dd01bc5929ed40a2678bcdd6f7273",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "index",
+        object_name: "idx_relay_container_drain_source_registration_command_audit",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "4690b8cc0e32349c85873f79ecb4d0868997eb424c28e6a0e7d5449b37291264",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "index",
+        object_name: "idx_relay_container_drain_source_registration_command_expiry",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "1a64f18dc506738bf3765957fa362598bf35120b9601b38fcec61b3ea1264ab4",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "table",
+        object_name: "relay_container_drain_source_registration_commands",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "5714a9b679bc8a7a885d2d5935020c065d4df35cfb4060ce55f4cd7ce6e781d4",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "passkey_credential_identity_backfill_guard",
+        table_name: "passkey_credentials",
+        normalized_sql_sha256: "ed2c7bd2f4ce0a11f20e2f689c919bc4207f780b2e86fa1f401d34884a50549a",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "passkey_credential_identity_insert_guard",
+        table_name: "passkey_credentials",
+        normalized_sql_sha256: "47e52695168b82b8a82ad7712d88bce373d37080401748d9990b24a6af9bca0e",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "passkey_credential_immutable_identity_update_guard",
+        table_name: "passkey_credentials",
+        normalized_sql_sha256: "17bbb7630833439ba8de04576d7c55cb5be7f6da28ec70962d0c53bd603a17c3",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "passkey_credential_use_generation_update_guard",
+        table_name: "passkey_credentials",
+        normalized_sql_sha256: "8b00aa5704a7248c0b0a6655fa28bed5ca1038919ed2fe0d5fe89e05440445be",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_protected_audit_delete_guard",
+        table_name: "logs",
+        normalized_sql_sha256: "34186e4c9d92c84189c67c21275acd3ccd050b756d7700a0ccbcaaf705f2fa62",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_protected_audit_insert_guard",
+        table_name: "logs",
+        normalized_sql_sha256: "80002bdf1be4f98e12292ee19ca89c4f3fa00be350a406db7876288ceb88bc2b",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_protected_audit_update_guard",
+        table_name: "logs",
+        normalized_sql_sha256: "ef1b1ce8929916da99cee8d9b07339a1883a8c3758fc93db322dc385914d692d",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_command_delete_guard",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "df11cfbecb1def93427d39ede115b601101fb40d2b2519ebfd51d1a363a2dfd7",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_command_insert_guard",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "0e37e8ebdc604f2c50513f90f5637274d78ad21fc88901592cc9d14bb2b69e0a",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_command_project",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "717871d2996d7bdf4e20c57714b73e82c30488b3ee5d84a66522b13e9318b1ef",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_command_update_guard",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "b2ddec84c35b3987bf3926292f11bc5674e2ca58cd702b74376bd3c09bcf688d",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_insert_guard",
+        table_name: "relay_container_drain_source_authorization_registrations",
+        normalized_sql_sha256: "763f037f27d5c0b11b72d6038023da6b61b8d41cc03bbb3fd15479e599f6301a",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_http_stream_finalization_receipt_insert_guard",
+        table_name: "relay_http_stream_finalization_receipts",
+        normalized_sql_sha256: "daf99a58d1117104837522b77b8d3d4c756f78b1620b6a9b6fbe3203dccf4285",
+    },
+];
+
 const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_TABLE_PRAGMAS:
     &[RelayContainerDrainSourceConsumptionExpectedTablePragma] = &[
     RelayContainerDrainSourceConsumptionExpectedTablePragma {
@@ -1487,6 +1646,31 @@ const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_TABLE_PRAGMAS:
         indexes_sha256: "d0ae725c55a1d3fd58665c0b5e7eccac99ac7dfa23e7c123fee86c1cbdfeff7e",
         foreign_keys_sha256: "76a6d54e37c810f1a2100da2e18dc547315327cc8b033db8cbf4ae8f34823764",
         table_flags_sha256: "8dbf56e8b2665e6e0b02c2555b92de52c32168c96674393f910a376708577299",
+    },
+];
+
+const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_TABLE_PRAGMAS:
+    &[RelayContainerDrainSourceConsumptionExpectedTablePragma] = &[
+    RelayContainerDrainSourceConsumptionExpectedTablePragma {
+        table_name: "passkey_credentials",
+        columns_sha256: "ed02bf6a4201a72ec36b770c79da702452221bc3e98606644c86290116fd1944",
+        indexes_sha256: "852e20fd9be21365ed994e250ebf0949aba6f4f9e098bbfe636cefcea2976d72",
+        foreign_keys_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        table_flags_sha256: "204ddff831f5892892bd9d69f4079bbf931920a8dd215558d736897c659bfbc2",
+    },
+    RelayContainerDrainSourceConsumptionExpectedTablePragma {
+        table_name: "logs",
+        columns_sha256: "ffa8e3796e62b97ef82b02f741ade70b30d03b4a4187c6731081af0266945669",
+        indexes_sha256: "0f87ef441ff5bda8b94bc2f8b6d85b63acc3fa77233cda0dc230fd9265e7fef7",
+        foreign_keys_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        table_flags_sha256: "204ddff831f5892892bd9d69f4079bbf931920a8dd215558d736897c659bfbc2",
+    },
+    RelayContainerDrainSourceConsumptionExpectedTablePragma {
+        table_name: "relay_container_drain_source_registration_commands",
+        columns_sha256: "ddfa649e511ad7f53fb1d1999e7c238f9375e7508b199080569c922a58e180b2",
+        indexes_sha256: "8bcca0df93ea76773fb9e82e9546d7c7ead70e3f41f9862a050ef0be6f4bc7f7",
+        foreign_keys_sha256: "57d19b655eb652a57565e9c1ea2564b4c689570423e02d1b7cde326a3b8f8b9d",
+        table_flags_sha256: "77d96cd88a8df7edce85264931b93811ea597fcf2529f682be0c687122d241e3",
     },
 ];
 
@@ -1527,6 +1711,128 @@ pub struct RelayContainerDrainSourceRegistrationRow {
     pub verified_at: i64,
     pub verification_expires_at: i64,
     pub registered_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // default-inert 0074 command; no route is enabled
+pub struct RelayContainerDrainSourceRegistrationCommandRow {
+    pub command_id_sha256: String,
+    pub contract_version: i64,
+    pub command_contract: String,
+    pub command_migration: String,
+    pub action: String,
+    pub environment: String,
+    pub authorization_id_sha256: String,
+    pub permit_id_sha256: String,
+    pub permit_subject_sha256: String,
+    pub permit_signature_envelope_sha256: String,
+    pub issuer_request_id_sha256: String,
+    pub issuer_version_id: String,
+    pub permit_issuer: String,
+    pub permit_key_id: String,
+    pub permit_signer_identity_sha256: String,
+    pub permit_signer_spki_sha256: String,
+    pub action_subject_sha256: String,
+    pub action_digest_sha256: String,
+    pub registration_request_sha256: String,
+    pub admin_audit_digest_sha256: String,
+    pub change_ticket_sha256: String,
+    pub reason_code: String,
+    pub admin_network_identity_hmac_sha256: String,
+    pub root_admin_id: i64,
+    pub root_session_epoch: i64,
+    pub root_session_binding_sha256: String,
+    pub root_session_issued_at: i64,
+    pub root_session_expires_at: i64,
+    pub passkey_credential_row_id: i64,
+    pub passkey_credential_registration_id_sha256: String,
+    pub passkey_credential_id_sha256: String,
+    pub passkey_credential_binding_sha256: String,
+    pub passkey_previous_use_generation: i64,
+    pub passkey_next_use_generation: i64,
+    pub passkey_assertion_subject_sha256: String,
+    pub passkey_assertion_signature_sha256: String,
+    pub secure_verification_challenge_sha256: String,
+    pub passkey_previous_sign_count: u32,
+    pub passkey_sign_count: u32,
+    pub passkey_user_present: i64,
+    pub passkey_user_verified: i64,
+    pub passkey_backup_eligible: i64,
+    pub passkey_backup_state: i64,
+    pub registered_by_service_name: String,
+    pub registered_by_version_id: String,
+    pub registration_execution_id_sha256: String,
+    pub registration_credential_id_sha256: String,
+    pub authority_ledger_identity_sha256: String,
+    pub receipt_sequence: i64,
+    pub ledger_head_before_sha256: String,
+    pub verification_expires_at: i64,
+    pub verified_at: i64,
+    pub permit_issued_at: i64,
+    pub permit_expires_at: i64,
+    pub secure_verification_receipt_sha256: String,
+    pub registration_receipt_sha256: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // protected 0074 audit projection; no route is enabled
+pub struct RelayContainerDrainSourceProtectedAuditRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub created_at: i64,
+    pub kind: i64,
+    pub content: String,
+    pub username: String,
+    pub token_name: String,
+    pub model_name: String,
+    pub quota: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub use_time: i64,
+    pub is_stream: i64,
+    pub channel_id: i64,
+    pub token_id: i64,
+    pub group: String,
+    pub ip: String,
+    pub request_id: String,
+    pub upstream_request_id: String,
+    pub other: String,
+    pub drain_source_registration_command_id_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // narrow post-CAS 0074 credential projection; no route is enabled
+pub struct RelayContainerDrainSourcePasskeyStateRow {
+    pub id: i64,
+    pub user_id: i64,
+    pub credential_registration_id_sha256: Option<String>,
+    pub credential_id_sha256: Option<String>,
+    pub credential_binding_sha256: Option<String>,
+    pub credential_use_generation: i64,
+    pub sign_count: u32,
+    pub clone_warning: i64,
+    pub user_present: i64,
+    pub user_verified: i64,
+    pub backup_eligible: i64,
+    pub backup_state: i64,
+    pub last_used_at: Option<i64>,
+    pub updated_at: i64,
+    pub deleted_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[allow(dead_code)] // same-Session five-part 0074 evidence; no route is enabled
+pub struct RelayContainerDrainSourceRegistrationCommandReadback {
+    pub command: RelayContainerDrainSourceRegistrationCommandRow,
+    pub protected_audit: RelayContainerDrainSourceProtectedAuditRow,
+    pub passkey: Option<RelayContainerDrainSourcePasskeyStateRow>,
+    pub registration: RelayContainerDrainSourceRegistrationRow,
+    pub ledger: RelayContainerDrainSourceReceiptLedgerRow,
+    pub read_bookmark_sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -1631,7 +1937,8 @@ enum RelayContainerDrainSourceBatchClassification {
     ProtocolUnknown,
 }
 
-// D1 meta.changes includes the immutable 0073 trigger projections.
+// D1 meta.changes includes the immutable 0073/0074 trigger projections.
+const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_FRESH_CHANGES: u64 = 5;
 const RELAY_CONTAINER_DRAIN_SOURCE_CLAIM_FRESH_CHANGES: u64 = 2;
 const RELAY_CONTAINER_DRAIN_SOURCE_TERMINAL_NO_SEAL_FRESH_CHANGES: u64 = 2;
 const RELAY_CONTAINER_DRAIN_SOURCE_TERMINAL_WITH_SEAL_FRESH_CHANGES: u64 = 3;
@@ -17067,6 +17374,20 @@ async fn relay_container_drain_source_consumption_schema_ready_in_session(
     if !migration_probe.is_some_and(|probe| probe.migration_count == 7) {
         return Ok(false);
     }
+    let registration_command_migrated = session
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS registration_command_count
+            FROM d1_migrations
+            WHERE name = ?1
+            "#,
+        )?
+        .bind_refs(&[D1Type::Text(
+            RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION,
+        )])?
+        .first::<RelayContainerDrainSourceRegistrationMigrationProfileProbe>(None)
+        .await?
+        .is_some_and(|probe| probe.registration_command_count == 1);
 
     let schema_objects = session
         .prepare(
@@ -17137,7 +17458,10 @@ async fn relay_container_drain_source_consumption_schema_ready_in_session(
         .all()
         .await?
         .results::<RelayContainerDrainSourceConsumptionSchemaObjectProbe>()?;
-    if !relay_container_drain_source_consumption_schema_objects_match(&schema_objects) {
+    if !relay_container_drain_source_consumption_schema_objects_match(
+        &schema_objects,
+        registration_command_migrated,
+    ) {
         return Ok(false);
     }
 
@@ -17227,6 +17551,7 @@ async fn relay_container_drain_source_consumption_schema_ready_in_session(
 
 fn relay_container_drain_source_consumption_schema_objects_match(
     probes: &[RelayContainerDrainSourceConsumptionSchemaObjectProbe],
+    registration_command_migrated: bool,
 ) -> bool {
     let fingerprints = probes
         .iter()
@@ -17239,24 +17564,63 @@ fn relay_container_drain_source_consumption_schema_objects_match(
             })
         })
         .collect::<Option<Vec<_>>>();
-    fingerprints
-        .as_deref()
-        .is_some_and(relay_container_drain_source_consumption_schema_fingerprints_match)
+    fingerprints.as_deref().is_some_and(|fingerprints| {
+        relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
+            fingerprints,
+            registration_command_migrated,
+        )
+    })
 }
 
 fn relay_container_drain_source_consumption_schema_fingerprints_match(
     fingerprints: &[RelayContainerDrainSourceConsumptionSchemaFingerprint],
 ) -> bool {
-    fingerprints.len() == RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_SCHEMA_FINGERPRINTS.len()
-        && fingerprints
+    relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
+        fingerprints,
+        false,
+    )
+}
+
+fn relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
+    fingerprints: &[RelayContainerDrainSourceConsumptionSchemaFingerprint],
+    registration_command_migrated: bool,
+) -> bool {
+    let expected_len = RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_SCHEMA_FINGERPRINTS.len()
+        + if registration_command_migrated {
+            RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS.len()
+        } else {
+            0
+        };
+    fingerprints.len() == expected_len
+        && RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_SCHEMA_FINGERPRINTS
             .iter()
-            .zip(RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_SCHEMA_FINGERPRINTS.iter())
-            .all(|(actual, expected)| {
-                actual.object_type == expected.object_type
-                    && actual.object_name == expected.object_name
-                    && actual.table_name == expected.table_name
-                    && actual.normalized_sql_sha256 == expected.normalized_sql_sha256
+            .all(|expected| {
+                fingerprints.iter().any(|actual| {
+                    let expected_sha256 = if registration_command_migrated
+                        && expected.object_name
+                            == "relay_container_drain_source_registration_insert_guard"
+                    {
+                        RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_INSERT_GUARD_0074_SHA256
+                    } else {
+                        expected.normalized_sql_sha256
+                    };
+                    actual.object_type == expected.object_type
+                        && actual.object_name == expected.object_name
+                        && actual.table_name == expected.table_name
+                        && actual.normalized_sql_sha256 == expected_sha256
+                })
             })
+        && (!registration_command_migrated
+            || RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS
+                .iter()
+                .all(|expected| {
+                    fingerprints.iter().any(|actual| {
+                        actual.object_type == expected.object_type
+                            && actual.object_name == expected.object_name
+                            && actual.table_name == expected.table_name
+                            && actual.normalized_sql_sha256 == expected.normalized_sql_sha256
+                    })
+                }))
 }
 
 fn relay_container_normalized_sql_sha256(sql: &str) -> String {
@@ -17285,6 +17649,615 @@ fn relay_container_drain_source_consumption_table_pragma_matches(
         actual
             .is_some_and(|actual| relay_container_sha256_hex(actual.as_bytes()) == expected_sha256)
     })
+}
+
+#[allow(dead_code)] // default-inert 0074 writer boundary; no route is enabled
+pub(crate) async fn register_relay_container_drain_source_authorization(
+    db: &D1Database,
+    command: &VerifiedDrainSourceRegistrationCommand,
+) -> worker::Result<
+    RelayContainerDrainSourceMutationOutcome<RelayContainerDrainSourceRegistrationCommandReadback>,
+> {
+    let session = D1Session::first_primary(db)?;
+    require_relay_container_drain_source_registration_command_schema(&session).await?;
+    let values = vec![
+        JsValue::from_str(command.command_id_sha256()),
+        JsValue::from_str(command.environment()),
+        JsValue::from_str(command.authorization_id_sha256()),
+        JsValue::from_str(command.permit_id_sha256()),
+        JsValue::from_str(command.permit_subject_sha256()),
+        JsValue::from_str(command.permit_signature_envelope_sha256()),
+        JsValue::from_str(command.issuer_request_id_sha256()),
+        JsValue::from_str(command.issuer_version_id()),
+        JsValue::from_str(command.permit_issuer()),
+        JsValue::from_str(command.permit_key_id()),
+        JsValue::from_str(command.permit_signer_identity_sha256()),
+        JsValue::from_str(command.permit_signer_spki_sha256()),
+        JsValue::from_str(command.action_subject_sha256()),
+        JsValue::from_str(command.action_digest_sha256()),
+        JsValue::from_str(command.registration_request_sha256()),
+        JsValue::from_str(command.admin_audit_digest_sha256()),
+        JsValue::from_str(command.change_ticket_sha256()),
+        JsValue::from_str(command.reason_code()),
+        JsValue::from_str(command.admin_network_identity_hmac_sha256()),
+        JsValue::from_f64(command.root_admin_id() as f64),
+        JsValue::from_f64(command.root_session_epoch() as f64),
+        JsValue::from_str(command.root_session_binding_sha256()),
+        JsValue::from_f64(command.root_session_issued_at() as f64),
+        JsValue::from_f64(command.root_session_expires_at() as f64),
+        JsValue::from_f64(command.passkey_credential_row_id() as f64),
+        JsValue::from_str(command.passkey_credential_registration_id_sha256()),
+        JsValue::from_str(command.passkey_credential_id_sha256()),
+        JsValue::from_str(command.passkey_credential_binding_sha256()),
+        JsValue::from_f64(command.passkey_previous_use_generation() as f64),
+        JsValue::from_f64(command.passkey_next_use_generation() as f64),
+        JsValue::from_str(command.passkey_assertion_subject_sha256()),
+        JsValue::from_str(command.passkey_assertion_signature_sha256()),
+        JsValue::from_str(command.secure_verification_challenge_sha256()),
+        JsValue::from_f64(command.passkey_previous_sign_count() as f64),
+        JsValue::from_f64(command.passkey_sign_count() as f64),
+        JsValue::from_f64(i32::from(command.passkey_user_present()) as f64),
+        JsValue::from_f64(i32::from(command.passkey_user_verified()) as f64),
+        JsValue::from_f64(i32::from(command.passkey_backup_eligible()) as f64),
+        JsValue::from_f64(i32::from(command.passkey_backup_state()) as f64),
+        JsValue::from_str(command.registered_by_service_name()),
+        JsValue::from_str(command.registered_by_version_id()),
+        JsValue::from_str(command.registration_execution_id_sha256()),
+        JsValue::from_str(command.registration_credential_id_sha256()),
+        JsValue::from_str(command.authority_ledger_identity_sha256()),
+        JsValue::from_f64(command.receipt_sequence() as f64),
+        JsValue::from_str(command.ledger_head_before_sha256()),
+        JsValue::from_f64(command.verification_expires_at() as f64),
+        JsValue::from_f64(command.verified_at() as f64),
+        JsValue::from_f64(command.permit_issued_at() as f64),
+        JsValue::from_f64(command.permit_expires_at() as f64),
+        JsValue::from_str(command.secure_verification_receipt_sha256()),
+        JsValue::from_str(command.registration_receipt_sha256()),
+    ];
+    let insert = session
+        .prepare_batch_statement(
+            r#"
+            INSERT INTO relay_container_drain_source_registration_commands (
+              command_id_sha256, contract_version, command_contract,
+              command_migration, action, environment,
+              authorization_id_sha256, permit_id_sha256,
+              permit_subject_sha256, permit_signature_envelope_sha256,
+              issuer_request_id_sha256, issuer_version_id, permit_issuer,
+              permit_key_id, permit_signer_identity_sha256,
+              permit_signer_spki_sha256, action_subject_sha256,
+              action_digest_sha256, registration_request_sha256,
+              admin_audit_digest_sha256, change_ticket_sha256, reason_code,
+              admin_network_identity_hmac_sha256, root_admin_id,
+              root_session_epoch,
+              root_session_binding_sha256, root_session_issued_at,
+              root_session_expires_at, passkey_credential_row_id,
+              passkey_credential_registration_id_sha256,
+              passkey_credential_id_sha256,
+              passkey_credential_binding_sha256,
+              passkey_previous_use_generation,
+              passkey_next_use_generation,
+              passkey_assertion_subject_sha256,
+              passkey_assertion_signature_sha256,
+              secure_verification_challenge_sha256,
+              passkey_previous_sign_count, passkey_sign_count,
+              passkey_user_present, passkey_user_verified,
+              passkey_backup_eligible, passkey_backup_state,
+              registered_by_service_name, registered_by_version_id,
+              registration_execution_id_sha256,
+              registration_credential_id_sha256,
+              authority_ledger_identity_sha256, receipt_sequence,
+              ledger_head_before_sha256, verification_expires_at,
+              verified_at, permit_issued_at, permit_expires_at,
+              secure_verification_receipt_sha256,
+              registration_receipt_sha256
+            )
+            SELECT
+              ?1, 1, 'relay-container-drain-source-registration-command-v1',
+              '0074_relay_container_drain_source_registration_command.sql',
+              'relay_container.drain_source_authorization_register',
+              ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+              ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+              ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
+              ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46,
+              ?47, ?48, ?49, ?50, ?51, ?52
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM relay_container_drain_source_registration_commands
+                   AS existing
+              WHERE existing.command_id_sha256 = ?1
+            )
+            "#,
+        )?
+        .bind(&values)?;
+    let batch_classification = classify_relay_container_drain_source_batch(
+        session.batch(vec![insert]).await,
+        RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_FRESH_CHANGES,
+    );
+
+    match relay_container_drain_source_registration_command_readback_in_session(
+        &session,
+        command.command_id_sha256(),
+    )
+    .await
+    {
+        Ok(Some(readback)) => {
+            let immutable_exact =
+                relay_container_drain_source_registration_command_matches(&readback, command);
+            let current_passkey_exact =
+                relay_container_drain_source_registration_current_passkey_matches(
+                    &readback, command,
+                );
+            let readback_classification =
+                classify_relay_container_drain_source_registration_readback(
+                    batch_classification,
+                    immutable_exact,
+                    current_passkey_exact,
+                );
+            Ok(
+                match resolve_relay_container_drain_source_mutation(
+                    batch_classification,
+                    readback_classification,
+                ) {
+                    RelayContainerDrainSourceMutationResolution::FreshApplied => {
+                        RelayContainerDrainSourceMutationOutcome::FreshApplied(readback)
+                    }
+                    RelayContainerDrainSourceMutationResolution::ExactReplay => {
+                        RelayContainerDrainSourceMutationOutcome::ExactReplay(readback)
+                    }
+                    RelayContainerDrainSourceMutationResolution::Conflict => {
+                        RelayContainerDrainSourceMutationOutcome::Conflict
+                    }
+                    RelayContainerDrainSourceMutationResolution::OutcomeUnknown => {
+                        RelayContainerDrainSourceMutationOutcome::OutcomeUnknown
+                    }
+                },
+            )
+        }
+        Ok(None) => {
+            let conflict =
+                relay_container_drain_source_registration_command_has_conflict(&session, command)
+                    .await;
+            match conflict {
+                Ok(true)
+                    if batch_classification
+                        != RelayContainerDrainSourceBatchClassification::ConfirmedApplied =>
+                {
+                    Ok(RelayContainerDrainSourceMutationOutcome::Conflict)
+                }
+                Ok(_) => Ok(
+                    match resolve_relay_container_drain_source_mutation(
+                        batch_classification,
+                        RelayContainerDrainSourceReadbackClassification::DifferentOrMissing,
+                    ) {
+                        RelayContainerDrainSourceMutationResolution::Conflict => {
+                            RelayContainerDrainSourceMutationOutcome::Conflict
+                        }
+                        _ => RelayContainerDrainSourceMutationOutcome::OutcomeUnknown,
+                    },
+                ),
+                Err(_) => Ok(RelayContainerDrainSourceMutationOutcome::OutcomeUnknown),
+            }
+        }
+        Err(_) => Ok(RelayContainerDrainSourceMutationOutcome::OutcomeUnknown),
+    }
+}
+
+async fn relay_container_drain_source_registration_command_readback_in_session(
+    session: &D1Session,
+    command_id_sha256: &str,
+) -> worker::Result<Option<RelayContainerDrainSourceRegistrationCommandReadback>> {
+    validate_relay_container_sha256(command_id_sha256, "drain source registration command ID")?;
+    let command_args = [D1Type::Text(command_id_sha256)];
+    let Some(command) = session
+        .prepare(
+            r#"
+            SELECT command_id_sha256, contract_version, command_contract,
+                   command_migration, action, environment,
+                   authorization_id_sha256, permit_id_sha256,
+                   permit_subject_sha256,
+                   permit_signature_envelope_sha256,
+                   issuer_request_id_sha256, issuer_version_id,
+                   permit_issuer, permit_key_id,
+                   permit_signer_identity_sha256,
+                   permit_signer_spki_sha256, action_subject_sha256,
+                   action_digest_sha256, registration_request_sha256,
+                   admin_audit_digest_sha256, change_ticket_sha256,
+                   reason_code, admin_network_identity_hmac_sha256,
+                   root_admin_id,
+                   root_session_epoch, root_session_binding_sha256,
+                   root_session_issued_at, root_session_expires_at,
+                   passkey_credential_row_id,
+                   passkey_credential_registration_id_sha256,
+                   passkey_credential_id_sha256,
+                   passkey_credential_binding_sha256,
+                   passkey_previous_use_generation,
+                   passkey_next_use_generation,
+                   passkey_assertion_subject_sha256,
+                   passkey_assertion_signature_sha256,
+                   secure_verification_challenge_sha256,
+                   passkey_previous_sign_count, passkey_sign_count,
+                   passkey_user_present, passkey_user_verified,
+                   passkey_backup_eligible, passkey_backup_state,
+                   registered_by_service_name,
+                   registered_by_version_id,
+                   registration_execution_id_sha256,
+                   registration_credential_id_sha256,
+                   authority_ledger_identity_sha256, receipt_sequence,
+                   ledger_head_before_sha256, verification_expires_at,
+                   verified_at, permit_issued_at, permit_expires_at,
+                   secure_verification_receipt_sha256,
+                   registration_receipt_sha256, created_at
+            FROM relay_container_drain_source_registration_commands
+            WHERE command_id_sha256 = ?1
+            LIMIT 1
+            "#,
+        )?
+        .bind_refs(&command_args)?
+        .first::<RelayContainerDrainSourceRegistrationCommandRow>(None)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let Some(protected_audit) = session
+        .prepare(
+            r#"
+            SELECT id, user_id, created_at, type AS kind, content,
+                   username, token_name, model_name, quota,
+                   prompt_tokens, completion_tokens, use_time, is_stream,
+                   channel_id, token_id, "group" AS "group", ip,
+                   request_id, upstream_request_id, other,
+                   drain_source_registration_command_id_sha256
+            FROM logs
+            WHERE drain_source_registration_command_id_sha256 = ?1
+            LIMIT 1
+            "#,
+        )?
+        .bind_refs(&command_args)?
+        .first::<RelayContainerDrainSourceProtectedAuditRow>(None)
+        .await?
+    else {
+        return Err(worker::Error::RustError(
+            "relay container drain source registration protected audit is missing".to_string(),
+        ));
+    };
+    let passkey_args = [relay_container_d1_safe_integer(
+        command.passkey_credential_row_id,
+        "drain source registration passkey row ID",
+    )?];
+    let passkey = session
+        .prepare(
+            r#"
+            SELECT id, user_id, credential_registration_id_sha256,
+                   credential_id_sha256, credential_binding_sha256,
+                   credential_use_generation, sign_count, clone_warning,
+                   user_present, user_verified, backup_eligible,
+                   backup_state, last_used_at, updated_at, deleted_at
+            FROM passkey_credentials
+            WHERE id = ?1
+            LIMIT 1
+            "#,
+        )?
+        .bind_refs(&passkey_args)?
+        .first::<RelayContainerDrainSourcePasskeyStateRow>(None)
+        .await?;
+    let Some(consumption) = relay_container_drain_source_consumption_readback_in_session(
+        session,
+        &command.authorization_id_sha256,
+    )
+    .await?
+    else {
+        return Err(worker::Error::RustError(
+            "relay container drain source registration projection is missing".to_string(),
+        ));
+    };
+    let Some(ledger) = consumption
+        .ledger
+        .iter()
+        .find(|row| row.event_kind == "registration")
+        .cloned()
+    else {
+        return Err(worker::Error::RustError(
+            "relay container drain source registration ledger projection is missing".to_string(),
+        ));
+    };
+    Ok(Some(RelayContainerDrainSourceRegistrationCommandReadback {
+        command,
+        protected_audit,
+        passkey,
+        registration: consumption.registration,
+        ledger,
+        read_bookmark_sha256: consumption.read_bookmark_sha256,
+    }))
+}
+
+async fn relay_container_drain_source_registration_command_has_conflict(
+    session: &D1Session,
+    command: &VerifiedDrainSourceRegistrationCommand,
+) -> worker::Result<bool> {
+    let args = [
+        D1Type::Text(command.authorization_id_sha256()),
+        D1Type::Text(command.permit_id_sha256()),
+        D1Type::Text(command.permit_subject_sha256()),
+        D1Type::Text(command.permit_signature_envelope_sha256()),
+        D1Type::Text(command.issuer_request_id_sha256()),
+        D1Type::Text(command.action_subject_sha256()),
+        D1Type::Text(command.action_digest_sha256()),
+        D1Type::Text(command.registration_request_sha256()),
+        D1Type::Text(command.admin_audit_digest_sha256()),
+        D1Type::Text(command.passkey_assertion_subject_sha256()),
+        D1Type::Text(command.passkey_assertion_signature_sha256()),
+        D1Type::Text(command.secure_verification_challenge_sha256()),
+        D1Type::Text(command.registration_execution_id_sha256()),
+        D1Type::Text(command.secure_verification_receipt_sha256()),
+        D1Type::Text(command.registration_receipt_sha256()),
+    ];
+    Ok(session
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS conflict_count
+            FROM relay_container_drain_source_registration_commands
+            WHERE authorization_id_sha256 = ?1
+               OR permit_id_sha256 = ?2
+               OR permit_subject_sha256 = ?3
+               OR permit_signature_envelope_sha256 = ?4
+               OR issuer_request_id_sha256 = ?5
+               OR action_subject_sha256 = ?6
+               OR action_digest_sha256 = ?7
+               OR registration_request_sha256 = ?8
+               OR admin_audit_digest_sha256 = ?9
+               OR passkey_assertion_subject_sha256 = ?10
+               OR passkey_assertion_signature_sha256 = ?11
+               OR secure_verification_challenge_sha256 = ?12
+               OR registration_execution_id_sha256 = ?13
+               OR secure_verification_receipt_sha256 = ?14
+               OR registration_receipt_sha256 = ?15
+            "#,
+        )?
+        .bind_refs(&args)?
+        .first::<RelayContainerDrainSourceRegistrationConflictProbe>(None)
+        .await?
+        .is_some_and(|probe| probe.conflict_count > 0))
+}
+
+fn relay_container_drain_source_registration_command_matches(
+    readback: &RelayContainerDrainSourceRegistrationCommandReadback,
+    expected: &VerifiedDrainSourceRegistrationCommand,
+) -> bool {
+    let command = &readback.command;
+    command.command_id_sha256 == expected.command_id_sha256()
+        && command.contract_version == 1
+        && command.command_contract == DRAIN_SOURCE_REGISTRATION_COMMAND_CONTRACT
+        && command.command_migration == RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION
+        && command.action == "relay_container.drain_source_authorization_register"
+        && command.environment == expected.environment()
+        && command.authorization_id_sha256 == expected.authorization_id_sha256()
+        && command.permit_id_sha256 == expected.permit_id_sha256()
+        && command.permit_subject_sha256 == expected.permit_subject_sha256()
+        && command.permit_signature_envelope_sha256 == expected.permit_signature_envelope_sha256()
+        && command.issuer_request_id_sha256 == expected.issuer_request_id_sha256()
+        && command.issuer_version_id == expected.issuer_version_id()
+        && command.permit_issuer == expected.permit_issuer()
+        && command.permit_key_id == expected.permit_key_id()
+        && command.permit_signer_identity_sha256 == expected.permit_signer_identity_sha256()
+        && command.permit_signer_spki_sha256 == expected.permit_signer_spki_sha256()
+        && command.action_subject_sha256 == expected.action_subject_sha256()
+        && command.action_digest_sha256 == expected.action_digest_sha256()
+        && command.registration_request_sha256 == expected.registration_request_sha256()
+        && command.admin_audit_digest_sha256 == expected.admin_audit_digest_sha256()
+        && command.change_ticket_sha256 == expected.change_ticket_sha256()
+        && command.reason_code == expected.reason_code()
+        && command.admin_network_identity_hmac_sha256
+            == expected.admin_network_identity_hmac_sha256()
+        && command.root_admin_id == expected.root_admin_id()
+        && command.root_session_epoch == expected.root_session_epoch()
+        && command.root_session_binding_sha256 == expected.root_session_binding_sha256()
+        && command.root_session_issued_at == expected.root_session_issued_at()
+        && command.root_session_expires_at == expected.root_session_expires_at()
+        && command.passkey_credential_row_id == expected.passkey_credential_row_id()
+        && command.passkey_credential_registration_id_sha256
+            == expected.passkey_credential_registration_id_sha256()
+        && command.passkey_credential_id_sha256 == expected.passkey_credential_id_sha256()
+        && command.passkey_credential_binding_sha256 == expected.passkey_credential_binding_sha256()
+        && command.passkey_previous_use_generation == expected.passkey_previous_use_generation()
+        && command.passkey_next_use_generation == expected.passkey_next_use_generation()
+        && command.passkey_assertion_subject_sha256 == expected.passkey_assertion_subject_sha256()
+        && command.passkey_assertion_signature_sha256
+            == expected.passkey_assertion_signature_sha256()
+        && command.secure_verification_challenge_sha256
+            == expected.secure_verification_challenge_sha256()
+        && command.passkey_previous_sign_count == expected.passkey_previous_sign_count()
+        && command.passkey_sign_count == expected.passkey_sign_count()
+        && command.passkey_user_present == i64::from(expected.passkey_user_present())
+        && command.passkey_user_verified == i64::from(expected.passkey_user_verified())
+        && command.passkey_backup_eligible == i64::from(expected.passkey_backup_eligible())
+        && command.passkey_backup_state == i64::from(expected.passkey_backup_state())
+        && command.registered_by_service_name == expected.registered_by_service_name()
+        && command.registered_by_version_id == expected.registered_by_version_id()
+        && command.registration_execution_id_sha256 == expected.registration_execution_id_sha256()
+        && command.registration_credential_id_sha256 == expected.registration_credential_id_sha256()
+        && command.authority_ledger_identity_sha256 == expected.authority_ledger_identity_sha256()
+        && command.receipt_sequence == expected.receipt_sequence()
+        && command.ledger_head_before_sha256 == expected.ledger_head_before_sha256()
+        && command.verification_expires_at == expected.verification_expires_at()
+        && command.verified_at == expected.verified_at()
+        && command.permit_issued_at == expected.permit_issued_at()
+        && command.permit_expires_at == expected.permit_expires_at()
+        && command.secure_verification_receipt_sha256
+            == expected.secure_verification_receipt_sha256()
+        && command.registration_receipt_sha256 == expected.registration_receipt_sha256()
+        && command.created_at >= command.verified_at
+        && command.created_at < command.permit_expires_at
+        && command
+            .created_at
+            .checked_sub(command.verified_at)
+            .is_some_and(|age| age <= 30)
+        && relay_container_drain_source_registration_projections_match(readback, expected)
+}
+
+fn relay_container_drain_source_registration_projections_match(
+    readback: &RelayContainerDrainSourceRegistrationCommandReadback,
+    expected: &VerifiedDrainSourceRegistrationCommand,
+) -> bool {
+    let command = &readback.command;
+    let audit = &readback.protected_audit;
+    let registration = &readback.registration;
+    let ledger = &readback.ledger;
+    let Ok(audit_other) = serde_json::from_str::<Value>(&audit.other) else {
+        return false;
+    };
+    let Some(admin_role) = audit_other
+        .pointer("/admin_info/admin_role")
+        .and_then(Value::as_i64)
+        .filter(|role| *role >= 100)
+    else {
+        return false;
+    };
+    let expected_audit_other = serde_json::json!({
+        "op": {
+            "action": "relay_container.drain_source_authorization_register",
+            "params": {
+                "authorization_id_sha256": expected.authorization_id_sha256(),
+                "action_subject_sha256": expected.action_subject_sha256(),
+                "action_digest_sha256": expected.action_digest_sha256(),
+                "registration_request_sha256": expected.registration_request_sha256(),
+                "command_id_sha256": expected.command_id_sha256(),
+                "permit_id_sha256": expected.permit_id_sha256(),
+                "change_ticket_sha256": expected.change_ticket_sha256(),
+                "reason_code": expected.reason_code(),
+                "admin_network_identity_hmac_sha256":
+                    expected.admin_network_identity_hmac_sha256(),
+            },
+        },
+        "admin_info": {
+            "admin_id": expected.root_admin_id(),
+            "admin_username": "",
+            "admin_role": admin_role,
+            "auth_method": "passkey",
+        },
+        "audit_info": {
+            "request_path": "/internal/relay-container/drain-source/register",
+            "request_method": "POST",
+            "status_code": 200,
+            "result": "success",
+        },
+    });
+
+    audit.id > 0
+        && audit.user_id == expected.root_admin_id()
+        && audit.created_at == command.created_at
+        && audit.kind == 3
+        && audit.content == "Root registered relay container drain-source authorization"
+        && audit.username.is_empty()
+        && audit.token_name.is_empty()
+        && audit.model_name.is_empty()
+        && audit.quota == 0
+        && audit.prompt_tokens == 0
+        && audit.completion_tokens == 0
+        && audit.use_time == 0
+        && audit.is_stream == 0
+        && audit.channel_id == 0
+        && audit.token_id == 0
+        && audit.group.is_empty()
+        && audit.ip.is_empty()
+        && audit.request_id == expected.admin_audit_digest_sha256()
+        && audit.upstream_request_id.is_empty()
+        && audit.drain_source_registration_command_id_sha256 == expected.command_id_sha256()
+        && audit_other == expected_audit_other
+        && registration.authorization_id_sha256 == expected.authorization_id_sha256()
+        && registration.contract_version == 1
+        && registration.registration_contract
+            == "relay-container-drain-source-authorization-registration-v1"
+        && registration.registration_migration == RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_MIGRATION
+        && registration.environment == expected.environment()
+        && registration.root_admin_id == expected.root_admin_id()
+        && registration.root_session_epoch == expected.root_session_epoch()
+        && registration.root_session_binding_sha256 == expected.root_session_binding_sha256()
+        && registration.passkey_credential_row_id == expected.passkey_credential_row_id()
+        && registration.passkey_credential_id_sha256 == expected.passkey_credential_id_sha256()
+        && registration.passkey_assertion_subject_sha256
+            == expected.passkey_assertion_subject_sha256()
+        && registration.passkey_assertion_signature_sha256
+            == expected.passkey_assertion_signature_sha256()
+        && registration.secure_verification_challenge_sha256
+            == expected.secure_verification_challenge_sha256()
+        && registration.secure_verification_receipt_sha256
+            == expected.secure_verification_receipt_sha256()
+        && registration.action_digest_sha256 == expected.action_digest_sha256()
+        && registration.admin_audit_digest_sha256 == expected.admin_audit_digest_sha256()
+        && registration.change_ticket_sha256 == expected.change_ticket_sha256()
+        && registration.reason_code == expected.reason_code()
+        && registration.registered_by_service_name == expected.registered_by_service_name()
+        && registration.registered_by_version_id == expected.registered_by_version_id()
+        && registration.registration_execution_id_sha256
+            == expected.registration_execution_id_sha256()
+        && registration.registration_credential_id_sha256
+            == expected.registration_credential_id_sha256()
+        && registration.registration_request_sha256 == expected.registration_request_sha256()
+        && registration.authority_ledger_identity_sha256
+            == expected.authority_ledger_identity_sha256()
+        && registration.receipt_sequence == expected.receipt_sequence()
+        && registration.ledger_head_before_sha256 == expected.ledger_head_before_sha256()
+        && registration.registration_receipt_sha256 == expected.registration_receipt_sha256()
+        && registration.verified_at == expected.verified_at()
+        && registration.verification_expires_at == expected.verification_expires_at()
+        && registration.registered_at == command.created_at
+        && ledger.authority_ledger_identity_sha256 == expected.authority_ledger_identity_sha256()
+        && ledger.receipt_sequence == expected.receipt_sequence()
+        && ledger.event_kind == "registration"
+        && ledger.authorization_id_sha256 == expected.authorization_id_sha256()
+        && ledger.predecessor_receipt_sha256 == expected.ledger_head_before_sha256()
+        && ledger.receipt_digest_sha256 == expected.registration_receipt_sha256()
+        && ledger.recorded_at == command.created_at
+        && validate_relay_container_sha256(
+            &readback.read_bookmark_sha256,
+            "drain source registration command read bookmark",
+        )
+        .is_ok()
+}
+
+fn relay_container_drain_source_registration_current_passkey_matches(
+    readback: &RelayContainerDrainSourceRegistrationCommandReadback,
+    expected: &VerifiedDrainSourceRegistrationCommand,
+) -> bool {
+    readback.passkey.as_ref().is_some_and(|passkey| {
+        passkey.id == expected.passkey_credential_row_id()
+            && passkey.user_id == expected.root_admin_id()
+            && passkey.credential_registration_id_sha256.as_deref()
+                == Some(expected.passkey_credential_registration_id_sha256())
+            && passkey.credential_id_sha256.as_deref()
+                == Some(expected.passkey_credential_id_sha256())
+            && passkey.credential_binding_sha256.as_deref()
+                == Some(expected.passkey_credential_binding_sha256())
+            && passkey.credential_use_generation == expected.passkey_next_use_generation()
+            && passkey.sign_count == expected.passkey_sign_count()
+            && passkey.clone_warning == 0
+            && passkey.user_present == i64::from(expected.passkey_user_present())
+            && passkey.user_verified == i64::from(expected.passkey_user_verified())
+            && passkey.backup_eligible == i64::from(expected.passkey_backup_eligible())
+            && passkey.backup_state == i64::from(expected.passkey_backup_state())
+            && passkey.last_used_at == Some(expected.verified_at())
+            && passkey.updated_at == readback.command.created_at
+            && passkey.deleted_at.is_none()
+    })
+}
+
+fn classify_relay_container_drain_source_registration_readback(
+    batch: RelayContainerDrainSourceBatchClassification,
+    immutable_exact: bool,
+    current_passkey_exact: bool,
+) -> RelayContainerDrainSourceReadbackClassification {
+    let exact = match batch {
+        RelayContainerDrainSourceBatchClassification::ConfirmedApplied => {
+            immutable_exact && current_passkey_exact
+        }
+        RelayContainerDrainSourceBatchClassification::ConfirmedNoWrite
+        | RelayContainerDrainSourceBatchClassification::ProtocolUnknown => immutable_exact,
+    };
+    if exact {
+        RelayContainerDrainSourceReadbackClassification::Exact
+    } else {
+        RelayContainerDrainSourceReadbackClassification::DifferentOrMissing
+    }
 }
 
 #[allow(dead_code)] // first-primary 0073 readback; no route or write path is enabled
@@ -17715,6 +18688,226 @@ async fn require_relay_container_drain_source_consumption_schema(
     Ok(())
 }
 
+#[allow(dead_code)] // fail-closed 0074 probe; no route or production gate is enabled
+pub(crate) async fn relay_container_drain_source_registration_command_schema_ready(
+    db: &D1Database,
+) -> worker::Result<bool> {
+    let session = D1Session::first_primary(db)?;
+    relay_container_drain_source_registration_command_schema_ready_in_session(&session).await
+}
+
+async fn relay_container_drain_source_registration_command_schema_ready_in_session(
+    session: &D1Session,
+) -> worker::Result<bool> {
+    if !relay_container_drain_source_consumption_schema_ready_in_session(session).await? {
+        return Ok(false);
+    }
+    let migrations = [
+        D1Type::Text(RELAY_CONTAINER_DRAIN_EXPAND_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_ADMISSION_ENFORCE_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_TRAFFIC_RETURN_EVIDENCE_ENFORCE_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_CLOSE_COMMAND_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_SEAL_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_AUTHORIZATION_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION),
+    ];
+    let migration_probe = session
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS migration_count
+            FROM d1_migrations
+            WHERE name IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )?
+        .bind_refs(&migrations)?
+        .first::<RelayContainerDrainSourceConsumptionSchemaProbe>(None)
+        .await?;
+    if !migration_probe.is_some_and(|probe| probe.migration_count == 8) {
+        return Ok(false);
+    }
+
+    let preflight_probe = session
+        .prepare(
+            r#"
+            SELECT COUNT(1) AS conflict_count
+            FROM sqlite_master
+            WHERE name IN (
+              'relay_container_drain_source_registration_command_preflight',
+              'relay_container_drain_source_registration_command_preflight_guard'
+            )
+            "#,
+        )?
+        .first::<RelayContainerDrainSourceRegistrationConflictProbe>(None)
+        .await?;
+    if !preflight_probe.is_some_and(|probe| probe.conflict_count == 0) {
+        return Ok(false);
+    }
+
+    let schema_objects = session
+        .prepare(
+            r#"
+            SELECT type AS object_type, name AS object_name,
+                   tbl_name AS table_name, sql
+            FROM sqlite_master
+            WHERE sql IS NOT NULL
+              AND (
+                name IN (
+                  'idx_passkey_credentials_registration_identity',
+                  'idx_passkey_credentials_id_digest',
+                  'idx_passkey_credentials_binding_digest',
+                  'idx_logs_drain_source_registration_command',
+                  'idx_relay_container_drain_source_registration_command_audit',
+                  'idx_relay_container_drain_source_registration_command_expiry',
+                  'relay_container_drain_source_registration_commands',
+                  'relay_container_drain_source_registration_insert_guard',
+                  'relay_http_stream_finalization_receipt_insert_guard'
+                )
+                OR (
+                  type = 'trigger'
+                  AND tbl_name IN (
+                    'passkey_credentials',
+                    'logs',
+                    'relay_container_drain_source_registration_commands'
+                  )
+                )
+              )
+            ORDER BY type, name
+            "#,
+        )?
+        .all()
+        .await?
+        .results::<RelayContainerDrainSourceConsumptionSchemaObjectProbe>()?;
+    if !relay_container_drain_source_registration_command_schema_objects_match(&schema_objects) {
+        return Ok(false);
+    }
+
+    for expected in RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_TABLE_PRAGMAS {
+        let table = D1Type::Text(expected.table_name);
+        let probe = session
+            .prepare(
+                r#"
+                SELECT
+                  COALESCE((SELECT group_concat(entry, '|') FROM (
+                     SELECT printf(
+                       '%d:%s:%s:%d:%s:%d:%d',
+                       cid,
+                       hex(CAST(name AS BLOB)),
+                       hex(CAST(type AS BLOB)),
+                       "notnull",
+                       COALESCE(hex(CAST(dflt_value AS BLOB)), '-'),
+                       pk,
+                       hidden
+                     ) AS entry
+                     FROM pragma_table_xinfo(?1)
+                     ORDER BY cid
+                   )), '') AS columns_contract,
+                  COALESCE((SELECT group_concat(entry, '|') FROM (
+                     SELECT printf(
+                       '%d:%s:%d:%s:%d:%s',
+                       il.seq,
+                       hex(CAST(il.name AS BLOB)),
+                       il."unique",
+                       hex(CAST(il.origin AS BLOB)),
+                       il.partial,
+                       (SELECT group_concat(xentry, ',') FROM (
+                          SELECT printf(
+                            '%d:%d:%s:%d:%s:%d',
+                            xi.seqno,
+                            xi.cid,
+                            COALESCE(hex(CAST(xi.name AS BLOB)), '-'),
+                            xi."desc",
+                            hex(CAST(xi.coll AS BLOB)),
+                            xi."key"
+                          ) AS xentry
+                          FROM pragma_index_xinfo(il.name) AS xi
+                          ORDER BY xi.seqno
+                       ))
+                     ) AS entry
+                     FROM pragma_index_list(?1) AS il
+                     ORDER BY il.seq
+                   )), '') AS indexes_contract,
+                  COALESCE((SELECT group_concat(entry, '|') FROM (
+                     SELECT printf(
+                       '%d:%d:%s:%s:%s:%s:%s:%s',
+                       id,
+                       seq,
+                       hex(CAST("table" AS BLOB)),
+                       hex(CAST("from" AS BLOB)),
+                       hex(CAST("to" AS BLOB)),
+                       hex(CAST(on_update AS BLOB)),
+                       hex(CAST(on_delete AS BLOB)),
+                       hex(CAST("match" AS BLOB))
+                     ) AS entry
+                     FROM pragma_foreign_key_list(?1)
+                     ORDER BY id, seq
+                   )), '') AS foreign_keys_contract,
+                  COALESCE((SELECT printf(
+                     '%s:%d:%d:%d',
+                     hex(CAST(type AS BLOB)),
+                     ncol,
+                     wr,
+                     strict
+                   )
+                   FROM pragma_table_list(?1)
+                   WHERE name = ?1), '') AS table_flags_contract
+                "#,
+            )?
+            .bind_refs(&table)?
+            .first::<RelayContainerDrainSourceConsumptionTablePragmaProbe>(None)
+            .await?;
+        if !probe.is_some_and(|probe| {
+            relay_container_drain_source_consumption_table_pragma_matches(&probe, expected)
+        }) {
+            return Ok(false);
+        }
+    }
+
+    Ok(session.bookmark_sha256()?.len() == 64)
+}
+
+fn relay_container_drain_source_registration_command_schema_objects_match(
+    probes: &[RelayContainerDrainSourceConsumptionSchemaObjectProbe],
+) -> bool {
+    let fingerprints = probes
+        .iter()
+        .map(|probe| {
+            Some(RelayContainerDrainSourceConsumptionSchemaFingerprint {
+                object_type: probe.object_type.clone(),
+                object_name: probe.object_name.clone(),
+                table_name: probe.table_name.clone(),
+                normalized_sql_sha256: relay_container_normalized_sql_sha256(probe.sql.as_deref()?),
+            })
+        })
+        .collect::<Option<Vec<_>>>();
+    fingerprints.as_deref().is_some_and(|fingerprints| {
+        fingerprints.len()
+            == RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS.len()
+            && RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS
+                .iter()
+                .all(|expected| {
+                    fingerprints.iter().any(|actual| {
+                        actual.object_type == expected.object_type
+                            && actual.object_name == expected.object_name
+                            && actual.table_name == expected.table_name
+                            && actual.normalized_sql_sha256 == expected.normalized_sql_sha256
+                    })
+                })
+    })
+}
+
+async fn require_relay_container_drain_source_registration_command_schema(
+    session: &D1Session,
+) -> worker::Result<()> {
+    if !relay_container_drain_source_registration_command_schema_ready_in_session(session).await? {
+        return Err(worker::Error::RustError(
+            "relay container drain source registration command schema contract is not ready"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn classify_relay_container_drain_source_batch(
     batch: worker::Result<Vec<D1SessionBatchResult>>,
     expected_fresh_changes: u64,
@@ -17798,6 +18991,19 @@ fn resolve_relay_container_drain_source_mutation(
 
 fn optional_d1_session_text(value: Option<&str>) -> JsValue {
     value.map_or_else(JsValue::null, JsValue::from_str)
+}
+
+fn relay_container_d1_safe_integer(value: i64, field: &str) -> worker::Result<D1Type<'static>> {
+    const MAXIMUM_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
+    if !(-MAXIMUM_SAFE_INTEGER..=MAXIMUM_SAFE_INTEGER).contains(&value) {
+        return Err(worker::Error::RustError(format!(
+            "relay container {field} is outside the JavaScript safe-integer range"
+        )));
+    }
+    Ok(i32::try_from(value)
+        .map(D1Type::Integer)
+        .unwrap_or_else(|_| D1Type::Real(value as f64)))
 }
 
 fn validate_relay_container_drain_source_claim_mutation(
@@ -28071,6 +29277,10 @@ pub struct PasskeyCredentialRow {
     pub public_key: String,
     pub attestation_type: String,
     pub aaguid: String,
+    pub credential_registration_id_sha256: Option<String>,
+    pub credential_id_sha256: Option<String>,
+    pub credential_binding_sha256: Option<String>,
+    pub credential_use_generation: i64,
     pub sign_count: u32,
     pub clone_warning: i32,
     pub user_present: i32,
@@ -28094,6 +29304,9 @@ pub struct PasskeyCredentialWrite<'a> {
     pub public_key: &'a str,
     pub attestation_type: &'a str,
     pub aaguid: &'a str,
+    pub credential_registration_id_sha256: &'a str,
+    pub credential_id_sha256: &'a str,
+    pub credential_binding_sha256: &'a str,
     pub sign_count: u32,
     pub clone_warning: bool,
     pub user_present: bool,
@@ -28105,8 +29318,23 @@ pub struct PasskeyCredentialWrite<'a> {
     pub last_used_at: Option<i64>,
 }
 
-const FIND_PASSKEY_BY_USER_SQL: &str = r#"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PasskeyCredentialSchemaProfile {
+    Legacy,
+    GenerationBound,
+}
+
+#[derive(Debug, Deserialize)]
+struct PasskeyCredentialSchemaProbe {
+    identity_column_count: i64,
+}
+
+const FIND_LEGACY_PASSKEY_BY_USER_SQL: &str = r#"
     SELECT id, user_id, credential_id, public_key, attestation_type, aaguid,
+           NULL AS credential_registration_id_sha256,
+           NULL AS credential_id_sha256,
+           NULL AS credential_binding_sha256,
+           0 AS credential_use_generation,
            sign_count, clone_warning, user_present, user_verified,
            backup_eligible, backup_state, transports, attachment, last_used_at,
            created_at, updated_at, deleted_at
@@ -28115,8 +29343,24 @@ const FIND_PASSKEY_BY_USER_SQL: &str = r#"
     LIMIT 1
 "#;
 
-const FIND_PASSKEY_BY_CREDENTIAL_ID_SQL: &str = r#"
+const FIND_PASSKEY_BY_USER_SQL: &str = r#"
     SELECT id, user_id, credential_id, public_key, attestation_type, aaguid,
+           credential_registration_id_sha256, credential_id_sha256,
+           credential_binding_sha256, credential_use_generation,
+           sign_count, clone_warning, user_present, user_verified,
+           backup_eligible, backup_state, transports, attachment, last_used_at,
+           created_at, updated_at, deleted_at
+    FROM passkey_credentials
+    WHERE user_id = ?1 AND deleted_at IS NULL
+    LIMIT 1
+"#;
+
+const FIND_LEGACY_PASSKEY_BY_CREDENTIAL_ID_SQL: &str = r#"
+    SELECT id, user_id, credential_id, public_key, attestation_type, aaguid,
+           NULL AS credential_registration_id_sha256,
+           NULL AS credential_id_sha256,
+           NULL AS credential_binding_sha256,
+           0 AS credential_use_generation,
            sign_count, clone_warning, user_present, user_verified,
            backup_eligible, backup_state, transports, attachment, last_used_at,
            created_at, updated_at, deleted_at
@@ -28125,7 +29369,19 @@ const FIND_PASSKEY_BY_CREDENTIAL_ID_SQL: &str = r#"
     LIMIT 1
 "#;
 
-const INSERT_PASSKEY_CREDENTIAL_SQL: &str = r#"
+const FIND_PASSKEY_BY_CREDENTIAL_ID_SQL: &str = r#"
+    SELECT id, user_id, credential_id, public_key, attestation_type, aaguid,
+           credential_registration_id_sha256, credential_id_sha256,
+           credential_binding_sha256, credential_use_generation,
+           sign_count, clone_warning, user_present, user_verified,
+           backup_eligible, backup_state, transports, attachment, last_used_at,
+           created_at, updated_at, deleted_at
+    FROM passkey_credentials
+    WHERE credential_id = ?1 AND deleted_at IS NULL
+    LIMIT 1
+"#;
+
+const INSERT_LEGACY_PASSKEY_CREDENTIAL_SQL: &str = r#"
     INSERT INTO passkey_credentials (
         user_id, credential_id, public_key, attestation_type, aaguid,
         sign_count, clone_warning, user_present, user_verified,
@@ -28139,7 +29395,24 @@ const INSERT_PASSKEY_CREDENTIAL_SQL: &str = r#"
     )
 "#;
 
-const UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL: &str = r#"
+const INSERT_PASSKEY_CREDENTIAL_SQL: &str = r#"
+    INSERT INTO passkey_credentials (
+        user_id, credential_id, public_key, attestation_type, aaguid,
+        credential_registration_id_sha256, credential_id_sha256,
+        credential_binding_sha256, credential_use_generation,
+        sign_count, clone_warning, user_present, user_verified,
+        backup_eligible, backup_state, transports, attachment, last_used_at,
+        created_at, updated_at, deleted_at
+    ) VALUES (
+        ?1, ?2, ?3, ?4, ?5,
+        ?6, ?7, ?8, 0,
+        ?9, ?10, ?11, ?12,
+        ?13, ?14, ?15, ?16, ?17,
+        ?18, ?18, NULL
+    )
+"#;
+
+const UPDATE_LEGACY_PASSKEY_AFTER_AUTHENTICATION_SQL: &str = r#"
     UPDATE passkey_credentials
     SET sign_count = ?1,
         clone_warning = ?2,
@@ -28152,6 +29425,27 @@ const UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL: &str = r#"
     WHERE user_id = ?8
       AND credential_id = ?9
       AND sign_count = ?10
+      AND deleted_at IS NULL
+"#;
+
+const UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL: &str = r#"
+    UPDATE passkey_credentials
+    SET sign_count = ?1,
+        clone_warning = ?2,
+        user_present = ?3,
+        user_verified = ?4,
+        backup_eligible = ?5,
+        backup_state = ?6,
+        last_used_at = ?7,
+        updated_at = ?7,
+        credential_use_generation = credential_use_generation + 1
+    WHERE user_id = ?8
+      AND credential_id = ?9
+      AND sign_count = ?10
+      AND credential_use_generation = ?11
+      AND credential_registration_id_sha256 IS ?12
+      AND credential_id_sha256 IS ?13
+      AND credential_binding_sha256 IS ?14
       AND deleted_at IS NULL
 "#;
 
@@ -28176,6 +29470,86 @@ fn d1_passkey_timestamp(value: i64) -> D1Type<'static> {
 
 fn d1_optional_timestamp(value: Option<i64>) -> D1Type<'static> {
     value.map(d1_passkey_timestamp).unwrap_or(D1Type::Null)
+}
+
+fn d1_passkey_use_generation(value: i64) -> worker::Result<D1Type<'static>> {
+    const MAX_INCREMENTABLE_JS_SAFE_INTEGER: i64 = 9_007_199_254_740_990;
+
+    if !(0..=MAX_INCREMENTABLE_JS_SAFE_INTEGER).contains(&value) {
+        return Err(worker::Error::RustError(
+            "invalid Passkey credential use generation".to_string(),
+        ));
+    }
+    Ok(if let Ok(value) = i32::try_from(value) {
+        D1Type::Integer(value)
+    } else {
+        D1Type::Real(value as f64)
+    })
+}
+
+fn d1_passkey_optional_digest<'a>(
+    value: Option<&'a str>,
+    field: &str,
+) -> worker::Result<D1Type<'a>> {
+    match value {
+        Some(value) => {
+            validate_passkey_digest(value, field)?;
+            Ok(D1Type::Text(value))
+        }
+        None => Ok(D1Type::Null),
+    }
+}
+
+fn validate_passkey_digest(value: &str, field: &str) -> worker::Result<()> {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        Ok(())
+    } else {
+        Err(worker::Error::RustError(format!(
+            "invalid Passkey {field} digest"
+        )))
+    }
+}
+
+async fn passkey_credential_schema_profile(
+    db: &D1Database,
+) -> worker::Result<PasskeyCredentialSchemaProfile> {
+    let probe = db
+        .prepare(
+            r#"
+            SELECT COUNT(*) AS identity_column_count
+            FROM pragma_table_xinfo('passkey_credentials')
+            WHERE name IN (
+              'credential_registration_id_sha256',
+              'credential_id_sha256',
+              'credential_binding_sha256',
+              'credential_use_generation'
+            )
+            "#,
+        )
+        .first::<PasskeyCredentialSchemaProbe>(None)
+        .await?
+        .ok_or_else(|| {
+            worker::Error::RustError(
+                "Passkey credential schema profile could not be read".to_string(),
+            )
+        })?;
+    passkey_credential_schema_profile_from_count(probe.identity_column_count)
+}
+
+fn passkey_credential_schema_profile_from_count(
+    identity_column_count: i64,
+) -> worker::Result<PasskeyCredentialSchemaProfile> {
+    match identity_column_count {
+        0 => Ok(PasskeyCredentialSchemaProfile::Legacy),
+        4 => Ok(PasskeyCredentialSchemaProfile::GenerationBound),
+        _ => Err(worker::Error::RustError(
+            "Passkey credential schema is partially migrated".to_string(),
+        )),
+    }
 }
 
 /// Return whether the user has a non-deleted Passkey credential. Go reads via
@@ -28204,7 +29578,11 @@ pub async fn find_passkey_by_user(
     db: &D1Database,
     user_id: i64,
 ) -> worker::Result<Option<PasskeyCredentialRow>> {
-    db.prepare(FIND_PASSKEY_BY_USER_SQL)
+    let sql = match passkey_credential_schema_profile(db).await? {
+        PasskeyCredentialSchemaProfile::Legacy => FIND_LEGACY_PASSKEY_BY_USER_SQL,
+        PasskeyCredentialSchemaProfile::GenerationBound => FIND_PASSKEY_BY_USER_SQL,
+    };
+    db.prepare(sql)
         .bind_refs(&[D1Type::Integer(d1_i32(user_id))])?
         .first::<PasskeyCredentialRow>(None)
         .await
@@ -28215,7 +29593,11 @@ pub async fn find_passkey_by_credential_id(
     db: &D1Database,
     credential_id: &str,
 ) -> worker::Result<Option<PasskeyCredentialRow>> {
-    db.prepare(FIND_PASSKEY_BY_CREDENTIAL_ID_SQL)
+    let sql = match passkey_credential_schema_profile(db).await? {
+        PasskeyCredentialSchemaProfile::Legacy => FIND_LEGACY_PASSKEY_BY_CREDENTIAL_ID_SQL,
+        PasskeyCredentialSchemaProfile::GenerationBound => FIND_PASSKEY_BY_CREDENTIAL_ID_SQL,
+    };
+    db.prepare(sql)
         .bind_refs(&[D1Type::Text(credential_id)])?
         .first::<PasskeyCredentialRow>(None)
         .await
@@ -28229,38 +29611,78 @@ pub async fn replace_passkey_credential(
     credential: PasskeyCredentialWrite<'_>,
     now: i64,
 ) -> worker::Result<()> {
+    validate_passkey_digest(
+        credential.credential_registration_id_sha256,
+        "credential registration id",
+    )?;
+    validate_passkey_digest(credential.credential_id_sha256, "credential id")?;
+    validate_passkey_digest(credential.credential_binding_sha256, "credential binding")?;
+    let schema_profile = passkey_credential_schema_profile(db).await?;
     let delete = db
         .prepare("DELETE FROM passkey_credentials WHERE user_id = ?1")
         .bind_refs(&[D1Type::Integer(d1_i32(credential.user_id))])?;
-    let args = [
-        D1Type::Integer(d1_i32(credential.user_id)),
-        D1Type::Text(credential.credential_id),
-        D1Type::Text(credential.public_key),
-        D1Type::Text(credential.attestation_type),
-        D1Type::Text(credential.aaguid),
-        d1_passkey_sign_count(credential.sign_count),
-        D1Type::Boolean(credential.clone_warning),
-        D1Type::Boolean(credential.user_present),
-        D1Type::Boolean(credential.user_verified),
-        D1Type::Boolean(credential.backup_eligible),
-        D1Type::Boolean(credential.backup_state),
-        D1Type::Text(credential.transports),
-        D1Type::Text(credential.attachment),
-        d1_optional_timestamp(credential.last_used_at),
-        d1_passkey_timestamp(now),
-    ];
-    let insert = db.prepare(INSERT_PASSKEY_CREDENTIAL_SQL).bind_refs(&args)?;
+    let insert = match schema_profile {
+        PasskeyCredentialSchemaProfile::Legacy => {
+            let args = [
+                D1Type::Integer(d1_i32(credential.user_id)),
+                D1Type::Text(credential.credential_id),
+                D1Type::Text(credential.public_key),
+                D1Type::Text(credential.attestation_type),
+                D1Type::Text(credential.aaguid),
+                d1_passkey_sign_count(credential.sign_count),
+                D1Type::Boolean(credential.clone_warning),
+                D1Type::Boolean(credential.user_present),
+                D1Type::Boolean(credential.user_verified),
+                D1Type::Boolean(credential.backup_eligible),
+                D1Type::Boolean(credential.backup_state),
+                D1Type::Text(credential.transports),
+                D1Type::Text(credential.attachment),
+                d1_optional_timestamp(credential.last_used_at),
+                d1_passkey_timestamp(now),
+            ];
+            db.prepare(INSERT_LEGACY_PASSKEY_CREDENTIAL_SQL)
+                .bind_refs(&args)?
+        }
+        PasskeyCredentialSchemaProfile::GenerationBound => {
+            let args = [
+                D1Type::Integer(d1_i32(credential.user_id)),
+                D1Type::Text(credential.credential_id),
+                D1Type::Text(credential.public_key),
+                D1Type::Text(credential.attestation_type),
+                D1Type::Text(credential.aaguid),
+                D1Type::Text(credential.credential_registration_id_sha256),
+                D1Type::Text(credential.credential_id_sha256),
+                D1Type::Text(credential.credential_binding_sha256),
+                d1_passkey_sign_count(credential.sign_count),
+                D1Type::Boolean(credential.clone_warning),
+                D1Type::Boolean(credential.user_present),
+                D1Type::Boolean(credential.user_verified),
+                D1Type::Boolean(credential.backup_eligible),
+                D1Type::Boolean(credential.backup_state),
+                D1Type::Text(credential.transports),
+                D1Type::Text(credential.attachment),
+                d1_optional_timestamp(credential.last_used_at),
+                d1_passkey_timestamp(now),
+            ];
+            db.prepare(INSERT_PASSKEY_CREDENTIAL_SQL).bind_refs(&args)?
+        }
+    };
     let results = db.batch(vec![delete, insert]).await?;
     require_batch_change(&results, 1, "passkey credential insert failed")
 }
 
-/// Persist authenticator state after a successful assertion. The previously
-/// read sign counter is an optimistic concurrency guard against stale writes.
+/// Persist authenticator state after a successful assertion. The use generation
+/// makes even 0-to-0 sign counters single-winner, while nullable digest CAS
+/// preserves legacy rows and rejects concurrent immutable-binding drift.
 pub async fn update_passkey_after_authentication(
     db: &D1Database,
     user_id: i64,
     credential_id: &str,
     expected_sign_count: u32,
+    expected_credential_use_generation: i64,
+    expected_credential_registration_id_sha256: Option<&str>,
+    expected_credential_id_sha256: Option<&str>,
+    expected_credential_binding_sha256: Option<&str>,
     sign_count: u32,
     clone_warning: bool,
     user_present: bool,
@@ -28269,23 +29691,70 @@ pub async fn update_passkey_after_authentication(
     backup_state: bool,
     now: i64,
 ) -> worker::Result<bool> {
-    let args = [
-        d1_passkey_sign_count(sign_count),
-        D1Type::Boolean(clone_warning),
-        D1Type::Boolean(user_present),
-        D1Type::Boolean(user_verified),
-        D1Type::Boolean(backup_eligible),
-        D1Type::Boolean(backup_state),
-        d1_passkey_timestamp(now),
-        D1Type::Integer(d1_i32(user_id)),
-        D1Type::Text(credential_id),
-        d1_passkey_sign_count(expected_sign_count),
-    ];
-    let result = db
-        .prepare(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL)
-        .bind_refs(&args)?
-        .run()
-        .await?;
+    let schema_profile = passkey_credential_schema_profile(db).await?;
+    let result = match schema_profile {
+        PasskeyCredentialSchemaProfile::Legacy => {
+            if expected_credential_use_generation != 0
+                || expected_credential_registration_id_sha256.is_some()
+                || expected_credential_id_sha256.is_some()
+                || expected_credential_binding_sha256.is_some()
+            {
+                return Err(worker::Error::RustError(
+                    "generation-bound Passkey evidence cannot use the legacy schema".to_string(),
+                ));
+            }
+            let args = [
+                d1_passkey_sign_count(sign_count),
+                D1Type::Boolean(clone_warning),
+                D1Type::Boolean(user_present),
+                D1Type::Boolean(user_verified),
+                D1Type::Boolean(backup_eligible),
+                D1Type::Boolean(backup_state),
+                d1_passkey_timestamp(now),
+                D1Type::Integer(d1_i32(user_id)),
+                D1Type::Text(credential_id),
+                d1_passkey_sign_count(expected_sign_count),
+            ];
+            db.prepare(UPDATE_LEGACY_PASSKEY_AFTER_AUTHENTICATION_SQL)
+                .bind_refs(&args)?
+                .run()
+                .await?
+        }
+        PasskeyCredentialSchemaProfile::GenerationBound => {
+            let expected_credential_use_generation =
+                d1_passkey_use_generation(expected_credential_use_generation)?;
+            let expected_credential_registration_id_sha256 = d1_passkey_optional_digest(
+                expected_credential_registration_id_sha256,
+                "credential registration id",
+            )?;
+            let expected_credential_id_sha256 =
+                d1_passkey_optional_digest(expected_credential_id_sha256, "credential id")?;
+            let expected_credential_binding_sha256 = d1_passkey_optional_digest(
+                expected_credential_binding_sha256,
+                "credential binding",
+            )?;
+            let args = [
+                d1_passkey_sign_count(sign_count),
+                D1Type::Boolean(clone_warning),
+                D1Type::Boolean(user_present),
+                D1Type::Boolean(user_verified),
+                D1Type::Boolean(backup_eligible),
+                D1Type::Boolean(backup_state),
+                d1_passkey_timestamp(now),
+                D1Type::Integer(d1_i32(user_id)),
+                D1Type::Text(credential_id),
+                d1_passkey_sign_count(expected_sign_count),
+                expected_credential_use_generation,
+                expected_credential_registration_id_sha256,
+                expected_credential_id_sha256,
+                expected_credential_binding_sha256,
+            ];
+            db.prepare(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL)
+                .bind_refs(&args)?
+                .run()
+                .await?
+        }
+    };
     Ok(result.meta()?.and_then(|meta| meta.changes).unwrap_or(0) == 1)
 }
 
@@ -28469,6 +29938,15 @@ pub struct LogsStat {
 
 const LOG_TYPE_CONSUME: i32 = 2;
 const LOG_STAT_WINDOW_SECONDS: i64 = 60;
+const COUNT_LEGACY_LOGS_BEFORE_SQL: &str =
+    "SELECT COUNT(*) AS count FROM logs WHERE created_at < ?1";
+const DELETE_LEGACY_LOGS_BEFORE_SQL: &str = "DELETE FROM logs WHERE created_at < ?1";
+const COUNT_DELETABLE_LOGS_BEFORE_SQL: &str = "SELECT COUNT(*) AS count FROM logs \
+     WHERE created_at < ?1 \
+       AND drain_source_registration_command_id_sha256 IS NULL";
+const DELETE_DELETABLE_LOGS_BEFORE_SQL: &str = "DELETE FROM logs \
+     WHERE created_at < ?1 \
+       AND drain_source_registration_command_id_sha256 IS NULL";
 
 /// Build the WHERE clause and bind parameters for a [`LogFilter`]. Returns
 /// the (sql, args) pair. Parameter placeholders are `?N` starting at N=1.
@@ -28677,19 +30155,38 @@ pub async fn delete_logs_before(db: &D1Database, target_timestamp: i64) -> worke
     struct Count {
         count: i64,
     }
+    let protected_link_count = db
+        .prepare(
+            "SELECT COUNT(*) AS count \
+             FROM pragma_table_xinfo('logs') \
+             WHERE name = 'drain_source_registration_command_id_sha256'",
+        )
+        .first::<Count>(None)
+        .await?
+        .map(|row| row.count)
+        .unwrap_or(-1);
+    let (count_sql, delete_sql) = match protected_link_count {
+        0 => (COUNT_LEGACY_LOGS_BEFORE_SQL, DELETE_LEGACY_LOGS_BEFORE_SQL),
+        1 => (
+            COUNT_DELETABLE_LOGS_BEFORE_SQL,
+            DELETE_DELETABLE_LOGS_BEFORE_SQL,
+        ),
+        _ => {
+            return Err(worker::Error::RustError(
+                "log retention schema profile is invalid".to_string(),
+            ))
+        }
+    };
     let arg = D1Type::Integer(d1_i32(target_timestamp));
     let count = db
-        .prepare("SELECT COUNT(*) AS count FROM logs WHERE created_at < ?1")
+        .prepare(count_sql)
         .bind_refs(&[arg])?
         .first::<Count>(None)
         .await?
         .map(|r| r.count)
         .unwrap_or(0);
     let arg2 = D1Type::Integer(d1_i32(target_timestamp));
-    db.prepare("DELETE FROM logs WHERE created_at < ?1")
-        .bind_refs(&[arg2])?
-        .run()
-        .await?;
+    db.prepare(delete_sql).bind_refs(&[arg2])?.run().await?;
     Ok(count)
 }
 
@@ -34751,15 +36248,87 @@ mod tests {
         assert!(FIND_PASSKEY_BY_CREDENTIAL_ID_SQL.contains("credential_id = ?1"));
         assert!(FIND_PASSKEY_BY_USER_SQL.contains("deleted_at IS NULL"));
         assert!(FIND_PASSKEY_BY_CREDENTIAL_ID_SQL.contains("deleted_at IS NULL"));
-        assert!(INSERT_PASSKEY_CREDENTIAL_SQL.contains("?15, ?15, NULL"));
+        for field in [
+            "credential_registration_id_sha256",
+            "credential_id_sha256",
+            "credential_binding_sha256",
+            "credential_use_generation",
+        ] {
+            assert!(
+                FIND_PASSKEY_BY_USER_SQL.contains(field),
+                "missing Passkey SELECT field {field}"
+            );
+            assert!(
+                FIND_PASSKEY_BY_CREDENTIAL_ID_SQL.contains(field),
+                "missing Passkey credential-id SELECT field {field}"
+            );
+            assert!(
+                INSERT_PASSKEY_CREDENTIAL_SQL.contains(field),
+                "missing Passkey INSERT field {field}"
+            );
+        }
+        assert!(INSERT_PASSKEY_CREDENTIAL_SQL.contains("?6, ?7, ?8, 0"));
+        assert!(INSERT_PASSKEY_CREDENTIAL_SQL.contains("?18, ?18, NULL"));
         assert!(!INSERT_PASSKEY_CREDENTIAL_SQL.contains("OR REPLACE"));
     }
 
     #[test]
-    fn passkey_authentication_update_uses_sign_count_cas() {
+    fn passkey_repository_is_reader_first_across_the_0074_schema_boundary() {
+        for legacy_query in [
+            FIND_LEGACY_PASSKEY_BY_USER_SQL,
+            FIND_LEGACY_PASSKEY_BY_CREDENTIAL_ID_SQL,
+        ] {
+            assert!(legacy_query.contains("NULL AS credential_registration_id_sha256"));
+            assert!(legacy_query.contains("NULL AS credential_id_sha256"));
+            assert!(legacy_query.contains("NULL AS credential_binding_sha256"));
+            assert!(legacy_query.contains("0 AS credential_use_generation"));
+            assert!(legacy_query.contains("deleted_at IS NULL"));
+        }
+        assert!(!INSERT_LEGACY_PASSKEY_CREDENTIAL_SQL.contains("credential_use_generation"));
+        assert!(!INSERT_LEGACY_PASSKEY_CREDENTIAL_SQL.contains("credential_id_sha256"));
+        assert!(
+            !UPDATE_LEGACY_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("credential_use_generation")
+        );
+        assert!(!UPDATE_LEGACY_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("credential_id_sha256"));
+        assert!(UPDATE_LEGACY_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("sign_count = ?10"));
+        assert_eq!(
+            passkey_credential_schema_profile_from_count(0).unwrap(),
+            PasskeyCredentialSchemaProfile::Legacy
+        );
+        assert_eq!(
+            passkey_credential_schema_profile_from_count(4).unwrap(),
+            PasskeyCredentialSchemaProfile::GenerationBound
+        );
+        for partial_count in [1, 2, 3, 5] {
+            assert!(passkey_credential_schema_profile_from_count(partial_count).is_err());
+        }
+        let source = include_str!("d1_repositories.rs");
+        for fragment in [
+            "FROM pragma_table_xinfo('passkey_credentials')",
+            "Passkey credential schema is partially migrated",
+            "generation-bound Passkey evidence cannot use the legacy schema",
+        ] {
+            assert!(
+                source.contains(fragment),
+                "missing reader-first Passkey schema boundary: {fragment}"
+            );
+        }
+    }
+
+    #[test]
+    fn passkey_authentication_update_uses_generation_and_null_safe_digest_cas() {
         assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("user_id = ?8"));
         assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("credential_id = ?9"));
         assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("sign_count = ?10"));
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL
+            .contains("credential_use_generation = credential_use_generation + 1"));
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("credential_use_generation = ?11"));
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL
+            .contains("credential_registration_id_sha256 IS ?12"));
+        assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("credential_id_sha256 IS ?13"));
+        assert!(
+            UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("credential_binding_sha256 IS ?14")
+        );
         assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("deleted_at IS NULL"));
         assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("last_used_at = ?7"));
         assert!(UPDATE_PASSKEY_AFTER_AUTHENTICATION_SQL.contains("updated_at = ?7"));
@@ -34779,6 +36348,26 @@ mod tests {
             d1_passkey_timestamp(i64::from(i32::MAX) + 1),
             D1Type::Real(value) if value == (i64::from(i32::MAX) + 1) as f64
         ));
+        assert!(matches!(
+            d1_passkey_use_generation(i64::from(i32::MAX) + 1).unwrap(),
+            D1Type::Real(value) if value == (i64::from(i32::MAX) + 1) as f64
+        ));
+        assert!(d1_passkey_use_generation(-1).is_err());
+        assert!(d1_passkey_use_generation(9_007_199_254_740_991).is_err());
+    }
+
+    #[test]
+    fn passkey_digest_binding_accepts_legacy_null_but_validates_new_values() {
+        assert!(matches!(
+            d1_passkey_optional_digest(None, "credential binding").unwrap(),
+            D1Type::Null
+        ));
+        assert!(matches!(
+            d1_passkey_optional_digest(Some(&"a".repeat(64)), "credential binding").unwrap(),
+            D1Type::Text(value) if value == "a".repeat(64)
+        ));
+        assert!(d1_passkey_optional_digest(Some(""), "credential binding").is_err());
+        assert!(d1_passkey_optional_digest(Some(&"A".repeat(64)), "credential binding").is_err());
     }
 
     #[test]
@@ -37853,6 +39442,33 @@ mod tests {
     }
 
     #[test]
+    fn log_retention_sql_profiles_keep_count_and_delete_predicates_aligned() {
+        let legacy_count_where = COUNT_LEGACY_LOGS_BEFORE_SQL
+            .split_once(" WHERE ")
+            .unwrap()
+            .1;
+        let legacy_delete_where = DELETE_LEGACY_LOGS_BEFORE_SQL
+            .split_once(" WHERE ")
+            .unwrap()
+            .1;
+        assert_eq!(legacy_count_where, legacy_delete_where);
+        assert!(!legacy_count_where.contains("drain_source_registration_command_id_sha256"));
+
+        let protected_count_where = COUNT_DELETABLE_LOGS_BEFORE_SQL
+            .split_once(" WHERE ")
+            .unwrap()
+            .1;
+        let protected_delete_where = DELETE_DELETABLE_LOGS_BEFORE_SQL
+            .split_once(" WHERE ")
+            .unwrap()
+            .1;
+        assert_eq!(protected_count_where, protected_delete_where);
+        assert!(
+            protected_count_where.contains("drain_source_registration_command_id_sha256 IS NULL")
+        );
+    }
+
+    #[test]
     fn parse_auto_groups_option_reads_json_array() {
         assert_eq!(
             parse_auto_groups_option(Some(r#"["default","vip"]"#)),
@@ -39495,19 +41111,34 @@ mod tests {
         let readiness_start = source
             .find("pub async fn relay_container_drain_source_consumption_schema_ready")
             .unwrap();
+        let registration_writer_start = source
+            .find("pub(crate) async fn register_relay_container_drain_source_authorization")
+            .unwrap();
         let readback_start = source
             .find("pub async fn relay_container_drain_source_consumption_readback")
             .unwrap();
         let claim_start = source
             .find("pub async fn claim_relay_container_drain_source_authorization")
             .unwrap();
+        let registration_schema_start = source
+            .find(
+                "pub(crate) async fn relay_container_drain_source_registration_command_schema_ready",
+            )
+            .unwrap();
+        let classification_start = source
+            .find("fn classify_relay_container_drain_source_batch(")
+            .unwrap();
         let validation_start = source[claim_start..]
             .find("fn validate_relay_container_drain_source_consumption_readback")
             .map(|offset| claim_start + offset)
             .unwrap();
-        let readiness = &source[readiness_start..readback_start];
+        let readiness = &source[readiness_start..registration_writer_start];
         let readback = &source[readback_start..claim_start];
-        let mutations = &source[claim_start..validation_start];
+        let mutations = format!(
+            "{}\n{}",
+            &source[claim_start..registration_schema_start],
+            &source[classification_start..validation_start]
+        );
 
         for fragment in [
             "D1Session::first_primary(db)?",
@@ -39633,6 +41264,180 @@ mod tests {
     }
 
     #[test]
+    fn relay_container_drain_source_registration_command_is_atomic_and_default_inert() {
+        let migration = include_str!(
+            "../../../migrations/d1/0074_relay_container_drain_source_registration_command.sql"
+        );
+        assert_eq!(
+            RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION,
+            "0074_relay_container_drain_source_registration_command.sql"
+        );
+        assert_eq!(migration.matches("CREATE TABLE ").count(), 2);
+        assert_eq!(migration.matches("CREATE TRIGGER ").count(), 13);
+        assert_eq!(migration.matches("CREATE UNIQUE INDEX ").count(), 4);
+        assert_eq!(migration.matches("CREATE INDEX ").count(), 2);
+        for fragment in [
+            "0074 requires empty 0073 consumption tables and stopped registration writers",
+            "DROP TRIGGER\n  relay_container_drain_source_registration_command_preflight_guard",
+            "DROP TABLE relay_container_drain_source_registration_command_preflight",
+            "credential_use_generation INTEGER NOT NULL DEFAULT 0",
+            "CREATE TABLE relay_container_drain_source_registration_commands",
+            "admin_network_identity_hmac_sha256 TEXT NOT NULL",
+            "'admin_network_identity_hmac_sha256',",
+            "AND NEW.username = ''",
+            "AND NEW.ip = ''",
+            "drain source registration command time must come from D1",
+            "complete 0067 through 0074 chain",
+            "drain source registration command lost Root or passkey state",
+            "drain source registration command lost authorization or fence state",
+            "drain source registration command lost the current ledger head",
+            "permit_issued_at - verified_at BETWEEN 0 AND 5",
+            "permit_issued_at <= created_at + 5",
+            "INSERT INTO logs",
+            "UPDATE passkey_credentials",
+            "INSERT INTO relay_container_drain_source_authorization_registrations",
+            "drain source registration protected audit projection failed",
+            "drain source registration passkey CAS failed",
+            "drain source registration receipt projection failed",
+            "drain source registration commands are append-preserved",
+            "drain source registration protected audits are append-preserved",
+            "drain source registration must be projected by an exact 0074 command",
+        ] {
+            assert!(
+                migration.contains(fragment),
+                "missing 0074 registration-command invariant: {fragment}"
+            );
+        }
+        for forbidden in [
+            "CREATE TABLE IF NOT EXISTS",
+            "CREATE INDEX IF NOT EXISTS",
+            "CREATE TRIGGER IF NOT EXISTS",
+            "INSERT OR REPLACE",
+            "INSERT OR IGNORE",
+            "admin_audit_ip",
+        ] {
+            assert!(
+                !migration.contains(forbidden),
+                "0074 retained an idempotent or replacing DDL path: {forbidden}"
+            );
+        }
+
+        let source = include_str!("d1_repositories.rs");
+        let writer_start = source
+            .find("pub(crate) async fn register_relay_container_drain_source_authorization")
+            .unwrap();
+        let readback_start = source[writer_start..]
+            .find("async fn relay_container_drain_source_registration_command_readback_in_session")
+            .map(|offset| writer_start + offset)
+            .unwrap();
+        let conflict_start = source[readback_start..]
+            .find("async fn relay_container_drain_source_registration_command_has_conflict")
+            .map(|offset| readback_start + offset)
+            .unwrap();
+        let match_start = source[conflict_start..]
+            .find("fn relay_container_drain_source_registration_command_matches")
+            .map(|offset| conflict_start + offset)
+            .unwrap();
+        let schema_start = source
+            .find(
+                "pub(crate) async fn relay_container_drain_source_registration_command_schema_ready",
+            )
+            .unwrap();
+        let classify_start = source[schema_start..]
+            .find("fn classify_relay_container_drain_source_batch(")
+            .map(|offset| schema_start + offset)
+            .unwrap();
+        let writer = &source[writer_start..readback_start];
+        let readback = &source[readback_start..conflict_start];
+        let conflict = &source[conflict_start..match_start];
+        let schema = &source[schema_start..classify_start];
+
+        for fragment in [
+            "D1Session::first_primary(db)?",
+            "require_relay_container_drain_source_registration_command_schema(&session).await?",
+            ".prepare_batch_statement(",
+            "INSERT INTO relay_container_drain_source_registration_commands",
+            "WHERE NOT EXISTS (",
+            "existing.command_id_sha256 = ?1",
+            "?47, ?48, ?49, ?50, ?51, ?52",
+            "session.batch(vec![insert]).await",
+            "RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_FRESH_CHANGES",
+            "relay_container_drain_source_registration_command_readback_in_session(",
+            "&session",
+            "RelayContainerDrainSourceMutationOutcome::FreshApplied(readback)",
+            "RelayContainerDrainSourceMutationOutcome::ExactReplay(readback)",
+            "RelayContainerDrainSourceMutationOutcome::Conflict",
+            "RelayContainerDrainSourceMutationOutcome::OutcomeUnknown",
+        ] {
+            assert!(
+                writer.contains(fragment),
+                "missing 0074 one-statement Session writer invariant: {fragment}"
+            );
+        }
+        assert!(!writer.contains("INSERT OR "));
+        assert!(!writer.contains("authenticated_request_id"));
+        for fragment in [
+            "FROM relay_container_drain_source_registration_commands",
+            "FROM logs",
+            "FROM passkey_credentials",
+            "relay_container_drain_source_consumption_readback_in_session(",
+            "event_kind == \"registration\"",
+            "RelayContainerDrainSourceRegistrationCommandReadback",
+        ] {
+            assert!(
+                readback.contains(fragment),
+                "missing 0074 same-Session readback invariant: {fragment}"
+            );
+        }
+        for fragment in [
+            "authorization_id_sha256 = ?1",
+            "permit_id_sha256 = ?2",
+            "permit_signature_envelope_sha256 = ?4",
+            "issuer_request_id_sha256 = ?5",
+            "action_subject_sha256 = ?6",
+            "registration_request_sha256 = ?8",
+            "admin_audit_digest_sha256 = ?9",
+            "passkey_assertion_subject_sha256 = ?10",
+            "secure_verification_challenge_sha256 = ?12",
+            "registration_execution_id_sha256 = ?13",
+            "registration_receipt_sha256 = ?15",
+        ] {
+            assert!(
+                conflict.contains(fragment),
+                "missing 0074 alternate-identity conflict probe: {fragment}"
+            );
+        }
+        for fragment in [
+            "relay_container_drain_source_consumption_schema_ready_in_session(session).await?",
+            "probe.migration_count == 8",
+            "RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS",
+            "RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_TABLE_PRAGMAS",
+            "relay_container_drain_source_registration_command_preflight_guard",
+            "probe.conflict_count == 0",
+            "tbl_name IN (",
+            "'passkey_credentials',",
+            "'logs',",
+            "COALESCE((SELECT group_concat(entry, '|')",
+            "session.bookmark_sha256()?",
+        ] {
+            assert!(
+                schema.contains(fragment),
+                "missing strict 0074 schema readiness invariant: {fragment}"
+            );
+        }
+        assert!(schema.contains(".all()"));
+        assert!(
+            schema.contains(".results::<RelayContainerDrainSourceConsumptionSchemaObjectProbe>()")
+        );
+        assert!(!schema.contains(".run().await"));
+        assert!(!schema.contains(".batch("));
+        assert_eq!(
+            RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_FRESH_CHANGES,
+            5
+        );
+    }
+
+    #[test]
     fn relay_container_drain_source_consumption_schema_fingerprints_are_tamper_evident() {
         let migration = include_str!(
             "../../../migrations/d1/0073_relay_container_drain_source_authorization_consumption.sql"
@@ -39678,6 +41483,49 @@ mod tests {
             !relay_container_drain_source_consumption_schema_fingerprints_match(&missing_object)
         );
 
+        let mut registration_command_profile = actual.clone();
+        registration_command_profile
+            .iter_mut()
+            .find(|fingerprint| {
+                fingerprint.object_name == "relay_container_drain_source_registration_insert_guard"
+            })
+            .unwrap()
+            .normalized_sql_sha256 =
+            RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_INSERT_GUARD_0074_SHA256.to_string();
+        registration_command_profile.extend(
+            RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS
+                .iter()
+                .map(
+                    |expected| RelayContainerDrainSourceConsumptionSchemaFingerprint {
+                        object_type: expected.object_type.to_string(),
+                        object_name: expected.object_name.to_string(),
+                        table_name: expected.table_name.to_string(),
+                        normalized_sql_sha256: expected.normalized_sql_sha256.to_string(),
+                    },
+                ),
+        );
+        assert!(
+            relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
+                &registration_command_profile,
+                true,
+            )
+        );
+        assert!(
+            !relay_container_drain_source_consumption_schema_fingerprints_match(
+                &registration_command_profile,
+            )
+        );
+        registration_command_profile
+            .last_mut()
+            .unwrap()
+            .normalized_sql_sha256 = "f".repeat(64);
+        assert!(
+            !relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
+                &registration_command_profile,
+                true,
+            )
+        );
+
         for expected in RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_TABLE_PRAGMAS {
             for digest in [
                 expected.columns_sha256,
@@ -39691,6 +41539,53 @@ mod tests {
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
             }
         }
+        assert_eq!(
+            RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS.len(),
+            20
+        );
+        assert_eq!(
+            RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_TABLE_PRAGMAS.len(),
+            3
+        );
+        let mut registration_command_object_names = HashSet::new();
+        for expected in RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS {
+            assert!(registration_command_object_names.insert(expected.object_name));
+            assert_eq!(expected.normalized_sql_sha256.len(), 64);
+            assert!(expected
+                .normalized_sql_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        }
+        for expected in RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_TABLE_PRAGMAS {
+            for digest in [
+                expected.columns_sha256,
+                expected.indexes_sha256,
+                expected.foreign_keys_sha256,
+                expected.table_flags_sha256,
+            ] {
+                assert_eq!(digest.len(), 64);
+                assert!(digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+            }
+        }
+    }
+
+    #[test]
+    fn relay_container_d1_safe_integer_binding_never_clamps_row_identity() {
+        assert!(matches!(
+            relay_container_d1_safe_integer(i64::from(i32::MAX), "test").unwrap(),
+            D1Type::Integer(i32::MAX)
+        ));
+        assert!(matches!(
+            relay_container_d1_safe_integer(i64::from(i32::MAX) + 1, "test").unwrap(),
+            D1Type::Real(value) if value == f64::from(i32::MAX) + 1.0
+        ));
+        assert!(matches!(
+            relay_container_d1_safe_integer(9_007_199_254_740_991, "test").unwrap(),
+            D1Type::Real(value) if value == 9_007_199_254_740_991_f64
+        ));
+        assert!(relay_container_d1_safe_integer(9_007_199_254_740_992, "test").is_err());
     }
 
     #[test]
@@ -39763,6 +41658,33 @@ mod tests {
             resolve_relay_container_drain_source_mutation(ConfirmedApplied, DifferentOrMissing,),
             OutcomeUnknown
         );
+
+        assert_eq!(
+            classify_relay_container_drain_source_registration_readback(
+                ConfirmedApplied,
+                true,
+                true,
+            ),
+            Exact
+        );
+        assert_eq!(
+            classify_relay_container_drain_source_registration_readback(
+                ConfirmedApplied,
+                true,
+                false,
+            ),
+            DifferentOrMissing
+        );
+        for batch in [ConfirmedNoWrite, ProtocolUnknown] {
+            assert_eq!(
+                classify_relay_container_drain_source_registration_readback(batch, true, false),
+                Exact
+            );
+            assert_eq!(
+                classify_relay_container_drain_source_registration_readback(batch, false, true),
+                DifferentOrMissing
+            );
+        }
     }
 
     #[test]

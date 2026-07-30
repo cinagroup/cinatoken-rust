@@ -9,6 +9,7 @@ use base64::Engine as _;
 use cinatoken_auth::USER_STATUS_ENABLED;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use worker::{Env, Request, Response, Result as WorkerResult};
 
 use crate::admin::{
@@ -39,6 +40,10 @@ const PASSKEY_TIMEOUT_MS: u32 = 120_000;
 const PASSKEY_CHALLENGE_BYTES: usize = 32;
 const PASSKEY_CHALLENGE_TTL_SECONDS: u64 = 300;
 const PASSKEY_LOGIN_COOKIE: &str = "passkey_challenge";
+const PASSKEY_CREDENTIAL_ID_DIGEST_DOMAIN: &[u8] = b"cinatoken:passkey:credential-id:v1";
+const PASSKEY_PUBLIC_KEY_DIGEST_DOMAIN: &[u8] = b"cinatoken:passkey:public-key:v1";
+const PASSKEY_REGISTRATION_ID_DIGEST_DOMAIN: &[u8] = b"cinatoken:passkey:registration-id:v1";
+const PASSKEY_CREDENTIAL_BINDING_DIGEST_DOMAIN: &[u8] = b"cinatoken:passkey:credential-binding:v1";
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 struct PasskeySettings {
@@ -71,6 +76,13 @@ struct PasskeyStatusResponse {
     backup_eligible: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     backup_state: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PasskeyCredentialBindings {
+    credential_registration_id_sha256: String,
+    credential_id_sha256: String,
+    credential_binding_sha256: String,
 }
 
 pub async fn status(req: Request, env: Env) -> WorkerResult<Response> {
@@ -242,12 +254,26 @@ pub async fn register_finish(mut req: Request, env: Env) -> WorkerResult<Respons
     })?;
     let attachment = verified.authenticator_attachment.as_deref().unwrap_or("");
     let now = unix_timestamp();
+    let bindings = derive_passkey_credential_bindings(
+        &state.challenge,
+        claims.id,
+        &verified.credential_id,
+        &verified.public_key_cose,
+        verified.attestation_format,
+        &aaguid,
+        &transports,
+        attachment,
+        now,
+    )?;
     let write = PasskeyCredentialWrite {
         user_id: claims.id,
         credential_id: &credential_id,
         public_key: &public_key,
         attestation_type: verified.attestation_format,
         aaguid: &aaguid,
+        credential_registration_id_sha256: &bindings.credential_registration_id_sha256,
+        credential_id_sha256: &bindings.credential_id_sha256,
+        credential_binding_sha256: &bindings.credential_binding_sha256,
         sign_count: verified.sign_count,
         clone_warning: false,
         user_present: verified.user_present,
@@ -888,6 +914,76 @@ fn new_challenge() -> WorkerResult<String> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
+fn derive_passkey_credential_bindings(
+    challenge_base64url: &str,
+    user_id: i64,
+    credential_id: &[u8],
+    public_key_cose: &[u8],
+    attestation_type: &str,
+    aaguid_base64: &str,
+    transports_json: &str,
+    attachment: &str,
+    created_at: i64,
+) -> WorkerResult<PasskeyCredentialBindings> {
+    let challenge = URL_SAFE_NO_PAD
+        .decode(challenge_base64url.as_bytes())
+        .map_err(|_| worker::Error::RustError("invalid consumed Passkey challenge".to_string()))?;
+    if challenge.len() != PASSKEY_CHALLENGE_BYTES
+        || URL_SAFE_NO_PAD.encode(&challenge) != challenge_base64url
+        || user_id <= 0
+        || created_at < 0
+    {
+        return Err(worker::Error::RustError(
+            "invalid Passkey registration binding input".to_string(),
+        ));
+    }
+
+    let user_id_bytes = user_id.to_be_bytes();
+    let created_at_bytes = created_at.to_be_bytes();
+    let credential_id_sha256 =
+        passkey_sha256_len_prefixed(PASSKEY_CREDENTIAL_ID_DIGEST_DOMAIN, &[credential_id]);
+    let public_key_sha256 =
+        passkey_sha256_len_prefixed(PASSKEY_PUBLIC_KEY_DIGEST_DOMAIN, &[public_key_cose]);
+    let immutable_fields = [
+        user_id_bytes.as_slice(),
+        credential_id_sha256.as_bytes(),
+        public_key_sha256.as_bytes(),
+        attestation_type.as_bytes(),
+        aaguid_base64.as_bytes(),
+        transports_json.as_bytes(),
+        attachment.as_bytes(),
+        created_at_bytes.as_slice(),
+    ];
+
+    let mut registration_fields = Vec::with_capacity(immutable_fields.len() + 1);
+    registration_fields.push(challenge.as_slice());
+    registration_fields.extend(immutable_fields);
+    let credential_registration_id_sha256 =
+        passkey_sha256_len_prefixed(PASSKEY_REGISTRATION_ID_DIGEST_DOMAIN, &registration_fields);
+
+    let mut binding_fields = Vec::with_capacity(immutable_fields.len() + 1);
+    binding_fields.push(credential_registration_id_sha256.as_bytes());
+    binding_fields.extend(immutable_fields);
+    let credential_binding_sha256 =
+        passkey_sha256_len_prefixed(PASSKEY_CREDENTIAL_BINDING_DIGEST_DOMAIN, &binding_fields);
+
+    Ok(PasskeyCredentialBindings {
+        credential_registration_id_sha256,
+        credential_id_sha256,
+        credential_binding_sha256,
+    })
+}
+
+fn passkey_sha256_len_prefixed(domain: &[u8], fields: &[&[u8]]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    for field in fields {
+        hasher.update((field.len() as u64).to_be_bytes());
+        hasher.update(field);
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 async fn put_challenge(
     env: &Env,
     key: &str,
@@ -1059,6 +1155,10 @@ async fn persist_assertion(
         stored.user_id,
         credential_id,
         expected_sign_count,
+        stored.credential_use_generation,
+        stored.credential_registration_id_sha256.as_deref(),
+        stored.credential_id_sha256.as_deref(),
+        stored.credential_binding_sha256.as_deref(),
         verified.sign_count,
         clone_warning,
         verified.user_present,
@@ -1255,6 +1355,71 @@ mod tests {
             ..state
         };
         assert!(!valid_challenge_state_at(&expired, "verify", Some(42), now));
+    }
+
+    #[test]
+    fn registration_bindings_match_fixed_domain_separated_vectors() {
+        let challenge = URL_SAFE_NO_PAD.encode([7u8; PASSKEY_CHALLENGE_BYTES]);
+        let aaguid = STANDARD.encode([9u8; 16]);
+        let bindings = derive_passkey_credential_bindings(
+            &challenge,
+            42,
+            &[1, 2, 3, 250],
+            &[0xa5, 1, 2, 3],
+            "packed",
+            &aaguid,
+            r#"["internal","hybrid"]"#,
+            "platform",
+            1_700_000_000,
+        )
+        .unwrap();
+
+        assert_eq!(
+            bindings.credential_id_sha256,
+            "bf96852d43d8c2af87499b9b5b942e555e2395f240d92a5fe839867b06fe67cc"
+        );
+        assert_eq!(
+            bindings.credential_registration_id_sha256,
+            "fd12a5a0062f0f9d445d6a3dc4e648d2b473e1e7380d5280fb61b7444b2a0281"
+        );
+        assert_eq!(
+            bindings.credential_binding_sha256,
+            "1354609638d3f4d0136df85433fb3921e9d6d72c8f3017009b2cc6dccd2115c2"
+        );
+    }
+
+    #[test]
+    fn registration_bindings_change_with_challenge_or_immutable_metadata() {
+        let derive = |challenge_byte, attachment| {
+            derive_passkey_credential_bindings(
+                &URL_SAFE_NO_PAD.encode([challenge_byte; PASSKEY_CHALLENGE_BYTES]),
+                42,
+                &[1, 2, 3, 250],
+                &[0xa5, 1, 2, 3],
+                "packed",
+                &STANDARD.encode([9u8; 16]),
+                r#"["internal","hybrid"]"#,
+                attachment,
+                1_700_000_000,
+            )
+            .unwrap()
+        };
+        let baseline = derive(7, "platform");
+        let different_challenge = derive(8, "platform");
+        let different_attachment = derive(7, "cross-platform");
+
+        assert_ne!(
+            baseline.credential_registration_id_sha256,
+            different_challenge.credential_registration_id_sha256
+        );
+        assert_eq!(
+            baseline.credential_id_sha256,
+            different_challenge.credential_id_sha256
+        );
+        assert_ne!(
+            baseline.credential_binding_sha256,
+            different_attachment.credential_binding_sha256
+        );
     }
 
     #[test]

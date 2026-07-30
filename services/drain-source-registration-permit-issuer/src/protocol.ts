@@ -1,5 +1,4 @@
-export const PERMITS_PATH =
-  "/internal/v1/drain-source-registration/permits";
+export const PERMITS_PATH = "/internal/v1/drain-source-registration/permits";
 export const MAX_JSON_BODY_BYTES = 16 * 1024;
 export const HMAC_WINDOW_SECONDS = 60;
 export const CLOCK_SKEW_SECONDS = 5;
@@ -19,8 +18,7 @@ export const PERMIT_ID_DOMAIN =
 
 const HMAC_DOMAIN =
   "cinatoken-drain-source-registration-permit-issuer-authority-v1\n";
-const HMAC_HEADER_TYPE =
-  "CINATOKEN-DRAIN-SOURCE-REGISTRATION-PERMIT-ISSUER";
+const HMAC_HEADER_TYPE = "CINATOKEN-DRAIN-SOURCE-REGISTRATION-PERMIT-ISSUER";
 const ACTION = "relay_container.drain_source_authorization_register";
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -30,10 +28,11 @@ const SERVICE_NAME = /^[a-z0-9](?:[a-z0-9-]{0,126}[a-z0-9])?$/;
 const VERSION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const PATH_AND_QUERY = /^\/[^\r\n]{0,2047}$/;
 const MAXIMUM_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
+const MAXIMUM_PREVIOUS_USE_GENERATION = MAXIMUM_SAFE_INTEGER - 1;
 const MAXIMUM_SIGN_COUNT = 0xffff_ffff;
 const ED25519_PKCS8_PREFIX = Uint8Array.from([
-  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
-  0x04, 0x22, 0x04, 0x20,
+  0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04,
+  0x22, 0x04, 0x20,
 ]);
 const ED25519_SPKI_PREFIX = Uint8Array.from([
   0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
@@ -56,12 +55,18 @@ export const SUBJECT_FIELDS = Object.freeze([
   "actionDigestSha256",
   "registrationRequestSha256",
   "adminAuditDigestSha256",
+  "adminNetworkIdentityHmacSha256",
   "changeTicketSha256",
   "rootAdminId",
   "rootSessionEpoch",
+  "rootSessionIssuedAt",
+  "rootSessionExpiresAt",
   "rootSessionBindingSha256",
   "passkeyCredentialRowId",
   "passkeyCredentialIdSha256",
+  "passkeyCredentialRegistrationIdSha256",
+  "passkeyCredentialBindingSha256",
+  "passkeyPreviousUseGeneration",
   "passkeyAssertionSubjectSha256",
   "passkeyAssertionSignatureSha256",
   "secureVerificationChallengeSha256",
@@ -95,12 +100,18 @@ export const REQUEST_FIELDS = Object.freeze([
   "actionDigestSha256",
   "registrationRequestSha256",
   "adminAuditDigestSha256",
+  "adminNetworkIdentityHmacSha256",
   "changeTicketSha256",
   "rootAdminId",
   "rootSessionEpoch",
+  "rootSessionIssuedAt",
+  "rootSessionExpiresAt",
   "rootSessionBindingSha256",
   "passkeyCredentialRowId",
   "passkeyCredentialIdSha256",
+  "passkeyCredentialRegistrationIdSha256",
+  "passkeyCredentialBindingSha256",
+  "passkeyPreviousUseGeneration",
   "passkeyAssertionSubjectSha256",
   "passkeyAssertionSignatureSha256",
   "secureVerificationChallengeSha256",
@@ -176,12 +187,18 @@ export interface RegistrationPermitSubject {
   actionDigestSha256: string;
   registrationRequestSha256: string;
   adminAuditDigestSha256: string;
+  adminNetworkIdentityHmacSha256: string;
   changeTicketSha256: string;
   rootAdminId: number;
   rootSessionEpoch: number;
+  rootSessionIssuedAt: number;
+  rootSessionExpiresAt: number;
   rootSessionBindingSha256: string;
   passkeyCredentialRowId: number;
   passkeyCredentialIdSha256: string;
+  passkeyCredentialRegistrationIdSha256: string;
+  passkeyCredentialBindingSha256: string;
+  passkeyPreviousUseGeneration: number;
   passkeyAssertionSubjectSha256: string;
   passkeyAssertionSignatureSha256: string;
   secureVerificationChallengeSha256: string;
@@ -247,7 +264,9 @@ export class ProtocolError extends Error {
 
 export async function readBoundedJson(request: Request): Promise<Uint8Array> {
   const contentType = request.headers.get("content-type");
-  if (contentType?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+  if (
+    contentType?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json"
+  ) {
     throw new ProtocolError("invalid_content_type", 415);
   }
   const declaredLength = request.headers.get("content-length");
@@ -416,8 +435,7 @@ export async function issueRegistrationPermit(
     now - authentication.issuedAt > HMAC_WINDOW_SECONDS ||
     authentication.expiresAt <= now ||
     authentication.expiresAt <= authentication.issuedAt ||
-    authentication.expiresAt - authentication.issuedAt >
-      HMAC_WINDOW_SECONDS ||
+    authentication.expiresAt - authentication.issuedAt > HMAC_WINDOW_SECONDS ||
     bindings.environment !== env.ENVIRONMENT ||
     bindings.registrationCredentialIdSha256 !==
       authentication.credentialIdSha256
@@ -436,11 +454,11 @@ export async function issueRegistrationPermit(
     bindings.verificationExpiresAt,
     authentication.expiresAt,
   );
-  if (
-    expiresAt - issuedAt < PERMIT_MIN_LIFETIME_SECONDS ||
-    expiresAt <= now
-  ) {
-    throw new ProtocolError("registration_verification_window_unavailable", 403);
+  if (expiresAt - issuedAt < PERMIT_MIN_LIFETIME_SECONDS || expiresAt <= now) {
+    throw new ProtocolError(
+      "registration_verification_window_unavailable",
+      403,
+    );
   }
   const permitIdSha256 = await derivePermitIdSha256(
     authentication.requestId,
@@ -499,8 +517,7 @@ export async function issueRegistrationPermit(
     subjectSha256,
     signatureBase64url,
   };
-  const signatureEnvelopeSha256 =
-    await permitSignatureEnvelopeSha256(envelope);
+  const signatureEnvelopeSha256 = await permitSignatureEnvelopeSha256(envelope);
   return { envelope, subjectSha256, signatureEnvelopeSha256 };
 }
 
@@ -513,18 +530,17 @@ export function parseRegistrationBindings(
     environment: requireString(value.environment, /^(?:local|staging)$/),
     action: requireLiteral(value.action, ACTION),
     authorizationIdSha256: requireSha256(value.authorizationIdSha256),
-    authorizationSubjectSha256: requireSha256(
-      value.authorizationSubjectSha256,
-    ),
+    authorizationSubjectSha256: requireSha256(value.authorizationSubjectSha256),
     authorizationSignatureEnvelopeSha256: requireSha256(
       value.authorizationSignatureEnvelopeSha256,
     ),
     actionSubjectSha256: requireSha256(value.actionSubjectSha256),
     actionDigestSha256: requireSha256(value.actionDigestSha256),
-    registrationRequestSha256: requireSha256(
-      value.registrationRequestSha256,
-    ),
+    registrationRequestSha256: requireSha256(value.registrationRequestSha256),
     adminAuditDigestSha256: requireSha256(value.adminAuditDigestSha256),
+    adminNetworkIdentityHmacSha256: requireSha256(
+      value.adminNetworkIdentityHmacSha256,
+    ),
     changeTicketSha256: requireSha256(value.changeTicketSha256),
     rootAdminId: requireInteger(value.rootAdminId, 1, MAXIMUM_SAFE_INTEGER),
     rootSessionEpoch: requireInteger(
@@ -532,16 +548,33 @@ export function parseRegistrationBindings(
       0,
       MAXIMUM_SAFE_INTEGER,
     ),
-    rootSessionBindingSha256: requireSha256(
-      value.rootSessionBindingSha256,
+    rootSessionIssuedAt: requireInteger(
+      value.rootSessionIssuedAt,
+      1,
+      MAXIMUM_SAFE_INTEGER,
     ),
+    rootSessionExpiresAt: requireInteger(
+      value.rootSessionExpiresAt,
+      1,
+      MAXIMUM_SAFE_INTEGER,
+    ),
+    rootSessionBindingSha256: requireSha256(value.rootSessionBindingSha256),
     passkeyCredentialRowId: requireInteger(
       value.passkeyCredentialRowId,
       1,
       MAXIMUM_SAFE_INTEGER,
     ),
-    passkeyCredentialIdSha256: requireSha256(
-      value.passkeyCredentialIdSha256,
+    passkeyCredentialIdSha256: requireSha256(value.passkeyCredentialIdSha256),
+    passkeyCredentialRegistrationIdSha256: requireSha256(
+      value.passkeyCredentialRegistrationIdSha256,
+    ),
+    passkeyCredentialBindingSha256: requireSha256(
+      value.passkeyCredentialBindingSha256,
+    ),
+    passkeyPreviousUseGeneration: requireInteger(
+      value.passkeyPreviousUseGeneration,
+      0,
+      MAXIMUM_PREVIOUS_USE_GENERATION,
     ),
     passkeyAssertionSubjectSha256: requireSha256(
       value.passkeyAssertionSubjectSha256,
@@ -596,8 +629,19 @@ export function parseRegistrationBindings(
     !bindings.passkeyUserPresent ||
     !bindings.passkeyUserVerified ||
     (bindings.passkeyBackupState && !bindings.passkeyBackupEligible) ||
+    bindings.rootSessionIssuedAt < bindings.rootSessionEpoch ||
+    bindings.rootSessionExpiresAt <= bindings.rootSessionIssuedAt ||
+    bindings.verifiedAt < bindings.rootSessionIssuedAt ||
+    bindings.verificationExpiresAt > bindings.rootSessionExpiresAt ||
     bindings.authorizationSubjectSha256 ===
       bindings.authorizationSignatureEnvelopeSha256 ||
+    bindings.rootSessionBindingSha256 === bindings.passkeyCredentialIdSha256 ||
+    bindings.passkeyCredentialIdSha256 ===
+      bindings.passkeyCredentialRegistrationIdSha256 ||
+    bindings.passkeyCredentialIdSha256 ===
+      bindings.passkeyCredentialBindingSha256 ||
+    bindings.passkeyCredentialRegistrationIdSha256 ===
+      bindings.passkeyCredentialBindingSha256 ||
     bindings.actionDigestSha256 === bindings.registrationRequestSha256 ||
     bindings.actionDigestSha256 === bindings.adminAuditDigestSha256 ||
     bindings.registrationRequestSha256 === bindings.adminAuditDigestSha256 ||
@@ -708,9 +752,7 @@ export async function createHmacTokenForTest(
       "HMAC",
       key,
       toArrayBuffer(
-        new TextEncoder().encode(
-          `${HMAC_DOMAIN}${headerPart}.${claimsPart}`,
-        ),
+        new TextEncoder().encode(`${HMAC_DOMAIN}${headerPart}.${claimsPart}`),
       ),
     ),
   );
@@ -734,9 +776,7 @@ async function loadSigningConfiguration(
     !IDENTIFIER.test(env.DRAIN_SOURCE_REGISTRATION_PERMIT_ISSUER) ||
     !IDENTIFIER.test(env.DRAIN_SOURCE_REGISTRATION_PERMIT_AUDIENCE) ||
     !KEY_ID.test(env.DRAIN_SOURCE_REGISTRATION_PERMIT_KEY_ID) ||
-    !SHA256.test(
-      env.DRAIN_SOURCE_REGISTRATION_PERMIT_SIGNER_IDENTITY_SHA256,
-    ) ||
+    !SHA256.test(env.DRAIN_SOURCE_REGISTRATION_PERMIT_SIGNER_IDENTITY_SHA256) ||
     !SHA256.test(env.DRAIN_SOURCE_REGISTRATION_PERMIT_SPKI_SHA256) ||
     env.DRAIN_SOURCE_REGISTRATION_PERMIT_SIGNER_IDENTITY_SHA256 ===
       env.DRAIN_SOURCE_REGISTRATION_PERMIT_SPKI_SHA256 ||
@@ -777,9 +817,7 @@ async function loadSigningConfiguration(
   const expectedSpkiSha256 = decodeSha256Hex(
     env.DRAIN_SOURCE_REGISTRATION_PERMIT_SPKI_SHA256,
   );
-  if (
-    !constantTimeEqual(await sha256Bytes(spki), expectedSpkiSha256)
-  ) {
+  if (!constantTimeEqual(await sha256Bytes(spki), expectedSpkiSha256)) {
     throw new ProtocolError("issuer_unavailable", 503);
   }
 
@@ -1065,11 +1103,7 @@ function authoritySha256(value: unknown): string {
 }
 
 function authorityInteger(value: unknown): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isSafeInteger(value) ||
-    value < 1
-  ) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
     throw new ProtocolError("invalid_authority", 403);
   }
   return value;
@@ -1100,9 +1134,7 @@ function decodeBase64Url(
   const padding = "=".repeat((4 - (value.length % 4)) % 4);
   let decoded: string;
   try {
-    decoded = atob(
-      value.replaceAll("-", "+").replaceAll("_", "/") + padding,
-    );
+    decoded = atob(value.replaceAll("-", "+").replaceAll("_", "/") + padding);
   } catch {
     throw new ProtocolError(errorCode, errorStatus);
   }
@@ -1128,10 +1160,7 @@ function decodeSha256Hex(value: string): Uint8Array {
   }
   const bytes = new Uint8Array(32);
   for (let index = 0; index < bytes.length; index += 1) {
-    bytes[index] = Number.parseInt(
-      value.slice(index * 2, index * 2 + 2),
-      16,
-    );
+    bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
   }
   return bytes;
 }

@@ -8,6 +8,7 @@ const defaultStagingDatabase = "<STAGING_D1_DATABASE_NAME>";
 const defaultArtifactDir = "artifacts/realtime-settlement-batch";
 const defaultBindingSmokeUrl = "http://127.0.0.1:8787";
 const bindingSmokePath = "/api/platform/realtime/settlement-batch/smoke";
+const protectedDrainSourceRegistrationCommandIdSha256 = "f".repeat(64);
 
 function parseArgs(argv) {
   const values = new Map();
@@ -165,7 +166,8 @@ function createSchema(db) {
       ip TEXT NOT NULL DEFAULT '',
       request_id TEXT NOT NULL DEFAULT '',
       upstream_request_id TEXT NOT NULL DEFAULT '',
-      other TEXT NOT NULL DEFAULT ''
+      other TEXT NOT NULL DEFAULT '',
+      drain_source_registration_command_id_sha256 TEXT
     );
     CREATE TABLE realtime_settlement_replays (
       replay_key TEXT PRIMARY KEY,
@@ -910,7 +912,7 @@ function buildStagingPlan(options) {
     },
     requiredBeforeRun: [
       "Confirm the target database is an isolated staging D1, not production.",
-      "Apply migrations through migrations/d1/0023_relay_billing_reservations.sql.",
+      "Apply migrations through migrations/d1/0074_relay_container_drain_source_registration_command.sql.",
       "Write each sqlArtifacts[].sql body to its sqlArtifacts[].path exactly, then review it before running.",
       "Use Wrangler SQL artifacts only for setup, verification, and cleanup; do not treat multi-statement SQL files as D1Database.batch evidence.",
       "Apply the settlement through the deployed Worker binding path, then archive Wrangler stdout/stderr, Worker smoke output, D1 row snapshots, capabilities output, and the matching git commit SHA.",
@@ -935,7 +937,7 @@ function buildStagingPlan(options) {
       "For duplicate replay, verify the Worker binding path reports replay_duplicate and no second audit row is added.",
       "For guarded-update failure, archive Worker binding error metadata plus unchanged user/token/channel rows and zero replay/log rows.",
       "For audit failure, archive Worker binding error metadata plus unchanged quota rows and zero replay/log rows.",
-      "For cleanup, archive that all smoke user/token/channel/replay/log rows are removed from staging.",
+      "For cleanup, archive that all unprotected smoke user/token/channel/replay/log rows are removed while protected drain-source command audit rows remain.",
     ],
   };
 }
@@ -986,7 +988,7 @@ function buildBindingSmokePlan(options) {
       "Deploy a staging Worker with REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true.",
       "Keep ENVIRONMENT=staging; the Worker route rejects production.",
       "Authenticate with an admin session Cookie; the tool reports only whether the Cookie is configured.",
-      "Run against an isolated staging D1 database with migrations through 0023 applied.",
+      "Run against an isolated staging D1 database with migrations through 0074 applied.",
       "Archive /api/platform/capabilities before and after the smoke run.",
     ],
     requests: options.scenarios.map((scenario) => ({
@@ -1452,7 +1454,7 @@ function buildStagingVerifySql(scenario) {
 function buildStagingCleanupSql(scenario) {
   const { userId, tokenId, channelId } = scenario.ids;
   const statements = [
-    `DELETE FROM logs WHERE request_id = ${sqlString(scenario.requestId)} OR user_id = ${userId};`,
+    `DELETE FROM logs WHERE drain_source_registration_command_id_sha256 IS NULL AND (request_id = ${sqlString(scenario.requestId)} OR user_id = ${userId});`,
     `DELETE FROM realtime_settlement_replays WHERE replay_key = ${sqlString(scenario.record.replayKey)};`,
   ];
   if (tokenId > 0) {
@@ -1525,6 +1527,7 @@ function runStagingScenarioPlanLocally(scenario) {
         scenario.applyEvidence.referenceBatchSql.includes("changes() != 1"),
       `${scenario.name} reference batch SQL should expose transaction and changes() guard shape`,
     );
+    seedProtectedStagingAudit(db, scenario);
     const cleanup = scenario.sqlArtifacts.find((artifact) => artifact.role === "cleanup");
     db.exec(cleanup.sql);
     assertStagingCleanup(db, scenario);
@@ -1533,6 +1536,7 @@ function runStagingScenarioPlanLocally(scenario) {
       expectedApplyFailure: scenario.expectedApplyFailure,
       setupArtifacts: scenario.sqlArtifacts.filter((artifact) => artifact.role !== "cleanup").length,
       hasReferenceBatchSql: true,
+      protectedAuditRetained: true,
     };
   });
 }
@@ -1626,7 +1630,8 @@ function createStagingPlanSchema(db) {
       ip TEXT NOT NULL DEFAULT '',
       request_id TEXT NOT NULL DEFAULT '',
       upstream_request_id TEXT NOT NULL DEFAULT '',
-      other TEXT NOT NULL DEFAULT ''
+      other TEXT NOT NULL DEFAULT '',
+      drain_source_registration_command_id_sha256 TEXT
     );
     CREATE TABLE realtime_settlement_replays (
       replay_key TEXT PRIMARY KEY,
@@ -1643,6 +1648,18 @@ function createStagingPlanSchema(db) {
       error TEXT NOT NULL DEFAULT ''
     );
   `);
+}
+
+function seedProtectedStagingAudit(db, scenario) {
+  db.prepare(
+    `INSERT INTO logs (
+       user_id, request_id, drain_source_registration_command_id_sha256
+     ) VALUES (?1, ?2, ?3)`,
+  ).run(
+    scenario.ids.userId,
+    scenario.requestId,
+    protectedDrainSourceRegistrationCommandIdSha256,
+  );
 }
 
 function assertStagingSetupRows(db, scenario) {
@@ -1666,7 +1683,14 @@ function assertStagingCleanup(db, scenario) {
   const counts = [
     db.prepare("SELECT COUNT(1) AS count FROM users WHERE id = ?1").get(scenario.ids.userId),
     db.prepare("SELECT COUNT(1) AS count FROM channels WHERE id = ?1").get(scenario.ids.channelId),
-    db.prepare("SELECT COUNT(1) AS count FROM logs WHERE request_id = ?1").get(scenario.requestId),
+    db
+      .prepare(
+        `SELECT COUNT(1) AS count
+         FROM logs
+         WHERE request_id = ?1
+           AND drain_source_registration_command_id_sha256 IS NULL`,
+      )
+      .get(scenario.requestId),
     db
       .prepare("SELECT COUNT(1) AS count FROM realtime_settlement_replays WHERE replay_key = ?1")
       .get(scenario.replayKey),
@@ -1676,6 +1700,15 @@ function assertStagingCleanup(db, scenario) {
   }
   const remaining = counts.reduce((sum, row) => sum + Number(row.count), 0);
   assert(remaining === 0, `${scenario.name} cleanup should remove all smoke rows`);
+  const protectedAudits = db
+    .prepare(
+      `SELECT COUNT(1) AS count
+       FROM logs
+       WHERE request_id = ?1
+         AND drain_source_registration_command_id_sha256 = ?2`,
+    )
+    .get(scenario.requestId, protectedDrainSourceRegistrationCommandIdSha256);
+  assert(Number(protectedAudits.count) === 1, `${scenario.name} cleanup should retain protected command audit rows`);
 }
 
 function reserveRealtimeResponse(db, record) {

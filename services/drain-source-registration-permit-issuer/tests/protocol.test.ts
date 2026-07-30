@@ -1,7 +1,9 @@
 import { describe, expect, test } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   ENVELOPE_CONTRACT,
   PERMITS_PATH,
+  REQUEST_FIELDS,
   SUBJECT_FIELDS,
   ProtocolError,
   canonicalJson,
@@ -16,6 +18,7 @@ import {
   verifyHmacRequest,
   type AuthorityTokenClaims,
   type IssuerEnv,
+  type RegistrationPermitBindings,
   type RegistrationPermitSubject,
 } from "../src/protocol";
 import {
@@ -40,6 +43,30 @@ import {
   fixtureSubject,
 } from "./fixtures";
 
+const CROSS_LANGUAGE_CANARY = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../tests/fixtures/drain-source-registration-permit-v1-canary.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as {
+  schemaVersion: number;
+  requestFields: string[];
+  subjectFields: string[];
+  adminNetworkIdentityHmacSha256: string;
+  spkiBase64url: string;
+  spkiSha256: string;
+  permitIdSha256: string;
+  requestBytes: number;
+  requestSha256: string;
+  subjectBytes: number;
+  subjectSha256: string;
+  signatureBase64url: string;
+  signatureEnvelopeSha256: string;
+};
+
 const EXPECTED_SUBJECT_FIELDS = [
   "schemaVersion",
   "contract",
@@ -57,12 +84,18 @@ const EXPECTED_SUBJECT_FIELDS = [
   "actionDigestSha256",
   "registrationRequestSha256",
   "adminAuditDigestSha256",
+  "adminNetworkIdentityHmacSha256",
   "changeTicketSha256",
   "rootAdminId",
   "rootSessionEpoch",
+  "rootSessionIssuedAt",
+  "rootSessionExpiresAt",
   "rootSessionBindingSha256",
   "passkeyCredentialRowId",
   "passkeyCredentialIdSha256",
+  "passkeyCredentialRegistrationIdSha256",
+  "passkeyCredentialBindingSha256",
+  "passkeyPreviousUseGeneration",
   "passkeyAssertionSubjectSha256",
   "passkeyAssertionSignatureSha256",
   "secureVerificationChallengeSha256",
@@ -84,21 +117,86 @@ const EXPECTED_SUBJECT_FIELDS = [
   "verifiedAt",
   "issuedAt",
   "expiresAt",
-];
+] as const;
+
+const EXPECTED_REQUEST_FIELDS = [
+  "environment",
+  "action",
+  "authorizationIdSha256",
+  "authorizationSubjectSha256",
+  "authorizationSignatureEnvelopeSha256",
+  "actionSubjectSha256",
+  "actionDigestSha256",
+  "registrationRequestSha256",
+  "adminAuditDigestSha256",
+  "adminNetworkIdentityHmacSha256",
+  "changeTicketSha256",
+  "rootAdminId",
+  "rootSessionEpoch",
+  "rootSessionIssuedAt",
+  "rootSessionExpiresAt",
+  "rootSessionBindingSha256",
+  "passkeyCredentialRowId",
+  "passkeyCredentialIdSha256",
+  "passkeyCredentialRegistrationIdSha256",
+  "passkeyCredentialBindingSha256",
+  "passkeyPreviousUseGeneration",
+  "passkeyAssertionSubjectSha256",
+  "passkeyAssertionSignatureSha256",
+  "secureVerificationChallengeSha256",
+  "passkeyPreviousSignCount",
+  "passkeySignCount",
+  "passkeyUserPresent",
+  "passkeyUserVerified",
+  "passkeyBackupEligible",
+  "passkeyBackupState",
+  "registeredByServiceName",
+  "registeredByVersionId",
+  "registrationExecutionIdSha256",
+  "registrationCredentialIdSha256",
+  "authorityLedgerIdentitySha256",
+  "receiptSequence",
+  "ledgerHeadBeforeSha256",
+  "verificationExpiresAt",
+  "verifiedAt",
+] as const;
+
+const ADDED_REQUEST_FIELDS = [
+  "adminNetworkIdentityHmacSha256",
+  "rootSessionIssuedAt",
+  "rootSessionExpiresAt",
+  "passkeyCredentialRegistrationIdSha256",
+  "passkeyCredentialBindingSha256",
+  "passkeyPreviousUseGeneration",
+] as const;
 
 describe("registration permit canonical protocol", () => {
   test("pins the deterministic 0x07 Ed25519 cross-language canary", async () => {
+    expect(CROSS_LANGUAGE_CANARY.schemaVersion).toBe(1);
+    expect(CROSS_LANGUAGE_CANARY.requestFields).toEqual(
+      EXPECTED_REQUEST_FIELDS,
+    );
+    expect(CROSS_LANGUAGE_CANARY.subjectFields).toEqual(
+      EXPECTED_SUBJECT_FIELDS,
+    );
     expect(SUBJECT_FIELDS).toEqual(EXPECTED_SUBJECT_FIELDS);
-    expect(SUBJECT_FIELDS).toHaveLength(43);
-    expect(TEST_SPKI_BASE64URL).toBe(
-      "MCowBQYDK2VwAyEA6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+    expect(SUBJECT_FIELDS).toHaveLength(49);
+    expect(REQUEST_FIELDS).toEqual(EXPECTED_REQUEST_FIELDS);
+    expect(REQUEST_FIELDS).toHaveLength(39);
+    expect(Object.keys(fixtureBindings()).sort()).toEqual(
+      [...EXPECTED_REQUEST_FIELDS].sort(),
     );
-    expect(TEST_SPKI_SHA256).toBe(
-      "324be2dea8bc44461b0233e51fa48902ed6b1cc671e7739af2551e0bfe68f54e",
+    expect(TEST_SPKI_BASE64URL).toBe(CROSS_LANGUAGE_CANARY.spkiBase64url);
+    expect(TEST_SPKI_SHA256).toBe(CROSS_LANGUAGE_CANARY.spkiSha256);
+    expect(fixtureBindings().adminNetworkIdentityHmacSha256).toBe(
+      CROSS_LANGUAGE_CANARY.adminNetworkIdentityHmacSha256,
     );
-    expect(fixtureBody()).toHaveLength(2_120);
+    expect(fixtureBody()).toHaveLength(CROSS_LANGUAGE_CANARY.requestBytes);
     expect(await sha256Hex(fixtureBody())).toBe(
-      FIXTURE_ISSUE_REQUEST_SHA256,
+      CROSS_LANGUAGE_CANARY.requestSha256,
+    );
+    expect(FIXTURE_ISSUE_REQUEST_SHA256).toBe(
+      CROSS_LANGUAGE_CANARY.requestSha256,
     );
 
     const authentication = await fixtureAuthentication();
@@ -110,15 +208,28 @@ describe("registration permit canonical protocol", () => {
     );
     expect(Object.keys(issued.envelope.subject)).toEqual(SUBJECT_FIELDS);
     expect(issued.envelope.subject).toEqual(await fixtureSubject());
-    expect(issued.envelope.subject.permitIdSha256).toBe(
-      FIXTURE_PERMIT_ID_SHA256,
+    expect(encodePermitSubject(issued.envelope.subject)).toHaveLength(
+      CROSS_LANGUAGE_CANARY.subjectBytes,
     );
-    expect(issued.subjectSha256).toBe(FIXTURE_SUBJECT_SHA256);
+    expect(issued.envelope.subject.permitIdSha256).toBe(
+      CROSS_LANGUAGE_CANARY.permitIdSha256,
+    );
+    expect(FIXTURE_PERMIT_ID_SHA256).toBe(CROSS_LANGUAGE_CANARY.permitIdSha256);
+    expect(issued.subjectSha256).toBe(CROSS_LANGUAGE_CANARY.subjectSha256);
+    expect(FIXTURE_SUBJECT_SHA256).toBe(CROSS_LANGUAGE_CANARY.subjectSha256);
     expect(issued.envelope.subjectSha256).toBe(FIXTURE_SUBJECT_SHA256);
     expect(issued.envelope.signatureBase64url).toBe(
-      FIXTURE_SIGNATURE_BASE64URL,
+      CROSS_LANGUAGE_CANARY.signatureBase64url,
     );
-    expect(issued.signatureEnvelopeSha256).toBe(FIXTURE_ENVELOPE_SHA256);
+    expect(FIXTURE_SIGNATURE_BASE64URL).toBe(
+      CROSS_LANGUAGE_CANARY.signatureBase64url,
+    );
+    expect(issued.signatureEnvelopeSha256).toBe(
+      CROSS_LANGUAGE_CANARY.signatureEnvelopeSha256,
+    );
+    expect(FIXTURE_ENVELOPE_SHA256).toBe(
+      CROSS_LANGUAGE_CANARY.signatureEnvelopeSha256,
+    );
     expect(await permitSubjectSha256(issued.envelope.subject)).toBe(
       FIXTURE_SUBJECT_SHA256,
     );
@@ -155,12 +266,173 @@ describe("registration permit canonical protocol", () => {
     ).toBe(true);
   });
 
-  test("every one of the 43 ordered fields changes the subject digest", async () => {
+  test("every one of the 49 ordered fields changes the subject digest", async () => {
     const subject = await fixtureSubject();
     const baseline = await permitSubjectSha256(subject);
-    for (const field of SUBJECT_FIELDS) {
+    for (const field of EXPECTED_SUBJECT_FIELDS) {
       const drifted = driftSubject(subject, field);
       expect(await permitSubjectSha256(drifted), field).not.toBe(baseline);
+    }
+  });
+
+  test("binds all six added request fields and rejects each one when missing", async () => {
+    const baseline = await sha256Hex(fixtureBody());
+    const drifts: Partial<RegistrationPermitBindings>[] = [
+      { adminNetworkIdentityHmacSha256: digest(23) },
+      { rootSessionIssuedAt: FIXTURE_NOW - 59 },
+      { rootSessionExpiresAt: FIXTURE_NOW + 299 },
+      { passkeyCredentialRegistrationIdSha256: digest(24) },
+      { passkeyCredentialBindingSha256: digest(25) },
+      { passkeyPreviousUseGeneration: 18 },
+    ];
+    for (const drift of drifts) {
+      expect(await sha256Hex(fixtureBody(fixtureBindings(drift)))).not.toBe(
+        baseline,
+      );
+    }
+
+    for (const field of ADDED_REQUEST_FIELDS) {
+      const missing: Record<string, unknown> = { ...fixtureBindings() };
+      Reflect.deleteProperty(missing, field);
+      expectProtocolError(
+        () =>
+          parseRegistrationBindings(
+            new TextEncoder().encode(canonicalJson(missing)),
+          ),
+        "invalid_fields",
+        400,
+      );
+    }
+  });
+
+  test("enforces root session time boundaries", () => {
+    const atEpoch = parseRegistrationBindings(
+      fixtureBody(
+        fixtureBindings({
+          rootSessionEpoch: FIXTURE_NOW - 60,
+          rootSessionIssuedAt: FIXTURE_NOW - 60,
+          rootSessionExpiresAt: FIXTURE_NOW + 24,
+        }),
+      ),
+    );
+    expect(atEpoch.rootSessionIssuedAt).toBe(atEpoch.rootSessionEpoch);
+    expect(atEpoch.rootSessionExpiresAt).toBe(atEpoch.verificationExpiresAt);
+
+    for (const overrides of [
+      {
+        rootSessionEpoch: FIXTURE_NOW - 59,
+        rootSessionIssuedAt: FIXTURE_NOW - 60,
+      },
+      {
+        rootSessionIssuedAt: FIXTURE_NOW - 60,
+        rootSessionExpiresAt: FIXTURE_NOW - 60,
+      },
+      {
+        rootSessionIssuedAt: FIXTURE_NOW + 1,
+        verifiedAt: FIXTURE_NOW,
+      },
+      {
+        rootSessionExpiresAt: FIXTURE_NOW + 23,
+        verificationExpiresAt: FIXTURE_NOW + 24,
+      },
+    ] satisfies Partial<RegistrationPermitBindings>[]) {
+      expectProtocolError(
+        () =>
+          parseRegistrationBindings(fixtureBody(fixtureBindings(overrides))),
+        "invalid_fields",
+        400,
+      );
+    }
+  });
+
+  test("accepts generation boundaries and rejects unsafe generations", () => {
+    for (const passkeyPreviousUseGeneration of [
+      0,
+      Number.MAX_SAFE_INTEGER - 1,
+    ]) {
+      const parsed = parseRegistrationBindings(
+        fixtureBody(fixtureBindings({ passkeyPreviousUseGeneration })),
+      );
+      expect(parsed.passkeyPreviousUseGeneration).toBe(
+        passkeyPreviousUseGeneration,
+      );
+    }
+    expectProtocolError(
+      () =>
+        parseRegistrationBindings(
+          fixtureBody(fixtureBindings({ passkeyPreviousUseGeneration: -1 })),
+        ),
+      "invalid_fields",
+      400,
+    );
+    expectProtocolError(
+      () =>
+        parseRegistrationBindings(
+          fixtureBody(
+            fixtureBindings({
+              passkeyPreviousUseGeneration: Number.MAX_SAFE_INTEGER,
+            }),
+          ),
+        ),
+      "invalid_fields",
+      400,
+    );
+    expect(() =>
+      fixtureBody(
+        fixtureBindings({
+          passkeyPreviousUseGeneration: Number.MAX_SAFE_INTEGER + 1,
+        }),
+      ),
+    ).toThrow("non_integer_number");
+  });
+
+  test("requires canonical added digests and Rust-aligned binding distinctness", () => {
+    for (const field of [
+      "adminNetworkIdentityHmacSha256",
+      "passkeyCredentialRegistrationIdSha256",
+      "passkeyCredentialBindingSha256",
+    ] as const) {
+      expectProtocolError(
+        () =>
+          parseRegistrationBindings(
+            fixtureBody(fixtureBindings({ [field]: "A".repeat(64) })),
+          ),
+        "invalid_fields",
+        400,
+      );
+    }
+
+    expectProtocolError(
+      () =>
+        parseRegistrationBindings(
+          fixtureBody(
+            fixtureBindings({ rootSessionBindingSha256: digest(11) }),
+          ),
+        ),
+      "invalid_fields",
+      400,
+    );
+
+    for (const overrides of [
+      {
+        passkeyCredentialRegistrationIdSha256:
+          fixtureBindings().passkeyCredentialIdSha256,
+      },
+      {
+        passkeyCredentialBindingSha256:
+          fixtureBindings().passkeyCredentialIdSha256,
+      },
+      {
+        passkeyCredentialBindingSha256:
+          fixtureBindings().passkeyCredentialRegistrationIdSha256,
+      },
+    ] satisfies Partial<RegistrationPermitBindings>[]) {
+      expectProtocolError(
+        () =>
+          parseRegistrationBindings(fixtureBody(fixtureBindings(overrides))),
+        "invalid_fields",
+        400,
+      );
     }
   });
 
@@ -237,16 +509,13 @@ describe("registration permit canonical protocol", () => {
       '"action":"relay_container.drain_source_authorization_register","action":"relay_container.drain_source_authorization_register",',
     );
     expectProtocolError(
-      () =>
-        parseRegistrationBindings(new TextEncoder().encode(duplicate)),
+      () => parseRegistrationBindings(new TextEncoder().encode(duplicate)),
       "non_canonical_json",
       400,
     );
     expectProtocolError(
       () =>
-        parseRegistrationBindings(
-          new TextEncoder().encode(`${canonical}\n`),
-        ),
+        parseRegistrationBindings(new TextEncoder().encode(`${canonical}\n`)),
       "non_canonical_json",
       400,
     );
@@ -351,8 +620,7 @@ describe("registration permit authority and signing", () => {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-cinatoken-drain-source-registration-issuer":
-          `${header}.${tamperedClaims}.${signature}`,
+        "x-cinatoken-drain-source-registration-issuer": `${header}.${tamperedClaims}.${signature}`,
       },
       body,
     });
@@ -621,7 +889,7 @@ async function authenticatedRequest(
 
 function driftSubject(
   subject: RegistrationPermitSubject,
-  field: (typeof SUBJECT_FIELDS)[number],
+  field: (typeof EXPECTED_SUBJECT_FIELDS)[number],
 ): RegistrationPermitSubject {
   const drifted = structuredClone(subject);
   const value = drifted[field];
@@ -630,7 +898,11 @@ function driftSubject(
   } else if (typeof value === "number") {
     Reflect.set(drifted, field, value + 1);
   } else if (/^[0-9a-f]{64}$/.test(value)) {
-    Reflect.set(drifted, field, `${value[0] === "0" ? "1" : "0"}${value.slice(1)}`);
+    Reflect.set(
+      drifted,
+      field,
+      `${value[0] === "0" ? "1" : "0"}${value.slice(1)}`,
+    );
   } else {
     Reflect.set(drifted, field, `${value}-drift`);
   }

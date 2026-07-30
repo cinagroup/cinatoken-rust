@@ -245,7 +245,7 @@ function cleanupSql(fixtureId, optionSnapshot) {
   const statements = [
     `DELETE FROM realtime_settlement_replays WHERE user_id = ${fixtureId} OR token_id = ${fixtureId} OR channel_id = ${fixtureId};`,
     `DELETE FROM realtime_billing_reservations WHERE user_id = ${fixtureId} OR token_id = ${fixtureId} OR channel_id = ${fixtureId};`,
-    `DELETE FROM logs WHERE user_id = ${fixtureId} OR token_id = ${fixtureId} OR channel_id = ${fixtureId};`,
+    `DELETE FROM logs WHERE drain_source_registration_command_id_sha256 IS NULL AND (user_id = ${fixtureId} OR token_id = ${fixtureId} OR channel_id = ${fixtureId});`,
     `DELETE FROM abilities WHERE channel_id = ${fixtureId};`,
     `DELETE FROM channels WHERE id = ${fixtureId};`,
     `DELETE FROM tokens WHERE id = ${fixtureId};`,
@@ -348,7 +348,7 @@ function runSelfTest() {
     "DELETE FROM abilities",
     "DELETE FROM realtime_settlement_replays",
     "DELETE FROM realtime_billing_reservations",
-    "DELETE FROM logs",
+    "DELETE FROM logs WHERE drain_source_registration_command_id_sha256 IS NULL",
     "DELETE FROM channels",
     "DELETE FROM tokens",
     "DELETE FROM users",

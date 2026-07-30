@@ -4915,3 +4915,85 @@ but real Workerd must prove the final trigger accounting. The private
 begin/finish coordinator follows 0074; no route, gate, isolated-staging
 deployment, remote D1 change, collector authority, or production change is
 included. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-07-30 Current/Superseding 0074 Atomic Registration Command
+
+This section preserves the preceding M1 checkpoints as history and supersedes
+their candidate-only 0074 status. The complete focused contract is
+[`relay-container-drain-registration-command.md`](relay-container-drain-registration-command.md).
+
+Application D1 candidate head is now
+`0074_relay_container_drain_source_registration_command.sql`, with 74
+migrations, 104 required tables, 1,759 checked incremental columns, and 162
+key indexes. The migration refuses to apply unless all 0073 registration,
+claim, terminal, and receipt-ledger tables are empty.
+
+The typed chain now has a 57-field action subject, 39-field permit issue
+request, and 49-field permit subject. Root session epoch/binding plus explicit
+iat/exp, immutable credential registration/ID/binding digests, previous
+credential-use generation, a domain-separated keyed network-identity HMAC,
+authenticated issuer request identity, and issuer version are bound through
+action, verified WebAuthn proof, permit, and opaque command. The trusted
+network input is parsed as `IpAddr`; plaintext IP and Root username never
+enter the immutable command/audit, whose legacy `username` and `ip` columns
+are blank. Command and receipt identities are derived under separate
+length-prefixed SHA-256 domains rather than accepted from a caller.
+The previous-use generation is capped at `Number.MAX_SAFE_INTEGER - 1` so the
+command's mandatory increment remains exactly representable, and the three
+Passkey credential identity digests are pairwise distinct in action, permit,
+issuer, and D1 validation.
+
+One top-level command `INSERT` atomically produces exactly five fresh effects:
+command, protected canonical Root audit, passkey CAS, 0073 registration, and
+registration ledger receipt. Exact replay produces zero. The independent
+`credential_use_generation` advances even when an authenticator legitimately
+reports sign count `0 -> 0`, so the fresh command consumes generation `0 -> 1`
+and replay cannot consume it again.
+
+Real Workerd now proves `5/0`, same-`first-primary`-Session readback, the
+`0/0` generation transition, replay after passkey deletion, ordinary-log
+cleanup with protected-log retention, blank username/IP privacy projection,
+five-second issuance boundaries, exact trigger closure, command/audit
+immutability, and full rollback when credential generation drifts. SQLite
+verification covers preflight, exact schema/trigger identity with an
+unknown-trigger negative, protected-audit guards, ordinary-log compatibility,
+generation enforcement, duplicate DDL, 34/36-object migration-aware 0073
+profiles, 20 cross-engine-stable 0074 SQL fingerprints, and three complete
+table PRAGMA fingerprints. The private Rust repository now implements schema
+readiness, the one 52-binding insert, trigger-aware classification, immutable
+four-part comparison plus fresh-only current-passkey comparison, 15 stable
+conflict aliases, and four-state recovery without a route. The passkey
+repository is dual-profile:
+before 0074 it uses aliased legacy reads/writes, after all four columns appear
+it uses digest/generation CAS, and any partial-column schema fails closed.
+The isolated issuer now uses the exact same 39-request/49-subject contract.
+Its 29 TypeScript tests and 7 Workerd tests share a versioned fixed-vector
+canary manifest with the Rust verifier, covering field order, canonical bytes,
+session bounds, generation bounds, digest distinctness, and IP redaction.
+The repository-root `bun run check` aggregate passes the Worker builds,
+Workerd/Vitest contracts, frontend gates, SQLite verification, complete Rust
+workspace, and required WASM target checks.
+
+This remains default-inert local evidence. A D1 Session supplies sequential
+consistency, while the one SQLite statement supplies atomicity. Batch errors,
+response loss, unexpected change counts, or readback drift remain
+`OutcomeUnknown` until same-Session command and alternate-identity readback
+classifies them; blind retry is forbidden.
+
+The private coordinator, fresh Root/session/credential/fence/head/ledger
+rereads, isolated-staging apply and fault campaigns, credential/trust
+rotation, network-HMAC key provisioning/rotation and retention/legal
+approval, load/cost/SLO/alerts, rollback, collection/claim/terminal, P5,
+billing/reconciliation, reverse sync, traffic/DNS, and approvals remain open.
+The signed chain still needs an immutable non-secret network-HMAC key
+ID/version, and the disabled local issuer remains build/test-only while the
+Application verifier is staging-only. A version-controlled, read-only-by-
+default 0074 remote preflight/apply/readback/fault-campaign evidence command is
+also absent. These are explicit production blockers.
+Rollback is disable-first,
+evidence-preserving, and repair-forward; an old direct 0073 registration
+writer or generation-unaware passkey writer must never restart after 0074.
+
+No production issuer binding, route, gate, remote migration, deployment,
+credential, traffic, or Go/VPS authority changed. Go/VPS remains authoritative
+and production remains **NO-GO**.

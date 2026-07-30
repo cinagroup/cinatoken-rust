@@ -26181,3 +26181,168 @@ Rust tests, and the portable canary.
 
 No remote Cloudflare resource, secret, D1 database, route, or deployment was
 accessed. Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 22.342 Current/Superseding 0074 Atomic Registration Command (2026-07-30)
+
+This is the current overlay for the local 0074 candidate. It preserves
+22.340-22.341 as historical decision records while superseding their
+`4/0`, 33-field issue-request, and 43-field permit-subject assumptions.
+The focused production contract is
+[`relay-container-drain-registration-command.md`](relay-container-drain-registration-command.md).
+
+### Source decisions
+
+The design retains Go/VPS role/status checks, phishing-resistant passkey
+verification, structured operation/admin/audit log shape, and mature
+transaction/CAS lessons. It does not copy generic RootAuth as sufficient
+authorization, mutation-followed-by-best-effort audit, passkey
+delete-and-create identity, process-local serialization, or external I/O
+before durable intent.
+
+From cinaVibeSDK it retains deterministic Durable Object ownership, persisted
+local supervision, disposable Containers, private binding/RPC communication,
+D1 as global truth, R2 for retained artifacts, and KV only as cache. It rejects
+modulo pool assignment, session IDs as stable shard identity, in-memory
+timers/promises, unbounded retry, best-effort shutdown as drain evidence, and
+metadata written only after Container or filesystem I/O.
+
+The resulting boundary is explicit: a Durable Object may serialize one local
+coordinator, but D1 selects the globally unique registration winner. 0074
+performs no Container, provider, deployment, billing, or traffic side effect.
+
+### Closed typed chain
+
+The action/proof/permit chain now binds explicit Root session
+`issued_at`/`expires_at`, immutable passkey registration/credential/binding
+digests, previous credential-use generation, and a domain-separated keyed
+network-identity HMAC. The trusted source must parse as `IpAddr`; plaintext IP
+and Root username are excluded from immutable persistence. The current fixed
+shapes are:
+
+```text
+action subject:       57 fields
+permit issue request: 39 fields
+permit subject:       49 fields
+```
+
+The verified permit retains the authenticated issuer request ID and issuer
+version ID. `VerifiedDrainSourceRegistrationCommand::from_verified` accepts
+only the typed action, verified WebAuthn proof, and verified permit, compares
+all shared bindings, derives `next_use_generation = previous + 1`, and derives
+the issuer-request digest, secure-verification receipt, command ID, and
+registration receipt under four separate length-prefixed SHA-256 domains.
+Caller-provided command or receipt identities are ineligible.
+
+Session epoch/binding and iat/exp are distinct. The command requires
+`session_iat < session_exp`, verification within the session, permit expiry
+within verification expiry, and D1 `unixepoch()` before both session and
+permit expiry. This remains defense in depth: the future private coordinator
+must still reread live Root/session authority before the challenge, issuer
+call, and 0074 insert.
+The previous credential-use generation is bounded to
+`0..=Number.MAX_SAFE_INTEGER - 1`, preserving an exactly representable
+mandatory increment. Credential ID, immutable registration ID, and credential
+binding digests are pairwise distinct in action, permit, issuer, and D1.
+
+### Five-effect linearization
+
+`0074_relay_container_drain_source_registration_command.sql` applies only
+while registration, claim, terminal, and receipt-ledger tables from 0073 are
+all empty. It adds immutable credential identity digests plus an independent
+`credential_use_generation`, protected audit linkage, and the append-preserved
+registration command.
+
+One top-level `INSERT` has exactly five fresh effects:
+
+1. command;
+2. canonical protected Root audit;
+3. passkey sign-count/use-generation CAS;
+4. 0073 registration; and
+5. 0073 registration ledger receipt.
+
+The replacement 0073 guard admits only the exact command-projected
+registration after the audit and credential CAS exist. Every failed guard or
+projection aborts the complete SQLite statement. Exact
+`INSERT ... SELECT ... WHERE NOT EXISTS(command_id)` replay changes zero rows.
+
+Authenticators with counters fixed at `0/0` remain valid, but they no longer
+make assertion consumption invisible. The separate generation advances
+`0 -> 1` on the fresh command while sign count remains zero; exact replay
+stays at generation 1. Any competing credential use makes the stale command
+lose its CAS and leaves no command, audit, registration, or ledger projection.
+
+### Session readback and local evidence
+
+The required D1 protocol uses one `withSession("first-primary")` Session for
+schema readiness, the single command batch, and exact readback of command,
+protected audit, optional current passkey, registration, and ledger. The Session
+provides sequential consistency, not a cross-statement transaction; atomicity
+comes from the one SQLite insert.
+
+Real Workerd now proves fresh `meta.changes=5`, replay `0`, a nonempty Session
+bookmark, joined readback, `0/0` generation advancement, exact replay after
+the passkey row is deleted, ordinary-log cleanup that preserves protected
+audit, blank username/IP privacy projection, five-second issuance boundaries,
+complete trigger closure, command and audit append preservation, and complete
+rollback after pre-command generation drift. Fresh success requires the
+current post-CAS passkey. Replay and unknown-outcome recovery compare the four
+immutable projections and do not depend on later mutable passkey state. Any
+other change count, malformed metadata, exception, timeout, unreadable result,
+partial or mismatched immutable readback, or schema drift remains
+`OutcomeUnknown`; an unknown response must be classified by same-Session
+command/alias readback before any retry.
+
+The local candidate inventory advances to 74 migrations, 104 required tables,
+1,759 checked incremental columns, and 162 key indexes. The private Rust
+repository now implements schema readiness, the one 52-binding statement,
+trigger-aware classification, immutable projection comparison plus
+fresh-only current-passkey comparison, 15 stable conflict aliases, and
+four-state recovery without a route. The migration-aware
+readiness contract retains the 34-object 0073 profile, accepts only the exact
+36-object 0074 profile after upgrade, and additionally checks 20
+cross-engine-stable 0074 SQL fingerprints plus complete PRAGMA fingerprints
+for `passkey_credentials`, `logs`, and the command table. It queries the full
+trigger closure on all three tables, so an unknown trigger fails readiness.
+The 38-test real-Workerd suite, aggregate SQLite verifier, focused Rust
+registration-chain tests, and contiguous migration-head audit pass.
+The isolated issuer additionally passes 29 TypeScript tests and 7 Workerd
+tests against the same versioned 39-request/49-subject fixed-vector manifest
+consumed by Rust. The complete Worker Rust library passes 980 tests.
+The repository-root `bun run check` aggregate also passes the Worker builds,
+Workerd/Vitest contracts, frontend gates, SQLite verification, complete Rust
+workspace, and required WASM target checks.
+
+### Preflight, rollback, and production posture
+
+Apply remains reader-first and isolated-staging-first: stop old 0073 writers,
+prove all four consumption tables empty, retain Time Travel/backup and exact
+schema evidence, and first deploy the dual-profile passkey build against the
+pre-0074 schema. That build aliases missing digest/generation fields on reads,
+uses legacy writes only when all four columns are absent, switches to
+digest/generation CAS when all four exist, and rejects partial migration.
+After every older Worker and in-flight passkey request is drained, apply 0074
+with every gate off, verify PRAGMAs/triggers and zero-row state, then run the
+fault and concurrency matrix. An old direct-registration writer or
+generation-unaware passkey writer is incompatible after 0074 and must not
+restart.
+
+Rollback is disable-first and evidence-preserving. Stop issuer/coordinator/
+registration/claim/collector/close/traffic-return/reopen authority, keep
+Go/VPS hot, classify unknown commands through first-primary readback, preserve
+all five effects, and repair forward with a new migration. There is no
+production down migration or selective deletion of protected evidence.
+
+The private coordinator, remote isolated-staging readback, concurrency and
+response-loss campaigns, credential/trust rotation, dedicated network-HMAC
+secret provisioning/rotation plus immutable non-secret key ID/version,
+retention/legal approval, load/cost/SLO/alerts, rollback rehearsal, source
+claim/terminal collection, P5, billing/reconciliation, reverse sync,
+traffic/DNS, and independent approvals remain open. No remote Cloudflare
+resource, credential, deployment, route, traffic, or Go/VPS state was changed.
+The disabled local issuer is a build/test surface only while the Application
+verifier remains staging-only. The repository also still lacks a
+version-controlled, read-only-by-default 0074 remote
+preflight/apply/readback/fault-campaign evidence command. Exact replay may
+return only the existing registration result and must never mint fresh
+downstream authority.
+Go/VPS remains authoritative and production remains **NO-GO**.

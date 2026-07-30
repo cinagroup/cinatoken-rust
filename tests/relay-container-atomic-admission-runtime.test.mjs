@@ -10,8 +10,131 @@ const reservedQuota = 125;
 const admissionScopeId =
   "53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251";
 const admissionFenceId = "6".repeat(64);
+const adminNetworkIdentityHmacSha256 = "9".repeat(64);
 const acceptedSourceSchemaSha256 =
   "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50";
+const registrationCommandSchemaFingerprints = {
+  idx_logs_drain_source_registration_command: [
+    "index",
+    "logs",
+    "da02077714ba816b35b9de20ab843b74067eb7fe04f7c15317e8e007950b42fa",
+  ],
+  idx_passkey_credentials_binding_digest: [
+    "index",
+    "passkey_credentials",
+    "5676d858402a30884a8518c43ff9c58c0e303bb9f7c9999ed0039d656d3c46b9",
+  ],
+  idx_passkey_credentials_id_digest: [
+    "index",
+    "passkey_credentials",
+    "03b39a869b2741ad025d80dab77f060808d5cb63e2f4479cafc38b2c0292fb69",
+  ],
+  idx_passkey_credentials_registration_identity: [
+    "index",
+    "passkey_credentials",
+    "571ade6b670ea940e8e4f4eb8eb7d111381dd01bc5929ed40a2678bcdd6f7273",
+  ],
+  idx_relay_container_drain_source_registration_command_audit: [
+    "index",
+    "relay_container_drain_source_registration_commands",
+    "4690b8cc0e32349c85873f79ecb4d0868997eb424c28e6a0e7d5449b37291264",
+  ],
+  idx_relay_container_drain_source_registration_command_expiry: [
+    "index",
+    "relay_container_drain_source_registration_commands",
+    "1a64f18dc506738bf3765957fa362598bf35120b9601b38fcec61b3ea1264ab4",
+  ],
+  relay_container_drain_source_registration_commands: [
+    "table",
+    "relay_container_drain_source_registration_commands",
+    "5714a9b679bc8a7a885d2d5935020c065d4df35cfb4060ce55f4cd7ce6e781d4",
+  ],
+  passkey_credential_identity_backfill_guard: [
+    "trigger",
+    "passkey_credentials",
+    "ed2c7bd2f4ce0a11f20e2f689c919bc4207f780b2e86fa1f401d34884a50549a",
+  ],
+  passkey_credential_identity_insert_guard: [
+    "trigger",
+    "passkey_credentials",
+    "47e52695168b82b8a82ad7712d88bce373d37080401748d9990b24a6af9bca0e",
+  ],
+  passkey_credential_immutable_identity_update_guard: [
+    "trigger",
+    "passkey_credentials",
+    "17bbb7630833439ba8de04576d7c55cb5be7f6da28ec70962d0c53bd603a17c3",
+  ],
+  passkey_credential_use_generation_update_guard: [
+    "trigger",
+    "passkey_credentials",
+    "8b00aa5704a7248c0b0a6655fa28bed5ca1038919ed2fe0d5fe89e05440445be",
+  ],
+  relay_container_drain_source_protected_audit_delete_guard: [
+    "trigger",
+    "logs",
+    "34186e4c9d92c84189c67c21275acd3ccd050b756d7700a0ccbcaaf705f2fa62",
+  ],
+  relay_container_drain_source_protected_audit_insert_guard: [
+    "trigger",
+    "logs",
+    "80002bdf1be4f98e12292ee19ca89c4f3fa00be350a406db7876288ceb88bc2b",
+  ],
+  relay_container_drain_source_protected_audit_update_guard: [
+    "trigger",
+    "logs",
+    "ef1b1ce8929916da99cee8d9b07339a1883a8c3758fc93db322dc385914d692d",
+  ],
+  relay_container_drain_source_registration_command_delete_guard: [
+    "trigger",
+    "relay_container_drain_source_registration_commands",
+    "df11cfbecb1def93427d39ede115b601101fb40d2b2519ebfd51d1a363a2dfd7",
+  ],
+  relay_container_drain_source_registration_command_insert_guard: [
+    "trigger",
+    "relay_container_drain_source_registration_commands",
+    "0e37e8ebdc604f2c50513f90f5637274d78ad21fc88901592cc9d14bb2b69e0a",
+  ],
+  relay_container_drain_source_registration_command_project: [
+    "trigger",
+    "relay_container_drain_source_registration_commands",
+    "717871d2996d7bdf4e20c57714b73e82c30488b3ee5d84a66522b13e9318b1ef",
+  ],
+  relay_container_drain_source_registration_command_update_guard: [
+    "trigger",
+    "relay_container_drain_source_registration_commands",
+    "b2ddec84c35b3987bf3926292f11bc5674e2ca58cd702b74376bd3c09bcf688d",
+  ],
+  relay_container_drain_source_registration_insert_guard: [
+    "trigger",
+    "relay_container_drain_source_authorization_registrations",
+    "763f037f27d5c0b11b72d6038023da6b61b8d41cc03bbb3fd15479e599f6301a",
+  ],
+  relay_http_stream_finalization_receipt_insert_guard: [
+    "trigger",
+    "relay_http_stream_finalization_receipts",
+    "daf99a58d1117104837522b77b8d3d4c756f78b1620b6a9b6fbe3203dccf4285",
+  ],
+};
+const registrationCommandTablePragmaFingerprints = {
+  passkey_credentials: [
+    "ed02bf6a4201a72ec36b770c79da702452221bc3e98606644c86290116fd1944",
+    "852e20fd9be21365ed994e250ebf0949aba6f4f9e098bbfe636cefcea2976d72",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "204ddff831f5892892bd9d69f4079bbf931920a8dd215558d736897c659bfbc2",
+  ],
+  logs: [
+    "ffa8e3796e62b97ef82b02f741ade70b30d03b4a4187c6731081af0266945669",
+    "0f87ef441ff5bda8b94bc2f8b6d85b63acc3fa77233cda0dc230fd9265e7fef7",
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "204ddff831f5892892bd9d69f4079bbf931920a8dd215558d736897c659bfbc2",
+  ],
+  relay_container_drain_source_registration_commands: [
+    "ddfa649e511ad7f53fb1d1999e7c238f9375e7508b199080569c922a58e180b2",
+    "8bcca0df93ea76773fb9e82e9546d7c7ead70e3f41f9862a050ef0be6f4bc7f7",
+    "57d19b655eb652a57565e9c1ea2564b4c689570423e02d1b7cde326a3b8f8b9d",
+    "77d96cd88a8df7edce85264931b93811ea597fcf2529f682be0c687122d241e3",
+  ],
+};
 
 beforeEach(async () => {
   await applyD1Migrations(env.DB, env.TEST_D1_MIGRATIONS);
@@ -276,6 +399,409 @@ describe("migration 0050 atomic relay Container admission", () => {
     await expect(sourceTerminalStatement(source).run()).rejects.toThrow(
       /successful drain source receipt requires exact unsealed attestations/,
     );
+  });
+
+  it("pins the 0074 schema and PRAGMA contracts in Workerd", async () => {
+    const objectNames = Object.keys(registrationCommandSchemaFingerprints);
+    const placeholders = objectNames
+      .map((_, index) => `?${index + 1}`)
+      .join(", ");
+    const objects = await env.DB.prepare(
+      `SELECT type, name, tbl_name AS table_name, sql
+       FROM sqlite_master
+       WHERE sql IS NOT NULL
+         AND name IN (${placeholders})
+       ORDER BY type, name`,
+    )
+      .bind(...objectNames)
+      .all();
+    expect(objects.results).toHaveLength(20);
+    for (const object of objects.results) {
+      const expected = registrationCommandSchemaFingerprints[object.name];
+      expect(expected, `unexpected 0074 object ${object.name}`).toBeDefined();
+      expect([object.type, object.table_name]).toEqual(expected.slice(0, 2));
+      await expect(
+        sha256Text(object.sql.trim().split(/\s+/u).join(" ")),
+      ).resolves.toBe(expected[2]);
+    }
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM sqlite_master
+         WHERE name IN (
+           'relay_container_drain_source_registration_command_preflight',
+           'relay_container_drain_source_registration_command_preflight_guard'
+         )`,
+      ).first(),
+    ).resolves.toEqual({ count: 0 });
+
+    for (const [tableName, expected] of Object.entries(
+      registrationCommandTablePragmaFingerprints,
+    )) {
+      const contracts = await registrationCommandPragmaContracts(tableName);
+      const actual = await Promise.all(
+        [
+          contracts.columns_contract,
+          contracts.indexes_contract,
+          contracts.foreign_keys_contract,
+          contracts.table_flags_contract,
+        ].map(sha256Text),
+      );
+      expect(actual, `0074 PRAGMA drift for ${tableName}`).toEqual(expected);
+    }
+
+    const triggerClosureTables = new Set([
+      "logs",
+      "passkey_credentials",
+      "relay_container_drain_source_registration_commands",
+    ]);
+    const expectedTriggerClosure = Object.entries(
+      registrationCommandSchemaFingerprints,
+    )
+      .filter(([, [type, tableName]]) => {
+        return type === "trigger" && triggerClosureTables.has(tableName);
+      })
+      .map(([name]) => name)
+      .sort();
+    const readTriggerClosure = async () => {
+      const result = await env.DB.prepare(
+        `SELECT name
+         FROM sqlite_master
+         WHERE type = 'trigger'
+           AND tbl_name IN (
+             'logs',
+             'passkey_credentials',
+             'relay_container_drain_source_registration_commands'
+           )
+         ORDER BY name`,
+      ).all();
+      return result.results.map(({ name }) => name);
+    };
+    await expect(readTriggerClosure()).resolves.toEqual(
+      expectedTriggerClosure,
+    );
+    await env.DB.prepare(
+      `CREATE TRIGGER unexpected_registration_command_trigger
+       BEFORE INSERT ON logs
+       BEGIN
+         SELECT 1;
+       END`,
+    ).run();
+    await expect(readTriggerClosure()).resolves.not.toEqual(
+      expectedTriggerClosure,
+    );
+    await env.DB.prepare(
+      "DROP TRIGGER unexpected_registration_command_trigger",
+    ).run();
+    await expect(readTriggerClosure()).resolves.toEqual(
+      expectedTriggerClosure,
+    );
+  });
+
+  it("accepts the maximum five-second registration permit issuance skew", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet(
+      "drain-source-registration-five-second-skew",
+      [3],
+    );
+    let fresh;
+    await prepareAcceptedSource([intent], {
+      pageSize: 1,
+      includeClaim: false,
+      collectSource: false,
+      registerAuthorization: async (candidate) => {
+        candidate.registrationPermitIssuedAt = candidate.verifiedAt + 5;
+        fresh = await sourceRegistrationCommandStatement(env.DB, candidate).run();
+      },
+    });
+    expect(fresh?.success).toBe(true);
+    expect(fresh?.meta.changes).toBe(5);
+  });
+
+  it("rejects registration permit issuance more than five seconds after verification", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet(
+      "drain-source-registration-six-second-skew",
+      [3],
+    );
+    let source;
+    await prepareAcceptedSource([intent], {
+      pageSize: 1,
+      includeClaim: false,
+      collectSource: false,
+      registerAuthorization: async (candidate) => {
+        source = candidate;
+        candidate.registrationPermitIssuedAt = candidate.verifiedAt + 6;
+        await expect(
+          sourceRegistrationCommandStatement(env.DB, candidate).run(),
+        ).rejects.toThrow(/CHECK constraint failed/);
+      },
+    });
+    expect(source).toBeDefined();
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM relay_container_drain_source_registration_commands
+         WHERE command_id_sha256 = ?1`,
+      )
+        .bind(source.commandIdSha256)
+        .first(),
+    ).resolves.toEqual({ count: 0 });
+  });
+
+  it("atomically registers a 0/0 Passkey command as five fresh changes and zero on replay", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet(
+      "drain-source-registration-command",
+      [3],
+    );
+    const session = env.DB.withSession("first-primary");
+    let registrationCandidate;
+    const source = await prepareAcceptedSource([intent], {
+      pageSize: 1,
+      includeClaim: false,
+      collectSource: false,
+      registerAuthorization: async (candidate) => {
+        registrationCandidate = candidate;
+        const fresh = await session.batch([
+          sourceRegistrationCommandStatement(session, candidate),
+        ]);
+        expect(fresh).toHaveLength(1);
+        expect(fresh[0].success).toBe(true);
+        expect(fresh[0].meta.changes).toBe(5);
+        expect(session.getBookmark()).toEqual(expect.any(String));
+
+        const replay = await session.batch([
+          sourceRegistrationCommandStatement(session, candidate),
+        ]);
+        expect(replay).toHaveLength(1);
+        expect(replay[0].success).toBe(true);
+        expect(replay[0].meta.changes).toBe(0);
+        expect(session.getBookmark()).toEqual(expect.any(String));
+      },
+    });
+
+    await expect(
+      session
+        .prepare(
+          `SELECT command.command_id_sha256,
+                  command.permit_id_sha256,
+                  command.passkey_previous_use_generation,
+                  command.passkey_next_use_generation,
+                  command.passkey_previous_sign_count,
+                  command.passkey_sign_count,
+                  command.admin_network_identity_hmac_sha256,
+                  audit.request_id AS audit_request_id,
+                  audit.username AS audit_username,
+                  audit.ip AS audit_ip,
+                  passkey.credential_use_generation,
+                  passkey.sign_count,
+                  registration.registration_receipt_sha256,
+                  ledger.receipt_digest_sha256 AS ledger_receipt_sha256
+           FROM relay_container_drain_source_registration_commands AS command
+           JOIN logs AS audit
+             ON audit.drain_source_registration_command_id_sha256 =
+                  command.command_id_sha256
+           JOIN passkey_credentials AS passkey
+             ON passkey.id = command.passkey_credential_row_id
+           JOIN relay_container_drain_source_authorization_registrations
+                AS registration
+             ON registration.authorization_id_sha256 =
+                  command.authorization_id_sha256
+           JOIN relay_container_drain_source_receipt_ledger AS ledger
+             ON ledger.authorization_id_sha256 =
+                  command.authorization_id_sha256
+            AND ledger.event_kind = 'registration'
+           WHERE command.command_id_sha256 = ?1`,
+        )
+        .bind(source.commandIdSha256)
+        .first(),
+    ).resolves.toEqual({
+      command_id_sha256: source.commandIdSha256,
+      permit_id_sha256: source.permitIdSha256,
+      passkey_previous_use_generation: 0,
+      passkey_next_use_generation: 1,
+      passkey_previous_sign_count: 0,
+      passkey_sign_count: 0,
+      admin_network_identity_hmac_sha256: adminNetworkIdentityHmacSha256,
+      audit_request_id: source.adminAuditDigestSha256,
+      audit_username: "",
+      audit_ip: "",
+      credential_use_generation: 1,
+      sign_count: 0,
+      registration_receipt_sha256: source.registrationReceiptSha256,
+      ledger_receipt_sha256: source.registrationReceiptSha256,
+    });
+    const protectedAudit = await env.DB.prepare(
+      `SELECT other
+       FROM logs
+       WHERE drain_source_registration_command_id_sha256 = ?1`,
+    )
+      .bind(source.commandIdSha256)
+      .first();
+    const protectedAuditOther = JSON.parse(protectedAudit.other);
+    expect(
+      protectedAuditOther.op.params.admin_network_identity_hmac_sha256,
+    ).toBe(adminNetworkIdentityHmacSha256);
+    expect(protectedAuditOther.admin_info.admin_username).toBe("");
+    expect(protectedAudit.other).not.toContain("root-runtime-42");
+    expect(protectedAudit.other).not.toContain("192.0.2.");
+    expect(protectedAudit.other).not.toContain("203.0.113.");
+
+    await expect(
+      env.DB.prepare(
+        `UPDATE relay_container_drain_source_registration_commands
+         SET reason_code = reason_code
+         WHERE command_id_sha256 = ?1`,
+      )
+        .bind(source.commandIdSha256)
+        .run(),
+    ).rejects.toThrow(/registration commands are immutable/);
+    await expect(
+      env.DB.prepare(
+        `DELETE FROM logs
+         WHERE drain_source_registration_command_id_sha256 = ?1`,
+      )
+        .bind(source.commandIdSha256)
+        .run(),
+    ).rejects.toThrow(/protected audits are append-preserved/);
+
+    await env.DB.prepare(
+      `INSERT INTO logs (created_at, content, request_id)
+       VALUES (1, 'ordinary retention fixture', 'ordinary-retention-fixture')`,
+    ).run();
+    const retention = await env.DB.prepare(
+      `DELETE FROM logs
+       WHERE created_at < 4000000000
+         AND drain_source_registration_command_id_sha256 IS NULL`,
+    ).run();
+    expect(retention.success).toBe(true);
+    expect(retention.meta.changes).toBeGreaterThanOrEqual(1);
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*)
+            FROM logs
+            WHERE request_id = 'ordinary-retention-fixture') AS ordinary_logs,
+           (SELECT COUNT(*)
+            FROM logs
+            WHERE drain_source_registration_command_id_sha256 = ?1)
+             AS protected_logs`,
+      )
+        .bind(source.commandIdSha256)
+        .first(),
+    ).resolves.toEqual({ ordinary_logs: 0, protected_logs: 1 });
+
+    expect(registrationCandidate).toBeDefined();
+    await env.DB.prepare(
+      `DELETE FROM passkey_credentials
+       WHERE id = ?1`,
+    )
+      .bind(source.passkeyCredentialRowId)
+      .run();
+    const replayAfterPasskeyDeletion = await session.batch([
+      sourceRegistrationCommandStatement(session, registrationCandidate),
+    ]);
+    expect(replayAfterPasskeyDeletion).toHaveLength(1);
+    expect(replayAfterPasskeyDeletion[0].success).toBe(true);
+    expect(replayAfterPasskeyDeletion[0].meta.changes).toBe(0);
+    await expect(
+      session
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*)
+              FROM relay_container_drain_source_registration_commands
+              WHERE command_id_sha256 = ?1) AS commands,
+             (SELECT COUNT(*)
+              FROM logs
+              WHERE drain_source_registration_command_id_sha256 = ?1) AS audits,
+             (SELECT COUNT(*)
+              FROM relay_container_drain_source_authorization_registrations
+              WHERE authorization_id_sha256 = ?2) AS registrations,
+             (SELECT COUNT(*)
+              FROM relay_container_drain_source_receipt_ledger
+              WHERE authorization_id_sha256 = ?2
+                AND event_kind = 'registration') AS ledger_rows,
+             (SELECT COUNT(*)
+              FROM passkey_credentials
+              WHERE id = ?3) AS passkeys`,
+        )
+        .bind(
+          source.commandIdSha256,
+          source.authorizationIdSha256,
+          source.passkeyCredentialRowId,
+        )
+        .first(),
+    ).resolves.toEqual({
+      commands: 1,
+      audits: 1,
+      registrations: 1,
+      ledger_rows: 1,
+      passkeys: 0,
+    });
+  });
+
+  it("rolls every 0074 projection back when the Passkey generation drifts", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet(
+      "drain-source-registration-generation-drift",
+      [3],
+    );
+    let attempted;
+    const source = await prepareAcceptedSource([intent], {
+      pageSize: 1,
+      includeClaim: false,
+      collectSource: false,
+      registerAuthorization: async (candidate) => {
+        await env.DB.prepare(
+          `UPDATE passkey_credentials
+           SET credential_use_generation = credential_use_generation + 1,
+               last_used_at = last_used_at + 1,
+               updated_at = updated_at + 1
+           WHERE id = ?1`,
+        )
+          .bind(candidate.passkeyCredentialRowId)
+          .run();
+        attempted = sourceRegistrationCommandStatement(env.DB, candidate).run();
+        await expect(attempted).rejects.toThrow(
+          /registration command lost Root or passkey state/,
+        );
+      },
+    });
+    expect(attempted).toBeDefined();
+
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*)
+            FROM relay_container_drain_source_registration_commands
+            WHERE authorization_id_sha256 = ?1) AS commands,
+           (SELECT COUNT(*)
+            FROM logs
+            WHERE drain_source_registration_command_id_sha256 = ?2) AS audits,
+           (SELECT COUNT(*)
+            FROM relay_container_drain_source_authorization_registrations
+            WHERE authorization_id_sha256 = ?1) AS registrations,
+           (SELECT COUNT(*)
+            FROM relay_container_drain_source_receipt_ledger
+            WHERE authorization_id_sha256 = ?1) AS ledger_rows,
+           (SELECT credential_use_generation
+            FROM passkey_credentials
+            WHERE id = ?3) AS credential_use_generation`,
+      )
+        .bind(
+          source.authorizationIdSha256,
+          source.commandIdSha256,
+          source.passkeyCredentialRowId,
+        )
+        .first(),
+    ).resolves.toEqual({
+      commands: 0,
+      audits: 0,
+      registrations: 0,
+      ledger_rows: 0,
+      credential_use_generation: 1,
+    });
   });
 
   it("reports trigger-aware fresh and replay changes through first-primary Session batches", async () => {
@@ -1764,6 +2290,7 @@ async function prepareAcceptedSource(
     omittedPageOrdinals = [],
     omittedShardIndexes = [],
     includeClaim = true,
+    registerAuthorization = null,
     claimAuthorization = null,
     collectSource = true,
   },
@@ -1811,7 +2338,17 @@ async function prepareAcceptedSource(
     rootSessionEpoch: 7,
     passkeyCredentialRowId: 42073,
     rootSessionBindingSha256: await digest("root-session-binding"),
+    passkeyCredentialRegistrationIdSha256: await digest(
+      "passkey-credential-registration",
+    ),
     passkeyCredentialIdSha256: await digest("passkey-credential"),
+    passkeyCredentialBindingSha256: await digest(
+      "passkey-credential-binding",
+    ),
+    passkeyPreviousUseGeneration: 0,
+    passkeyNextUseGeneration: 1,
+    passkeyPreviousSignCount: 0,
+    passkeySignCount: 0,
     passkeyAssertionSubjectSha256: await digest("passkey-assertion-subject"),
     passkeyAssertionSignatureSha256: await digest(
       "passkey-assertion-signature",
@@ -1822,6 +2359,18 @@ async function prepareAcceptedSource(
     secureVerificationReceiptSha256: await digest(
       "secure-verification-receipt",
     ),
+    commandIdSha256: await digest("registration-command"),
+    permitIdSha256: await digest("registration-permit"),
+    permitSubjectSha256: await digest("registration-permit-subject"),
+    permitSignatureEnvelopeSha256: await digest(
+      "registration-permit-envelope",
+    ),
+    issuerRequestIdSha256: await digest("registration-issuer-request"),
+    permitSignerIdentitySha256: await digest(
+      "registration-permit-signer-identity",
+    ),
+    permitSignerSpkiSha256: await digest("registration-permit-signer-spki"),
+    actionSubjectSha256: await digest("registration-action-subject"),
     actionDigestSha256: await digest("registration-action"),
     adminAuditDigestSha256: await digest("admin-audit"),
     changeTicketSha256: await digest("change-ticket"),
@@ -1863,6 +2412,8 @@ async function prepareAcceptedSource(
     collectorCredentialIdSha256: await digest("collector-credential"),
     permitIssuedAt: d1Clock.now,
     permitExpiresAt: d1Clock.now + 300,
+    rootSessionIssuedAt: d1Clock.now - 60,
+    rootSessionExpiresAt: d1Clock.now + 600,
     claimLeaseExpiresAt: d1Clock.now + 240,
   };
 
@@ -1878,17 +2429,23 @@ async function prepareAcceptedSource(
   await env.DB.prepare(
     `INSERT INTO passkey_credentials (
        id, user_id, credential_id, public_key, clone_warning,
-       user_present, user_verified, last_used_at, created_at, updated_at
-     ) VALUES (
-       ?1, ?2, 'base64url-runtime-passkey-0073',
-       'base64url-runtime-public-key-0073', 0, 1, 1, ?3, ?4, ?3
-     )`,
+       user_present, user_verified, last_used_at, created_at, updated_at,
+       credential_registration_id_sha256, credential_id_sha256,
+       credential_binding_sha256, credential_use_generation
+      ) VALUES (
+        ?1, ?2, 'base64url-runtime-passkey-0073',
+        'base64url-runtime-public-key-0073', 0, 1, 1, ?3, ?4, ?3,
+        ?5, ?6, ?7, 0
+      )`,
   )
     .bind(
       source.passkeyCredentialRowId,
       source.rootAdminId,
       source.permitIssuedAt,
       source.permitIssuedAt - 100,
+      source.passkeyCredentialRegistrationIdSha256,
+      source.passkeyCredentialIdSha256,
+      source.passkeyCredentialBindingSha256,
     )
     .run();
 
@@ -1940,85 +2497,6 @@ async function prepareAcceptedSource(
       source.permitExpiresAt,
       source.rootAdminId,
     );
-  const auditStatement = env.DB.prepare(
-    `INSERT INTO logs (
-       user_id, created_at, type, content, username, ip, request_id, other
-     ) VALUES (
-       ?1, unixepoch(), 3,
-       'registered runtime drain source authorization',
-       'root-runtime-42', '192.0.2.73', ?2, ?3
-     )`,
-  ).bind(
-    source.rootAdminId,
-    source.adminAuditDigestSha256,
-    JSON.stringify({
-      op: {
-        action: "relay_container.drain_source_authorization_register",
-        params: {
-          authorization_id_sha256: source.authorizationIdSha256,
-          action_digest_sha256: source.actionDigestSha256,
-        },
-      },
-      admin_info: {
-        admin_id: source.rootAdminId,
-        admin_username: "root-runtime-42",
-        admin_role: 100,
-        auth_method: "passkey",
-      },
-    }),
-  );
-  const registrationStatement = env.DB.prepare(
-    `INSERT INTO relay_container_drain_source_authorization_registrations (
-       authorization_id_sha256, contract_version,
-       registration_contract, registration_migration,
-       environment, scope_kind, scope_id_sha256, source_scan_id_sha256,
-       root_admin_id, root_session_epoch, root_session_binding_sha256,
-       passkey_credential_row_id, passkey_credential_id_sha256,
-       passkey_assertion_subject_sha256,
-       passkey_assertion_signature_sha256,
-       secure_verification_challenge_sha256,
-       secure_verification_receipt_sha256, action_digest_sha256,
-       admin_audit_digest_sha256, change_ticket_sha256, reason_code,
-       registered_by_service_name, registered_by_version_id,
-       registration_execution_id_sha256,
-       registration_credential_id_sha256,
-       registration_request_sha256, authority_ledger_identity_sha256,
-       receipt_sequence, ledger_head_before_sha256,
-       registration_receipt_sha256, verified_at,
-       verification_expires_at
-     ) VALUES (
-       ?1, 1,
-       'relay-container-drain-source-authorization-registration-v1',
-       '0073_relay_container_drain_source_authorization_consumption.sql',
-       'staging', 'global', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-       ?11, ?12, ?13, ?14, ?15, 'runtime-source-collection',
-       'cinatoken-application-worker', 'runtime-test-v1', ?16, ?17,
-       ?18, ?2, 1, ?19, ?20, ?21, ?22
-     )`,
-  ).bind(
-    source.authorizationIdSha256,
-    admissionScopeId,
-    source.sourceScanIdSha256,
-    source.rootAdminId,
-    source.rootSessionEpoch,
-    source.rootSessionBindingSha256,
-    source.passkeyCredentialRowId,
-    source.passkeyCredentialIdSha256,
-    source.passkeyAssertionSubjectSha256,
-    source.passkeyAssertionSignatureSha256,
-    source.secureVerificationChallengeSha256,
-    source.secureVerificationReceiptSha256,
-    source.actionDigestSha256,
-    source.adminAuditDigestSha256,
-    source.changeTicketSha256,
-    source.registrationExecutionIdSha256,
-    source.registrationCredentialIdSha256,
-    source.registrationRequestSha256,
-    hex("8"),
-    source.registrationReceiptSha256,
-    source.permitIssuedAt,
-    source.permitIssuedAt + 120,
-  );
   const claimStatement = env.DB.prepare(
     `INSERT INTO relay_container_drain_source_authorization_claims (
        authorization_id_sha256, contract_version, claim_contract,
@@ -2047,12 +2525,27 @@ async function prepareAcceptedSource(
     source.collectorCredentialIdSha256,
     source.claimLeaseExpiresAt,
   );
-  await env.DB.batch([
-    authorizationStatement,
-    auditStatement,
-    registrationStatement,
-    ...(includeClaim ? [claimStatement] : []),
-  ]);
+  await authorizationStatement.run();
+  const verificationClock = await env.DB.prepare(
+    "SELECT unixepoch() AS now",
+  ).first();
+  source.verifiedAt = verificationClock.now;
+  source.registrationPermitIssuedAt = verificationClock.now;
+  source.registrationPermitExpiresAt = verificationClock.now + 30;
+  source.verificationExpiresAt = verificationClock.now + 120;
+
+  if (registerAuthorization === null) {
+    const registrationResult =
+      await sourceRegistrationCommandStatement(env.DB, source).run();
+    expect(registrationResult.success).toBe(true);
+    expect(registrationResult.meta.changes).toBe(5);
+  } else {
+    await registerAuthorization(source);
+  }
+
+  if (includeClaim) {
+    await claimStatement.run();
+  }
   if (claimAuthorization !== null) {
     await claimAuthorization(source);
   }
@@ -2419,6 +2912,107 @@ function sourceTerminalStatement(source, overrides = {}) {
     source.terminalObservationSha256,
     source.terminalReceiptSha256,
   );
+}
+
+function sourceRegistrationCommandStatement(database, source) {
+  return database
+    .prepare(
+      `INSERT INTO relay_container_drain_source_registration_commands (
+         command_id_sha256, contract_version, command_contract,
+         command_migration, action, environment,
+         authorization_id_sha256, permit_id_sha256,
+         permit_subject_sha256, permit_signature_envelope_sha256,
+         issuer_request_id_sha256, issuer_version_id, permit_issuer,
+         permit_key_id, permit_signer_identity_sha256,
+         permit_signer_spki_sha256, action_subject_sha256,
+         action_digest_sha256, registration_request_sha256,
+         admin_audit_digest_sha256, change_ticket_sha256, reason_code,
+         admin_network_identity_hmac_sha256, root_admin_id,
+         root_session_epoch,
+         root_session_binding_sha256, root_session_issued_at,
+         root_session_expires_at, passkey_credential_row_id,
+         passkey_credential_registration_id_sha256,
+         passkey_credential_id_sha256,
+         passkey_credential_binding_sha256,
+         passkey_previous_use_generation, passkey_next_use_generation,
+         passkey_assertion_subject_sha256,
+         passkey_assertion_signature_sha256,
+         secure_verification_challenge_sha256,
+         passkey_previous_sign_count, passkey_sign_count,
+         passkey_user_present, passkey_user_verified,
+         passkey_backup_eligible, passkey_backup_state,
+         registered_by_service_name, registered_by_version_id,
+         registration_execution_id_sha256,
+         registration_credential_id_sha256,
+         authority_ledger_identity_sha256, receipt_sequence,
+         ledger_head_before_sha256, verification_expires_at,
+         verified_at, permit_issued_at, permit_expires_at,
+         secure_verification_receipt_sha256,
+         registration_receipt_sha256
+       )
+       SELECT
+         ?1, 1, 'relay-container-drain-source-registration-command-v1',
+         '0074_relay_container_drain_source_registration_command.sql',
+         'relay_container.drain_source_authorization_register',
+         'staging', ?2, ?3, ?4, ?5, ?6,
+         'issuer-runtime-v1',
+         'cinatoken-drain-source-registration-permit-issuer',
+         'registration-permit-key-v1', ?7, ?8, ?9, ?10, ?11, ?12,
+         ?13, 'runtime-source-collection',
+         '${adminNetworkIdentityHmacSha256}', ?14, ?15,
+         ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26,
+         ?27, ?28, ?29, 1, 1, ?30, ?31,
+         'cinatoken-application-worker', 'runtime-test-v1', ?32, ?33,
+         ?34, 1, ?35, ?36, ?37, ?38, ?39, ?40, ?41
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM relay_container_drain_source_registration_commands AS existing
+         WHERE existing.command_id_sha256 = ?1
+       )`,
+    )
+    .bind(
+      source.commandIdSha256,
+      source.authorizationIdSha256,
+      source.permitIdSha256,
+      source.permitSubjectSha256,
+      source.permitSignatureEnvelopeSha256,
+      source.issuerRequestIdSha256,
+      source.permitSignerIdentitySha256,
+      source.permitSignerSpkiSha256,
+      source.actionSubjectSha256,
+      source.actionDigestSha256,
+      source.registrationRequestSha256,
+      source.adminAuditDigestSha256,
+      source.changeTicketSha256,
+      source.rootAdminId,
+      source.rootSessionEpoch,
+      source.rootSessionBindingSha256,
+      source.rootSessionIssuedAt,
+      source.rootSessionExpiresAt,
+      source.passkeyCredentialRowId,
+      source.passkeyCredentialRegistrationIdSha256,
+      source.passkeyCredentialIdSha256,
+      source.passkeyCredentialBindingSha256,
+      source.passkeyPreviousUseGeneration,
+      source.passkeyNextUseGeneration,
+      source.passkeyAssertionSubjectSha256,
+      source.passkeyAssertionSignatureSha256,
+      source.secureVerificationChallengeSha256,
+      source.passkeyPreviousSignCount,
+      source.passkeySignCount,
+      0,
+      0,
+      source.registrationExecutionIdSha256,
+      source.registrationCredentialIdSha256,
+      admissionScopeId,
+      hex("8"),
+      source.verificationExpiresAt,
+      source.verifiedAt,
+      source.registrationPermitIssuedAt,
+      source.registrationPermitExpiresAt,
+      source.secureVerificationReceiptSha256,
+      source.registrationReceiptSha256,
+    );
 }
 
 function sourceClaimRepositoryStatement(session, source, leaseSeconds = 240) {
@@ -3237,6 +3831,77 @@ async function relayContainerAdmissionCommitSha256(intent) {
     offset += value.byteLength;
   }
   return sha256Bytes(encoded);
+}
+
+async function registrationCommandPragmaContracts(tableName) {
+  return env.DB.prepare(
+    `SELECT
+       COALESCE((SELECT group_concat(entry, '|') FROM (
+          SELECT printf(
+            '%d:%s:%s:%d:%s:%d:%d',
+            cid,
+            hex(CAST(name AS BLOB)),
+            hex(CAST(type AS BLOB)),
+            "notnull",
+            COALESCE(hex(CAST(dflt_value AS BLOB)), '-'),
+            pk,
+            hidden
+          ) AS entry
+          FROM pragma_table_xinfo(?1)
+          ORDER BY cid
+        )), '') AS columns_contract,
+       COALESCE((SELECT group_concat(entry, '|') FROM (
+          SELECT printf(
+            '%d:%s:%d:%s:%d:%s',
+            il.seq,
+            hex(CAST(il.name AS BLOB)),
+            il."unique",
+            hex(CAST(il.origin AS BLOB)),
+            il.partial,
+            (SELECT group_concat(xentry, ',') FROM (
+               SELECT printf(
+                 '%d:%d:%s:%d:%s:%d',
+                 xi.seqno,
+                 xi.cid,
+                 COALESCE(hex(CAST(xi.name AS BLOB)), '-'),
+                 xi."desc",
+                 hex(CAST(xi.coll AS BLOB)),
+                 xi."key"
+               ) AS xentry
+               FROM pragma_index_xinfo(il.name) AS xi
+               ORDER BY xi.seqno
+            ))
+          ) AS entry
+          FROM pragma_index_list(?1) AS il
+          ORDER BY il.seq
+        )), '') AS indexes_contract,
+       COALESCE((SELECT group_concat(entry, '|') FROM (
+          SELECT printf(
+            '%d:%d:%s:%s:%s:%s:%s:%s',
+            id,
+            seq,
+            hex(CAST("table" AS BLOB)),
+            hex(CAST("from" AS BLOB)),
+            hex(CAST("to" AS BLOB)),
+            hex(CAST(on_update AS BLOB)),
+            hex(CAST(on_delete AS BLOB)),
+            hex(CAST("match" AS BLOB))
+          ) AS entry
+          FROM pragma_foreign_key_list(?1)
+          ORDER BY id, seq
+        )), '') AS foreign_keys_contract,
+       COALESCE((SELECT printf(
+          '%s:%d:%d:%d',
+          hex(CAST(type AS BLOB)),
+          ncol,
+          wr,
+          strict
+        )
+        FROM pragma_table_list(?1)
+        WHERE name = ?1), '') AS table_flags_contract`,
+  )
+    .bind(tableName)
+    .first();
 }
 
 async function sha256Text(value) {

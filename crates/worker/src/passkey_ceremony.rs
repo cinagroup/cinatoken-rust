@@ -16,14 +16,17 @@ use worker::{
 pub(crate) const PASSKEY_CEREMONIES_BINDING: &str = "PASSKEY_CEREMONIES";
 
 const PUT_PATH: &str = "/put";
+const PUT_ONCE_PATH: &str = "/put-once";
 const TAKE_PATH: &str = "/take";
 const CEREMONY_KEY_HEADER: &str = "x-cinatoken-passkey-ceremony-key";
 const CEREMONY_TTL_HEADER: &str = "x-cinatoken-passkey-ceremony-ttl";
 const CEREMONY_CLAIM_HEADER: &str = "x-cinatoken-passkey-ceremony-claim";
 const RECORD_KEY: &str = "ceremony";
+const CREATE_LOCK_KEY: &str = "create-lock";
 const CLAIM_PREFIX: &str = "claim:";
 const MISSING_ERROR_MARKER: &str = "cinatoken_passkey_ceremony_missing";
 const EXPIRED_ERROR_MARKER: &str = "cinatoken_passkey_ceremony_expired";
+const ALREADY_EXISTS_ERROR_MARKER: &str = "cinatoken_passkey_ceremony_already_exists";
 const MAX_KEY_BYTES: usize = 256;
 const MAX_PAYLOAD_BYTES: usize = 16 * 1024;
 const MAX_TTL_SECONDS: u64 = 300;
@@ -32,6 +35,7 @@ const CLAIM_BYTES: usize = 16;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PasskeyCeremonyError {
     BindingUnavailable,
+    AlreadyExists,
     ExpiredOrConsumed,
     InvalidRequest(&'static str),
     Unavailable(String),
@@ -41,6 +45,7 @@ impl fmt::Display for PasskeyCeremonyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BindingUnavailable => formatter.write_str("Passkey ceremony binding unavailable"),
+            Self::AlreadyExists => formatter.write_str("Passkey ceremony already exists"),
             Self::ExpiredOrConsumed => {
                 formatter.write_str("Passkey ceremony expired or already consumed")
             }
@@ -58,6 +63,11 @@ struct CeremonyRecord {
     expires_at_ms: i64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+struct CeremonyCreateLock {
+    expires_at_ms: i64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TakeDecision {
     Available,
@@ -68,6 +78,7 @@ enum TakeDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CeremonyRoute {
     Put,
+    PutOnce,
     Take,
     NotFound,
 }
@@ -106,7 +117,8 @@ impl DurableObject for PasskeyCeremony {
         }
 
         match route {
-            CeremonyRoute::Put => self.put(&mut req).await,
+            CeremonyRoute::Put => self.put(&mut req, false).await,
+            CeremonyRoute::PutOnce => self.put(&mut req, true).await,
             CeremonyRoute::Take => self.take(&req).await,
             CeremonyRoute::NotFound => Response::error("not found", 404),
         }
@@ -119,7 +131,7 @@ impl DurableObject for PasskeyCeremony {
 }
 
 impl PasskeyCeremony {
-    async fn put(&mut self, req: &mut Request) -> WorkerResult<Response> {
+    async fn put(&mut self, req: &mut Request, create_only: bool) -> WorkerResult<Response> {
         let Some(ttl_seconds) =
             header(req, CEREMONY_TTL_HEADER).and_then(|value| value.parse::<u64>().ok())
         else {
@@ -151,6 +163,41 @@ impl PasskeyCeremony {
             .storage()
             .set_alarm(Duration::from_secs(ttl_seconds))
             .await?;
+        if create_only {
+            let mut storage = self.state.storage();
+            let lock = storage
+                .transaction(move |mut transaction| async move {
+                    let values = transaction
+                        .get_multiple(vec![RECORD_KEY, CREATE_LOCK_KEY])
+                        .await?;
+                    if values.has(&JsValue::from_str(RECORD_KEY))
+                        || values.has(&JsValue::from_str(CREATE_LOCK_KEY))
+                    {
+                        return Err(Error::RustError(ALREADY_EXISTS_ERROR_MARKER.to_string()));
+                    }
+                    transaction
+                        .put(CREATE_LOCK_KEY, CeremonyCreateLock { expires_at_ms })
+                        .await?;
+                    Ok(())
+                })
+                .await;
+            match lock {
+                Ok(()) => {}
+                Err(err) if err.to_string().contains(ALREADY_EXISTS_ERROR_MARKER) => {
+                    return Response::error("ceremony already exists", 409);
+                }
+                Err(err) => return Err(err),
+            }
+        } else {
+            let values = self
+                .state
+                .storage()
+                .get_multiple(vec![CREATE_LOCK_KEY])
+                .await?;
+            if values.has(&JsValue::from_str(CREATE_LOCK_KEY)) {
+                return Response::error("ceremony already exists", 409);
+            }
+        }
         self.state.storage().put(RECORD_KEY, record).await?;
         Ok(Response::empty()?.with_status(204))
     }
@@ -250,6 +297,46 @@ pub(crate) async fn put_json(
     }
 }
 
+/// Create a bounded JSON ceremony payload without replacing an active or
+/// already-consumed challenge in the same object lifetime.
+pub(crate) async fn put_once_json(
+    env: &Env,
+    ceremony_key: &str,
+    payload: &str,
+    ttl_seconds: u64,
+) -> Result<(), PasskeyCeremonyError> {
+    validate_caller_input(ceremony_key, payload, ttl_seconds)?;
+    let stub = ceremony_stub(env, ceremony_key)?;
+
+    let mut headers = Headers::new();
+    headers
+        .set("Content-Type", "application/json")
+        .map_err(unavailable)?;
+    headers
+        .set(CEREMONY_KEY_HEADER, ceremony_key)
+        .map_err(unavailable)?;
+    headers
+        .set(CEREMONY_TTL_HEADER, &ttl_seconds.to_string())
+        .map_err(unavailable)?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post)
+        .with_headers(headers)
+        .with_body(Some(JsValue::from_str(payload)));
+    let request =
+        Request::new_with_init("https://passkey-ceremony/put-once", &init).map_err(unavailable)?;
+    let response = stub
+        .fetch_with_request(request)
+        .await
+        .map_err(unavailable)?;
+    match response.status_code() {
+        204 => Ok(()),
+        409 => Err(PasskeyCeremonyError::AlreadyExists),
+        status => Err(PasskeyCeremonyError::Unavailable(format!(
+            "Passkey ceremony put-once returned {status}"
+        ))),
+    }
+}
+
 /// Atomically consume a Passkey ceremony payload. Exactly one concurrent take
 /// can succeed; all later attempts return `ExpiredOrConsumed`.
 pub(crate) async fn take_json(
@@ -299,8 +386,10 @@ pub(crate) fn binding_available(env: &Env) -> bool {
 pub(crate) fn ceremony_contract_compiled() -> bool {
     PASSKEY_CEREMONIES_BINDING == "PASSKEY_CEREMONIES"
         && PUT_PATH == "/put"
+        && PUT_ONCE_PATH == "/put-once"
         && TAKE_PATH == "/take"
         && ceremony_route(true, PUT_PATH) == CeremonyRoute::Put
+        && ceremony_route(true, PUT_ONCE_PATH) == CeremonyRoute::PutOnce
         && ceremony_route(true, TAKE_PATH) == CeremonyRoute::Take
         && ceremony_route(false, TAKE_PATH) == CeremonyRoute::NotFound
         && MAX_TTL_SECONDS <= 300
@@ -347,6 +436,7 @@ fn validate_json_payload(payload: &str) -> Result<(), PasskeyCeremonyError> {
 fn ceremony_route(is_post: bool, path: &str) -> CeremonyRoute {
     match (is_post, path) {
         (true, PUT_PATH) => CeremonyRoute::Put,
+        (true, PUT_ONCE_PATH) => CeremonyRoute::PutOnce,
         (true, TAKE_PATH) => CeremonyRoute::Take,
         _ => CeremonyRoute::NotFound,
     }
@@ -466,6 +556,7 @@ mod tests {
     #[test]
     fn request_contract_only_accepts_post_put_and_take() {
         assert_eq!(ceremony_route(true, "/put"), CeremonyRoute::Put);
+        assert_eq!(ceremony_route(true, "/put-once"), CeremonyRoute::PutOnce);
         assert_eq!(ceremony_route(true, "/take"), CeremonyRoute::Take);
         assert_eq!(ceremony_route(false, "/take"), CeremonyRoute::NotFound);
         assert_eq!(ceremony_route(true, "/unknown"), CeremonyRoute::NotFound);
@@ -500,6 +591,10 @@ mod tests {
     fn public_errors_distinguish_binding_from_expiry_without_leaking_runtime_detail() {
         assert_ne!(
             PasskeyCeremonyError::BindingUnavailable,
+            PasskeyCeremonyError::ExpiredOrConsumed
+        );
+        assert_ne!(
+            PasskeyCeremonyError::AlreadyExists,
             PasskeyCeremonyError::ExpiredOrConsumed
         );
         let unavailable = PasskeyCeremonyError::Unavailable("secret detail".to_string());

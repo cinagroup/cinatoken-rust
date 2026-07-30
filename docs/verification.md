@@ -12397,11 +12397,13 @@ bun run check:relay-container:ring-transition
 
 The verifier applies the complete 0001-0073 chain and locks the 0073
 production invariants: migration preflight rejects any retained 0070-0072
-drain authority; registration requires exact Root, live UV passkey and
-passkey-authenticated audit evidence; a source scan without the exact live
-claim fails; claimed lease expiry can append an `expired` terminal without a
-scan or seal; source writes stop after any terminal; and registration, claim,
-terminal and global ledger rows are immutable and append-preserved.
+drain authority; registration requires exact Root, a live UV passkey and a
+matching passkey-authenticated audit candidate; a source scan without the exact
+live claim fails; claimed lease expiry can append an `expired` terminal without
+a scan or seal; source writes stop after any terminal; and registration, claim,
+terminal and global ledger rows are immutable and append-preserved. The audit
+candidate itself is not unique or immutable under 0073 and is not yet
+production-exact.
 
 The successful path proves that terminal insertion requires exact unsealed
 assembler/verifier attestations, projects the 0071 seal and appends the
@@ -12432,9 +12434,60 @@ concurrent single-winner claims, claimed expiry, unknown commit/readback,
 process loss, late admission, and atomic terminal/seal rollback. These local
 results are not remote evidence.
 
-There is still no action-bound one-shot passkey ceremony, mandatory-UV issuer,
-dedicated atomic audit writer with exact `request_id` and
-`auth_method=passkey`, permit-only verifier, isolated issuer, claim worker,
-collector, route, gate, close/traffic/reopen authority, or authenticated
-remote P5 capture. P5 advances only as a local candidate contract. Go/VPS
-remains authoritative and production remains **NO-GO**.
+There is still no connected action-bound passkey issuance path, dedicated
+atomic audit writer with exact `request_id` and `auth_method=passkey`,
+permit-only verifier, isolated issuer, claim worker, collector, route, gate,
+close/traffic/reopen authority, or authenticated remote P5 capture. P5
+advances only as a local candidate contract. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
+## 2026-07-30 M1 Passkey Foundation Verification
+
+Targeted current-worktree verification passes:
+
+```text
+cargo test -p cinatoken-worker --lib container_drain_source_registration_action
+  5 passed
+
+cargo test -p cinatoken-worker --lib passkey_ceremony::tests
+  5 passed
+
+cargo test -p cinatoken-worker --lib webauthn::tests
+  6 passed
+
+bunx vitest run --config vitest.do.config.mjs \
+  -t "creates one passkey ceremony"
+  1 passed; 54 skipped
+
+bun run check
+  full aggregate gate passed
+  cinatoken-worker library: 964 passed
+  Application Workerd lifecycle: 55 passed
+  worker, wfp-tenant and wfp-outbound release builds passed
+  Worker wasm32 checks passed with existing dead-code warnings only
+```
+
+The action tests drift each M1-critical authorization ID, fence/head state,
+collector build/run/credential, page/shard bound, source schema, authorizer
+identity/SPKI/signature evidence, permit lifetime, action, request, audit,
+environment, source, change-ticket, expiry, ledger, session, credential, and
+nonce binding. They also reject non-global scope, pre-issue use, exact-expiry
+use, insecure/mismatched origin, unknown JSON fields, and UV downgrade.
+
+The WebAuthn tests prove that assertion evidence hashes come from the exact
+post-verification signature subject, decoded signature, and decoded challenge.
+The M1 wrapper rejects stored or newly detected clone state and accepts only
+user-present/user-verified proof tied to the frozen Root credential.
+
+The Workerd test sends 32 concurrent create-only requests to one
+`PasskeyCeremony` object. Exactly one returns `204`, 31 return `409`, ordinary
+replacement returns `409`, the first take returns the original payload, and
+the second take returns `410`; create-only reuse after take remains `409`.
+
+This closes only the local action-bound challenge and mandatory-UV proof
+foundation. The generic passkey marker remains ineligible. Registration remains
+blocked on a 0074 single-statement command that immutably projects exact audit,
+registration, and ledger with runtime-proven `4/0` fresh/replay changes, plus a
+dedicated permit-only verifier and isolated issuer. No route, writer, gate,
+remote migration, or authority transfer was tested. Production remains
+**NO-GO**.

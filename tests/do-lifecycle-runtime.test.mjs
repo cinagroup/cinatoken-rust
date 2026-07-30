@@ -70,6 +70,58 @@ afterAll(async () => {
 });
 
 describe("Rust Durable Object lifecycle contracts", () => {
+  it("creates one passkey ceremony and consumes it exactly once", async () => {
+    const ceremonyKey = `drain-source-registration:${"a".repeat(64)}:${"b".repeat(64)}`;
+    const stub = env.PASSKEY_CEREMONIES.getByName(ceremonyKey);
+    const payload = JSON.stringify({
+      contract: "relay-container-drain-source-registration-action-v1",
+      challenge: "runtime-challenge",
+    });
+    const putOnce = () =>
+      stub.fetch("https://passkey-ceremony/put-once", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-cinatoken-passkey-ceremony-key": ceremonyKey,
+          "x-cinatoken-passkey-ceremony-ttl": "120",
+        },
+        body: payload,
+      });
+
+    const statuses = (
+      await Promise.all(Array.from({ length: 32 }, () => putOnce()))
+    )
+      .map((response) => response.status)
+      .sort((left, right) => left - right);
+    expect(statuses.filter((status) => status === 204)).toHaveLength(1);
+    expect(statuses.filter((status) => status === 409)).toHaveLength(31);
+
+    const replacement = await stub.fetch("https://passkey-ceremony/put", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-cinatoken-passkey-ceremony-key": ceremonyKey,
+        "x-cinatoken-passkey-ceremony-ttl": "120",
+      },
+      body: JSON.stringify({ challenge: "replacement" }),
+    });
+    expect(replacement.status).toBe(409);
+
+    const take = (claim) =>
+      stub.fetch("https://passkey-ceremony/take", {
+        method: "POST",
+        headers: {
+          "x-cinatoken-passkey-ceremony-key": ceremonyKey,
+          "x-cinatoken-passkey-ceremony-claim": claim,
+        },
+      });
+    const firstTake = await take("01".repeat(16));
+    expect(firstTake.status).toBe(200);
+    expect(await firstTake.text()).toBe(payload);
+    expect((await take("02".repeat(16))).status).toBe(410);
+    expect((await putOnce()).status).toBe(409);
+  });
+
   it("applies quota reserve replay and settle atomically across eviction", async () => {
     const tokenId = 701;
     const reservationFingerprint = quotaHex("b");

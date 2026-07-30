@@ -143,6 +143,9 @@ pub struct VerifiedAssertion {
     pub user_verified: bool,
     pub backup_eligible: bool,
     pub backup_state: bool,
+    pub signed_subject_sha256: [u8; 32],
+    pub signature_sha256: [u8; 32],
+    pub challenge_sha256: [u8; 32],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,7 +292,7 @@ pub fn verify_registration(
         "clientDataJSON",
         false,
     )?;
-    verify_client_data(&client_data, "webauthn.create", expected)?;
+    let _ = verify_client_data(&client_data, "webauthn.create", expected)?;
 
     let attestation_bytes = decode_base64url(
         &credential.response.attestation_object,
@@ -356,7 +359,7 @@ pub fn verify_assertion(
         "clientDataJSON",
         false,
     )?;
-    verify_client_data(&client_data, "webauthn.get", expected)?;
+    let challenge = verify_client_data(&client_data, "webauthn.get", expected)?;
     let authenticator_data = decode_base64url(
         &credential.response.authenticator_data,
         MAX_AUTHENTICATOR_DATA_BYTES,
@@ -398,6 +401,9 @@ pub fn verify_assertion(
         user_verified: parsed_auth_data.flags & FLAG_UV != 0,
         backup_eligible: parsed_auth_data.flags & FLAG_BE != 0,
         backup_state: parsed_auth_data.flags & FLAG_BS != 0,
+        signed_subject_sha256: Sha256::digest(&signed_data).into(),
+        signature_sha256: Sha256::digest(&signature).into(),
+        challenge_sha256: Sha256::digest(&challenge).into(),
     })
 }
 
@@ -429,7 +435,7 @@ fn verify_client_data(
     bytes: &[u8],
     expected_type: &str,
     expected: &CeremonyExpectation<'_>,
-) -> Result<(), WebauthnError> {
+) -> Result<Vec<u8>, WebauthnError> {
     if expected.origin.is_empty() || expected.origin.len() > MAX_ORIGIN_BYTES {
         return Err(WebauthnError::InvalidStructure("expected origin"));
     }
@@ -464,7 +470,7 @@ fn verify_client_data(
     if client.cross_origin || client.top_origin.is_some() {
         return Err(WebauthnError::CrossOriginNotAllowed);
     }
-    Ok(())
+    Ok(actual_challenge)
 }
 
 fn parse_none_attestation(bytes: &[u8]) -> Result<Vec<u8>, WebauthnError> {
@@ -1008,6 +1014,12 @@ mod tests {
         assert_eq!(verified.sign_count, 10);
         assert!(verified.clone_warning);
         assert_eq!(verified.user_handle.as_deref(), Some(b"42".as_slice()));
+        let expected_subject: [u8; 32] = Sha256::digest(signed_message(&auth_data, &client)).into();
+        let expected_signature: [u8; 32] = Sha256::digest(signature.to_der().as_bytes()).into();
+        let expected_challenge: [u8; 32] = Sha256::digest(CHALLENGE).into();
+        assert_eq!(verified.signed_subject_sha256, expected_subject);
+        assert_eq!(verified.signature_sha256, expected_signature);
+        assert_eq!(verified.challenge_sha256, expected_challenge);
     }
 
     #[test]

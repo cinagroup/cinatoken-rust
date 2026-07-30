@@ -1,4 +1,5 @@
 import {
+  PasskeyCeremony,
   QuotaCoordinator,
   RealtimeSession,
   TaskRunner,
@@ -6,7 +7,13 @@ import {
 } from "../../crates/worker/build/index.js";
 import WorkerEntrypoint from "../../crates/worker/build/index.js";
 
-export { QuotaCoordinator, RealtimeSession, TaskRunner, WfpAuthorityReplay };
+export {
+  PasskeyCeremony,
+  QuotaCoordinator,
+  RealtimeSession,
+  TaskRunner,
+  WfpAuthorityReplay,
+};
 export function scheduled(controller, env, ctx) {
   const worker = new WorkerEntrypoint(ctx, env);
   return worker.scheduled(controller);

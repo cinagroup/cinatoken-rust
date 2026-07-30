@@ -147,6 +147,10 @@ export default defineConfig({
           CONTAINER_CONTROLLER: "container-terminal-ack-mock",
         },
         durableObjects: {
+          PASSKEY_CEREMONIES: {
+            className: "PasskeyCeremony",
+            useSQLite: true,
+          },
           REALTIME_SESSIONS: {
             className: "RealtimeSession",
             useSQLite: true,

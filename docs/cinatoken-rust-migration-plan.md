@@ -25844,7 +25844,9 @@ blocker and must never be deleted merely to make the preflight pass.
 The migration adds four append-preserved authorities:
 
 1. one Root/passkey action-bound registration for each 0072 authorization,
-   linked to an exact admin audit row and the current global receipt head;
+   requiring a matching admin-audit candidate row and the current global
+   receipt head; the audit does not become exact, unique, and immutable until
+   the planned 0074 command envelope;
 2. one execution claim bound to the exact collector service, version, run,
    credential, lease, registration receipt, and next receipt sequence;
 3. one terminal receipt with `succeeded`, `failed`, `expired`, or `ambiguous`
@@ -25945,3 +25947,119 @@ P5 has advanced only as a local contract in this candidate. No remote
 Cloudflare migration, schema readback, deployment, credential, route, gate,
 traffic, close, reopen, or authority change is claimed. Go/VPS remains the
 authoritative production system and production remains **NO-GO**.
+
+## 22.340 M1 Action-Bound Passkey Foundation And 0074 Audit Plan (2026-07-30)
+
+This overlay advances only the local, unreachable M1 proof foundation. It does
+not supersede the four hard blockers in 22.339, enable registration, or change
+the `73/103/1701/156` D1 baseline.
+
+### Implemented proof boundary
+
+The Application Worker now has a route-free
+`DrainSourceRegistrationActionV1` contract. Its domain-separated,
+length-prefixed WebAuthn challenge commits to:
+
+1. schema, contract, and the fixed
+   `relay_container.drain_source_authorization_register` action;
+2. the complete `VerifiedDrainSourceAuthorization`: authorization contract,
+   environment/ID, admission fence/generation/state, expected head
+   version/digest, global scope, source scan, collector service/build/run/
+   credential, page/shard bounds, accepted-source schema, authorizer issuer/
+   key/identity/SPKI/subject/signature envelope, execution nonce, permit
+   lifetime, and authorizing Root;
+3. external action digest, registration request digest, dedicated
+   admin-audit/request digest, change ticket, reason, verification expiry, and
+   current global ledger identity/sequence/head;
+4. Root session epoch/binding, passkey row ID and credential digest;
+5. registration service/build/execution/credential provenance; and
+6. a per-ceremony nonce digest, exact HTTPS origin, RP ID, issued time, and the
+   literal `required` user-verification policy.
+
+Unknown state fields and any `preferred`/`discouraged` UV value are rejected.
+The verification lifetime is 30-300 seconds, storage TTL is the remaining
+lifetime rather than the original lifetime, and assertion verification rejects
+use before issue time or at/after expiry.
+
+The shared `PasskeyCeremony` Durable Object now exposes a private
+`/put-once` protocol. A storage transaction creates a non-overwritable lock
+before payload persistence. The lock remains after take until the alarm clears
+the object, so neither ordinary put nor another put-once can replace a
+consumed challenge in the same lifetime. Workerd proves one winner across 32
+concurrent puts, 31 conflicts, one successful take, and rejection of
+replacement and second take. If payload persistence fails after lock
+acquisition, the bounded lock intentionally remains until alarm cleanup and no
+consumable ceremony is produced.
+
+The pure WebAuthn verifier now returns SHA-256 digests of the exact verified
+signature subject (`authenticatorData || SHA256(clientDataJSON)`), decoded
+signature, and decoded challenge. The dedicated M1 wrapper accepts only those
+post-verification bytes, fixes `require_user_verification=true`, verifies Root
+user/credential-row/credential-digest binding, checks an optional user handle,
+and rejects both a pre-existing sticky clone warning and a newly detected
+counter rollback. Callers cannot manufacture the 0073 assertion digests from
+unverified request strings.
+
+All of this code remains `#[allow(dead_code)]`, crate-private, route-free, and
+writer-free. The generic login/register/verification challenge remains a
+separate compatibility flow and is still ineligible for M1.
+
+### Audit correction and mandatory 0074
+
+The 0073 registration trigger checks that at least one `logs` row matches a
+subset of Root/action fields. That is not yet an exact immutable audit:
+
+- `logs.request_id` has a non-unique index;
+- the guard does not prove exact `content`, IP, username/admin username, or a
+  canonical no-extra-fields JSON projection;
+- `logs` remains mutable and deletable; and
+- a separate audit statement followed by registration can straddle a
+  `unixepoch()` second boundary even when D1 batch rollback is atomic.
+
+Therefore no two-statement audit/registration repository is eligible. The next
+forward migration must be
+`0074_relay_container_drain_source_registration_command.sql` and must apply
+only while every 0073 consumption table is empty and all related writers are
+stopped. It must add one append-preserved registration-command envelope whose
+single top-level insert:
+
+1. validates the complete proof/action/permit input and current Root,
+   credential, authorization, and ledger state;
+2. projects one canonical `logs` row with D1-derived username/role/action,
+   exact `request_id`, and `auth_method=passkey`;
+3. projects the 0073 registration, which then projects its ledger row; and
+4. fails the entire statement if any command, audit, registration, or ledger
+   invariant fails.
+
+The protected audit row needs command linkage plus scoped insert/update/delete
+guards; unrelated logs must remain unaffected. The command, protected audit,
+registration, and ledger must be included in exact same-Session readback and
+new schema/PRAGMA fingerprints. A real Workerd run must establish fresh
+`meta.changes=4` (command, audit, registration, ledger) and replay
+`meta.changes=0`; those counts are a planned contract, not accepted evidence
+until runtime verification passes. Any other count, malformed metadata, batch
+error, response loss without exact readback, or readback drift is
+`OutcomeUnknown`.
+
+### Remaining M1 order
+
+1. Implement the isolated registration-permit issuer and Application-side
+   permit-only verifier. The issuer gets one dedicated signing identity and
+   audience and no D1, KV, R2, Queue, collector, claim, close, traffic-return,
+   reopen, deployment, or container authority. Production Application config
+   must omit the issuance gate, issuer Service Binding, issuance rate limiter,
+   HMAC, and trust pins entirely; `false` placeholders are not sufficient.
+   Issuer configuration and deployment tooling must exist only for local and
+   isolated staging.
+2. Add 0074 and its SQLite, Rust, and Workerd fault/concurrency matrix while
+   every runtime gate remains false.
+3. Add a private service-binding-only begin/finish coordinator that performs
+   fresh Root/session/credential rereads around one-shot assertion consumption.
+   It may return a registration permit, never collection authority.
+4. Only after isolated-staging proof may the private registration repository
+   be connected. An HTTP route, customer traffic, source collector, claim
+   worker, close, traffic return, reopen, and Go/VPS retirement remain separate
+   later decisions.
+
+No remote Cloudflare resource or D1 database was accessed. Go/VPS remains
+authoritative and production remains **NO-GO**.

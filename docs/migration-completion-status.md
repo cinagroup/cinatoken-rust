@@ -3175,10 +3175,10 @@ evidence.
 | Terminal | **ONE SUCCEEDED / FAILED / EXPIRED / AMBIGUOUS RECEIPT PER CLAIM** |
 | Successful seal | **TERMINAL INSERT ATOMICALLY PROJECTS EXACT 0071 SEAL AND GLOBAL LEDGER RECEIPT** |
 | Global receipt ledger | **APPEND-PRESERVED REGISTRATION -> CLAIM -> TERMINAL HEAD CHAIN** |
-| Private claim/terminal repository | **IMPLEMENTED LOCALLY; FRESH=EXPLICIT 1 WRITE, REPLAY=EXPLICIT 0 WRITES, MALFORMED/BATCH/READBACK ERROR=UNKNOWN; NO CALLER** |
+| Private claim/terminal repository | **IMPLEMENTED LOCALLY; FRESH=TRIGGER-AWARE 2 CLAIM/NON-SUCCESS OR 3 SUCCESS WRITES, REPLAY=EXPLICIT 0 WRITES, MALFORMED/BATCH/READBACK ERROR=UNKNOWN; NO CALLER** |
 | Schema attestation | **34 EXACT SQL OBJECT FINGERPRINTS + 4 TABLE PRAGMA FINGERPRINTS REQUIRED BEFORE MUTATION** |
-| Registration repository | **NOT IMPLEMENTED; BLOCKED ON M1 CEREMONY/AUDIT/ISSUER** |
-| M1 passkey/audit/permit controls | **NOT IMPLEMENTED** |
+| Registration repository | **NOT IMPLEMENTED; BLOCKED ON CONNECTED M1 ISSUANCE/AUDIT/ISSUER** |
+| M1 passkey/audit/permit controls | **ACTION-BOUND CREATE-ONLY MANDATORY-UV PROOF FOUNDATION IMPLEMENTED; 0074 EXACT AUDIT + PERMIT VERIFIER + ISOLATED ISSUER ABSENT** |
 | Issuer / claim worker / collector | **ABSENT** |
 | Route / credential / runtime write gate | **ABSENT** |
 | Close / traffic-return / reopen authority | **ABSENT** |
@@ -3187,9 +3187,30 @@ evidence.
 | Go/VPS authority | **RETAINED** |
 | Production eligibility | **NO-GO** |
 
-M1 remains blocked on an action-bound one-shot passkey ceremony, mandatory
-user verification, a dedicated atomic audit writer with exact `request_id`
-and `auth_method=passkey`, and a permit-only verifier backed by an isolated
-issuer identity. The next runtime boundary is those controls plus a private
-single-winner claim/terminal worker and authoritative collector using the
-already-inert repository methods; it is not route or gate activation.
+M1 remains blocked on connecting the action-bound ceremony through a dedicated
+atomic audit writer with exact `request_id` and `auth_method=passkey`, a
+permit-only verifier, and an isolated issuer identity. The local create-only,
+mandatory-UV proof foundation is not an issuance path. The next runtime
+boundary is those remaining controls plus a private single-winner
+claim/terminal worker and authoritative collector using the already-inert
+repository methods; it is not route or gate activation.
+
+## 2026-07-30 M1 Passkey Foundation Status
+
+| Item | Current status |
+|---|---|
+| Dedicated registration action | **IMPLEMENTED; DOMAIN-SEPARATED, LENGTH-PREFIXED, UNKNOWN-FIELD REJECTING** |
+| Required action bindings | **VERIFIED AUTHORIZATION / FENCE / HEAD / COLLECTOR / ISSUER / PERMIT / ACTION / REQUEST / AUDIT / SCOPE / SOURCE / TICKET / LEDGER / ROOT SESSION / CREDENTIAL / WRITER / NONCE** |
+| User verification | **STRUCTURALLY REQUIRED; PREFERRED/DISCOURAGED REJECTED** |
+| One-shot storage | **CREATE-ONLY DO LOCK + ATOMIC TAKE; 32-WAY WORKERD SINGLE WINNER** |
+| Expiry | **30-300 SECOND ACTION; REMAINING-TTL STORAGE; PRE-ISSUE/AT-EXPIRY REJECTED** |
+| Verified proof material | **SIGNED SUBJECT / DECODED SIGNATURE / DECODED CHALLENGE SHA-256 FROM VERIFIED BYTES** |
+| Clone handling | **PRE-EXISTING STICKY WARNING + NEW COUNTER ROLLBACK REJECTED** |
+| Generic passkey marker eligibility | **NONE** |
+| 0073 audit exactness | **INSUFFICIENT; PARTIAL EXISTS MATCH, NON-UNIQUE REQUEST ID, MUTABLE LOG** |
+| Required 0074 | **PLANNED SINGLE-STATEMENT COMMAND -> AUDIT -> REGISTRATION -> LEDGER; WORKERD 4/0 NOT YET EVIDENCE** |
+| Permit-only verifier / isolated issuer | **ABSENT** |
+| Registration writer / route / gate | **ABSENT** |
+| Remote Cloudflare/D1 evidence | **NOT COLLECTED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |

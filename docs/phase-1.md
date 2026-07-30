@@ -4805,10 +4805,12 @@ exact scan and independent attestations, then atomically projects the 0071
 seal and terminal ledger receipt in one SQLite statement. The 0070 close
 command requires that retained successful terminal and projected seal.
 
-Registration checks a live user-present/user-verified passkey row and exact
-`auth_method=passkey` audit evidence at insert time. Its passkey row ID is
-intentionally not retained as a foreign key, so credential rotation or
-deletion does not invalidate immutable digest evidence.
+Registration checks a live user-present/user-verified passkey row and a
+matching `auth_method=passkey` audit candidate at insert time. That candidate
+is not unique or immutable yet; 0074 must add the exact single-statement audit
+command before a writer is eligible. The passkey row ID is intentionally not
+retained as a foreign key, so credential rotation or deletion does not
+invalidate immutable digest evidence.
 
 This remains a default-inert repository boundary, not a production control
 plane. The root Worker now has crate-private first-primary Session batch
@@ -4824,13 +4826,50 @@ schema-object fingerprints and four table PRAGMA fingerprints. Registration
 mutation remains absent, and the claim/terminal methods have no route, worker
 or gate.
 
-There is no action-bound one-shot passkey ceremony, hard-UV issuer, dedicated
-atomic audit writer with exact `request_id`, permit-only verifier, isolated
-issuer, claim worker, collector, route, credential, gate, close authority,
-traffic-return authority, or reopen authority. Those M1 controls must exist
-before any registration writer can be connected.
+There is no connected action-bound issuance path, dedicated atomic audit
+writer with exact `request_id`, permit-only verifier, isolated issuer, claim
+worker, collector, route, credential, gate, close authority, traffic-return
+authority, or reopen authority. Those remaining M1 controls must exist before
+any registration writer can be connected.
 
 P5 candidate and schema contracts advance locally to `73/103/1701/156` only.
 No remote 0073 application, readback, deployment, credential, route, traffic,
 or authority change is claimed. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-07-30 M1 Action-Bound Passkey Foundation
+
+The unreachable Application Worker now has a dedicated drain-source
+registration action and ceremony contract. It can only derive authorization
+fields from `VerifiedDrainSourceAuthorization`; the domain-separated,
+length-prefixed challenge freezes fence/head state, collector build/run,
+page/shard bounds, authorizer identity/SPKI/signature evidence, permit
+lifetime, action/request/audit, global scope/source, change ticket, current
+ledger head, Root session, passkey credential, writer provenance, nonce, RP
+ID, origin, and issued time. UV is structurally fixed to `required`; unknown
+fields and policy downgrades fail closed.
+
+`PasskeyCeremony` now supports private create-only storage. A transaction
+claims a non-overwritable lock, and that lock survives one-time take until
+alarm cleanup. Workerd proves one winner across 32 concurrent creates,
+replacement rejection, one successful consume, and second-consume rejection.
+Failure after lock acquisition leaves a bounded lock and no consumable
+ceremony. Storage uses remaining validity, and proof verification rejects use
+before issue or at/after expiry.
+
+The WebAuthn verifier now returns digests only after verifying the exact signed
+subject, decoded signature, and decoded challenge. The M1 wrapper fixes
+mandatory UV and rejects Root/credential mismatch, user-handle drift, sticky
+clone warning, and fresh counter rollback. The challenge binds the Root session
+epoch and binding; a fresh live session reread remains mandatory coordinator
+work. The generic reusable secure-verification marker remains ineligible.
+
+M1 is still incomplete. Audit review found that 0073 only proves existence of
+a partially matching mutable `logs` row. The required 0074 forward migration
+must project command, canonical exact audit, registration, and ledger from one
+top-level SQLite insert, protect that audit from mutation/deletion, bind exact
+same-Session readback and schema fingerprints, and prove Workerd fresh/replay
+counts `4/0`. A dedicated permit-only verifier and storage-free isolated issuer
+identity also remain absent. No registration writer, route, credential, gate,
+collector, or remote operation was added. Go/VPS remains authoritative and
+production remains **NO-GO**.

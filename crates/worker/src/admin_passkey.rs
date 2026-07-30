@@ -913,6 +913,10 @@ async fn take_challenge(
 
 fn challenge_error_response(error: PasskeyCeremonyError) -> Response {
     match error {
+        PasskeyCeremonyError::AlreadyExists => envelope_error_response(
+            409,
+            "Passkey challenge already exists; finish it or start a new flow",
+        ),
         PasskeyCeremonyError::ExpiredOrConsumed => envelope_error_response(
             400,
             "Passkey challenge expired or was already consumed; start again",

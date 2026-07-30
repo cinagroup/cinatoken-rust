@@ -5019,14 +5019,16 @@ No production issuer binding, route, gate, remote migration, deployment,
 credential, traffic, or Go/VPS authority changed. Go/VPS remains authoritative
 and production remains **NO-GO**.
 
-## 2026-07-30 Exact Root Session Authority Checkpoint
+## 2026-07-31 Exact Root Session Authority Checkpoint
 
-The local candidate schema head advances to
-`0075_root_authority_exactness.sql`. The migration preflights all user roles
-and session generations, restricts future roles to `0/1/10/100`, prevents
-session-generation rollback, and rechecks exact role `100`, enabled status,
-no deletion, and exact generation at both final registration write
-boundaries. It adds no route, credential, or runtime gate.
+The local candidate schema head advances through
+`0075_root_authority_exactness.sql` to
+`0076_relay_container_drain_source_registration_command_exact_session_generation.sql`.
+Migration 0075 preflights all user roles and session generations, restricts
+future roles to `0/1/10/100`, prevents generation rollback, and rechecks exact
+role `100`, enabled status, no deletion, and exact generation at both final
+registration write boundaries. Neither migration adds a route, credential, or
+runtime gate.
 
 Session revocation no longer overloads Unix seconds. Every generation bump is
 an exact integer increment and every protected request requires equality with
@@ -5040,22 +5042,25 @@ statement. A generation-bound failure therefore leaves the account mutation
 unapplied instead of creating a stale-session window.
 
 The runtime validation paths no longer compare generation to time. Migration
-0074 remains immutable and still embeds its older
-`root_session_issued_at >= root_session_epoch` relationship in the command
-table and insert trigger. A later additive migration must require an empty
-command table, rebuild that schema without the comparison, and refreeze every
-SQL/PRAGMA fingerprint before isolated-staging apply. This is an explicit
-production blocker, not accepted technical debt.
+0074 remains immutable and still embeds its older predicates in historical
+migration text. Migration 0076 requires the exact predecessor schema and empty
+command/consumption state, rebuilds the effective command table and trigger
+closure without those comparisons, and refreezes every SQL/PRAGMA fingerprint.
+SQLite and Workerd locally prove failed preflight, post-drop rollback, and an
+exact generation-greater-than-`iat` fresh/replay `5/0` command. Remote
+application and evidence remain blocked.
 
 `RootSessionPhaseProofV1` now binds exact Root/session state, Cookie and
-session-ID digests, operation, authorization, ceremony, request intent,
-phase-specific subject, semantic D1 authority, Application version, and the
-preceding phase proof. It is staging-only, defaults to a 10-second TTL, has a
-15-second hard ceiling, accepts one current plus one strictly older rotation
-key, and exposes only an opaque verified type to the coordinator.
+session-ID digests, operation, authorization, ceremony, request intent, a
+domain-separated phase-binding slot, semantic D1 authority, Application
+version, and the preceding phase proof. It is staging-only, defaults to a
+10-second TTL, has a 15-second hard ceiling, accepts one current plus one
+strictly older rotation key, and exposes only an opaque verified type to the
+coordinator. Typed challenge/issuer/commit subject structs are not yet frozen,
+and commit binding is not yet derived internally from the verified permit.
 
-This closes the local proof-format and exact-generation foundation only.
-Replay consumption, response-loss recovery, private transport authentication,
-secret provisioning, remote D1 `5/0`, fault campaigns, and production
-approvals remain open. Go/VPS remains authoritative and production remains
-**NO-GO**.
+This closes the local proof-format and schema exact-generation foundation
+only. Typed phase subjects, replay consumption, response-loss recovery,
+private transport authentication, secret provisioning, remote 0075/0076 D1
+apply/readback/`5/0`, fault campaigns, and production approvals remain open.
+Go/VPS remains authoritative and production remains **NO-GO**.

@@ -54,15 +54,14 @@ Password changes and resets, role changes, disable, and soft delete update the
 account and increment its generation in one D1 statement.
 
 The Application, action, permit, issuer, and phase-proof runtime contracts no
-longer compare this generation with a timestamp. The immutable migration
-`0074_relay_container_drain_source_registration_command.sql`, however, still
-contains the historical `root_session_issued_at >= root_session_epoch`
-relationship in both its command-table `CHECK` and insert guard. That residual
-is not accepted as exact-generation parity. Before the candidate schema is
-applied to isolated staging, a new additive migration must require an empty
-command table, rebuild the table without that relationship, replace the
-insert guard, and refreeze all normalized SQL/PRAGMA fingerprints. Migration
-0074 must not be edited in place.
+longer compare this generation with a timestamp. Immutable migration 0074
+still contains the historical predicates in its migration text and remains
+byte-stable. Migration 0076 locally verifies the exact 0074/0075 predecessor
+schema and empty command/consumption projections, rebuilds the effective table
+and trigger closure without those predicates, and refreezes every normalized
+SQL/PRAGMA fingerprint. SQLite and Workerd cover failed preflight,
+post-drop rollback, and an exact generation-greater-than-`iat` `5/0` commit.
+Remote D1 apply and readback remain absent.
 
 ## Wire Format
 
@@ -259,7 +258,8 @@ three-phase chain.
 
 Before isolated staging enablement:
 
-1. add and verify the immutable-0074 corrective migration described above;
+1. apply 0075/0076 only to isolated staging after backup, then retain exact
+   catalog/PRAGMA readback, rollback-fault, and `5/0` evidence;
 2. wire Application issuance only after cookie verification and fresh D1
    exact-Root/session snapshot;
 3. add a private Service-Binding-only or named-entrypoint transport with its

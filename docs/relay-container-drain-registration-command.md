@@ -24,8 +24,9 @@ candidate has:
 
 This is local candidate evidence, not production authorization. No public
 route, production Service Binding, production trust tuple, enabled write gate,
-remote D1 migration, traffic change, or Go/VPS retirement follows from 0074.
-Go/VPS remains authoritative and production remains **NO-GO**.
+remote D1 migration, traffic change, or Go/VPS retirement follows from the
+local 0074/0075/0076 chain. Go/VPS remains authoritative and production
+remains **NO-GO**.
 
 ## Source-system decisions
 
@@ -150,16 +151,15 @@ D1 created_at < min(session_exp, permit_expires_at)
 passkey proof or permit from being used after the bound session lifetime.
 Generation is deliberately absent from every timestamp inequality.
 
-The immutable 0074 migration predates that correction and still has
-`root_session_issued_at >= root_session_epoch` in the command-table `CHECK`
-and `relay_container_drain_source_registration_command_insert_guard`.
-Application, Rust action/permit, and TypeScript issuer validation no longer
-carry that comparison. Before any isolated-staging schema apply or command
-write, a new additive migration must prove the command table is empty, rebuild
-it without the historical relationship, recreate the insert/project/update/
-delete trigger contract, and update the normalized SQL and PRAGMA
-fingerprints. Editing 0074 in place is forbidden because already-applied
-migration identity must remain stable.
+Immutable 0074 predates that correction and retains both historical predicates
+byte-for-byte. Additive 0076 first proves the exact 0074/0075 schema closure
+and empty command, protected-audit, registration, claim, terminal, and ledger
+state. It then rebuilds the effective command table and direct trigger closure
+without comparing generation with time. The 22 normalized SQL objects and
+three PRAGMA contracts are refrozen; SQLite and Workerd prove preflight
+rejection, post-drop rollback, and exact generation-greater-than-`iat` `5/0`.
+Editing 0074 in place remains forbidden. Remote D1 apply and command writes
+remain blocked.
 
 The timestamps do not replace a fresh session-authority lookup. The future
 private begin/finish coordinator must reread Root status, session epoch,
@@ -425,49 +425,51 @@ migration-table readback decide the state before another apply attempt.
 
 At this checkpoint:
 
-- Application D1 candidate head is 0074;
-- the local SQLite inventory is 74 migrations, 104 required tables, 1,759
+- Application D1 candidate head is 0076;
+- the local SQLite inventory is 76 migrations, 104 required tables, 1,759
   checked incremental columns, and 162 key indexes;
-- the 0074 SQLite verifier includes preflight rejection, schema objects,
+- the 0074/0076 SQLite verifier includes exact-schema and empty-state
+  preflight rejection, immutable 0074 file hashing, final schema objects,
   exact protected trigger closure with an unknown-trigger negative,
   passkey generation enforcement, unrelated logs, protected-audit rejection,
-  duplicate-DDL failure, the 34/36-object 0073 migration-aware profiles, 20
-  cross-engine-stable 0074 SQL fingerprints, and three complete table PRAGMA
-  fingerprints;
+  duplicate-rebuild rejection, the 34/37-object 0073 migration-aware profiles,
+  22 cross-engine-stable final SQL fingerprints, and three complete table
+  PRAGMA fingerprints;
 - the typed command's focused Rust derivation tests pass;
-- the complete Worker Rust library passes 986 tests, including the private
+- the complete Worker Rust library passes 988 tests, including the private
   0074 repository and route-free coordinator source-contract tests;
 - two Bun SQLite coordinator tests prepare the exact phase query against
-  migrations 0001 through 0074 and project every authority component plus the
+  migrations 0001 through 0076 and project every authority component plus the
   current terminal ledger head;
 - the isolated issuer aggregate passes 29 TypeScript protocol tests and 7
   Workerd runtime tests. Rust and TypeScript consume the same versioned
   39-request/49-subject fixed-vector canary manifest;
-- the real-Workerd atomic-admission suite passes 38 tests, including 0074
-  `5/0`, same-Session readback, privacy projection, ordinary/protected
-  retention, replay after passkey deletion, five-second issuance boundaries,
-  exact trigger closure, immutability, and generation-drift rollback;
-  and
-- migration configuration resolves a contiguous 74-migration chain with 0074
-  as head.
+- the real-Workerd atomic-admission suite passes 43 tests, including 0076
+  generation-greater-than-`iat` exact `5/0`, post-drop migration rollback,
+  same-Session readback, privacy projection, ordinary/protected retention,
+  replay after passkey deletion, five-second issuance boundaries, exact
+  trigger closure, immutability, and generation-drift rollback;
+- migration configuration resolves a contiguous 76-migration chain with 0076
+  as head; and
 - the repository-root `bun run check` aggregate passes across Worker builds,
   Workerd/Vitest contracts, frontend gates, SQLite verification, the complete
   Rust workspace, and all required WASM target checks.
 
 The aggregate `python tools/verify_sqlite.py` gate is green. It replays through
-0073 against the 34-object base profile and through 0074 against the
-36-object upgraded profile, then checks the stable 0074 SQL and PRAGMA
-contracts. These are local implementation facts, not remote staging evidence.
+0073 against the 34-object base profile, preserves the historical 0074
+profile, and verifies the 37-object exact 0076 profile plus the final 22-object
+command and three-table PRAGMA contracts. These are local implementation
+facts, not remote staging evidence.
 
 ## Remaining gates
 
-### 0074-specific
+### 0074/0076-specific
 
-- Add the empty-table corrective migration for the legacy
-  `root_session_issued_at >= root_session_epoch` table and trigger clauses,
-  preserve 0074 byte-for-byte, and rerun the complete SQLite/Workerd schema,
-  rollback, concurrency, and `5/0` matrix. This is a hard blocker for remote
-  candidate apply and every command write.
+- Local 0076 implementation, schema fingerprints, post-drop rollback, and
+  exact `5/0` pass. Apply 0075/0076 only through a version-controlled isolated
+  staging campaign with backup/Time Travel, catalog/PRAGMA readback, injected
+  faults, N/N-1 checks, and retained signed evidence. Every remote command
+  write remains blocked until that evidence is approved.
 - The route-free coordinator foundation is implemented and documented in
   [`relay-container-drain-registration-coordinator.md`](relay-container-drain-registration-coordinator.md).
   It uses one first-primary SQL statement per phase, validates fresh Root,
@@ -483,6 +485,9 @@ contracts. These are local implementation facts, not remote staging evidence.
   raw `sid`, nor `SESSION_SECRET` may cross the Service Binding. The frozen
   protocol and remaining replay boundary are documented in
   [`root-session-phase-proof-v1.md`](root-session-phase-proof-v1.md).
+- Freeze typed challenge, issuer-request, and commit subject structs. Commit
+  binding must be derived internally from the verified action, frozen issuer
+  request, and verified permit, never accepted as a caller-carried digest.
 - Use a dedicated persistent coordinator DO. The generic Passkey ceremony and
   generic admin Passkey step-up paths cannot provide response-loss recovery
   while preserving 0074's atomic Passkey consumption.
@@ -505,7 +510,8 @@ contracts. These are local implementation facts, not remote staging evidence.
   ledger-head drift, schema drift, and D1 retry behavior.
 - Repeat `5/0` and exact readback in remote isolated staging with retained
   before/after schema and Time Travel evidence.
-- Add a version-controlled 0074 remote preflight/apply/readback/fault-campaign
+- Add a version-controlled 0075/0076 remote
+  backup/preflight/apply/readback/fault-campaign
   command that defaults to read-only, requires explicit mutation confirmation,
   and emits a signed evidence bundle. Ad hoc Wrangler commands are not an
   acceptable production gate.

@@ -42,7 +42,7 @@ current browser session after bumping the epoch; admin password reset,
 disable/delete, and role promote/demote bump the target user's epoch so old
 browser cookies do not survive account recovery or re-enable.
 
-2026-07-30 update: `session_epoch` is now an exact monotonic generation, not a
+2026-07-31 update: `session_epoch` is now an exact monotonic generation, not a
 timestamp surrogate. Every protected request requires equality between the
 signed Cookie generation and live D1 generation. Every Cookie issue obtains a
 fresh 32-byte random `sid`, including multiple issues in the same second.
@@ -54,11 +54,12 @@ Password changes and resets, role changes, disable, and soft delete increment
 the generation in the same D1 statement as the account mutation.
 
 The live Rust session, action/permit, and issuer paths never compare this
-generation to `iat`. The immutable 0074 drain-source command migration retains
-one historical generation/time comparison in its table and trigger schema.
-It remains a hard NO-GO until a later additive, empty-table rebuild migration
-removes that relationship and refreezes schema fingerprints; 0074 itself must
-remain byte-stable.
+generation to `iat`. Immutable 0074 retains its historical predicates
+byte-for-byte; additive 0076 locally rebuilds the effective empty command table
+and trigger schema without them. Exact SQLite/Workerd fingerprints,
+post-drop rollback, and generation-greater-than-`iat` `5/0` evidence pass
+locally. Remote 0075/0076 apply, browser revocation/concurrency, and retained
+staging evidence are still absent, so production remains **NO-GO**.
 
 > **Decision (already made): forced re-auth.** Go-issued cookies are not readable
 > by Rust. Cutover logs every browser session out; users sign in again. This is

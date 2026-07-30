@@ -1541,7 +1541,7 @@ authorization/attestation matrix remains historical evidence.
 | P5 | Candidate/schema values advance locally to 0073 | Authenticated remote before/after readback, immutable signed packet, budgets and independent approvals | Local contract only |
 | Promotion | Go/VPS remains authoritative; no remote 0073 apply or traffic change is claimed | Full M1-M4, drain, billing/reverse-sync, operation-14, rollback and traffic-return gates | **NO-GO** |
 
-## 2026-07-30 Exact Root Session Authority Overlay
+## 2026-07-31 Exact Root Session Authority Overlay
 
 This overlay advances only the local session, phase-proof, and schema guard
 contracts. It does not authorize a route, remote migration, or traffic shift.
@@ -1550,7 +1550,7 @@ contracts. It does not authorize a route, remote migration, or traffic shift.
 |---|---|---|---|
 | Session identity | Signed Cookie carries exact D1 generation, random 32-byte per-issue `sid`, iat and exp; malformed/legacy claims fail closed | Deployed stale-cookie, same-second issuance, revocation and recovery browser smoke | Local pass; remote open |
 | Role and generation integrity | Migration 0075 preflight plus persistent enum, monotonic-generation and exact-Root write guards; role `101` rollback tested | Remote backup/apply/catalog readback, invalid-data preflight rehearsal and N/N-1 deployment proof | Local pass; remote blocked |
-| 0074 schema exactness | Runtime action, permit and issuer validation keep generation independent from time; immutable 0074 still contains historical `root_session_issued_at >= root_session_epoch` table/trigger clauses | Add an empty-table rebuild migration, preserve 0074 bytes, refreeze SQL/PRAGMA fingerprints, and pass SQLite/Workerd/remote `5/0` evidence before candidate apply or writes | **Blocked** |
+| 0074/0076 schema exactness | Immutable 0074 hash is frozen; 0076 requires exact predecessor schema plus empty command/consumption state, rebuilds the effective table and trigger closure without generation/time predicates, refreezes 22 SQL objects and three PRAGMA contracts, and passes local SQLite plus Workerd post-drop rollback and exact `5/0` tests | Remote backup/apply/catalog and PRAGMA readback, injected rollback faults, retained exact `5/0`, and N/N-1 deployment evidence before any command write | Local pass; remote blocked |
 | Phase proof cryptography | Strict canonical HMAC protocol, staging-only 10-second default/15-second maximum, current/previous rotation validation, Rust plus Bun/WebCrypto fixed vector | Managed staging secret lifecycle, deployment identity, propagation bounds, rotation/revocation and redaction evidence | Foundation only |
 | Phase authorization | Proof binds exact Root/session, operation, authorization, ceremony, intent, semantic snapshot, phase and parent proof; coordinator accepts only verified type | Application issuance after each fresh D1 check and private authenticated transport | Route-free local pass |
 | Phase subject binding | Domain-separated `phase_binding_sha256` primitive exists and is carried by the verified type | Freeze typed challenge/issuer/commit subjects; verifier must derive commit binding from verified action, frozen issuer request and verified permit, never from caller-carried expected digest | **Blocked** |

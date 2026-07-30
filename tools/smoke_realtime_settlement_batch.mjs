@@ -988,7 +988,7 @@ function buildBindingSmokePlan(options) {
       "Deploy a staging Worker with REALTIME_SETTLEMENT_STAGING_SMOKE_ENABLED=true.",
       "Keep ENVIRONMENT=staging; the Worker route rejects production.",
       "Authenticate with an admin session Cookie; the tool reports only whether the Cookie is configured.",
-      "Run against an isolated staging D1 database with migrations through 0074 applied.",
+      "Run against an isolated staging D1 database with migrations through 0076 applied.",
       "Archive /api/platform/capabilities before and after the smoke run.",
     ],
     requests: options.scenarios.map((scenario) => ({

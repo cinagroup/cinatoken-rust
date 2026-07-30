@@ -2994,7 +2994,7 @@ def main() -> int:
     if relay_container_drain_source_consumption_rollout_verified:
         message += " + 0073 claimed terminal source authorization consumption"
     if relay_container_drain_source_registration_command_rollout_verified:
-        message += " + 0074 atomic Root registration command"
+        message += " + 0074/0075/0076 exact Root registration command"
     if flat_intent_guard_verified:
         message += " + 0029 flat-intent guard + 0030 immutable billing contract"
     if task_billing_intents_verified:
@@ -27487,26 +27487,46 @@ def verify_relay_container_drain_source_registration_command_rollout(
         ),
         None,
     )
+    exact_generation_path = next(
+        (
+            path
+            for path in schema_paths
+            if path.name
+            == "0076_relay_container_drain_source_registration_command_exact_session_generation.sql"
+        ),
+        None,
+    )
     if (
         command_path is None
         or consumption_path is None
         or exactness_path is None
+        or exact_generation_path is None
     ):
-        raise SystemExit("0073/0074/0075 drain registration command chain not found")
+        raise SystemExit(
+            "0073/0074/0075/0076 drain registration command chain not found"
+        )
     command_index = schema_paths.index(command_path)
+    exactness_index = schema_paths.index(exactness_path)
     if (
         command_index == 0
         or schema_paths[command_index - 1] != consumption_path
         or command_index + 1 >= len(schema_paths)
         or schema_paths[command_index + 1] != exactness_path
-        or schema_paths[-1] != exactness_path
+        or exactness_index + 1 >= len(schema_paths)
+        or schema_paths[exactness_index + 1] != exact_generation_path
+        or schema_paths[-1] != exact_generation_path
     ):
         raise SystemExit(
             "0074 drain registration command must immediately follow 0073 "
-            "and immediately precede the 0075 current head"
+            "and the 0075/0076 exactness migrations must be the current tail"
         )
 
     command_sql = command_path.read_text(encoding="utf-8")
+    if (
+        hashlib.sha256(command_sql.encode("utf-8")).hexdigest()
+        != "5478d632569acfd83884021cd843e96353a223044ed9927b4b54c4863e0f57ed"
+    ):
+        raise SystemExit("immutable 0074 registration command migration drifted")
     if "if not exists" in command_sql.lower():
         raise SystemExit("0074 critical command objects must fail duplicate DDL")
     required_fragments = (
@@ -27564,6 +27584,43 @@ def verify_relay_container_drain_source_registration_command_rollout(
             raise SystemExit(f"0075 exact Root migration missing {fragment!r}")
     if "if not exists" in exactness_sql.lower():
         raise SystemExit("0075 critical authority guards must fail duplicate DDL")
+    exact_generation_sql = exact_generation_path.read_text(encoding="utf-8")
+    for fragment in (
+        "PRAGMA defer_foreign_keys = ON",
+        "0076 requires exact 0074/0075 registration command schema",
+        "0076 requires empty 0074 registration command state",
+        "relay_container_drain_source_registration_command_exact_session_generation_preflight",
+        "relay_container_drain_source_authorization_claims",
+        "relay_container_drain_source_terminal_receipts",
+        "DROP TABLE relay_container_drain_source_registration_commands",
+        "CREATE TABLE relay_container_drain_source_registration_commands",
+        "relay_container_drain_source_registration_command_insert_guard",
+        "relay_container_drain_source_registration_command_project",
+        "relay_container_drain_source_command_exact_root_guard",
+        "relay_container_drain_source_registration_exact_root_guard",
+        "relay_container_drain_source_protected_audit_insert_guard",
+        "relay_container_drain_source_registration_insert_guard",
+        "root_user.session_epoch = NEW.root_session_epoch",
+    ):
+        if fragment not in exact_generation_sql:
+            raise SystemExit(f"0076 exact session migration missing {fragment!r}")
+    for historical_probe in (
+        "root_session_issued_at >= root_session_epoch",
+        "NEW.root_session_issued_at >= root_user.session_epoch",
+    ):
+        if exact_generation_sql.count(historical_probe) != 1:
+            raise SystemExit(
+                "0076 must reference each historical predicate only in its "
+                f"preflight probe: {historical_probe!r}"
+            )
+    if "ALTER TABLE relay_container_drain_source_registration_commands" in (
+        exact_generation_sql
+    ):
+        raise SystemExit("0076 must not rename the registration command table")
+    if "if not exists" in exact_generation_sql.lower():
+        raise SystemExit(
+            "0076 must not mask predecessor drift with IF NOT EXISTS"
+        )
 
     def apply_paths(
         connection: sqlite3.Connection,
@@ -27621,8 +27678,101 @@ def verify_relay_container_drain_source_registration_command_rollout(
     )
     exactness_preflight_conn.close()
 
+    for drift_sql in (
+        "DROP INDEX idx_relay_container_drain_source_registration_command_expiry",
+        """
+        CREATE TRIGGER unexpected_registration_command_preflight_guard
+        BEFORE INSERT
+        ON relay_container_drain_source_registration_commands
+        FOR EACH ROW
+        BEGIN
+          SELECT 1;
+        END
+        """,
+        "DROP TRIGGER relay_container_drain_source_registration_exact_root_guard",
+    ):
+        exact_generation_drift_conn = sqlite3.connect(":memory:")
+        apply_paths(
+            exact_generation_drift_conn,
+            schema_paths[: schema_paths.index(exact_generation_path)],
+        )
+        exact_generation_drift_conn.executescript(drift_sql)
+        exact_generation_drift_conn.commit()
+        expect_integrity_error(
+            lambda: exact_generation_drift_conn.executescript(
+                exact_generation_sql
+            ),
+            "0076 rebuilt a drifted 0074/0075 command schema",
+            "0076 requires exact 0074/0075 registration command schema",
+        )
+        exact_generation_drift_conn.close()
+
+    exact_generation_preflight_conn = sqlite3.connect(":memory:")
+    apply_paths(
+        exact_generation_preflight_conn,
+        schema_paths[: schema_paths.index(exact_generation_path)],
+    )
+    command_triggers = exact_generation_preflight_conn.execute(
+        """
+        SELECT name, sql
+        FROM sqlite_master
+        WHERE type = 'trigger'
+          AND tbl_name = 'relay_container_drain_source_registration_commands'
+        """
+    ).fetchall()
+    for trigger_name, _ in command_triggers:
+        exact_generation_preflight_conn.execute(
+            f'DROP TRIGGER "{trigger_name}"'
+        )
+    exact_generation_preflight_conn.execute("PRAGMA ignore_check_constraints = ON")
+    command_columns = exact_generation_preflight_conn.execute(
+        """
+        SELECT name, type
+        FROM pragma_table_info(
+          'relay_container_drain_source_registration_commands'
+        )
+        """
+    ).fetchall()
+    exact_generation_preflight_conn.execute(
+        "INSERT INTO relay_container_drain_source_registration_commands ("
+        + ",".join(f'"{name}"' for name, _ in command_columns)
+        + ") VALUES ("
+        + ",".join("?" for _ in command_columns)
+        + ")",
+        tuple(
+            1 if "INT" in column_type.upper() else "a" * 64
+            for _, column_type in command_columns
+        ),
+    )
+    for _, trigger_sql in command_triggers:
+        exact_generation_preflight_conn.execute(trigger_sql)
+    exact_generation_preflight_conn.commit()
+    expect_integrity_error(
+        lambda: exact_generation_preflight_conn.executescript(
+            exact_generation_sql
+        ),
+        "0076 rebuilt a nonempty 0074 registration command table",
+        "0076 requires empty 0074 registration command state",
+    )
+    exact_generation_preflight_conn.close()
+
     schema_conn = sqlite3.connect(":memory:")
     apply_paths(schema_conn, schema_paths)
+    forbidden_schema_fragments = (
+        "root_session_issued_at >= root_session_epoch",
+        "NEW.root_session_issued_at >= root_user.session_epoch",
+    )
+    final_schema_sql = "\n".join(
+        row[0]
+        for row in schema_conn.execute(
+            "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL"
+        )
+    )
+    for forbidden in forbidden_schema_fragments:
+        if forbidden in final_schema_sql:
+            raise SystemExit(
+                f"0076 effective SQLite schema retains {forbidden!r}"
+            )
     expected_triggers = {
         "passkey_credential_identity_insert_guard",
         "passkey_credential_immutable_identity_update_guard",
@@ -27680,7 +27830,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
     }
     if len(expected_command_object_fingerprints) != 22:
         raise SystemExit(
-            "0075 Rust registration schema contract must contain exactly 22 stable object fingerprints"
+            "0076 Rust registration schema contract must contain exactly 22 stable object fingerprints"
         )
     command_object_names = sorted(
         object_name
@@ -27730,7 +27880,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
         != expected_command_object_fingerprints
     ):
         raise SystemExit(
-            "0074 Rust schema object fingerprints do not match applied SQLite"
+            "0076 Rust schema object fingerprints do not match applied SQLite"
         )
     expected_trigger_closure = {
         object_name
@@ -27761,7 +27911,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
         )
     }
     if actual_trigger_closure != expected_trigger_closure:
-        raise SystemExit("0074 protected trigger closure is not exact")
+        raise SystemExit("0076 protected trigger closure is not exact")
     schema_conn.executescript(
         """
         CREATE TRIGGER unexpected_registration_command_trigger
@@ -27787,7 +27937,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
         )
     }
     if tampered_trigger_closure == expected_trigger_closure:
-        raise SystemExit("0074 trigger closure ignored an unknown trigger")
+        raise SystemExit("0076 trigger closure ignored an unknown trigger")
     schema_conn.execute("DROP TRIGGER unexpected_registration_command_trigger")
     preflight_objects = schema_conn.execute(
         """
@@ -27813,6 +27963,18 @@ def verify_relay_container_drain_source_registration_command_rollout(
     ).fetchone()
     if exactness_preflight_objects != (0,):
         raise SystemExit("0075 preflight objects survived the migration")
+    exact_generation_preflight_objects = schema_conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM sqlite_master
+        WHERE name IN (
+          'relay_container_drain_source_registration_command_exact_session_generation_preflight',
+          'relay_container_drain_source_registration_command_exact_session_generation_preflight_guard'
+        )
+        """
+    ).fetchone()
+    if exact_generation_preflight_objects != (0,):
+        raise SystemExit("0076 preflight objects survived the migration")
 
     base_consumption_contract_source = repositories_source[
         repositories_source.index(
@@ -27939,7 +28101,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
         != expected_upgraded_consumption_fingerprints
     ):
         raise SystemExit(
-            "0073 Rust dual-profile schema contract does not match 0075 SQLite"
+            "0073 Rust exact-generation profile does not match 0076 SQLite"
         )
 
     table_pragma_pattern = re.compile(
@@ -27979,7 +28141,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
     }
     if len(expected_command_table_pragmas) != 3:
         raise SystemExit(
-            "0074 Rust schema contract must contain exactly three table PRAGMA fingerprints"
+            "0076 Rust schema contract must contain exactly three table PRAGMA fingerprints"
         )
     command_table_pragma_sql = """
         SELECT
@@ -28055,7 +28217,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
         ).fetchone()
         if pragma_contracts is None:
             raise SystemExit(
-                f"0074 SQLite PRAGMA contract is unreadable for {table_name}"
+                f"0076 SQLite PRAGMA contract is unreadable for {table_name}"
             )
         actual_command_table_pragmas[table_name] = tuple(
             hashlib.sha256(contract.encode("utf-8")).hexdigest()
@@ -28063,7 +28225,7 @@ def verify_relay_container_drain_source_registration_command_rollout(
         )
     if actual_command_table_pragmas != expected_command_table_pragmas:
         raise SystemExit(
-            "0074 Rust table PRAGMA fingerprints do not match applied SQLite"
+            "0076 Rust table PRAGMA fingerprints do not match applied SQLite"
         )
 
     schema_conn.execute(
@@ -28215,6 +28377,29 @@ def verify_relay_container_drain_source_registration_command_rollout(
         pass
     else:
         raise SystemExit("0075 migration did not fail duplicate DDL")
+    exact_generation_table_before_replay = schema_conn.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'relay_container_drain_source_registration_commands'
+        """
+    ).fetchone()
+    expect_integrity_error(
+        lambda: schema_conn.executescript(exact_generation_sql),
+        "0076 accepted a duplicate exact-generation rebuild",
+        "0076 requires exact 0074/0075 registration command schema",
+    )
+    exact_generation_table_after_replay = schema_conn.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table'
+          AND name = 'relay_container_drain_source_registration_commands'
+        """
+    ).fetchone()
+    if exact_generation_table_after_replay != exact_generation_table_before_replay:
+        raise SystemExit("0076 duplicate rebuild attempt changed the command table")
     schema_conn.close()
 
 

@@ -26310,23 +26310,23 @@ partial or mismatched immutable readback, or schema drift remains
 `OutcomeUnknown`; an unknown response must be classified by same-Session
 command/alias readback before any retry.
 
-The local candidate inventory advances to 74 migrations, 104 required tables,
+The local candidate inventory advances to 76 migrations, 104 required tables,
 1,759 checked incremental columns, and 162 key indexes. The private Rust
 repository now implements schema readiness, the one 52-binding statement,
 trigger-aware classification, immutable projection comparison plus
 fresh-only current-passkey comparison, 15 stable conflict aliases, and
 four-state recovery without a route. The migration-aware
-readiness contract retains the 34-object 0073 profile, accepts only the exact
-36-object 0074 profile after upgrade, and additionally checks 20
-cross-engine-stable 0074 SQL fingerprints plus complete PRAGMA fingerprints
+readiness contract retains the 34-object 0073 profile, distinguishes the
+historical 0074 profile from the exact 37-object 0076 profile, and additionally
+checks 22 cross-engine-stable final SQL fingerprints plus complete PRAGMA fingerprints
 for `passkey_credentials`, `logs`, and the command table. It queries the full
 trigger closure on all three tables, so an unknown trigger fails readiness.
-The 38-test real-Workerd suite, aggregate SQLite verifier, focused Rust
+The 43-test real-Workerd suite, aggregate SQLite verifier, focused Rust
 registration-chain tests, and contiguous migration-head audit pass.
 The isolated issuer additionally passes 29 TypeScript tests and 7 Workerd
 tests against the same versioned 39-request/49-subject fixed-vector manifest
-consumed by Rust. The complete Worker Rust library passes 986 tests. Two Bun
-SQLite coordinator tests prepare the exact phase query through migration 0074
+consumed by Rust. The complete Worker Rust library passes 988 tests. Two Bun
+SQLite coordinator tests prepare the exact phase query through migration 0076
 and project every authority component plus the current terminal ledger head.
 The repository-root `bun run check` aggregate also passes the Worker builds,
 Workerd/Vitest contracts, frontend gates, SQLite verification, complete Rust
@@ -26377,7 +26377,7 @@ return only the existing registration result and must never mint fresh
 downstream authority.
 Go/VPS remains authoritative and production remains **NO-GO**.
 
-### 0075 exact Root authority and phase-proof overlay (2026-07-30)
+### 0075/0076 exact Root authority and phase-proof overlay (2026-07-31)
 
 This overlay supersedes the prior assumption that `users.session_epoch` is a
 timestamp boundary compared with Cookie `iat`. It is an independent monotonic
@@ -26403,14 +26403,22 @@ at both 0074 command and 0073 registration insertion. If any guard fails, the
 complete five-effect statement rolls back.
 
 The runtime session, action, permit, issuer, and phase-proof contracts now
-keep generation completely independent from time. Migration 0074 is already
-an immutable historical migration and still contains
-`root_session_issued_at >= root_session_epoch` in the command-table `CHECK`
-and insert guard. It must not be edited in place. Before the candidate schema
-is applied to isolated staging, a new additive migration must require an empty
-command table, rebuild the table and trigger contract without that
-relationship, and refreeze the normalized SQL/PRAGMA fingerprints. This is a
-hard NO-GO gate for remote apply and every registration command write.
+keep generation completely independent from time. Immutable migration 0074
+retains its historical generation/time predicates byte-for-byte. Additive,
+default-inert migration
+`0076_relay_container_drain_source_registration_command_exact_session_generation.sql`
+first requires the exact 0074/0075 object closure and empty command,
+protected-audit, registration, claim, terminal, and receipt-ledger state. It
+then rebuilds the empty command table and its direct trigger closure without
+comparing `root_session_epoch` with a timestamp.
+
+Local SQLite and Workerd verification refreezes the 22 normalized schema
+objects and three PRAGMA contracts, proves 0076 preflight rejection, proves
+post-`DROP TABLE` batch rollback, and accepts `root_session_epoch > iat` with
+an exact fresh/replay `5/0` result. This closes the local schema-exactness
+blocker only. No remote D1 backup/apply/catalog readback/fault campaign exists,
+so remote schema mutation, every registration command write, and production
+remain **NO-GO**.
 
 The frozen `RootSessionPhaseProofV1` has these properties:
 
@@ -26449,7 +26457,7 @@ digest separation, and the three-proof parent chain.
 | 4 | Freeze private transport | No route/workers.dev/preview; authenticated Service Binding or named entrypoint only |
 | 5 | Wire Application issuance | Cookie plus fresh first-primary D1 Root/session check precedes every proof |
 | 6 | Provision staging keys | Current/previous metadata, secret-to-stdin workflow, redaction and rotation rehearsal |
-| 7 | Add and verify the immutable-0074 corrective migration | Empty-table preflight, rebuilt table/trigger contract, refrozen SQL/PRAGMA and SQLite/Workerd fault matrix |
+| 7 | Retain the locally verified 0076 correction | 0074 hash frozen; empty-state/exact-schema preflight, rebuilt closure, refrozen SQL/PRAGMA and SQLite/Workerd rollback plus `5/0` matrix pass |
 | 8 | Apply the complete candidate schema in isolated staging | Backup/Time Travel, preflight, normalized trigger/PRAGMA readback, N/N-1 checks |
 | 9 | Run adversarial campaign | Replay, concurrency, response/process loss, revocation, expiry, schema and deployment drift |
 | 10 | Prove atomic command | Remote exact `5/0`, alias recovery, no duplicated downstream authority |
@@ -26463,8 +26471,6 @@ complete staging packet is approved.
 
 #### Remaining hard blockers
 
-- immutable 0074 still carries a historical generation/time table and trigger
-  relationship; the additive empty-table rebuild migration is not implemented;
 - phase-specific canonical subjects are not frozen, and commit verification
   does not yet derive its proof binding from the verified permit;
 - no dedicated replay/state coordinator DO;
@@ -26473,7 +26479,8 @@ complete staging packet is approved.
 - password changes/resets, role changes, disable, and soft delete now mutate
   the account and increment its generation in one D1 statement; remote
   concurrency and browser revocation evidence is still required;
-- no remote 0075 apply/readback or 0074 `5/0` campaign;
+- no remote 0075/0076 backup/apply/catalog readback, rollback fault campaign,
+  or exact `5/0` evidence;
 - no full response-loss winner recovery;
 - no retained load, duration, cost, SLO, alert, redaction, and rollback
   evidence; and

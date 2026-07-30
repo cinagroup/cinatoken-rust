@@ -2684,7 +2684,7 @@ pre-dispatch fields above. Earlier tables remain checkpoint history.
 | Go/VPS authority | **RETAINED** |
 | Production eligibility | **NO-GO** |
 
-## 2026-07-30 Root Session Phase-Proof Status
+## 2026-07-31 Root Session Phase-Proof Status
 
 This table supersedes only older rows that describe the phase proof or exact
 session-generation mechanism as absent.
@@ -2697,16 +2697,17 @@ session-generation mechanism as absent.
 | Legacy Rust Cookie policy | **FAIL CLOSED; FORCED REAUTHENTICATION** |
 | Role authority | **ENUM `0/1/10/100`; ROOT IS EXACTLY `100`** |
 | Migration 0075 | **LOCAL VERIFIED; ROLE/GENERATION AND BOTH FINAL ROOT WRITE GUARDS** |
-| Immutable 0074 generation/time residual | **BLOCKED; ADDITIVE EMPTY-TABLE REBUILD REQUIRED BEFORE REMOTE APPLY/WRITE** |
+| Migration 0076 exact-generation schema | **LOCAL VERIFIED; 0074 BYTE-STABLE, EFFECTIVE TABLE/TRIGGER REBUILT, POST-DROP ROLLBACK AND `5/0` PASS** |
 | RootSessionPhaseProofV1 | **IMPLEMENTED; CANONICAL HMAC, 10-SECOND DEFAULT/15-SECOND MAXIMUM** |
 | Cross-language vector | **RUST + INDEPENDENT BUN/WEBCRYPTO PASS** |
 | Coordinator consumption | **OPAQUE VERIFIED TYPE; ROUTE-FREE PURE VALIDATION** |
 | Phase chain | **CHALLENGE -> ISSUER -> COMMIT PARENT DIGESTS VERIFIED** |
+| Typed phase subjects | **BLOCKED; CANONICAL SUBJECT STRUCTS NOT FROZEN AND COMMIT BINDING NOT DERIVED FROM VERIFIED PERMIT** |
 | Application issuance route | **ABSENT** |
 | Private Service Binding / named entrypoint | **ABSENT** |
 | Persistent replay/recovery DO | **ABSENT** |
 | Staging proof-key lifecycle | **NOT PROVISIONED OR REHEARSED** |
-| Remote 0075 / exact `5/0` evidence | **NOT COLLECTED** |
+| Remote 0075/0076 / exact `5/0` evidence | **NOT COLLECTED** |
 | Go/VPS authority | **RETAINED** |
 | Production eligibility | **NO-GO** |
 
@@ -2717,9 +2718,9 @@ evidence. The next production-critical boundary is a one-owner Authority
 dispatch claim followed by exactly one Controller call and status-only
 ambiguity recovery. No retry path may issue a second enable mutation.
 
-No credential or remote state was accessed and no migration, gate, deployment,
-Container, customer traffic, billing, Go/VPS, DNS, or production state was
-changed. Production remains **NO-GO**.
+No credential or remote state was accessed and no remote migration, gate,
+deployment, Container, customer traffic, billing, Go/VPS, DNS, or production
+state was changed. Production remains **NO-GO**.
 
 ## 2026-07-29 Operation-5 Immutable Dispatch Claim Status
 

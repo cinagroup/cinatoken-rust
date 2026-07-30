@@ -12543,7 +12543,7 @@ until the final migration runs under real Workerd with exact same-Session
 readback and fault/concurrency tests. No remote resource, secret, route, gate,
 or deployment was used. Production remains **NO-GO**.
 
-## 2026-07-30 Route-Free Registration Coordinator Verification
+## 2026-07-31 Route-Free Registration Coordinator Verification
 
 This checkpoint supersedes only the preceding statement that 0074 had not
 yet run under local Workerd. The atomic 0074 command and its `5/0` local
@@ -12555,7 +12555,7 @@ Targeted current-worktree verification:
 ```text
 bun test tests/drain-source-registration-coordinator-snapshot.test.mjs
   2 passed
-  exact phase SQL prepared after migrations 0001 through 0074
+  exact phase SQL prepared after migrations 0001 through 0076
   nested authorization/Root/Passkey/head/fence/ledger projection passed
 
 cargo test -p cinatoken-worker --lib \
@@ -12598,7 +12598,7 @@ recovery. No Service Binding, coordinator DO, route, gate, issuer call, remote
 D1 operation, deployment, or traffic change was tested. Go/VPS remains
 authoritative and production remains **NO-GO**.
 
-## 2026-07-30 Root Session Phase Proof And Exactness Verification
+## 2026-07-31 Root Session Phase Proof And Exactness Verification
 
 Targeted current-worktree verification:
 
@@ -12614,16 +12614,16 @@ cargo test -p cinatoken-session -p cinatoken-auth
   auth 10 passed
 
 bun run check:d1:migration-config
-  contiguous head 0075 passed
+  contiguous 76-migration head 0076 passed
 
 python tools/verify_sqlite.py
-  75 migrations / 104 tables / 1759 incremental columns / 162 key indexes
-  exact schema/guard verification passed
+  76 migrations / 104 tables / 1759 incremental columns / 162 key indexes
+  exact 0074 hash, 0076 schema/PRAGMA/preflight verification passed
 
 bun run check
   complete repository gate passed
   Worker 988 passed after the final fail-closed self-delete regression test
-  real-Workerd atomic admission 40 passed
+  real-Workerd atomic admission 43 passed
   all required wasm32 checks passed
 ```
 
@@ -12647,18 +12647,28 @@ the general role guard and proves the final command still rolls back.
 
 The audit also found and removed every runtime
 `root_session_issued_at < root_session_epoch` rejection from Rust action,
-Rust permit, and TypeScript issuer validation. Cross-language tests now prove
-that a valid generation may be numerically greater than `iat`. The immutable
-0074 command table and insert trigger still retain the inverse historical
-comparison. No remote candidate apply or command write is eligible until a
-new additive migration rebuilds the empty table without that clause and the
-complete schema/fault matrix passes.
+Rust permit, and TypeScript issuer validation. Cross-language tests prove that
+a valid generation may be numerically greater than `iat`. Immutable 0074
+retains the inverse historical comparison byte-for-byte. Additive 0076
+requires the exact predecessor schema and empty command/consumption state,
+rebuilds the effective table and trigger closure without those predicates, and
+refreezes 22 normalized SQL plus three PRAGMA contracts.
+
+SQLite rejects drifted or nonempty preflight state, freezes the 0074 file
+SHA-256, confirms no forbidden predicate survives the effective schema, and
+rejects a duplicate rebuild before destructive DDL. Real Workerd injects a
+failure after `DROP TABLE` and proves full batch rollback, then accepts
+`root_session_epoch > root_session_issued_at` as an exact fresh/replay `5/0`
+command with one command, audit, registration, ledger row, and Passkey
+generation update.
 
 Password changes and email resets, role changes, disable, and soft delete now
 advance the generation in the same D1 `UPDATE` as the security mutation.
 Generation exhaustion or guard failure therefore cannot leave a completed
 account mutation with an unrevoked old Cookie.
 
-No proof issuer route, private binding, persistent replay coordinator,
-production key, remote migration, or traffic change was exercised. The proof
-is not independently single-use. Production remains **NO-GO**.
+This local 0076 matrix does not freeze typed challenge/issuer/commit subject
+schemas or prove that commit binding is derived from a verified permit. No
+proof issuer route, private binding, persistent replay coordinator, production
+key, remote 0075/0076 migration, or traffic change was exercised. The proof is
+not independently single-use. Production remains **NO-GO**.

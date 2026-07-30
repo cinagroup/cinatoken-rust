@@ -200,14 +200,14 @@ function fixtureDatabase() {
 }
 
 describe("drain source registration phase snapshot SQL", () => {
-  it("prepares against the complete D1 schema through 0074", () => {
+  it("prepares against the complete D1 schema through 0076", () => {
     const database = new Database(":memory:");
     database.exec("PRAGMA foreign_keys = ON");
     for (const name of readdirSync("migrations/d1")
       .filter((name) => /^\d{4}_.*\.sql$/u.test(name))
       .sort()) {
       database.exec(readFileSync(`migrations/d1/${name}`, "utf8"));
-      if (name.startsWith("0074_")) break;
+      if (name.startsWith("0076_")) break;
     }
 
     expect(

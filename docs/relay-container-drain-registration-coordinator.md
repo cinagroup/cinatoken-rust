@@ -84,12 +84,15 @@ ID/version metadata and never exposes the Cookie, raw `sid`, or
 `SESSION_SECRET`. See
 [`root-session-phase-proof-v1.md`](root-session-phase-proof-v1.md).
 
-The runtime coordinator treats `session_epoch` only as a generation. The
-immutable 0074 command schema still contains a historical
-`root_session_issued_at >= root_session_epoch` table/trigger relationship.
-The next additive migration must rebuild that empty command-table contract
-without the comparison before isolated-staging apply. Until then, this
-coordinator cannot be wired to a command writer.
+The runtime coordinator treats `session_epoch` only as a generation.
+Immutable 0074 retains its historical predicates byte-for-byte. Additive 0076
+locally verifies the exact predecessor schema and empty command/consumption
+state, rebuilds the effective command table and trigger closure without those
+predicates, and passes SQLite/Workerd fingerprint, post-drop rollback, and
+generation-greater-than-`iat` `5/0` tests. This closes the local schema blocker,
+but the coordinator still cannot be wired to a writer until typed phase
+subjects, private transport, persistent replay recovery, staging keys, and
+remote D1 evidence are complete.
 
 ## One-statement phase snapshot
 
@@ -410,26 +413,25 @@ Still required before staging enablement:
 The next code increment is not a public route and not a production gate. It
 must:
 
-1. add the empty-table corrective migration for 0074's historical
-   generation/time comparison and refreeze schema fingerprints;
-2. freeze typed challenge/issuer/commit phase subjects, with commit derived
+1. freeze typed challenge/issuer/commit phase subjects, with commit derived
    from the verified action, issuer request, and permit rather than a
    caller-carried digest;
-3. freeze the private caller protocol;
-4. wire the implemented Application-issued Root session phase proof only
+2. freeze the private caller protocol;
+3. wire the implemented Application-issued Root session phase proof only
    behind that private boundary;
-5. implement the dedicated durable coordinator state machine and alias-winner
+4. implement the dedicated durable coordinator state machine and alias-winner
    recovery without any public route;
-6. choose and test the Service-Binding-only or named-entrypoint boundary;
-7. add default-off staging configuration while keeping production authority
+5. choose and test the Service-Binding-only or named-entrypoint boundary;
+6. add default-off staging configuration while keeping production authority
    absent;
-8. wire begin to the first phase snapshot and durable `ChallengeIssued`;
-9. wire finish through durable claim, WebAuthn verification, issuer reread/call,
+7. wire begin to the first phase snapshot and durable `ChallengeIssued`;
+8. wire finish through durable claim, WebAuthn verification, issuer reread/call,
    final reread, and 0074 command;
-10. preserve the four-state
+9. preserve the four-state
    `FreshApplied`/`ExactReplay`/`Conflict`/`OutcomeUnknown` result model; and
-11. add a version-controlled isolated-staging fault campaign before any remote
-   mutation is attempted.
+10. add a version-controlled isolated-staging 0075/0076
+    backup/apply/readback/fault campaign before any remote mutation is
+    attempted.
 
 Until those gates and the broader migration gates pass, Cloudflare production
 remains **NO-GO**.

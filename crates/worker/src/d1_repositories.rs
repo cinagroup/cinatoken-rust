@@ -107,6 +107,8 @@ pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_MIGRATION: &str =
 pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION: &str =
     DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION;
 pub(crate) const ROOT_AUTHORITY_EXACTNESS_MIGRATION: &str = "0075_root_authority_exactness.sql";
+pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_EXACT_SESSION_GENERATION_MIGRATION: &str =
+    "0076_relay_container_drain_source_registration_command_exact_session_generation.sql";
 pub(crate) const RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256: &str =
     "fa8b6a9639ef803d367a0be3013c62e9c5bc47861a1bb38c18085fde5e1dca50";
 pub(crate) const RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256: &str =
@@ -1335,6 +1337,7 @@ struct RelayContainerDrainSourceRegistrationConflictProbe {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 struct RelayContainerDrainSourceRegistrationMigrationProfileProbe {
     registration_command_count: i64,
+    exact_session_generation_count: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -1611,6 +1614,28 @@ const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS:
     },
 ];
 
+const RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0076_EXTRA_SCHEMA_FINGERPRINTS:
+    &[RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint] = &[
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_command_insert_guard",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "4a7825c7d0bc7ac8ca7af6e68a838eb4307e3878dd79ec4b4283069d959bfc4a",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_command_project",
+        table_name: "relay_container_drain_source_registration_commands",
+        normalized_sql_sha256: "717871d2996d7bdf4e20c57714b73e82c30488b3ee5d84a66522b13e9318b1ef",
+    },
+    RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
+        object_type: "trigger",
+        object_name: "relay_container_drain_source_registration_exact_root_guard",
+        table_name: "relay_container_drain_source_authorization_registrations",
+        normalized_sql_sha256: "60c4bf6334af4b3c4e9884535c49d25cca734cc587f65bf23b4e44196d095ceb",
+    },
+];
+
 const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS:
     &[RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint] = &[
     RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
@@ -1653,7 +1678,7 @@ const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS:
         object_type: "table",
         object_name: "relay_container_drain_source_registration_commands",
         table_name: "relay_container_drain_source_registration_commands",
-        normalized_sql_sha256: "5714a9b679bc8a7a885d2d5935020c065d4df35cfb4060ce55f4cd7ce6e781d4",
+        normalized_sql_sha256: "d655cbf25735e0c652230b73475e4ef044f3f14e2aa10cc7d72a19b3825108e9",
     },
     RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
         object_type: "trigger",
@@ -1713,7 +1738,7 @@ const RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS:
         object_type: "trigger",
         object_name: "relay_container_drain_source_registration_command_insert_guard",
         table_name: "relay_container_drain_source_registration_commands",
-        normalized_sql_sha256: "0e37e8ebdc604f2c50513f90f5637274d78ad21fc88901592cc9d14bb2b69e0a",
+        normalized_sql_sha256: "4a7825c7d0bc7ac8ca7af6e68a838eb4307e3878dd79ec4b4283069d959bfc4a",
     },
     RelayContainerDrainSourceConsumptionExpectedSchemaFingerprint {
         object_type: "trigger",
@@ -17799,20 +17824,36 @@ async fn relay_container_drain_source_consumption_schema_ready_in_session(
     if !migration_probe.is_some_and(|probe| probe.migration_count == 7) {
         return Ok(false);
     }
-    let registration_command_migrated = session
+    let registration_profile = session
         .prepare(
             r#"
-            SELECT COUNT(1) AS registration_command_count
+            SELECT
+              COUNT(CASE WHEN name = ?1 THEN 1 END)
+                AS registration_command_count,
+              COUNT(CASE WHEN name = ?2 THEN 1 END)
+                AS exact_session_generation_count
             FROM d1_migrations
-            WHERE name = ?1
+            WHERE name IN (?1, ?2)
             "#,
         )?
-        .bind_refs(&[D1Type::Text(
-            RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION,
-        )])?
+        .bind_refs(&[
+            D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION),
+            D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_EXACT_SESSION_GENERATION_MIGRATION),
+        ])?
         .first::<RelayContainerDrainSourceRegistrationMigrationProfileProbe>(None)
-        .await?
-        .is_some_and(|probe| probe.registration_command_count == 1);
+        .await?;
+    let Some(registration_profile) = registration_profile else {
+        return Ok(false);
+    };
+    let registration_command_migrated = registration_profile.registration_command_count == 1;
+    let exact_session_generation_migrated =
+        registration_profile.exact_session_generation_count == 1;
+    if registration_profile.registration_command_count > 1
+        || registration_profile.exact_session_generation_count > 1
+        || (exact_session_generation_migrated && !registration_command_migrated)
+    {
+        return Ok(false);
+    }
 
     let schema_objects = session
         .prepare(
@@ -17886,6 +17927,7 @@ async fn relay_container_drain_source_consumption_schema_ready_in_session(
     if !relay_container_drain_source_consumption_schema_objects_match(
         &schema_objects,
         registration_command_migrated,
+        exact_session_generation_migrated,
     ) {
         return Ok(false);
     }
@@ -17977,6 +18019,7 @@ async fn relay_container_drain_source_consumption_schema_ready_in_session(
 fn relay_container_drain_source_consumption_schema_objects_match(
     probes: &[RelayContainerDrainSourceConsumptionSchemaObjectProbe],
     registration_command_migrated: bool,
+    exact_session_generation_migrated: bool,
 ) -> bool {
     let fingerprints = probes
         .iter()
@@ -17993,6 +18036,7 @@ fn relay_container_drain_source_consumption_schema_objects_match(
         relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
             fingerprints,
             registration_command_migrated,
+            exact_session_generation_migrated,
         )
     })
 }
@@ -18003,16 +18047,26 @@ fn relay_container_drain_source_consumption_schema_fingerprints_match(
     relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
         fingerprints,
         false,
+        false,
     )
 }
 
 fn relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
     fingerprints: &[RelayContainerDrainSourceConsumptionSchemaFingerprint],
     registration_command_migrated: bool,
+    exact_session_generation_migrated: bool,
 ) -> bool {
+    if exact_session_generation_migrated && !registration_command_migrated {
+        return false;
+    }
+    let registration_extras = if exact_session_generation_migrated {
+        RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0076_EXTRA_SCHEMA_FINGERPRINTS
+    } else {
+        RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS
+    };
     let expected_len = RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_SCHEMA_FINGERPRINTS.len()
         + if registration_command_migrated {
-            RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS.len()
+            registration_extras.len()
         } else {
             0
         };
@@ -18036,16 +18090,14 @@ fn relay_container_drain_source_consumption_schema_fingerprints_match_for_profil
                 })
             })
         && (!registration_command_migrated
-            || RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS
-                .iter()
-                .all(|expected| {
-                    fingerprints.iter().any(|actual| {
-                        actual.object_type == expected.object_type
-                            && actual.object_name == expected.object_name
-                            && actual.table_name == expected.table_name
-                            && actual.normalized_sql_sha256 == expected.normalized_sql_sha256
-                    })
-                }))
+            || registration_extras.iter().all(|expected| {
+                fingerprints.iter().any(|actual| {
+                    actual.object_type == expected.object_type
+                        && actual.object_name == expected.object_name
+                        && actual.table_name == expected.table_name
+                        && actual.normalized_sql_sha256 == expected.normalized_sql_sha256
+                })
+            }))
 }
 
 fn relay_container_normalized_sql_sha256(sql: &str) -> String {
@@ -19137,19 +19189,20 @@ async fn relay_container_drain_source_registration_command_schema_ready_in_sessi
         D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_MIGRATION),
         D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION),
         D1Type::Text(ROOT_AUTHORITY_EXACTNESS_MIGRATION),
+        D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_EXACT_SESSION_GENERATION_MIGRATION),
     ];
     let migration_probe = session
         .prepare(
             r#"
             SELECT COUNT(1) AS migration_count
             FROM d1_migrations
-            WHERE name IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            WHERE name IN (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             "#,
         )?
         .bind_refs(&migrations)?
         .first::<RelayContainerDrainSourceConsumptionSchemaProbe>(None)
         .await?;
-    if !migration_probe.is_some_and(|probe| probe.migration_count == 9) {
+    if !migration_probe.is_some_and(|probe| probe.migration_count == 10) {
         return Ok(false);
     }
 
@@ -19160,7 +19213,11 @@ async fn relay_container_drain_source_registration_command_schema_ready_in_sessi
             FROM sqlite_master
             WHERE name IN (
               'relay_container_drain_source_registration_command_preflight',
-              'relay_container_drain_source_registration_command_preflight_guard'
+              'relay_container_drain_source_registration_command_preflight_guard',
+              'root_authority_exactness_preflight',
+              'root_authority_exactness_preflight_guard',
+              'relay_container_drain_source_registration_command_exact_session_generation_preflight',
+              'relay_container_drain_source_registration_command_exact_session_generation_preflight_guard'
             )
             "#,
         )?
@@ -42007,10 +42064,13 @@ mod tests {
         for fragment in [
             "relay_container_drain_source_consumption_schema_ready_in_session(session).await?",
             "D1Type::Text(ROOT_AUTHORITY_EXACTNESS_MIGRATION)",
-            "probe.migration_count == 9",
+            "D1Type::Text(RELAY_CONTAINER_DRAIN_SOURCE_EXACT_SESSION_GENERATION_MIGRATION)",
+            "probe.migration_count == 10",
             "RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_SCHEMA_FINGERPRINTS",
             "RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_COMMAND_TABLE_PRAGMAS",
             "relay_container_drain_source_registration_command_preflight_guard",
+            "root_authority_exactness_preflight_guard",
+            "relay_container_drain_source_registration_command_exact_session_generation_preflight_guard",
             "relay_container_drain_source_registration_exact_root_guard",
             "probe.conflict_count == 0",
             "tbl_name IN (",
@@ -42082,8 +42142,8 @@ mod tests {
             !relay_container_drain_source_consumption_schema_fingerprints_match(&missing_object)
         );
 
-        let mut registration_command_profile = actual.clone();
-        registration_command_profile
+        let mut registration_command_0074_profile = actual.clone();
+        registration_command_0074_profile
             .iter_mut()
             .find(|fingerprint| {
                 fingerprint.object_name == "relay_container_drain_source_registration_insert_guard"
@@ -42091,7 +42151,7 @@ mod tests {
             .unwrap()
             .normalized_sql_sha256 =
             RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_INSERT_GUARD_0074_SHA256.to_string();
-        registration_command_profile.extend(
+        registration_command_0074_profile.extend(
             RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0074_EXTRA_SCHEMA_FINGERPRINTS
                 .iter()
                 .map(
@@ -42105,23 +42165,62 @@ mod tests {
         );
         assert!(
             relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
-                &registration_command_profile,
+                &registration_command_0074_profile,
                 true,
+                false,
             )
         );
         assert!(
             !relay_container_drain_source_consumption_schema_fingerprints_match(
-                &registration_command_profile,
+                &registration_command_0074_profile,
             )
         );
-        registration_command_profile
+        assert!(
+            !relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
+                &registration_command_0074_profile,
+                false,
+                true,
+            )
+        );
+
+        let mut registration_command_0076_profile = actual.clone();
+        registration_command_0076_profile
+            .iter_mut()
+            .find(|fingerprint| {
+                fingerprint.object_name == "relay_container_drain_source_registration_insert_guard"
+            })
+            .unwrap()
+            .normalized_sql_sha256 =
+            RELAY_CONTAINER_DRAIN_SOURCE_REGISTRATION_INSERT_GUARD_0074_SHA256.to_string();
+        registration_command_0076_profile.extend(
+            RELAY_CONTAINER_DRAIN_SOURCE_CONSUMPTION_0076_EXTRA_SCHEMA_FINGERPRINTS
+                .iter()
+                .map(
+                    |expected| RelayContainerDrainSourceConsumptionSchemaFingerprint {
+                        object_type: expected.object_type.to_string(),
+                        object_name: expected.object_name.to_string(),
+                        table_name: expected.table_name.to_string(),
+                        normalized_sql_sha256: expected.normalized_sql_sha256.to_string(),
+                    },
+                ),
+        );
+        assert!(
+            relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
+                &registration_command_0076_profile,
+                true,
+                true,
+            )
+        );
+
+        registration_command_0074_profile
             .last_mut()
             .unwrap()
             .normalized_sql_sha256 = "f".repeat(64);
         assert!(
             !relay_container_drain_source_consumption_schema_fingerprints_match_for_profile(
-                &registration_command_profile,
+                &registration_command_0074_profile,
                 true,
+                false,
             )
         );
 

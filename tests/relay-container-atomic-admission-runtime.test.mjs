@@ -47,7 +47,7 @@ const registrationCommandSchemaFingerprints = {
   relay_container_drain_source_registration_commands: [
     "table",
     "relay_container_drain_source_registration_commands",
-    "5714a9b679bc8a7a885d2d5935020c065d4df35cfb4060ce55f4cd7ce6e781d4",
+    "d655cbf25735e0c652230b73475e4ef044f3f14e2aa10cc7d72a19b3825108e9",
   ],
   passkey_credential_identity_backfill_guard: [
     "trigger",
@@ -97,7 +97,7 @@ const registrationCommandSchemaFingerprints = {
   relay_container_drain_source_registration_command_insert_guard: [
     "trigger",
     "relay_container_drain_source_registration_commands",
-    "0e37e8ebdc604f2c50513f90f5637274d78ad21fc88901592cc9d14bb2b69e0a",
+    "4a7825c7d0bc7ac8ca7af6e68a838eb4307e3878dd79ec4b4283069d959bfc4a",
   ],
   relay_container_drain_source_registration_command_project: [
     "trigger",
@@ -411,7 +411,7 @@ describe("migration 0050 atomic relay Container admission", () => {
     );
   });
 
-  it("pins the 0074 schema and PRAGMA contracts in Workerd", async () => {
+  it("pins the 0074/0076 effective schema and PRAGMA contracts in Workerd", async () => {
     const objectNames = Object.keys(registrationCommandSchemaFingerprints);
     const placeholders = objectNames
       .map((_, index) => `?${index + 1}`)
@@ -428,7 +428,7 @@ describe("migration 0050 atomic relay Container admission", () => {
     expect(objects.results).toHaveLength(22);
     for (const object of objects.results) {
       const expected = registrationCommandSchemaFingerprints[object.name];
-      expect(expected, `unexpected 0074 object ${object.name}`).toBeDefined();
+      expect(expected, `unexpected 0076 object ${object.name}`).toBeDefined();
       expect([object.type, object.table_name]).toEqual(expected.slice(0, 2));
       await expect(
         sha256Text(object.sql.trim().split(/\s+/u).join(" ")),
@@ -440,7 +440,11 @@ describe("migration 0050 atomic relay Container admission", () => {
          FROM sqlite_master
          WHERE name IN (
            'relay_container_drain_source_registration_command_preflight',
-           'relay_container_drain_source_registration_command_preflight_guard'
+           'relay_container_drain_source_registration_command_preflight_guard',
+           'root_authority_exactness_preflight',
+           'root_authority_exactness_preflight_guard',
+           'relay_container_drain_source_registration_command_exact_session_generation_preflight',
+           'relay_container_drain_source_registration_command_exact_session_generation_preflight_guard'
          )`,
       ).first(),
     ).resolves.toEqual({ count: 0 });
@@ -457,7 +461,7 @@ describe("migration 0050 atomic relay Container admission", () => {
           contracts.table_flags_contract,
         ].map(sha256Text),
       );
-      expect(actual, `0074 PRAGMA drift for ${tableName}`).toEqual(expected);
+      expect(actual, `0076 PRAGMA drift for ${tableName}`).toEqual(expected);
     }
 
     const triggerClosureTables = new Set([
@@ -506,6 +510,150 @@ describe("migration 0050 atomic relay Container admission", () => {
     await expect(readTriggerClosure()).resolves.toEqual(
       expectedTriggerClosure,
     );
+    await expect(
+      env.DB.prepare(
+        `SELECT COUNT(*) AS count
+         FROM sqlite_master
+         WHERE sql IS NOT NULL
+           AND (
+             instr(sql, 'root_session_issued_at >= root_session_epoch') > 0
+             OR instr(
+               sql,
+               'NEW.root_session_issued_at >= root_user.session_epoch'
+             ) > 0
+           )`,
+      ).first(),
+    ).resolves.toEqual({ count: 0 });
+  });
+
+  it("rolls the 0076 table rebuild back after a post-drop failure", async () => {
+    await reset();
+    const migrations = env.TEST_D1_MIGRATIONS;
+    const exactGenerationMigration = migrations.at(-1);
+    expect(exactGenerationMigration.name).toBe(
+      "0076_relay_container_drain_source_registration_command_exact_session_generation.sql",
+    );
+    await applyD1Migrations(env.DB, migrations.slice(0, -1));
+
+    const readState = () =>
+      env.DB.prepare(
+        `SELECT
+           (SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name =
+                'relay_container_drain_source_registration_commands')
+             AS command_table_sql,
+           (SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type = 'trigger'
+              AND tbl_name =
+                'relay_container_drain_source_registration_commands')
+             AS command_triggers,
+           (SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE name IN (
+              'relay_container_drain_source_protected_audit_insert_guard',
+              'relay_container_drain_source_registration_insert_guard'
+            )) AS external_triggers,
+           (SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE name IN (
+              'relay_container_drain_source_registration_command_exact_session_generation_preflight',
+              'relay_container_drain_source_registration_command_exact_session_generation_preflight_guard'
+            )) AS preflight_objects,
+           (SELECT COUNT(*)
+            FROM d1_migrations
+            WHERE name =
+              '0076_relay_container_drain_source_registration_command_exact_session_generation.sql')
+             AS exact_generation_migrations`,
+      ).first();
+    const before = await readState();
+    expect(before.command_table_sql).toContain(
+      "root_session_issued_at >= root_session_epoch",
+    );
+    expect(before).toMatchObject({
+      command_triggers: 5,
+      external_triggers: 2,
+      preflight_objects: 0,
+      exact_generation_migrations: 0,
+    });
+
+    const dropTableIndex = exactGenerationMigration.queries.findIndex(
+      (query) =>
+        query.trim() ===
+        "DROP TABLE relay_container_drain_source_registration_commands",
+    );
+    expect(dropTableIndex).toBeGreaterThan(0);
+    const injectedFailure = env.DB.prepare(
+      "SELECT * FROM relay_container_drain_source_registration_commands_0076_missing",
+    );
+    await expect(
+      env.DB.batch([
+        ...exactGenerationMigration.queries
+          .slice(0, dropTableIndex + 1)
+          .map((query) => env.DB.prepare(query)),
+        injectedFailure,
+      ]),
+    ).rejects.toThrow();
+
+    await expect(readState()).resolves.toEqual(before);
+  });
+
+  it("rejects an unknown predecessor trigger before the 0076 rebuild", async () => {
+    await reset();
+    const migrations = env.TEST_D1_MIGRATIONS;
+    const exactGenerationMigration = migrations.at(-1);
+    await applyD1Migrations(env.DB, migrations.slice(0, -1));
+    await env.DB.prepare(
+      `CREATE TRIGGER unexpected_registration_command_preflight_guard
+       BEFORE INSERT
+       ON relay_container_drain_source_registration_commands
+       FOR EACH ROW
+       BEGIN
+         SELECT 1;
+       END`,
+    ).run();
+
+    await expect(
+      env.DB.batch(
+        exactGenerationMigration.queries.map((query) =>
+          env.DB.prepare(query),
+        ),
+      ),
+    ).rejects.toThrow(
+      "0076 requires exact 0074/0075 registration command schema",
+    );
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           (SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE type = 'trigger'
+              AND tbl_name =
+                'relay_container_drain_source_registration_commands')
+             AS command_triggers,
+           (SELECT COUNT(*)
+            FROM sqlite_master
+            WHERE name IN (
+              'relay_container_drain_source_registration_command_exact_session_generation_preflight',
+              'relay_container_drain_source_registration_command_exact_session_generation_preflight_guard'
+            )) AS preflight_objects,
+           (SELECT instr(
+              sql,
+              'root_session_issued_at >= root_session_epoch'
+            )
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name =
+                'relay_container_drain_source_registration_commands')
+             > 0 AS historical_table_preserved`,
+      ).first(),
+    ).resolves.toEqual({
+      command_triggers: 6,
+      preflight_objects: 0,
+      historical_table_preserved: 1,
+    });
   });
 
   it("enforces the 0075 role enum and monotonic session generation", async () => {
@@ -563,6 +711,81 @@ describe("migration 0050 atomic relay Container admission", () => {
     } finally {
       await env.DB.prepare("DELETE FROM users WHERE id = 75002").run();
     }
+  });
+
+  it("treats the Root session epoch as an independent generation in an exact 5/0 commit", async () => {
+    await seedAuthorityState();
+    const [intent] = await admitAcceptedSet(
+      "drain-source-registration-independent-generation",
+      [3],
+    );
+    let fresh;
+    let replay;
+    let generation;
+    const source = await prepareAcceptedSource([intent], {
+      pageSize: 1,
+      includeClaim: false,
+      collectSource: false,
+      registerAuthorization: async (candidate) => {
+        generation = candidate.rootSessionIssuedAt + 1;
+        expect(Number.isSafeInteger(generation)).toBe(true);
+        expect(generation).toBeGreaterThan(candidate.rootSessionIssuedAt);
+        await env.DB.prepare(
+          "UPDATE users SET session_epoch = ?1 WHERE id = ?2",
+        )
+          .bind(generation, candidate.rootAdminId)
+          .run();
+        candidate.rootSessionEpoch = generation;
+        fresh = await sourceRegistrationCommandStatement(
+          env.DB,
+          candidate,
+        ).run();
+        replay = await sourceRegistrationCommandStatement(
+          env.DB,
+          candidate,
+        ).run();
+      },
+    });
+
+    expect(fresh?.success).toBe(true);
+    expect(fresh?.meta.changes).toBe(5);
+    expect(replay?.success).toBe(true);
+    expect(replay?.meta.changes).toBe(0);
+    await expect(
+      env.DB.prepare(
+        `SELECT
+           command.root_session_epoch,
+           command.root_session_issued_at,
+           (SELECT COUNT(*)
+            FROM relay_container_drain_source_registration_commands
+            WHERE command_id_sha256 = ?1) AS commands,
+           (SELECT COUNT(*)
+            FROM logs
+            WHERE drain_source_registration_command_id_sha256 = ?1) AS audits,
+           (SELECT COUNT(*)
+            FROM relay_container_drain_source_authorization_registrations
+            WHERE authorization_id_sha256 = ?2) AS registrations,
+           (SELECT COUNT(*)
+            FROM relay_container_drain_source_receipt_ledger
+            WHERE authorization_id_sha256 = ?2
+              AND event_kind = 'registration') AS ledger_rows,
+           passkey.credential_use_generation
+         FROM relay_container_drain_source_registration_commands AS command
+         JOIN passkey_credentials AS passkey
+           ON passkey.id = command.passkey_credential_row_id
+         WHERE command.command_id_sha256 = ?1`,
+      )
+        .bind(source.commandIdSha256, source.authorizationIdSha256)
+        .first(),
+    ).resolves.toEqual({
+      root_session_epoch: generation,
+      root_session_issued_at: source.rootSessionIssuedAt,
+      commands: 1,
+      audits: 1,
+      registrations: 1,
+      ledger_rows: 1,
+      credential_use_generation: 1,
+    });
   });
 
   it("accepts the maximum five-second registration permit issuance skew", async () => {

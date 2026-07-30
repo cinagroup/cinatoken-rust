@@ -15,6 +15,13 @@ pub const PROOF_TYPE: &str = "CINATOKEN-ROOT-SESSION-PHASE-PROOF";
 pub const PROOF_ALGORITHM: &str = "HS256";
 pub const PROOF_VERSION: u8 = 1;
 pub const PROTOCOL: &str = "relay-container-drain-source-registration-v1";
+pub const PHASE_SUBJECT_SCHEMA_VERSION: u8 = 1;
+pub const BEFORE_CHALLENGE_SUBJECT_CONTRACT: &str =
+    "relay-container-drain-source-registration-before-challenge-subject-v1";
+pub const BEFORE_ISSUER_SUBJECT_CONTRACT: &str =
+    "relay-container-drain-source-registration-before-issuer-subject-v1";
+pub const BEFORE_COMMIT_SUBJECT_CONTRACT: &str =
+    "relay-container-drain-source-registration-before-commit-subject-v1";
 pub const STAGING_ENVIRONMENT: &str = "staging";
 pub const SCOPE_KIND: &str = "global";
 pub const GLOBAL_SCOPE_ID_SHA256: &str =
@@ -71,6 +78,78 @@ impl RootSessionPhase {
             Self::BeforeIssuer => "before_issuer",
             Self::BeforeCommit => "before_commit",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootSessionPhaseSubjectContext<'a> {
+    pub environment: &'a str,
+    pub operation_id_sha256: &'a str,
+    pub authorization_id_sha256: &'a str,
+    pub ceremony_id_sha256: &'a str,
+    pub request_intent_sha256: &'a str,
+    pub semantic_authority_fingerprint_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootSessionBeforeChallengeSubjectV1<'a> {
+    pub context: RootSessionPhaseSubjectContext<'a>,
+    pub begin_intent_sha256: &'a str,
+    pub authorization_subject_sha256: &'a str,
+    pub authorization_signature_envelope_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootSessionBeforeIssuerSubjectV1<'a> {
+    pub context: RootSessionPhaseSubjectContext<'a>,
+    pub secure_verification_challenge_sha256: &'a str,
+    pub action_subject_sha256: &'a str,
+    pub permit_issue_request_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RootSessionBeforeCommitSubjectV1<'a> {
+    pub context: RootSessionPhaseSubjectContext<'a>,
+    pub action_subject_sha256: &'a str,
+    pub issuer_request_sha256: &'a str,
+    pub authenticated_issuer_request_id_sha256: &'a str,
+    pub issuer_version_id: &'a str,
+    pub permit_id_sha256: &'a str,
+    pub permit_subject_sha256: &'a str,
+    pub permit_signature_envelope_sha256: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootSessionPhaseSubjectV1<'a> {
+    BeforeChallenge(RootSessionBeforeChallengeSubjectV1<'a>),
+    BeforeIssuer(RootSessionBeforeIssuerSubjectV1<'a>),
+    BeforeCommit(RootSessionBeforeCommitSubjectV1<'a>),
+}
+
+impl<'a> RootSessionPhaseSubjectV1<'a> {
+    pub const fn phase(self) -> RootSessionPhase {
+        match self {
+            Self::BeforeChallenge(_) => RootSessionPhase::BeforeChallenge,
+            Self::BeforeIssuer(_) => RootSessionPhase::BeforeIssuer,
+            Self::BeforeCommit(_) => RootSessionPhase::BeforeCommit,
+        }
+    }
+
+    pub const fn context(self) -> RootSessionPhaseSubjectContext<'a> {
+        match self {
+            Self::BeforeChallenge(subject) => subject.context,
+            Self::BeforeIssuer(subject) => subject.context,
+            Self::BeforeCommit(subject) => subject.context,
+        }
+    }
+
+    pub fn canonical_json(self) -> Result<Vec<u8>, RootSessionPhaseProofError> {
+        validate_phase_subject(self)?;
+        canonical_phase_subject_json(self)
+    }
+
+    pub fn phase_binding_sha256(self) -> Result<String, RootSessionPhaseProofError> {
+        derive_phase_binding_sha256(self.phase(), &self.canonical_json()?)
     }
 }
 
@@ -141,6 +220,7 @@ pub struct RootSessionPhaseInput<'a> {
     pub application_version_id: &'a str,
     pub environment: &'a str,
     pub phase: RootSessionPhase,
+    pub phase_subject: RootSessionPhaseSubjectV1<'a>,
     pub operation_id_sha256: &'a str,
     pub authorization_id_sha256: &'a str,
     pub ceremony_id_sha256: &'a str,
@@ -157,7 +237,6 @@ pub struct RootSessionPhaseInput<'a> {
     pub root_session_id_sha256: &'a str,
     pub d1_observed_at: i64,
     pub parent_proof_sha256: Option<&'a str>,
-    pub phase_binding_sha256: &'a str,
     pub semantic_authority_fingerprint_sha256: &'a str,
     pub authority_expires_at: i64,
 }
@@ -178,12 +257,12 @@ pub struct RootSessionPhaseExpectation<'a> {
     pub application_version_id: &'a str,
     pub environment: &'a str,
     pub phase: RootSessionPhase,
+    pub phase_subject: RootSessionPhaseSubjectV1<'a>,
     pub operation_id_sha256: &'a str,
     pub authorization_id_sha256: &'a str,
     pub ceremony_id_sha256: &'a str,
     pub request_intent_sha256: &'a str,
     pub parent_proof_sha256: Option<&'a str>,
-    pub phase_binding_sha256: &'a str,
     pub semantic_authority_fingerprint_sha256: &'a str,
     pub authority_expires_at: i64,
     pub root_admin_id: i64,
@@ -281,6 +360,7 @@ pub fn sign_root_session_phase_proof_with_ttl(
 ) -> Result<String, RootSessionPhaseProofError> {
     validate_key(key)?;
     validate_input(input)?;
+    let phase_binding_sha256 = input.phase_subject.phase_binding_sha256()?;
     if !(1..=MAX_TTL_SECONDS).contains(&ttl_seconds) {
         return Err(RootSessionPhaseProofError::InvalidTimeWindow);
     }
@@ -329,7 +409,7 @@ pub fn sign_root_session_phase_proof_with_ttl(
         root_session_id_sha256: input.root_session_id_sha256.to_string(),
         d1_observed_at: input.d1_observed_at,
         parent_proof_sha256: input.parent_proof_sha256.map(str::to_string),
-        phase_binding_sha256: input.phase_binding_sha256.to_string(),
+        phase_binding_sha256,
         semantic_authority_fingerprint_sha256: input
             .semantic_authority_fingerprint_sha256
             .to_string(),
@@ -446,7 +526,137 @@ pub fn derive_request_intent_sha256(
     Ok(sha256_len_prefixed(REQUEST_INTENT_DOMAIN, &[request_body]))
 }
 
-pub fn derive_phase_binding_sha256(
+#[derive(Serialize)]
+struct CanonicalBeforeChallengeSubject<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    phase: RootSessionPhase,
+    environment: &'a str,
+    operation_id_sha256: &'a str,
+    scope_kind: &'static str,
+    scope_id_sha256: &'static str,
+    authorization_id_sha256: &'a str,
+    ceremony_id_sha256: &'a str,
+    request_intent_sha256: &'a str,
+    semantic_authority_fingerprint_sha256: &'a str,
+    begin_intent_sha256: &'a str,
+    authorization_subject_sha256: &'a str,
+    authorization_signature_envelope_sha256: &'a str,
+}
+
+#[derive(Serialize)]
+struct CanonicalBeforeIssuerSubject<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    phase: RootSessionPhase,
+    environment: &'a str,
+    operation_id_sha256: &'a str,
+    scope_kind: &'static str,
+    scope_id_sha256: &'static str,
+    authorization_id_sha256: &'a str,
+    ceremony_id_sha256: &'a str,
+    request_intent_sha256: &'a str,
+    semantic_authority_fingerprint_sha256: &'a str,
+    secure_verification_challenge_sha256: &'a str,
+    action_subject_sha256: &'a str,
+    permit_issue_request_sha256: &'a str,
+}
+
+#[derive(Serialize)]
+struct CanonicalBeforeCommitSubject<'a> {
+    schema_version: u8,
+    contract: &'static str,
+    phase: RootSessionPhase,
+    environment: &'a str,
+    operation_id_sha256: &'a str,
+    scope_kind: &'static str,
+    scope_id_sha256: &'static str,
+    authorization_id_sha256: &'a str,
+    ceremony_id_sha256: &'a str,
+    request_intent_sha256: &'a str,
+    semantic_authority_fingerprint_sha256: &'a str,
+    action_subject_sha256: &'a str,
+    issuer_request_sha256: &'a str,
+    authenticated_issuer_request_id_sha256: &'a str,
+    issuer_version_id: &'a str,
+    permit_id_sha256: &'a str,
+    permit_subject_sha256: &'a str,
+    permit_signature_envelope_sha256: &'a str,
+}
+
+fn canonical_phase_subject_json(
+    subject: RootSessionPhaseSubjectV1<'_>,
+) -> Result<Vec<u8>, RootSessionPhaseProofError> {
+    let context = subject.context();
+    match subject {
+        RootSessionPhaseSubjectV1::BeforeChallenge(subject) => {
+            serde_json::to_vec(&CanonicalBeforeChallengeSubject {
+                schema_version: PHASE_SUBJECT_SCHEMA_VERSION,
+                contract: BEFORE_CHALLENGE_SUBJECT_CONTRACT,
+                phase: RootSessionPhase::BeforeChallenge,
+                environment: context.environment,
+                operation_id_sha256: context.operation_id_sha256,
+                scope_kind: SCOPE_KIND,
+                scope_id_sha256: GLOBAL_SCOPE_ID_SHA256,
+                authorization_id_sha256: context.authorization_id_sha256,
+                ceremony_id_sha256: context.ceremony_id_sha256,
+                request_intent_sha256: context.request_intent_sha256,
+                semantic_authority_fingerprint_sha256: context
+                    .semantic_authority_fingerprint_sha256,
+                begin_intent_sha256: subject.begin_intent_sha256,
+                authorization_subject_sha256: subject.authorization_subject_sha256,
+                authorization_signature_envelope_sha256: subject
+                    .authorization_signature_envelope_sha256,
+            })
+        }
+        RootSessionPhaseSubjectV1::BeforeIssuer(subject) => {
+            serde_json::to_vec(&CanonicalBeforeIssuerSubject {
+                schema_version: PHASE_SUBJECT_SCHEMA_VERSION,
+                contract: BEFORE_ISSUER_SUBJECT_CONTRACT,
+                phase: RootSessionPhase::BeforeIssuer,
+                environment: context.environment,
+                operation_id_sha256: context.operation_id_sha256,
+                scope_kind: SCOPE_KIND,
+                scope_id_sha256: GLOBAL_SCOPE_ID_SHA256,
+                authorization_id_sha256: context.authorization_id_sha256,
+                ceremony_id_sha256: context.ceremony_id_sha256,
+                request_intent_sha256: context.request_intent_sha256,
+                semantic_authority_fingerprint_sha256: context
+                    .semantic_authority_fingerprint_sha256,
+                secure_verification_challenge_sha256: subject.secure_verification_challenge_sha256,
+                action_subject_sha256: subject.action_subject_sha256,
+                permit_issue_request_sha256: subject.permit_issue_request_sha256,
+            })
+        }
+        RootSessionPhaseSubjectV1::BeforeCommit(subject) => {
+            serde_json::to_vec(&CanonicalBeforeCommitSubject {
+                schema_version: PHASE_SUBJECT_SCHEMA_VERSION,
+                contract: BEFORE_COMMIT_SUBJECT_CONTRACT,
+                phase: RootSessionPhase::BeforeCommit,
+                environment: context.environment,
+                operation_id_sha256: context.operation_id_sha256,
+                scope_kind: SCOPE_KIND,
+                scope_id_sha256: GLOBAL_SCOPE_ID_SHA256,
+                authorization_id_sha256: context.authorization_id_sha256,
+                ceremony_id_sha256: context.ceremony_id_sha256,
+                request_intent_sha256: context.request_intent_sha256,
+                semantic_authority_fingerprint_sha256: context
+                    .semantic_authority_fingerprint_sha256,
+                action_subject_sha256: subject.action_subject_sha256,
+                issuer_request_sha256: subject.issuer_request_sha256,
+                authenticated_issuer_request_id_sha256: subject
+                    .authenticated_issuer_request_id_sha256,
+                issuer_version_id: subject.issuer_version_id,
+                permit_id_sha256: subject.permit_id_sha256,
+                permit_subject_sha256: subject.permit_subject_sha256,
+                permit_signature_envelope_sha256: subject.permit_signature_envelope_sha256,
+            })
+        }
+    }
+    .map_err(|_| RootSessionPhaseProofError::InvalidInput)
+}
+
+fn derive_phase_binding_sha256(
     phase: RootSessionPhase,
     canonical_subject: &[u8],
 ) -> Result<String, RootSessionPhaseProofError> {
@@ -671,11 +881,77 @@ fn validate_protected_header(
     Ok(())
 }
 
+fn validate_phase_subject(
+    subject: RootSessionPhaseSubjectV1<'_>,
+) -> Result<(), RootSessionPhaseProofError> {
+    let context = subject.context();
+    if context.environment != STAGING_ENVIRONMENT {
+        return Err(RootSessionPhaseProofError::InvalidInput);
+    }
+    let mut digests = vec![
+        context.operation_id_sha256,
+        GLOBAL_SCOPE_ID_SHA256,
+        context.authorization_id_sha256,
+        context.ceremony_id_sha256,
+        context.request_intent_sha256,
+        context.semantic_authority_fingerprint_sha256,
+    ];
+    match subject {
+        RootSessionPhaseSubjectV1::BeforeChallenge(subject) => {
+            digests.extend([
+                subject.begin_intent_sha256,
+                subject.authorization_subject_sha256,
+                subject.authorization_signature_envelope_sha256,
+            ]);
+        }
+        RootSessionPhaseSubjectV1::BeforeIssuer(subject) => {
+            digests.extend([
+                subject.secure_verification_challenge_sha256,
+                subject.action_subject_sha256,
+                subject.permit_issue_request_sha256,
+            ]);
+        }
+        RootSessionPhaseSubjectV1::BeforeCommit(subject) => {
+            if !valid_version_id(subject.issuer_version_id) {
+                return Err(RootSessionPhaseProofError::InvalidInput);
+            }
+            digests.extend([
+                subject.action_subject_sha256,
+                subject.issuer_request_sha256,
+                subject.authenticated_issuer_request_id_sha256,
+                subject.permit_id_sha256,
+                subject.permit_subject_sha256,
+                subject.permit_signature_envelope_sha256,
+            ]);
+        }
+    }
+    if digests.iter().any(|digest| !valid_sha256(digest)) {
+        return Err(RootSessionPhaseProofError::InvalidInput);
+    }
+    for (index, digest) in digests.iter().enumerate() {
+        if digests[index + 1..].contains(digest) {
+            return Err(RootSessionPhaseProofError::InvalidInput);
+        }
+    }
+    Ok(())
+}
+
 fn validate_input(input: RootSessionPhaseInput<'_>) -> Result<(), RootSessionPhaseProofError> {
+    validate_phase_subject(input.phase_subject)?;
+    let subject_context = input.phase_subject.context();
+    let phase_binding_sha256 = input.phase_subject.phase_binding_sha256()?;
     if !valid_identifier(input.issuer)
         || !valid_identifier(input.audience)
         || !valid_version_id(input.application_version_id)
         || input.environment != STAGING_ENVIRONMENT
+        || input.phase_subject.phase() != input.phase
+        || subject_context.environment != input.environment
+        || subject_context.operation_id_sha256 != input.operation_id_sha256
+        || subject_context.authorization_id_sha256 != input.authorization_id_sha256
+        || subject_context.ceremony_id_sha256 != input.ceremony_id_sha256
+        || subject_context.request_intent_sha256 != input.request_intent_sha256
+        || subject_context.semantic_authority_fingerprint_sha256
+            != input.semantic_authority_fingerprint_sha256
         || !valid_sha256(input.operation_id_sha256)
         || !valid_sha256(input.authorization_id_sha256)
         || !valid_sha256(input.ceremony_id_sha256)
@@ -683,7 +959,6 @@ fn validate_input(input: RootSessionPhaseInput<'_>) -> Result<(), RootSessionPha
         || !valid_sha256(input.proof_id_sha256)
         || !valid_sha256(input.root_session_binding_sha256)
         || !valid_sha256(input.root_session_id_sha256)
-        || !valid_sha256(input.phase_binding_sha256)
         || !valid_sha256(input.semantic_authority_fingerprint_sha256)
         || input.root_admin_id <= 0
         || input.root_admin_id > MAXIMUM_SAFE_INTEGER
@@ -720,7 +995,7 @@ fn validate_input(input: RootSessionPhaseInput<'_>) -> Result<(), RootSessionPha
         input.proof_id_sha256,
         input.root_session_binding_sha256,
         input.root_session_id_sha256,
-        input.phase_binding_sha256,
+        &phase_binding_sha256,
         input.semantic_authority_fingerprint_sha256,
         GLOBAL_SCOPE_ID_SHA256,
     ];
@@ -738,15 +1013,25 @@ fn validate_input(input: RootSessionPhaseInput<'_>) -> Result<(), RootSessionPha
 fn validate_expectation(
     expected: RootSessionPhaseExpectation<'_>,
 ) -> Result<(), RootSessionPhaseProofError> {
+    validate_phase_subject(expected.phase_subject)?;
+    let subject_context = expected.phase_subject.context();
+    let _ = expected.phase_subject.phase_binding_sha256()?;
     if !valid_identifier(expected.issuer)
         || !valid_identifier(expected.audience)
         || !valid_version_id(expected.application_version_id)
         || expected.environment != STAGING_ENVIRONMENT
+        || expected.phase_subject.phase() != expected.phase
+        || subject_context.environment != expected.environment
+        || subject_context.operation_id_sha256 != expected.operation_id_sha256
+        || subject_context.authorization_id_sha256 != expected.authorization_id_sha256
+        || subject_context.ceremony_id_sha256 != expected.ceremony_id_sha256
+        || subject_context.request_intent_sha256 != expected.request_intent_sha256
+        || subject_context.semantic_authority_fingerprint_sha256
+            != expected.semantic_authority_fingerprint_sha256
         || !valid_sha256(expected.operation_id_sha256)
         || !valid_sha256(expected.authorization_id_sha256)
         || !valid_sha256(expected.ceremony_id_sha256)
         || !valid_sha256(expected.request_intent_sha256)
-        || !valid_sha256(expected.phase_binding_sha256)
         || !valid_sha256(expected.semantic_authority_fingerprint_sha256)
         || expected.authority_expires_at <= 0
         || expected.authority_expires_at > MAXIMUM_SAFE_INTEGER
@@ -794,37 +1079,76 @@ fn validate_session_expectation(
     Ok(())
 }
 
+fn validate_claim_shape(claims: &RootSessionPhaseClaims) -> Result<(), RootSessionPhaseProofError> {
+    if !valid_identifier(&claims.issuer)
+        || !valid_identifier(&claims.audience)
+        || !valid_version_id(&claims.application_version_id)
+        || claims.environment != STAGING_ENVIRONMENT
+        || !valid_sha256(&claims.operation_id_sha256)
+        || !valid_sha256(&claims.authorization_id_sha256)
+        || !valid_sha256(&claims.ceremony_id_sha256)
+        || !valid_sha256(&claims.request_intent_sha256)
+        || !valid_sha256(&claims.proof_id_sha256)
+        || !valid_sha256(&claims.root_session_binding_sha256)
+        || !valid_sha256(&claims.root_session_id_sha256)
+        || !valid_sha256(&claims.phase_binding_sha256)
+        || !valid_sha256(&claims.semantic_authority_fingerprint_sha256)
+        || claims.root_admin_id <= 0
+        || claims.root_admin_id > MAXIMUM_SAFE_INTEGER
+        || claims.root_role != ROOT_ROLE
+        || claims.root_status != ENABLED_STATUS
+        || claims.root_deleted_at.is_some()
+        || claims.root_session_epoch < 0
+        || claims.root_session_epoch > MAXIMUM_SAFE_INTEGER
+        || claims.root_session_issued_at <= 0
+        || claims.root_session_issued_at > MAXIMUM_SAFE_INTEGER
+        || claims.root_session_expires_at <= claims.root_session_issued_at
+        || claims.root_session_expires_at > MAXIMUM_SAFE_INTEGER
+        || claims.d1_observed_at < claims.root_session_issued_at
+        || claims.d1_observed_at >= claims.root_session_expires_at
+        || claims.d1_observed_at > MAXIMUM_SAFE_INTEGER
+        || claims.authority_expires_at <= claims.d1_observed_at
+        || claims.authority_expires_at > MAXIMUM_SAFE_INTEGER
+    {
+        return Err(RootSessionPhaseProofError::InvalidToken);
+    }
+    match (claims.phase, claims.parent_proof_sha256.as_deref()) {
+        (RootSessionPhase::BeforeChallenge, None) => {}
+        (
+            RootSessionPhase::BeforeIssuer | RootSessionPhase::BeforeCommit,
+            Some(parent_proof_sha256),
+        ) if valid_sha256(parent_proof_sha256) => {}
+        _ => return Err(RootSessionPhaseProofError::InvalidToken),
+    }
+    let mut digests = vec![
+        claims.operation_id_sha256.as_str(),
+        claims.authorization_id_sha256.as_str(),
+        claims.ceremony_id_sha256.as_str(),
+        claims.request_intent_sha256.as_str(),
+        claims.proof_id_sha256.as_str(),
+        claims.root_session_binding_sha256.as_str(),
+        claims.root_session_id_sha256.as_str(),
+        claims.phase_binding_sha256.as_str(),
+        claims.semantic_authority_fingerprint_sha256.as_str(),
+        GLOBAL_SCOPE_ID_SHA256,
+    ];
+    if let Some(parent_proof_sha256) = claims.parent_proof_sha256.as_deref() {
+        digests.push(parent_proof_sha256);
+    }
+    for (index, digest) in digests.iter().enumerate() {
+        if digests[index + 1..].contains(digest) {
+            return Err(RootSessionPhaseProofError::InvalidToken);
+        }
+    }
+    Ok(())
+}
+
 fn validate_claims(
     claims: &RootSessionPhaseClaims,
     expected: RootSessionPhaseExpectation<'_>,
 ) -> Result<(), RootSessionPhaseProofError> {
-    validate_input(RootSessionPhaseInput {
-        issuer: &claims.issuer,
-        audience: &claims.audience,
-        application_version_id: &claims.application_version_id,
-        environment: &claims.environment,
-        phase: claims.phase,
-        operation_id_sha256: &claims.operation_id_sha256,
-        authorization_id_sha256: &claims.authorization_id_sha256,
-        ceremony_id_sha256: &claims.ceremony_id_sha256,
-        request_intent_sha256: &claims.request_intent_sha256,
-        proof_id_sha256: &claims.proof_id_sha256,
-        root_admin_id: claims.root_admin_id,
-        root_role: claims.root_role,
-        root_status: claims.root_status,
-        root_deleted_at: claims.root_deleted_at,
-        root_session_epoch: claims.root_session_epoch,
-        root_session_issued_at: claims.root_session_issued_at,
-        root_session_expires_at: claims.root_session_expires_at,
-        root_session_binding_sha256: &claims.root_session_binding_sha256,
-        root_session_id_sha256: &claims.root_session_id_sha256,
-        d1_observed_at: claims.d1_observed_at,
-        parent_proof_sha256: claims.parent_proof_sha256.as_deref(),
-        phase_binding_sha256: &claims.phase_binding_sha256,
-        semantic_authority_fingerprint_sha256: &claims.semantic_authority_fingerprint_sha256,
-        authority_expires_at: claims.authority_expires_at,
-    })
-    .map_err(|_| RootSessionPhaseProofError::InvalidToken)?;
+    validate_claim_shape(claims)?;
+    let expected_phase_binding_sha256 = expected.phase_subject.phase_binding_sha256()?;
 
     if claims.proof_version != PROOF_VERSION
         || claims.protocol != PROTOCOL
@@ -858,7 +1182,7 @@ fn validate_claims(
         || claims.ceremony_id_sha256 != expected.ceremony_id_sha256
         || claims.request_intent_sha256 != expected.request_intent_sha256
         || claims.parent_proof_sha256.as_deref() != expected.parent_proof_sha256
-        || claims.phase_binding_sha256 != expected.phase_binding_sha256
+        || claims.phase_binding_sha256 != expected_phase_binding_sha256
         || claims.semantic_authority_fingerprint_sha256
             != expected.semantic_authority_fingerprint_sha256
         || claims.authority_expires_at != expected.authority_expires_at
@@ -934,18 +1258,66 @@ mod tests {
     const SESSION_BINDING: &str =
         "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
     const SESSION_ID: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
-    const PHASE_BINDING: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+    const CHALLENGE_SHA256: &str =
+        "2222222222222222222222222222222222222222222222222222222222222222";
     const AUTHORITY_FINGERPRINT: &str =
         "3333333333333333333333333333333333333333333333333333333333333333";
     const PARENT_PROOF: &str = "4444444444444444444444444444444444444444444444444444444444444444";
+    const ACTION_SUBJECT: &str = "5555555555555555555555555555555555555555555555555555555555555555";
+    const PERMIT_ISSUE_REQUEST: &str =
+        "6666666666666666666666666666666666666666666666666666666666666666";
+    const PERMIT_ID: &str = "7777777777777777777777777777777777777777777777777777777777777777";
+    const PERMIT_SUBJECT: &str = "8888888888888888888888888888888888888888888888888888888888888888";
+    const PERMIT_ENVELOPE: &str =
+        "9999999999999999999999999999999999999999999999999999999999999999";
+    const BEGIN_INTENT: &str = "abababababababababababababababababababababababababababababababab";
+    const AUTHORIZATION_SUBJECT: &str =
+        "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
+    const AUTHORIZATION_ENVELOPE: &str =
+        "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1";
+    const AUTHENTICATED_ISSUER_REQUEST_ID: &str =
+        "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
 
     #[derive(Deserialize)]
     struct FixedVector {
         secret_hex: String,
         protected: RootSessionPhaseProtectedHeader,
         claims: RootSessionPhaseClaims,
+        before_challenge_subject: FixedBeforeChallengeSubject,
+        before_issuer_subject: FixedBeforeIssuerSubject,
+        before_commit_subject: FixedBeforeCommitSubject,
         signature_base64url: String,
         token_sha256: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FixedBeforeChallengeSubject {
+        canonical_json: String,
+        begin_intent_sha256: String,
+        authorization_subject_sha256: String,
+        authorization_signature_envelope_sha256: String,
+        phase_binding_sha256: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FixedBeforeIssuerSubject {
+        canonical_json: String,
+        secure_verification_challenge_sha256: String,
+        action_subject_sha256: String,
+        permit_issue_request_sha256: String,
+        phase_binding_sha256: String,
+    }
+
+    #[derive(Deserialize)]
+    struct FixedBeforeCommitSubject {
+        canonical_json: String,
+        action_subject_sha256: String,
+        issuer_request_sha256: String,
+        authenticated_issuer_request_id_sha256: String,
+        issuer_version_id: String,
+        permit_id_sha256: String,
+        permit_subject_sha256: String,
+        permit_signature_envelope_sha256: String,
     }
 
     fn current_key() -> RootSessionPhaseKey<'static> {
@@ -971,6 +1343,47 @@ mod tests {
         }
     }
 
+    fn phase_subject(phase: RootSessionPhase) -> RootSessionPhaseSubjectV1<'static> {
+        let context = RootSessionPhaseSubjectContext {
+            environment: STAGING_ENVIRONMENT,
+            operation_id_sha256: OPERATION_ID,
+            authorization_id_sha256: AUTHORIZATION_ID,
+            ceremony_id_sha256: CEREMONY_ID,
+            request_intent_sha256: REQUEST_INTENT,
+            semantic_authority_fingerprint_sha256: AUTHORITY_FINGERPRINT,
+        };
+        match phase {
+            RootSessionPhase::BeforeChallenge => {
+                RootSessionPhaseSubjectV1::BeforeChallenge(RootSessionBeforeChallengeSubjectV1 {
+                    context,
+                    begin_intent_sha256: BEGIN_INTENT,
+                    authorization_subject_sha256: AUTHORIZATION_SUBJECT,
+                    authorization_signature_envelope_sha256: AUTHORIZATION_ENVELOPE,
+                })
+            }
+            RootSessionPhase::BeforeIssuer => {
+                RootSessionPhaseSubjectV1::BeforeIssuer(RootSessionBeforeIssuerSubjectV1 {
+                    context,
+                    secure_verification_challenge_sha256: CHALLENGE_SHA256,
+                    action_subject_sha256: ACTION_SUBJECT,
+                    permit_issue_request_sha256: PERMIT_ISSUE_REQUEST,
+                })
+            }
+            RootSessionPhase::BeforeCommit => {
+                RootSessionPhaseSubjectV1::BeforeCommit(RootSessionBeforeCommitSubjectV1 {
+                    context,
+                    action_subject_sha256: ACTION_SUBJECT,
+                    issuer_request_sha256: PERMIT_ISSUE_REQUEST,
+                    authenticated_issuer_request_id_sha256: AUTHENTICATED_ISSUER_REQUEST_ID,
+                    issuer_version_id: "issuer-build-1",
+                    permit_id_sha256: PERMIT_ID,
+                    permit_subject_sha256: PERMIT_SUBJECT,
+                    permit_signature_envelope_sha256: PERMIT_ENVELOPE,
+                })
+            }
+        }
+    }
+
     fn input(
         phase: RootSessionPhase,
         proof_id_sha256: &'static str,
@@ -981,6 +1394,7 @@ mod tests {
             application_version_id: "application-build-1",
             environment: STAGING_ENVIRONMENT,
             phase,
+            phase_subject: phase_subject(phase),
             operation_id_sha256: OPERATION_ID,
             authorization_id_sha256: AUTHORIZATION_ID,
             ceremony_id_sha256: CEREMONY_ID,
@@ -998,7 +1412,6 @@ mod tests {
             d1_observed_at: 1_700_000_100,
             parent_proof_sha256: (phase != RootSessionPhase::BeforeChallenge)
                 .then_some(PARENT_PROOF),
-            phase_binding_sha256: PHASE_BINDING,
             semantic_authority_fingerprint_sha256: AUTHORITY_FINGERPRINT,
             authority_expires_at: 1_700_000_600,
         }
@@ -1021,13 +1434,13 @@ mod tests {
             application_version_id: "application-build-1",
             environment: STAGING_ENVIRONMENT,
             phase,
+            phase_subject: phase_subject(phase),
             operation_id_sha256: OPERATION_ID,
             authorization_id_sha256: AUTHORIZATION_ID,
             ceremony_id_sha256: CEREMONY_ID,
             request_intent_sha256: REQUEST_INTENT,
             parent_proof_sha256: (phase != RootSessionPhase::BeforeChallenge)
                 .then_some(PARENT_PROOF),
-            phase_binding_sha256: PHASE_BINDING,
             semantic_authority_fingerprint_sha256: AUTHORITY_FINGERPRINT,
             authority_expires_at: 1_700_000_600,
             root_admin_id: 1,
@@ -1153,12 +1566,82 @@ mod tests {
             key_version: fixture.protected.key_version,
             secret: &secret,
         };
+        let subject_context = RootSessionPhaseSubjectContext {
+            environment: &claims.environment,
+            operation_id_sha256: &claims.operation_id_sha256,
+            authorization_id_sha256: &claims.authorization_id_sha256,
+            ceremony_id_sha256: &claims.ceremony_id_sha256,
+            request_intent_sha256: &claims.request_intent_sha256,
+            semantic_authority_fingerprint_sha256: &claims.semantic_authority_fingerprint_sha256,
+        };
+        let before_challenge_subject =
+            RootSessionPhaseSubjectV1::BeforeChallenge(RootSessionBeforeChallengeSubjectV1 {
+                context: subject_context,
+                begin_intent_sha256: &fixture.before_challenge_subject.begin_intent_sha256,
+                authorization_subject_sha256: &fixture
+                    .before_challenge_subject
+                    .authorization_subject_sha256,
+                authorization_signature_envelope_sha256: &fixture
+                    .before_challenge_subject
+                    .authorization_signature_envelope_sha256,
+            });
+        assert_eq!(
+            String::from_utf8(before_challenge_subject.canonical_json().unwrap()).unwrap(),
+            fixture.before_challenge_subject.canonical_json
+        );
+        assert_eq!(
+            before_challenge_subject.phase_binding_sha256().unwrap(),
+            fixture.before_challenge_subject.phase_binding_sha256
+        );
+        let before_issuer_subject =
+            RootSessionPhaseSubjectV1::BeforeIssuer(RootSessionBeforeIssuerSubjectV1 {
+                context: subject_context,
+                secure_verification_challenge_sha256: &fixture
+                    .before_issuer_subject
+                    .secure_verification_challenge_sha256,
+                action_subject_sha256: &fixture.before_issuer_subject.action_subject_sha256,
+                permit_issue_request_sha256: &fixture
+                    .before_issuer_subject
+                    .permit_issue_request_sha256,
+            });
+        assert_eq!(
+            String::from_utf8(before_issuer_subject.canonical_json().unwrap()).unwrap(),
+            fixture.before_issuer_subject.canonical_json
+        );
+        assert_eq!(
+            before_issuer_subject.phase_binding_sha256().unwrap(),
+            fixture.before_issuer_subject.phase_binding_sha256
+        );
+        let phase_subject =
+            RootSessionPhaseSubjectV1::BeforeCommit(RootSessionBeforeCommitSubjectV1 {
+                context: subject_context,
+                action_subject_sha256: &fixture.before_commit_subject.action_subject_sha256,
+                issuer_request_sha256: &fixture.before_commit_subject.issuer_request_sha256,
+                authenticated_issuer_request_id_sha256: &fixture
+                    .before_commit_subject
+                    .authenticated_issuer_request_id_sha256,
+                issuer_version_id: &fixture.before_commit_subject.issuer_version_id,
+                permit_id_sha256: &fixture.before_commit_subject.permit_id_sha256,
+                permit_subject_sha256: &fixture.before_commit_subject.permit_subject_sha256,
+                permit_signature_envelope_sha256: &fixture
+                    .before_commit_subject
+                    .permit_signature_envelope_sha256,
+            });
+        assert_eq!(
+            String::from_utf8(phase_subject.canonical_json().unwrap()).unwrap(),
+            fixture.before_commit_subject.canonical_json
+        );
+        assert_eq!(
+            phase_subject.phase_binding_sha256().unwrap(),
+            claims.phase_binding_sha256
+        );
         let input = RootSessionPhaseInput {
             issuer: &claims.issuer,
             audience: &claims.audience,
             application_version_id: &claims.application_version_id,
             environment: &claims.environment,
             phase: claims.phase,
+            phase_subject,
             operation_id_sha256: &claims.operation_id_sha256,
             authorization_id_sha256: &claims.authorization_id_sha256,
             ceremony_id_sha256: &claims.ceremony_id_sha256,
@@ -1175,7 +1658,6 @@ mod tests {
             root_session_id_sha256: &claims.root_session_id_sha256,
             d1_observed_at: claims.d1_observed_at,
             parent_proof_sha256: claims.parent_proof_sha256.as_deref(),
-            phase_binding_sha256: &claims.phase_binding_sha256,
             semantic_authority_fingerprint_sha256: &claims.semantic_authority_fingerprint_sha256,
             authority_expires_at: claims.authority_expires_at,
         };
@@ -1194,12 +1676,12 @@ mod tests {
                 application_version_id: &claims.application_version_id,
                 environment: &claims.environment,
                 phase: claims.phase,
+                phase_subject,
                 operation_id_sha256: &claims.operation_id_sha256,
                 authorization_id_sha256: &claims.authorization_id_sha256,
                 ceremony_id_sha256: &claims.ceremony_id_sha256,
                 request_intent_sha256: &claims.request_intent_sha256,
                 parent_proof_sha256: claims.parent_proof_sha256.as_deref(),
-                phase_binding_sha256: &claims.phase_binding_sha256,
                 semantic_authority_fingerprint_sha256: &claims
                     .semantic_authority_fingerprint_sha256,
                 authority_expires_at: claims.authority_expires_at,
@@ -1371,6 +1853,39 @@ mod tests {
                 ..baseline
             },
             RootSessionPhaseExpectation {
+                parent_proof_sha256: Some(
+                    "9999999999999999999999999999999999999999999999999999999999999999",
+                ),
+                ..baseline
+            },
+            RootSessionPhaseExpectation {
+                phase_subject: RootSessionPhaseSubjectV1::BeforeIssuer(
+                    RootSessionBeforeIssuerSubjectV1 {
+                        context: phase_subject(RootSessionPhase::BeforeIssuer).context(),
+                        secure_verification_challenge_sha256: CHALLENGE_SHA256,
+                        action_subject_sha256:
+                            "abababababababababababababababababababababababababababababababab",
+                        permit_issue_request_sha256: PERMIT_ISSUE_REQUEST,
+                    },
+                ),
+                ..baseline
+            },
+            RootSessionPhaseExpectation {
+                authority_expires_at: baseline.authority_expires_at - 1,
+                ..baseline
+            },
+            RootSessionPhaseExpectation {
+                root_admin_id: 2,
+                ..baseline
+            },
+        ] {
+            assert_eq!(
+                verify_root_session_phase_proof(key_ring(), &token, changed).unwrap_err(),
+                RootSessionPhaseProofError::ClaimMismatch
+            );
+        }
+        for changed in [
+            RootSessionPhaseExpectation {
                 phase: RootSessionPhase::BeforeCommit,
                 ..baseline
             },
@@ -1395,33 +1910,14 @@ mod tests {
                 ..baseline
             },
             RootSessionPhaseExpectation {
-                parent_proof_sha256: Some(
-                    "9999999999999999999999999999999999999999999999999999999999999999",
-                ),
-                ..baseline
-            },
-            RootSessionPhaseExpectation {
-                phase_binding_sha256:
-                    "abababababababababababababababababababababababababababababababab",
-                ..baseline
-            },
-            RootSessionPhaseExpectation {
                 semantic_authority_fingerprint_sha256:
                     "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
-                ..baseline
-            },
-            RootSessionPhaseExpectation {
-                authority_expires_at: baseline.authority_expires_at - 1,
-                ..baseline
-            },
-            RootSessionPhaseExpectation {
-                root_admin_id: 2,
                 ..baseline
             },
         ] {
             assert_eq!(
                 verify_root_session_phase_proof(key_ring(), &token, changed).unwrap_err(),
-                RootSessionPhaseProofError::ClaimMismatch
+                RootSessionPhaseProofError::InvalidInput
             );
         }
     }

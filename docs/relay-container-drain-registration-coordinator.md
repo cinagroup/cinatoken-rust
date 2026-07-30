@@ -16,6 +16,11 @@ Implemented locally:
   checks;
 - `before-challenge`, `before-issuer`, and `before-commit` pure validators;
 - a semantic authority fingerprint shared by all three phases;
+- frozen canonical challenge/issuer/commit subjects reconstructed from typed
+  evidence rather than caller-carried digests;
+- exact parent-proof chaining and derived phase-binding comparison;
+- exact frozen issuer-request and latest-D1-time verified-permit checks;
+- phase-specific opaque challenge, issuer, and commit outputs;
 - production rejection;
 - route-free typed output for the later WebAuthn and command layers; and
 - SQLite-schema, projection, and Rust drift-matrix tests.
@@ -89,10 +94,11 @@ Immutable 0074 retains its historical predicates byte-for-byte. Additive 0076
 locally verifies the exact predecessor schema and empty command/consumption
 state, rebuilds the effective command table and trigger closure without those
 predicates, and passes SQLite/Workerd fingerprint, post-drop rollback, and
-generation-greater-than-`iat` `5/0` tests. This closes the local schema blocker,
-but the coordinator still cannot be wired to a writer until typed phase
-subjects, private transport, persistent replay recovery, staging keys, and
-remote D1 evidence are complete.
+generation-greater-than-`iat` `5/0` tests. This closes the local schema
+blocker. The typed phase-subject and verified-permit consumption blockers are
+also closed locally, but the coordinator still cannot be wired to a writer
+until private transport, persistent replay recovery, staging keys, and remote
+D1 evidence are complete.
 
 ## One-statement phase snapshot
 
@@ -189,7 +195,19 @@ closed.
 
 ### Before challenge
 
-The first validator checks the live authority and returns:
+The first validator accepts a validated
+`DrainSourceRegistrationBeginIntentV1`, not loose operation or RP/Origin
+strings. The intent binds staging, operation, authorization, ceremony,
+request intent, RP ID, HTTPS Origin, D1 issue time, and all twelve
+caller-controlled action inputs: action/request/audit digests, keyed network
+identity HMAC, ticket, reason, verification expiry, writer service/version,
+execution ID, credential ID, and ceremony nonce. The validator checks the
+live authority, reconstructs the canonical before-challenge subject from that
+intent plus D1-verified authorization subject/envelope digests, derives the
+phase binding, and returns an opaque
+`ValidatedDrainSourceRegistrationChallenge`.
+
+That output carries:
 
 - verified authorization fields;
 - decoded current Passkey material;
@@ -198,33 +216,54 @@ The first validator checks the live authority and returns:
 - a semantic authority fingerprint.
 
 The later begin route must use only these returned authority fields when it
-constructs `DrainSourceRegistrationActionV1`.
+constructs `DrainSourceRegistrationActionV1` and must use the retained RP ID,
+Origin, and issue time when it creates the ceremony.
 
 ### Before issuer
 
 After one-shot ceremony consumption and complete WebAuthn verification, the
-future finish route must reread D1 and call `validate_before_issuer`.
+future finish route must reread D1 and call `validate_before_issuer` with the
+opaque challenge output, exact ceremony, and
+`VerifiedDrainSourceRegistrationPasskeyProof`.
 
 The validator requires:
 
+- the signed parent digest equals the complete verified challenge proof;
 - the semantic fingerprint equals the before-challenge fingerprint;
+- ceremony RP ID, Origin, and issue time equal the typed begin intent;
+- every caller-controlled action input equals the value frozen before the
+  challenge;
 - every authority-bearing action field equals the fresh D1 projection;
 - Root session ID, epoch, iat, exp, and binding still match;
 - Passkey row and immutable identities still match;
 - generation and sign count have not moved;
 - receipt sequence and predecessor have not moved; and
-- D1 time is still before session, authorization, and verification expiry.
+- D1 time is still before session, authorization, and verification expiry;
+- the exact 39-field request is generated only from ceremony plus verified
+  Passkey evidence; and
+- the canonical issuer subject binding equals the signed claim.
 
-No issuer request is allowed after a mismatch.
+No issuer request is allowed after a mismatch. The successful opaque
+`ValidatedDrainSourceRegistrationIssuer` owns the frozen request bytes used
+for the isolated issuer call and the next phase.
 
 ### Before commit
 
 After a permit is returned and cryptographically verified, the future finish
-route must reread D1 again and call `validate_before_commit`.
+route must reread D1 again and call `validate_before_commit` with the opaque
+issuer output and `VerifiedDrainSourceRegistrationPermit`.
 
-It applies the same complete checks. Only its successful typed output may
-feed `VerifiedDrainSourceRegistrationCommand::from_verified` and the 0074
-repository.
+It applies the same complete checks, requires the signed parent to be the
+complete verified issuer proof, compares the permit's reconstructed 39-field
+request with the frozen request byte for byte, and rechecks permit validity at
+the latest D1 time. It then binds the action, request, authenticated request-ID
+digest, issuer version, permit ID, permit subject, and permit
+signature-envelope digest into the canonical commit subject.
+
+Only `ValidatedDrainSourceRegistrationCommit` may feed
+`VerifiedDrainSourceRegistrationCommand::from_validated_commit` and the 0074
+repository. The old action/proof/permit constructor is no longer exposed, so
+a caller cannot bypass the fresh before-commit D1 validation.
 
 The 0074 trigger repeats the live Root, Passkey, authorization, fence, ledger,
 and consumption checks inside the atomic statement. The coordinator is an
@@ -271,6 +310,11 @@ The route-free module exposes stable internal classes:
 | `AuthorityExpired` | Authorization is not live at D1 time |
 | `AuthorityDrift` | Semantic fingerprint changed across phases |
 | `ActionMismatch` | Frozen action no longer equals fresh authority/session state |
+| `CeremonyMismatch` | Begin intent, ceremony, challenge, action, or verified Passkey evidence diverged |
+| `PhaseChainMismatch` | Parent proof is absent, stale, or skips a phase |
+| `PhaseBindingMismatch` | Signed claim does not equal the internally derived typed subject binding |
+| `PermitMismatch` | Verified permit does not reproduce the exact frozen issuer request |
+| `PermitExpired` | Permit or phase authority is not live at the latest D1 time |
 
 The future external API must collapse sensitive distinctions. It must not
 reveal whether a Passkey is absent, malformed, deleted, or signature-invalid.
@@ -381,8 +425,14 @@ Local implemented coverage includes:
 - fixture projection of every nested authority component and terminal ledger
   head;
 - strict signed phase proof issue/verify, canonical encoding, current/previous
-  rotation, exact session anchoring, and parent-chain coverage; and
-- independent Rust and Bun/WebCrypto fixed-vector verification.
+  rotation, exact session anchoring, and parent-chain coverage;
+- the 22-field typed begin intent with explicit `u32be` framing plus all three
+  typed canonical phase subjects and bindings in independent Rust and
+  Bun/WebCrypto fixed vectors;
+- rejection when a freshly signed issuer phase tries to pair a retained
+  challenge with a different otherwise-valid action intent;
+- exact frozen issuer-request and permit mismatch/expiry negatives; and
+- command assembly through only the opaque validated commit.
 
 Still required before staging enablement:
 
@@ -413,23 +463,20 @@ Still required before staging enablement:
 The next code increment is not a public route and not a production gate. It
 must:
 
-1. freeze typed challenge/issuer/commit phase subjects, with commit derived
-   from the verified action, issuer request, and permit rather than a
-   caller-carried digest;
-2. freeze the private caller protocol;
-3. wire the implemented Application-issued Root session phase proof only
+1. freeze the private caller protocol;
+2. wire the implemented Application-issued Root session phase proof only
    behind that private boundary;
-4. implement the dedicated durable coordinator state machine and alias-winner
+3. implement the dedicated durable coordinator state machine and alias-winner
    recovery without any public route;
-5. choose and test the Service-Binding-only or named-entrypoint boundary;
-6. add default-off staging configuration while keeping production authority
+4. choose and test the Service-Binding-only or named-entrypoint boundary;
+5. add default-off staging configuration while keeping production authority
    absent;
-7. wire begin to the first phase snapshot and durable `ChallengeIssued`;
-8. wire finish through durable claim, WebAuthn verification, issuer reread/call,
+6. wire begin to the first phase snapshot and durable `ChallengeIssued`;
+7. wire finish through durable claim, WebAuthn verification, issuer reread/call,
    final reread, and 0074 command;
-9. preserve the four-state
+8. preserve the four-state
    `FreshApplied`/`ExactReplay`/`Conflict`/`OutcomeUnknown` result model; and
-10. add a version-controlled isolated-staging 0075/0076
+9. add a version-controlled isolated-staging 0075/0076
     backup/apply/readback/fault campaign before any remote mutation is
     attempted.
 

@@ -5056,11 +5056,22 @@ domain-separated phase-binding slot, semantic D1 authority, Application
 version, and the preceding phase proof. It is staging-only, defaults to a
 10-second TTL, has a 15-second hard ceiling, accepts one current plus one
 strictly older rotation key, and exposes only an opaque verified type to the
-coordinator. Typed challenge/issuer/commit subject structs are not yet frozen,
-and commit binding is not yet derived internally from the verified permit.
+coordinator.
 
-This closes the local proof-format and schema exact-generation foundation
-only. Typed phase subjects, replay consumption, response-loss recovery,
-private transport authentication, secret provisioning, remote 0075/0076 D1
-apply/readback/`5/0`, fault campaigns, and production approvals remain open.
-Go/VPS remains authoritative and production remains **NO-GO**.
+The three canonical phase subjects are now frozen and independently verified
+in Rust and Bun/WebCrypto. The coordinator reconstructs challenge binding from
+a 22-field typed begin intent plus D1-verified authorization. That intent
+freezes all caller-controlled action inputs under explicit `u32be` framing,
+and issuer validation rejects challenge/action substitution before emitting a
+request. Issuer binding comes from the exact ceremony and verified Passkey
+proof, and commit binding comes from the frozen 39-field issuer request plus
+opaque verified permit. Parent proofs are exact, permit request bytes and
+latest-D1-time validity are rechecked, and command assembly accepts only
+`ValidatedDrainSourceRegistrationCommit`; the old action/proof/permit command
+constructor is unavailable.
+
+This closes the local proof-format, typed-subject, commit-consumption, and
+schema exact-generation foundations only. Replay consumption, response-loss
+recovery, private transport authentication, secret provisioning, remote
+0075/0076 D1 apply/readback/`5/0`, fault campaigns, and production approvals
+remain open. Go/VPS remains authoritative and production remains **NO-GO**.

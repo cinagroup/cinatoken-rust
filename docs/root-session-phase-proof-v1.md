@@ -1,12 +1,14 @@
 # RootSessionPhaseProofV1
 
-Date: 2026-07-30
+Date: 2026-07-31
 
-Status: frozen route-free protocol and local verification foundation. It is
-implemented in `crates/root-session-phase-proof` and consumed by the pure
-drain-source registration coordinator. It is not wired to a public route,
-Service Binding, Durable Object, remote D1 database, or production secret.
-Production remains **NO-GO**.
+Status: frozen route-free protocol with typed three-phase subjects and local
+coordinator integration. It is implemented in
+`crates/root-session-phase-proof`; the pure drain-source registration
+coordinator independently reconstructs every subject from typed evidence and
+compares the derived binding with the signed claim. It is not wired to a
+public route, Service Binding, persistent Durable Object, remote D1 database,
+or production secret. Production remains **NO-GO**.
 
 ## Purpose And Trust Boundary
 
@@ -134,19 +136,52 @@ All digests are 64 lowercase hexadecimal characters and are pairwise distinct
 inside one proof. This catches accidental field reuse as well as ordinary
 claim drift.
 
-V1 freezes the digest slot and derivation domain, but the route-free
-foundation does not yet freeze the canonical phase-subject structs used by
-the future transport. That integration must derive them internally:
+V1 freezes three canonical phase-subject structs. Every subject starts with
+the same ordered fields:
 
-- `before_challenge` from the exact begin intent and selected authorization;
-- `before_issuer` from the issued challenge and verified action subject; and
-- `before_commit` from that action plus the frozen issuer request and the
-  verified permit subject/signature envelope.
+```text
+schema_version, contract, phase, environment, operation_id_sha256,
+scope_kind, scope_id_sha256, authorization_id_sha256,
+ceremony_id_sha256, request_intent_sha256,
+semantic_authority_fingerprint_sha256
+```
 
-The verifier must receive those typed values and compute
-`phase_binding_sha256` itself. A caller-carried expected digest, or a commit
-validator that has not consumed the verified permit, is not sufficient for
-staging enablement.
+The phase-specific suffix is:
+
+| Phase | Typed evidence |
+|---|---|
+| `before_challenge` | begin-intent digest, verified authorization subject digest, verified authorization signature-envelope digest |
+| `before_issuer` | verified challenge digest, canonical action-subject digest, exact 39-field permit-issue-request digest |
+| `before_commit` | canonical action-subject digest, the same frozen issuer-request digest, authenticated issuer-request-ID digest, issuer version, verified permit ID, subject, and signature-envelope digests |
+
+The begin intent is a real validated type. It binds staging environment,
+operation, authorization, ceremony, request intent, canonical RP ID, HTTPS
+Origin, and D1 issue time. It also freezes every caller-controlled action
+input: action, registration-request, and admin-audit digests; keyed network
+identity HMAC; change ticket; reason; verification expiry; writer service and
+version; registration execution and credential IDs; and ceremony nonce. The
+issuer phase rejects the ceremony before any request is emitted unless all
+of those values equal the retained begin intent.
+
+Begin-intent framing is explicitly:
+
+```text
+"cinatoken-relay-container-drain-source-registration-begin-intent-v1"
+|| u32be(len(field_1)) || field_1 || ... || u32be(len(field_22)) || field_22
+```
+
+The exact permit issue request is likewise an opaque canonical type and uses
+`cinatoken-relay-container-drain-source-registration-permit-issue-request-v1`.
+These action-layer contracts use `u32be`; Root phase-subject, proof-signing,
+and token-digest framing use their separately frozen NUL-terminated domains
+and `u64be`. Their helpers are intentionally separate.
+
+`phase_binding_sha256` is always recomputed from the phase name and exact
+canonical subject JSON under the frozen root-session phase-binding domain.
+The coordinator accepts no caller-carried binding or semantic digest. Commit
+cannot be validated without consuming the opaque verified permit, checking
+that it matches the frozen request byte for byte, and rechecking permit
+validity at the latest D1 time.
 
 `issued_at` and `not_before` equal the authoritative D1 observation time.
 `expires_at` is the minimum of:
@@ -241,9 +276,11 @@ the boundary. Error responses use stable codes and must not echo proof bytes.
 ## Verification
 
 The version-controlled fixture
-`tests/fixtures/root-session-phase-proof-v1.json` freezes protected and claim
-field order, signature bytes, and token digest. Rust and an independent
-Bun/WebCrypto implementation must both pass:
+`tests/fixtures/root-session-phase-proof-v1.json` freezes the 22-field typed
+begin intent with its `u32be` framing, all three canonical phase subjects and
+bindings, and the complete before-commit protected/claim field order,
+signature bytes, and token digest. Rust and an independent Bun/WebCrypto
+implementation must both pass:
 
 ```powershell
 bun run check:root-session-phase-proof
@@ -264,8 +301,8 @@ Before isolated staging enablement:
    exact-Root/session snapshot;
 3. add a private Service-Binding-only or named-entrypoint transport with its
    own authenticated caller protocol;
-4. freeze typed phase-subject schemas and require commit verification to
-   consume the verified permit before deriving its binding;
+4. prove the private caller protocol carries only the typed inputs required
+   by the implemented coordinator and cannot substitute a raw digest;
 5. implement the dedicated operation Durable Object with single-use phase
    transitions and response-loss recovery;
 6. recover winners by command ID and every stable 0074 alias before retry;

@@ -6,6 +6,84 @@
     "kid": "fixture-current",
     "key_version": 7
   },
+  "begin_intent": {
+    "domain": "cinatoken-relay-container-drain-source-registration-begin-intent-v1",
+    "length_prefix": "u32be",
+    "field_order": [
+      "contract",
+      "action",
+      "environment",
+      "operation_id_sha256",
+      "authorization_id_sha256",
+      "ceremony_id_sha256",
+      "request_intent_sha256",
+      "rp_id",
+      "origin",
+      "issued_at",
+      "action_digest_sha256",
+      "registration_request_sha256",
+      "admin_audit_digest_sha256",
+      "admin_network_identity_hmac_sha256",
+      "change_ticket_sha256",
+      "reason_code",
+      "verification_expires_at",
+      "registered_by_service_name",
+      "registered_by_version_id",
+      "registration_execution_id_sha256",
+      "registration_credential_id_sha256",
+      "ceremony_nonce_sha256"
+    ],
+    "fields": {
+      "contract": "relay-container-drain-source-registration-begin-intent-v1",
+      "action": "relay_container.drain_source_authorization_register",
+      "environment": "staging",
+      "operation_id_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "authorization_id_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ceremony_id_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "request_intent_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "rp_id": "cinatoken.com",
+      "origin": "https://admin.cinatoken.com",
+      "issued_at": 1800000100,
+      "action_digest_sha256": "bd938c688f49b77c7fc537c6b9222e2c97ebddd63076b87f2feaec66fb9c05d0",
+      "registration_request_sha256": "1f58b9145b24d108d7ac38887338b3ea3229833b9c1e418250343f907bfd1047",
+      "admin_audit_digest_sha256": "b81f37a043a6f767e7c94d105f4bd31282f3ecc20680bb9d09bd93461cf4c863",
+      "admin_network_identity_hmac_sha256": "b8de0f80c9ba10bc79d9534f35da4341bcca1f76e288c3d2059dd8186d96b2cf",
+      "change_ticket_sha256": "f1c49d4130925888478411328e1dac04280610f52b325acb71725eed59f42af3",
+      "reason_code": "migration.source-capture",
+      "verification_expires_at": 1800000220,
+      "registered_by_service_name": "cinatoken-application",
+      "registered_by_version_id": "build-2026-07-30",
+      "registration_execution_id_sha256": "a402c4336ebfd78227dea06341f394c60ab50d13d841cedf38df329afe4a304e",
+      "registration_credential_id_sha256": "1465a69e9033f1f8eafcdb06dd2b1195473b7ceefa5112663fdc0c20dfae6ede",
+      "ceremony_nonce_sha256": "eb7040a60ae6efeb78474f9567173e0adb2604e34e54c54bd2f88e7badddce95"
+    },
+    "message_byte_length": 1159,
+    "sha256": "dab63a0131be367fc159aebc5bdb997892e210b053b0a75017e856dd49d66346"
+  },
+  "before_challenge_subject": {
+    "canonical_json": "{\"schema_version\":1,\"contract\":\"relay-container-drain-source-registration-before-challenge-subject-v1\",\"phase\":\"before_challenge\",\"environment\":\"staging\",\"operation_id_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"scope_kind\":\"global\",\"scope_id_sha256\":\"53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251\",\"authorization_id_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ceremony_id_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"request_intent_sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"semantic_authority_fingerprint_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"begin_intent_sha256\":\"dab63a0131be367fc159aebc5bdb997892e210b053b0a75017e856dd49d66346\",\"authorization_subject_sha256\":\"b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0\",\"authorization_signature_envelope_sha256\":\"b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1\"}",
+    "begin_intent_sha256": "dab63a0131be367fc159aebc5bdb997892e210b053b0a75017e856dd49d66346",
+    "authorization_subject_sha256": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "authorization_signature_envelope_sha256": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1",
+    "phase_binding_sha256": "723be1a8937b74e1b327c63f98de0450ffee19f18f5c0a228038b993c38829fd"
+  },
+  "before_issuer_subject": {
+    "canonical_json": "{\"schema_version\":1,\"contract\":\"relay-container-drain-source-registration-before-issuer-subject-v1\",\"phase\":\"before_issuer\",\"environment\":\"staging\",\"operation_id_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"scope_kind\":\"global\",\"scope_id_sha256\":\"53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251\",\"authorization_id_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ceremony_id_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"request_intent_sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"semantic_authority_fingerprint_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"secure_verification_challenge_sha256\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"action_subject_sha256\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"permit_issue_request_sha256\":\"6666666666666666666666666666666666666666666666666666666666666666\"}",
+    "secure_verification_challenge_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "action_subject_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "permit_issue_request_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "phase_binding_sha256": "5b14f282dfd76a874babf9b83c8e89ada88f91f8460a8c0a26da070d18199717"
+  },
+  "before_commit_subject": {
+    "canonical_json": "{\"schema_version\":1,\"contract\":\"relay-container-drain-source-registration-before-commit-subject-v1\",\"phase\":\"before_commit\",\"environment\":\"staging\",\"operation_id_sha256\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"scope_kind\":\"global\",\"scope_id_sha256\":\"53481a32b6f9f49915477efcfca093d0f504943bf27e1a870dbcc1a0a2d69251\",\"authorization_id_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ceremony_id_sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"request_intent_sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"semantic_authority_fingerprint_sha256\":\"4444444444444444444444444444444444444444444444444444444444444444\",\"action_subject_sha256\":\"5555555555555555555555555555555555555555555555555555555555555555\",\"issuer_request_sha256\":\"6666666666666666666666666666666666666666666666666666666666666666\",\"authenticated_issuer_request_id_sha256\":\"b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\",\"issuer_version_id\":\"issuer-fixture-v1\",\"permit_id_sha256\":\"7777777777777777777777777777777777777777777777777777777777777777\",\"permit_subject_sha256\":\"8888888888888888888888888888888888888888888888888888888888888888\",\"permit_signature_envelope_sha256\":\"9999999999999999999999999999999999999999999999999999999999999999\"}",
+    "action_subject_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+    "issuer_request_sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+    "authenticated_issuer_request_id_sha256": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "issuer_version_id": "issuer-fixture-v1",
+    "permit_id_sha256": "7777777777777777777777777777777777777777777777777777777777777777",
+    "permit_subject_sha256": "8888888888888888888888888888888888888888888888888888888888888888",
+    "permit_signature_envelope_sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+  },
   "claims": {
     "proof_version": 1,
     "protocol": "relay-container-drain-source-registration-v1",
@@ -34,13 +112,13 @@
     "root_session_id_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "d1_observed_at": 1800000100,
     "parent_proof_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
-    "phase_binding_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "phase_binding_sha256": "6feded5f8b630c8f4ec23945ba4a4c83f5c6b682864349713ffb7a31ffc18ea7",
     "semantic_authority_fingerprint_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
     "authority_expires_at": 1800000500,
     "issued_at": 1800000100,
     "not_before": 1800000100,
     "expires_at": 1800000110
   },
-  "signature_base64url": "jQuc1jX6VaCVwqU-jz6vm5WbuwWBvrNRJzmr5HSMxlc",
-  "token_sha256": "1104cb9c0fe8575a7915db5bed29cc6b3745b203d74b577484b09846aba97bdf"
+  "signature_base64url": "vweLZ55sI6Y9EtqjoDyi_h72vLiTN2jmkmfMDqlDPyo",
+  "token_sha256": "f34ee190edff1fdfdbfe771feccdf768f6dcca3a73f04bec02d512da83c0377c"
 }

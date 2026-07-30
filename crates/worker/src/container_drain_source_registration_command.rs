@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use crate::container_drain_source_registration_action::{
     DrainSourceRegistrationActionV1, VerifiedDrainSourceRegistrationPasskeyProof,
 };
+use crate::container_drain_source_registration_coordinator::ValidatedDrainSourceRegistrationCommit;
 use crate::container_drain_source_registration_permit::VerifiedDrainSourceRegistrationPermit;
 
 pub(crate) const DRAIN_SOURCE_REGISTRATION_COMMAND_CONTRACT: &str =
@@ -16,8 +17,6 @@ pub(crate) const DRAIN_SOURCE_REGISTRATION_COMMAND_CONTRACT: &str =
 pub(crate) const DRAIN_SOURCE_REGISTRATION_COMMAND_MIGRATION: &str =
     "0074_relay_container_drain_source_registration_command.sql";
 
-const ISSUER_REQUEST_ID_DOMAIN: &[u8] =
-    b"cinatoken-relay-container-drain-source-registration-issuer-request-id-v1";
 const SECURE_VERIFICATION_RECEIPT_DOMAIN: &[u8] =
     b"cinatoken-relay-container-drain-source-registration-secure-receipt-v1";
 const COMMAND_ID_DOMAIN: &[u8] =
@@ -102,11 +101,21 @@ impl std::fmt::Display for DrainSourceRegistrationCommandError {
 impl std::error::Error for DrainSourceRegistrationCommandError {}
 
 impl VerifiedDrainSourceRegistrationCommand {
-    pub(crate) fn from_verified(
+    pub(crate) fn from_validated_commit(
+        commit: &ValidatedDrainSourceRegistrationCommit,
+    ) -> Result<Self, DrainSourceRegistrationCommandError> {
+        let (action, proof, permit) = commit.command_evidence();
+        Self::assemble(action, proof, permit)
+    }
+
+    fn assemble(
         action: &DrainSourceRegistrationActionV1,
         proof: &VerifiedDrainSourceRegistrationPasskeyProof,
         permit: &VerifiedDrainSourceRegistrationPermit,
     ) -> Result<Self, DrainSourceRegistrationCommandError> {
+        let issuer_request_id_sha256 = permit
+            .authenticated_request_id_sha256()
+            .map_err(|_| DrainSourceRegistrationCommandError::BindingMismatch)?;
         let action = action.writer_projection();
         let proof = proof.writer_projection();
         let permit = permit.writer_projection();
@@ -178,10 +187,6 @@ impl VerifiedDrainSourceRegistrationCommand {
             .checked_add(1)
             .filter(|generation| *generation <= MAXIMUM_SAFE_INTEGER)
             .ok_or(DrainSourceRegistrationCommandError::InvalidGeneration)?;
-        let issuer_request_id_sha256 = canonical_sha256(
-            ISSUER_REQUEST_ID_DOMAIN,
-            &[permit.authenticated_request_id().as_bytes()],
-        )?;
         let previous_generation = permit.passkey_previous_use_generation().to_string();
         let next_generation = passkey_next_use_generation.to_string();
         let previous_sign_count = permit.passkey_previous_sign_count().to_string();
@@ -452,15 +457,5 @@ mod tests {
         assert!(command
             .bytes()
             .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')));
-    }
-
-    #[test]
-    fn request_id_digest_does_not_persist_the_authenticated_identifier() {
-        let digest = canonical_sha256(ISSUER_REQUEST_ID_DOMAIN, &[b"issuer-request-42"]).unwrap();
-        assert_eq!(
-            digest,
-            "cb62d830e6687a14d3c3a239420d54ef8f856501d0cae40812f0edc101d34626"
-        );
-        assert!(!digest.contains("issuer-request"));
     }
 }

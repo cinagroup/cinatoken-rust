@@ -14,7 +14,8 @@ use sha2::{Digest, Sha256};
 use worker::Env;
 
 use crate::container_drain_source_registration_action::{
-    DrainSourceRegistrationPermitBindings, DRAIN_SOURCE_REGISTRATION_ACTION,
+    DrainSourceRegistrationPermitBindings, DrainSourceRegistrationPermitIssueRequestV1,
+    DRAIN_SOURCE_REGISTRATION_ACTION,
 };
 
 pub(crate) const DRAIN_SOURCE_REGISTRATION_PERMIT_CONTRACT: &str =
@@ -27,6 +28,8 @@ const PERMIT_SUBJECT_DOMAIN: &[u8] =
 const PERMIT_ENVELOPE_DOMAIN: &[u8] =
     b"cinatoken-relay-container-drain-source-registration-permit-envelope-v1";
 const PERMIT_ID_DOMAIN: &[u8] = b"cinatoken-relay-container-drain-source-registration-permit-id-v1";
+const ISSUER_REQUEST_ID_DOMAIN: &[u8] =
+    b"cinatoken-relay-container-drain-source-registration-issuer-request-id-v1";
 const PERMIT_ALGORITHM: &str = "Ed25519";
 const EXPECTED_ENVIRONMENT: &str = "staging";
 const MINIMUM_PERMIT_LIFETIME_SECONDS: i64 = 5;
@@ -175,8 +178,135 @@ impl VerifiedDrainSourceRegistrationPermit {
         &self.signature_envelope_sha256
     }
 
+    pub(crate) fn issuer_version_id(&self) -> &str {
+        &self.issuer_version_id
+    }
+
+    pub(crate) fn authenticated_request_id_sha256(
+        &self,
+    ) -> Result<String, DrainSourceRegistrationPermitError> {
+        canonical_message(
+            ISSUER_REQUEST_ID_DOMAIN,
+            std::slice::from_ref(&self.authenticated_request_id),
+        )
+        .map(sha256_hex)
+    }
+
+    pub(crate) fn validate_issue_request(
+        &self,
+        expected: &DrainSourceRegistrationPermitIssueRequestV1,
+    ) -> Result<(), DrainSourceRegistrationPermitError> {
+        if permit_issue_request_bytes(&self.subject)? != expected.as_bytes() {
+            return Err(DrainSourceRegistrationPermitError::BindingMismatch);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_at(
+        &self,
+        database_now: i64,
+    ) -> Result<(), DrainSourceRegistrationPermitError> {
+        validate_validity(&self.subject, database_now)
+    }
+
     pub(crate) fn writer_projection(&self) -> DrainSourceRegistrationPermitWriterProjection<'_> {
         DrainSourceRegistrationPermitWriterProjection { permit: self }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_fixture_from_issue_request(
+        request: &DrainSourceRegistrationPermitIssueRequestV1,
+        authenticated_request_id: &str,
+        issuer_version_id: &str,
+    ) -> Result<Self, DrainSourceRegistrationPermitError> {
+        if !valid_request_id(authenticated_request_id) || !valid_version_id(issuer_version_id) {
+            return Err(DrainSourceRegistrationPermitError::InvalidPermit);
+        }
+        let mut object: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(request.as_bytes())
+                .map_err(|_| DrainSourceRegistrationPermitError::InvalidPermit)?;
+        let verified_at = object
+            .get("verifiedAt")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or(DrainSourceRegistrationPermitError::InvalidPermit)?;
+        let verification_expires_at = object
+            .get("verificationExpiresAt")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or(DrainSourceRegistrationPermitError::InvalidPermit)?;
+        let root_session_expires_at = object
+            .get("rootSessionExpiresAt")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or(DrainSourceRegistrationPermitError::InvalidPermit)?;
+        let issuer = "cinatoken-test-registration-permit-issuer";
+        let audience = "cinatoken-test-registration-coordinator";
+        let key_id = "test-registration-permit-key-1";
+        let signer_identity_sha256 = sha256_hex(b"test-registration-permit-identity");
+        let signer_spki_sha256 = sha256_hex(b"test-registration-permit-spki");
+        let maximum_expires_at = verified_at
+            .checked_add(MAXIMUM_PERMIT_LIFETIME_SECONDS)
+            .ok_or(DrainSourceRegistrationPermitError::InvalidPermit)?;
+        let expires_at = maximum_expires_at
+            .min(verification_expires_at)
+            .min(root_session_expires_at);
+
+        for (name, value) in [
+            ("schemaVersion", serde_json::Value::from(1)),
+            (
+                "contract",
+                serde_json::Value::String(DRAIN_SOURCE_REGISTRATION_PERMIT_CONTRACT.to_owned()),
+            ),
+            ("issuer", serde_json::Value::String(issuer.to_owned())),
+            ("audience", serde_json::Value::String(audience.to_owned())),
+            ("keyId", serde_json::Value::String(key_id.to_owned())),
+            (
+                "signerIdentitySha256",
+                serde_json::Value::String(signer_identity_sha256.clone()),
+            ),
+            (
+                "signerSpkiSha256",
+                serde_json::Value::String(signer_spki_sha256.clone()),
+            ),
+            (
+                "permitIdSha256",
+                serde_json::Value::String(sha256_hex(b"pending-test-permit-id")),
+            ),
+            ("issuedAt", serde_json::Value::from(verified_at)),
+            ("expiresAt", serde_json::Value::from(expires_at)),
+        ] {
+            if object.insert(name.to_owned(), value).is_some() {
+                return Err(DrainSourceRegistrationPermitError::InvalidPermit);
+            }
+        }
+
+        let mut subject: DrainSourceRegistrationPermitSubject =
+            serde_json::from_value(serde_json::Value::Object(object))
+                .map_err(|_| DrainSourceRegistrationPermitError::InvalidPermit)?;
+        subject.permit_id_sha256 = derive_permit_id_sha256(&subject, authenticated_request_id)?;
+        let trust = DrainSourceRegistrationPermitTrust {
+            issuer: issuer.to_owned(),
+            audience: audience.to_owned(),
+            key_id: key_id.to_owned(),
+            identity_sha256: signer_identity_sha256,
+            spki_base64url: String::new(),
+            spki_sha256: signer_spki_sha256,
+        };
+        validate_subject_shape(&subject, &trust)?;
+        validate_validity(&subject, verified_at)?;
+        if permit_issue_request_bytes(&subject)? != request.as_bytes() {
+            return Err(DrainSourceRegistrationPermitError::BindingMismatch);
+        }
+        let subject_sha256 = sha256_hex(permit_subject_message(&subject)?);
+        let signature = Signature::from_bytes(&[0x5a; 64]);
+        let signature_envelope_sha256 =
+            permit_signature_envelope_sha256(&subject, &subject_sha256, &signature)?;
+
+        Ok(Self {
+            subject,
+            subject_sha256,
+            signature_envelope_sha256,
+            authenticated_request_id: authenticated_request_id.to_owned(),
+            issuer_version_id: issuer_version_id.to_owned(),
+        })
     }
 }
 
@@ -1189,6 +1319,23 @@ mod tests {
             verified.signature_envelope_sha256(),
             verified.subject_sha256()
         );
+        assert!(verified.validate_issue_request(&issue_request).is_ok());
+        assert_eq!(
+            verified.authenticated_request_id_sha256().unwrap(),
+            "644e0aea6dfcb881700c75a03414d7e747869918cdff5d3cc1c1f8cc44577eb5"
+        );
+        assert!(verified.validate_at(NOW + 2).is_ok());
+        assert_eq!(
+            verified.validate_at(NOW + 24),
+            Err(DrainSourceRegistrationPermitError::InvalidValidity)
+        );
+        let changed_bindings = expected
+            .clone()
+            .test_replace_registration_request_sha256(label_digest("changed-request"));
+        assert_eq!(
+            verified.validate_issue_request(&changed_bindings.issue_request().unwrap()),
+            Err(DrainSourceRegistrationPermitError::BindingMismatch)
+        );
         let projection = verified.writer_projection();
         assert_eq!(projection.authenticated_request_id(), REQUEST_ID);
         assert_eq!(projection.issuer_version_id(), ISSUER_VERSION_ID);
@@ -1316,6 +1463,24 @@ mod tests {
             projection.signature_envelope_sha256(),
             verified.signature_envelope_sha256()
         );
+    }
+
+    #[test]
+    fn test_fixture_preserves_the_opaque_verified_permit_boundary() {
+        let request = bindings().issue_request().unwrap();
+        let permit = VerifiedDrainSourceRegistrationPermit::test_fixture_from_issue_request(
+            &request,
+            REQUEST_ID,
+            ISSUER_VERSION_ID,
+        )
+        .unwrap();
+
+        assert!(permit.validate_issue_request(&request).is_ok());
+        assert!(permit.validate_at(NOW + 1).is_ok());
+        assert_eq!(permit.issuer_version_id(), ISSUER_VERSION_ID);
+        assert_eq!(permit.permit_id_sha256().len(), 64);
+        assert_eq!(permit.subject_sha256().len(), 64);
+        assert_eq!(permit.signature_envelope_sha256().len(), 64);
     }
 
     #[test]

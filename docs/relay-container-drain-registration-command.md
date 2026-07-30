@@ -92,11 +92,14 @@ The writer is assembled from verified types, not request strings:
 
 ```text
 VerifiedDrainSourceAuthorization
+  -> ValidatedDrainSourceRegistrationChallenge
   -> DrainSourceRegistrationActionV1
   -> one-shot mandatory-UV WebAuthn challenge
   -> VerifiedDrainSourceRegistrationPasskeyProof
-  -> isolated issuer request
+  -> ValidatedDrainSourceRegistrationIssuer
+  -> exact frozen isolated issuer request
   -> VerifiedDrainSourceRegistrationPermit
+  -> ValidatedDrainSourceRegistrationCommit
   -> VerifiedDrainSourceRegistrationCommand
   -> one 0074 D1 INSERT
 ```
@@ -113,11 +116,15 @@ issuer deployment version in addition to the signed subject, signer identity,
 key ID, SPKI digest, permit ID, and signature-envelope digest. The verified
 permit is opaque to route code.
 
-`VerifiedDrainSourceRegistrationCommand::from_verified` cross-checks every
-shared action, proof, and permit binding. It derives the issuer-request digest,
+`VerifiedDrainSourceRegistrationCommand::from_validated_commit` accepts only
+the opaque result of the latest-D1-time before-commit validator. That
+validator has already consumed the exact frozen issuer request and verified
+permit, recomputed the canonical commit phase binding, and enforced the
+parent-proof chain. Command assembly still cross-checks every shared action,
+proof, and permit binding and derives the issuer-request digest,
 secure-verification receipt, command ID, and registration receipt internally.
-A route cannot supply those identities or downgrade a verified type to raw
-strings.
+A route cannot supply those identities, call the old three-argument
+constructor, or downgrade a verified type to raw strings.
 
 ## Session lifetime binding
 
@@ -436,7 +443,7 @@ At this checkpoint:
   22 cross-engine-stable final SQL fingerprints, and three complete table
   PRAGMA fingerprints;
 - the typed command's focused Rust derivation tests pass;
-- the complete Worker Rust library passes 988 tests, including the private
+- the complete Worker Rust library passes 991 tests, including the private
   0074 repository and route-free coordinator source-contract tests;
 - two Bun SQLite coordinator tests prepare the exact phase query against
   migrations 0001 through 0076 and project every authority component plus the
@@ -485,9 +492,13 @@ facts, not remote staging evidence.
   raw `sid`, nor `SESSION_SECRET` may cross the Service Binding. The frozen
   protocol and remaining replay boundary are documented in
   [`root-session-phase-proof-v1.md`](root-session-phase-proof-v1.md).
-- Freeze typed challenge, issuer-request, and commit subject structs. Commit
-  binding must be derived internally from the verified action, frozen issuer
-  request, and verified permit, never accepted as a caller-carried digest.
+- The typed challenge, issuer-request, and commit subject structs are frozen
+  locally. The typed begin intent also freezes all twelve caller-controlled
+  action inputs and issuer validation rejects any later action substitution.
+  Commit binding is derived internally from the verified action, frozen
+  issuer request, authenticated issuer request ID/version, and opaque verified
+  permit; retain these vectors and do not reintroduce a caller-carried digest
+  or direct command constructor.
 - Use a dedicated persistent coordinator DO. The generic Passkey ceremony and
   generic admin Passkey step-up paths cannot provide response-loss recovery
   while preserving 0074's atomic Passkey consumption.

@@ -29,10 +29,16 @@ pub(crate) const DRAIN_SOURCE_REGISTRATION_ACTION_CONTRACT: &str =
     "relay-container-drain-source-registration-action-v1";
 pub(crate) const DRAIN_SOURCE_REGISTRATION_ACTION: &str =
     "relay_container.drain_source_authorization_register";
+pub(crate) const DRAIN_SOURCE_REGISTRATION_BEGIN_INTENT_CONTRACT: &str =
+    "relay-container-drain-source-registration-begin-intent-v1";
 
 const ACTION_SUBJECT_DOMAIN: &[u8] =
     b"cinatoken-relay-container-drain-source-registration-action-v1";
+const BEGIN_INTENT_DOMAIN: &[u8] =
+    b"cinatoken-relay-container-drain-source-registration-begin-intent-v1";
 const CHALLENGE_DOMAIN: &[u8] = b"cinatoken-relay-container-drain-source-registration-challenge-v1";
+const PERMIT_ISSUE_REQUEST_DOMAIN: &[u8] =
+    b"cinatoken-relay-container-drain-source-registration-permit-issue-request-v1";
 const ADMIN_NETWORK_IDENTITY_HMAC_DOMAIN: &[u8] =
     b"cinatoken-relay-container-admin-network-identity-hmac-v1";
 const CEREMONY_KEY_PREFIX: &str = "drain-source-registration";
@@ -41,6 +47,7 @@ const MAXIMUM_PREVIOUS_USE_GENERATION: i64 = MAXIMUM_SAFE_INTEGER - 1;
 const MINIMUM_VERIFICATION_LIFETIME_SECONDS: i64 = 30;
 const MAXIMUM_VERIFICATION_LIFETIME_SECONDS: i64 = 300;
 const ACTION_SUBJECT_FIELD_COUNT: usize = 57;
+const BEGIN_INTENT_FIELD_COUNT: usize = 22;
 const PERMIT_ISSUE_REQUEST_FIELD_COUNT: usize = 39;
 const MINIMUM_ADMIN_NETWORK_HMAC_KEY_BYTES: usize = 32;
 
@@ -163,6 +170,216 @@ pub(crate) struct DrainSourceRegistrationActionInput {
     pub(crate) registration_execution_id_sha256: String,
     pub(crate) registration_credential_id_sha256: String,
     pub(crate) ceremony_nonce_sha256: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DrainSourceRegistrationBeginIntentInput {
+    pub(crate) action_digest_sha256: String,
+    pub(crate) registration_request_sha256: String,
+    pub(crate) admin_audit_digest_sha256: String,
+    pub(crate) admin_network_identity_hmac_sha256: AdminNetworkIdentityHmacSha256,
+    pub(crate) change_ticket_sha256: String,
+    pub(crate) reason_code: String,
+    pub(crate) verification_expires_at: i64,
+    pub(crate) registered_by_service_name: String,
+    pub(crate) registered_by_version_id: String,
+    pub(crate) registration_execution_id_sha256: String,
+    pub(crate) registration_credential_id_sha256: String,
+    pub(crate) ceremony_nonce_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DrainSourceRegistrationBeginIntentV1 {
+    environment: String,
+    operation_id_sha256: String,
+    authorization_id_sha256: String,
+    ceremony_id_sha256: String,
+    request_intent_sha256: String,
+    rp_id: String,
+    origin: String,
+    issued_at: i64,
+    action_digest_sha256: String,
+    registration_request_sha256: String,
+    admin_audit_digest_sha256: String,
+    admin_network_identity_hmac_sha256: String,
+    change_ticket_sha256: String,
+    reason_code: String,
+    verification_expires_at: i64,
+    registered_by_service_name: String,
+    registered_by_version_id: String,
+    registration_execution_id_sha256: String,
+    registration_credential_id_sha256: String,
+    ceremony_nonce_sha256: String,
+}
+
+impl DrainSourceRegistrationBeginIntentV1 {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        environment: impl Into<String>,
+        operation_id_sha256: impl Into<String>,
+        authorization_id_sha256: impl Into<String>,
+        ceremony_id_sha256: impl Into<String>,
+        request_intent_sha256: impl Into<String>,
+        rp_id: impl Into<String>,
+        origin: impl Into<String>,
+        issued_at: i64,
+        input: DrainSourceRegistrationBeginIntentInput,
+    ) -> Result<Self, DrainSourceRegistrationCeremonyError> {
+        let intent = Self {
+            environment: environment.into(),
+            operation_id_sha256: operation_id_sha256.into(),
+            authorization_id_sha256: authorization_id_sha256.into(),
+            ceremony_id_sha256: ceremony_id_sha256.into(),
+            request_intent_sha256: request_intent_sha256.into(),
+            rp_id: rp_id.into(),
+            origin: origin.into(),
+            issued_at,
+            action_digest_sha256: input.action_digest_sha256,
+            registration_request_sha256: input.registration_request_sha256,
+            admin_audit_digest_sha256: input.admin_audit_digest_sha256,
+            admin_network_identity_hmac_sha256: input
+                .admin_network_identity_hmac_sha256
+                .into_inner(),
+            change_ticket_sha256: input.change_ticket_sha256,
+            reason_code: input.reason_code,
+            verification_expires_at: input.verification_expires_at,
+            registered_by_service_name: input.registered_by_service_name,
+            registered_by_version_id: input.registered_by_version_id,
+            registration_execution_id_sha256: input.registration_execution_id_sha256,
+            registration_credential_id_sha256: input.registration_credential_id_sha256,
+            ceremony_nonce_sha256: input.ceremony_nonce_sha256,
+        };
+        intent.validate()?;
+        Ok(intent)
+    }
+
+    pub(crate) fn environment(&self) -> &str {
+        &self.environment
+    }
+
+    pub(crate) fn operation_id_sha256(&self) -> &str {
+        &self.operation_id_sha256
+    }
+
+    pub(crate) fn authorization_id_sha256(&self) -> &str {
+        &self.authorization_id_sha256
+    }
+
+    pub(crate) fn ceremony_id_sha256(&self) -> &str {
+        &self.ceremony_id_sha256
+    }
+
+    pub(crate) fn request_intent_sha256(&self) -> &str {
+        &self.request_intent_sha256
+    }
+
+    pub(crate) fn rp_id(&self) -> &str {
+        &self.rp_id
+    }
+
+    pub(crate) fn origin(&self) -> &str {
+        &self.origin
+    }
+
+    pub(crate) fn issued_at(&self) -> i64 {
+        self.issued_at
+    }
+
+    pub(crate) fn matches_action(&self, action: &DrainSourceRegistrationActionV1) -> bool {
+        self.environment == action.environment
+            && self.authorization_id_sha256 == action.authorization_id_sha256
+            && self.action_digest_sha256 == action.action_digest_sha256
+            && self.registration_request_sha256 == action.registration_request_sha256
+            && self.admin_audit_digest_sha256 == action.admin_audit_digest_sha256
+            && self.admin_network_identity_hmac_sha256 == action.admin_network_identity_hmac_sha256
+            && self.change_ticket_sha256 == action.change_ticket_sha256
+            && self.reason_code == action.reason_code
+            && self.verification_expires_at == action.verification_expires_at
+            && self.registered_by_service_name == action.registered_by_service_name
+            && self.registered_by_version_id == action.registered_by_version_id
+            && self.registration_execution_id_sha256 == action.registration_execution_id_sha256
+            && self.registration_credential_id_sha256 == action.registration_credential_id_sha256
+            && self.ceremony_nonce_sha256 == action.ceremony_nonce_sha256
+    }
+
+    pub(crate) fn sha256(&self) -> Result<String, DrainSourceRegistrationCeremonyError> {
+        self.validate()?;
+        let issued_at = self.issued_at.to_string();
+        let verification_expires_at = self.verification_expires_at.to_string();
+        let fields = [
+            DRAIN_SOURCE_REGISTRATION_BEGIN_INTENT_CONTRACT.as_bytes(),
+            DRAIN_SOURCE_REGISTRATION_ACTION.as_bytes(),
+            self.environment.as_bytes(),
+            self.operation_id_sha256.as_bytes(),
+            self.authorization_id_sha256.as_bytes(),
+            self.ceremony_id_sha256.as_bytes(),
+            self.request_intent_sha256.as_bytes(),
+            self.rp_id.as_bytes(),
+            self.origin.as_bytes(),
+            issued_at.as_bytes(),
+            self.action_digest_sha256.as_bytes(),
+            self.registration_request_sha256.as_bytes(),
+            self.admin_audit_digest_sha256.as_bytes(),
+            self.admin_network_identity_hmac_sha256.as_bytes(),
+            self.change_ticket_sha256.as_bytes(),
+            self.reason_code.as_bytes(),
+            verification_expires_at.as_bytes(),
+            self.registered_by_service_name.as_bytes(),
+            self.registered_by_version_id.as_bytes(),
+            self.registration_execution_id_sha256.as_bytes(),
+            self.registration_credential_id_sha256.as_bytes(),
+            self.ceremony_nonce_sha256.as_bytes(),
+        ];
+        if fields.len() != BEGIN_INTENT_FIELD_COUNT {
+            return Err(DrainSourceRegistrationCeremonyError::InvalidCeremony);
+        }
+        Ok(sha256_hex(canonical_message(BEGIN_INTENT_DOMAIN, &fields)?))
+    }
+
+    fn validate(&self) -> Result<(), DrainSourceRegistrationCeremonyError> {
+        let verification_lifetime = self.verification_expires_at.checked_sub(self.issued_at);
+        if self.environment != "staging"
+            || self.issued_at <= 0
+            || self.issued_at > MAXIMUM_SAFE_INTEGER
+            || self.verification_expires_at > MAXIMUM_SAFE_INTEGER
+            || !matches!(
+                verification_lifetime,
+                Some(MINIMUM_VERIFICATION_LIFETIME_SECONDS..=MAXIMUM_VERIFICATION_LIFETIME_SECONDS)
+            )
+            || !valid_service_name(&self.registered_by_service_name)
+            || !valid_version_id(&self.registered_by_version_id)
+            || !valid_reason_code(&self.reason_code)
+            || self.action_digest_sha256 == self.registration_request_sha256
+            || self.action_digest_sha256 == self.admin_audit_digest_sha256
+            || self.registration_request_sha256 == self.admin_audit_digest_sha256
+            || self.registration_execution_id_sha256 == self.registration_credential_id_sha256
+        {
+            return Err(DrainSourceRegistrationCeremonyError::InvalidCeremony);
+        }
+        let digests = [
+            &self.operation_id_sha256,
+            &self.authorization_id_sha256,
+            &self.ceremony_id_sha256,
+            &self.request_intent_sha256,
+            &self.action_digest_sha256,
+            &self.registration_request_sha256,
+            &self.admin_audit_digest_sha256,
+            &self.admin_network_identity_hmac_sha256,
+            &self.change_ticket_sha256,
+            &self.registration_execution_id_sha256,
+            &self.registration_credential_id_sha256,
+            &self.ceremony_nonce_sha256,
+        ];
+        if digests.iter().any(|digest| !valid_sha256(digest))
+            || digests[..4]
+                .iter()
+                .enumerate()
+                .any(|(index, digest)| digests[index + 1..4].contains(digest))
+        {
+            return Err(DrainSourceRegistrationCeremonyError::InvalidCeremony);
+        }
+        validate_relying_party(&self.rp_id, &self.origin)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -426,6 +643,13 @@ impl DrainSourceRegistrationPermitIssueRequestV1 {
     pub(crate) fn as_bytes(&self) -> &[u8] {
         &self.canonical_json
     }
+
+    pub(crate) fn sha256(&self) -> Result<String, DrainSourceRegistrationCeremonyError> {
+        Ok(sha256_hex(canonical_message(
+            PERMIT_ISSUE_REQUEST_DOMAIN,
+            &[self.as_bytes()],
+        )?))
+    }
 }
 
 impl DrainSourceRegistrationPermitBindings {
@@ -647,6 +871,15 @@ impl DrainSourceRegistrationPermitBindings {
     pub(crate) fn test_admin_network_identity_hmac_sha256(&self) -> &str {
         &self.admin_network_identity_hmac_sha256
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_replace_registration_request_sha256(
+        mut self,
+        registration_request_sha256: String,
+    ) -> Self {
+        self.registration_request_sha256 = registration_request_sha256;
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -700,6 +933,50 @@ impl VerifiedDrainSourceRegistrationPasskeyProof {
     ) -> DrainSourceRegistrationPasskeyProofWriterProjection<'_> {
         DrainSourceRegistrationPasskeyProofWriterProjection { proof: self }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_fixture_for_state(
+        state: &DrainSourceRegistrationCeremonyState,
+        previous_sign_count: u32,
+        sign_count: u32,
+        backup_eligible: bool,
+        backup_state: bool,
+        verified_at: i64,
+    ) -> Result<Self, DrainSourceRegistrationCeremonyError> {
+        state.validate_at(verified_at)?;
+        if backup_state && !backup_eligible
+            || !valid_sign_count_transition(previous_sign_count, sign_count)
+        {
+            return Err(DrainSourceRegistrationCeremonyError::InvalidCeremony);
+        }
+        Ok(Self {
+            passkey_credential_row_id: state.action.passkey_credential_row_id,
+            passkey_credential_id_sha256: state.action.passkey_credential_id_sha256.clone(),
+            passkey_credential_registration_id_sha256: state
+                .action
+                .passkey_credential_registration_id_sha256
+                .clone(),
+            passkey_credential_binding_sha256: state
+                .action
+                .passkey_credential_binding_sha256
+                .clone(),
+            passkey_previous_use_generation: state.action.passkey_previous_use_generation,
+            passkey_assertion_subject_sha256: sha256_hex(
+                b"cinatoken-test-passkey-assertion-subject",
+            ),
+            passkey_assertion_signature_sha256: sha256_hex(
+                b"cinatoken-test-passkey-assertion-signature",
+            ),
+            secure_verification_challenge_sha256: state.secure_verification_challenge_sha256()?,
+            previous_sign_count,
+            sign_count,
+            user_present: true,
+            user_verified: true,
+            backup_eligible,
+            backup_state,
+            verified_at,
+        })
+    }
 }
 
 impl DrainSourceRegistrationCeremonyState {
@@ -728,6 +1005,18 @@ impl DrainSourceRegistrationCeremonyState {
 
     pub(crate) fn challenge(&self) -> &str {
         &self.challenge
+    }
+
+    pub(crate) fn rp_id(&self) -> &str {
+        &self.rp_id
+    }
+
+    pub(crate) fn origin(&self) -> &str {
+        &self.origin
+    }
+
+    pub(crate) fn issued_at(&self) -> i64 {
+        self.issued_at
     }
 
     pub(crate) fn ceremony_key(&self) -> Result<String, DrainSourceRegistrationCeremonyError> {
@@ -1474,21 +1763,39 @@ mod tests {
         }
     }
 
+    fn begin_intent_input() -> DrainSourceRegistrationBeginIntentInput {
+        DrainSourceRegistrationBeginIntentInput {
+            action_digest_sha256: digest("action"),
+            registration_request_sha256: digest("request"),
+            admin_audit_digest_sha256: digest("audit"),
+            admin_network_identity_hmac_sha256: AdminNetworkIdentityHmacSha256::derive(
+                &[0x42; 32],
+                "203.0.113.42",
+            )
+            .unwrap(),
+            change_ticket_sha256: digest("change-ticket"),
+            reason_code: "migration.source-capture".to_owned(),
+            verification_expires_at: NOW + 120,
+            registered_by_service_name: "cinatoken-application".to_owned(),
+            registered_by_version_id: "build-2026-07-30".to_owned(),
+            registration_execution_id_sha256: digest("execution"),
+            registration_credential_id_sha256: digest("service-credential"),
+            ceremony_nonce_sha256: digest("ceremony-nonce"),
+        }
+    }
+
     fn action() -> DrainSourceRegistrationActionV1 {
+        let begin_input = begin_intent_input();
         DrainSourceRegistrationActionV1::from_verified_authorization(
             &authorization(),
             DrainSourceRegistrationActionInput {
-                action_digest_sha256: digest("action"),
-                registration_request_sha256: digest("request"),
-                admin_audit_digest_sha256: digest("audit"),
-                admin_network_identity_hmac_sha256: AdminNetworkIdentityHmacSha256::derive(
-                    &[0x42; 32],
-                    "203.0.113.42",
-                )
-                .unwrap(),
-                change_ticket_sha256: digest("change-ticket"),
-                reason_code: "migration.source-capture".to_owned(),
-                verification_expires_at: NOW + 120,
+                action_digest_sha256: begin_input.action_digest_sha256,
+                registration_request_sha256: begin_input.registration_request_sha256,
+                admin_audit_digest_sha256: begin_input.admin_audit_digest_sha256,
+                admin_network_identity_hmac_sha256: begin_input.admin_network_identity_hmac_sha256,
+                change_ticket_sha256: begin_input.change_ticket_sha256,
+                reason_code: begin_input.reason_code,
+                verification_expires_at: begin_input.verification_expires_at,
                 receipt_sequence: 1,
                 ledger_head_before_sha256: digest("ledger-head"),
                 root_session_epoch: 7,
@@ -1500,11 +1807,11 @@ mod tests {
                 passkey_credential_registration_id_sha256: digest("credential-registration-id"),
                 passkey_credential_binding_sha256: digest("credential-binding"),
                 passkey_previous_use_generation: 17,
-                registered_by_service_name: "cinatoken-application".to_owned(),
-                registered_by_version_id: "build-2026-07-30".to_owned(),
-                registration_execution_id_sha256: digest("execution"),
-                registration_credential_id_sha256: digest("service-credential"),
-                ceremony_nonce_sha256: digest("ceremony-nonce"),
+                registered_by_service_name: begin_input.registered_by_service_name,
+                registered_by_version_id: begin_input.registered_by_version_id,
+                registration_execution_id_sha256: begin_input.registration_execution_id_sha256,
+                registration_credential_id_sha256: begin_input.registration_credential_id_sha256,
+                ceremony_nonce_sha256: begin_input.ceremony_nonce_sha256,
             },
         )
     }
@@ -1520,10 +1827,137 @@ mod tests {
     }
 
     #[test]
+    fn begin_intent_is_typed_domain_separated_and_fail_closed() {
+        let baseline = DrainSourceRegistrationBeginIntentV1::new(
+            "staging",
+            digest("operation"),
+            digest("authorization"),
+            digest("ceremony"),
+            digest("request-intent"),
+            "cinatoken.com",
+            "https://admin.cinatoken.com",
+            NOW,
+            begin_intent_input(),
+        )
+        .unwrap();
+        let baseline_sha256 = baseline.sha256().unwrap();
+        let changed = DrainSourceRegistrationBeginIntentV1::new(
+            "staging",
+            digest("operation"),
+            digest("authorization"),
+            digest("ceremony"),
+            digest("different-request-intent"),
+            "cinatoken.com",
+            "https://admin.cinatoken.com",
+            NOW,
+            begin_intent_input(),
+        )
+        .unwrap();
+        let mut changed_action_input = begin_intent_input();
+        changed_action_input.reason_code = "migration.source-replay".to_owned();
+        let changed_action = DrainSourceRegistrationBeginIntentV1::new(
+            "staging",
+            digest("operation"),
+            digest("authorization"),
+            digest("ceremony"),
+            digest("request-intent"),
+            "cinatoken.com",
+            "https://admin.cinatoken.com",
+            NOW,
+            changed_action_input,
+        )
+        .unwrap();
+
+        assert_eq!(baseline_sha256.len(), 64);
+        assert_eq!(
+            baseline_sha256,
+            "a1bce98a3c4cf27bd99c3ce33c644705204438b018834935f7b46e369024bd9f"
+        );
+        assert_ne!(baseline_sha256, changed.sha256().unwrap());
+        assert_ne!(baseline_sha256, changed_action.sha256().unwrap());
+        assert!(baseline.matches_action(&action()));
+        macro_rules! assert_action_drift {
+            ($field:ident, $value:expr) => {{
+                let mut changed_action = action();
+                changed_action.$field = $value;
+                assert!(
+                    !baseline.matches_action(&changed_action),
+                    stringify!($field)
+                );
+            }};
+        }
+        assert_action_drift!(environment, "production".to_owned());
+        assert_action_drift!(authorization_id_sha256, digest("other-authorization"));
+        assert_action_drift!(action_digest_sha256, digest("other-action"));
+        assert_action_drift!(registration_request_sha256, digest("other-request"));
+        assert_action_drift!(admin_audit_digest_sha256, digest("other-audit"));
+        assert_action_drift!(
+            admin_network_identity_hmac_sha256,
+            digest("other-network-identity")
+        );
+        assert_action_drift!(change_ticket_sha256, digest("other-change-ticket"));
+        assert_action_drift!(reason_code, "migration.source-replay".to_owned());
+        assert_action_drift!(verification_expires_at, NOW + 121);
+        assert_action_drift!(
+            registered_by_service_name,
+            "cinatoken-registration".to_owned()
+        );
+        assert_action_drift!(registered_by_version_id, "build-2026-07-31".to_owned());
+        assert_action_drift!(registration_execution_id_sha256, digest("other-execution"));
+        assert_action_drift!(
+            registration_credential_id_sha256,
+            digest("other-service-credential")
+        );
+        assert_action_drift!(ceremony_nonce_sha256, digest("other-ceremony-nonce"));
+        assert_eq!(baseline.rp_id(), "cinatoken.com");
+        assert_eq!(baseline.origin(), "https://admin.cinatoken.com");
+        assert_eq!(baseline.issued_at(), NOW);
+        assert!(DrainSourceRegistrationBeginIntentV1::new(
+            "production",
+            digest("operation"),
+            digest("authorization"),
+            digest("ceremony"),
+            digest("request-intent"),
+            "cinatoken.com",
+            "https://admin.cinatoken.com",
+            NOW,
+            begin_intent_input(),
+        )
+        .is_err());
+        assert!(DrainSourceRegistrationBeginIntentV1::new(
+            "staging",
+            digest("operation"),
+            digest("operation"),
+            digest("ceremony"),
+            digest("request-intent"),
+            "cinatoken.com",
+            "https://admin.cinatoken.com",
+            NOW,
+            begin_intent_input(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn permit_issue_request_digest_commits_exact_canonical_json() {
+        let baseline = DrainSourceRegistrationPermitBindings::test_fixture(NOW)
+            .issue_request()
+            .unwrap();
+        let mut changed_bindings = DrainSourceRegistrationPermitBindings::test_fixture(NOW);
+        changed_bindings.registration_request_sha256 = digest("changed-request");
+        let changed = changed_bindings.issue_request().unwrap();
+
+        assert_eq!(baseline.sha256().unwrap().len(), 64);
+        assert_ne!(baseline.sha256().unwrap(), changed.sha256().unwrap());
+        assert_ne!(baseline.as_bytes(), changed.as_bytes());
+    }
+
+    #[test]
     fn challenge_commits_every_m1_plan_binding() {
         let state = state();
         let expected = state.challenge.clone();
         assert_eq!(ACTION_SUBJECT_FIELD_COUNT, 57);
+        assert_eq!(BEGIN_INTENT_FIELD_COUNT, 22);
         assert_eq!(PERMIT_ISSUE_REQUEST_FIELD_COUNT, 39);
 
         macro_rules! assert_string_drift {

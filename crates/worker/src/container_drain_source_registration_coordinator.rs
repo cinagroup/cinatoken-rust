@@ -6,7 +6,9 @@
 
 use cinatoken_auth::{ROLE_ROOT_USER, USER_STATUS_ENABLED};
 use cinatoken_root_session_phase_proof::{
-    RootSessionPhase, RootSessionPhaseClaims, RootSessionPhaseKeySlot,
+    RootSessionBeforeChallengeSubjectV1, RootSessionBeforeCommitSubjectV1,
+    RootSessionBeforeIssuerSubjectV1, RootSessionPhase, RootSessionPhaseClaims,
+    RootSessionPhaseKeySlot, RootSessionPhaseSubjectContext, RootSessionPhaseSubjectV1,
     VerifiedRootSessionPhaseProof,
 };
 use serde::Serialize;
@@ -17,8 +19,11 @@ use crate::container_drain_source_authorization::{
     VerifiedDrainSourceAuthorization, DRAIN_SOURCE_AUTHORIZATION_CONTRACT,
 };
 use crate::container_drain_source_registration_action::{
-    DrainSourceRegistrationActionV1, DrainSourceRegistrationStoredCredential,
+    DrainSourceRegistrationActionV1, DrainSourceRegistrationBeginIntentV1,
+    DrainSourceRegistrationCeremonyState, DrainSourceRegistrationPermitIssueRequestV1,
+    DrainSourceRegistrationStoredCredential, VerifiedDrainSourceRegistrationPasskeyProof,
 };
+use crate::container_drain_source_registration_permit::VerifiedDrainSourceRegistrationPermit;
 use crate::d1_repositories::{
     RelayContainerDrainSourceAuthorizationRow, RelayContainerDrainSourceRegistrationFenceState,
     RelayContainerDrainSourceRegistrationHeadState,
@@ -35,13 +40,6 @@ const AUTHORITY_FINGERPRINT_DOMAIN: &[u8] =
     b"cinatoken-relay-container-drain-source-registration-authority-v1";
 const MAXIMUM_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const MAXIMUM_RECEIPT_SEQUENCE: i64 = 1_000_000;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum DrainSourceRegistrationCoordinatorPhase {
-    BeforeChallenge,
-    BeforeIssuer,
-    BeforeCommit,
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ValidatedDrainSourceRegistrationPasskey {
@@ -78,23 +76,90 @@ impl ValidatedDrainSourceRegistrationPasskey {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ValidatedDrainSourceRegistrationPhase {
-    pub(crate) phase: DrainSourceRegistrationCoordinatorPhase,
-    pub(crate) semantic_fingerprint_sha256: String,
-    pub(crate) operation_id_sha256: String,
-    pub(crate) ceremony_id_sha256: String,
-    pub(crate) request_intent_sha256: String,
-    pub(crate) parent_session_phase_proof_sha256: Option<String>,
-    pub(crate) phase_binding_sha256: String,
-    pub(crate) session_phase_proof_id_sha256: String,
-    pub(crate) session_phase_proof_key_id: String,
-    pub(crate) session_phase_proof_key_version: u32,
-    pub(crate) session_phase_proof_key_slot: RootSessionPhaseKeySlot,
-    pub(crate) authorization: VerifiedDrainSourceAuthorization,
-    pub(crate) passkey: ValidatedDrainSourceRegistrationPasskey,
-    pub(crate) receipt_sequence: i64,
-    pub(crate) ledger_head_before_sha256: String,
-    pub(crate) database_now: i64,
+struct ValidatedDrainSourceRegistrationAuthorityPhase {
+    phase: RootSessionPhase,
+    semantic_fingerprint_sha256: String,
+    parent_session_phase_proof_sha256: Option<String>,
+    phase_binding_sha256: String,
+    session_phase_proof_sha256: String,
+    session_phase_proof_id_sha256: String,
+    session_phase_proof_key_id: String,
+    session_phase_proof_key_version: u32,
+    session_phase_proof_key_slot: RootSessionPhaseKeySlot,
+    authorization: VerifiedDrainSourceAuthorization,
+    passkey: ValidatedDrainSourceRegistrationPasskey,
+    receipt_sequence: i64,
+    ledger_head_before_sha256: String,
+    database_now: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ValidatedDrainSourceRegistrationChallenge {
+    authority: ValidatedDrainSourceRegistrationAuthorityPhase,
+    begin_intent: DrainSourceRegistrationBeginIntentV1,
+}
+
+impl ValidatedDrainSourceRegistrationChallenge {
+    pub(crate) fn begin_intent(&self) -> &DrainSourceRegistrationBeginIntentV1 {
+        &self.begin_intent
+    }
+
+    pub(crate) fn authorization(&self) -> &VerifiedDrainSourceAuthorization {
+        &self.authority.authorization
+    }
+
+    pub(crate) fn passkey(&self) -> &ValidatedDrainSourceRegistrationPasskey {
+        &self.authority.passkey
+    }
+
+    pub(crate) fn receipt_sequence(&self) -> i64 {
+        self.authority.receipt_sequence
+    }
+
+    pub(crate) fn ledger_head_before_sha256(&self) -> &str {
+        &self.authority.ledger_head_before_sha256
+    }
+
+    pub(crate) fn database_now(&self) -> i64 {
+        self.authority.database_now
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ValidatedDrainSourceRegistrationIssuer {
+    authority: ValidatedDrainSourceRegistrationAuthorityPhase,
+    begin_intent: DrainSourceRegistrationBeginIntentV1,
+    ceremony: DrainSourceRegistrationCeremonyState,
+    passkey_proof: VerifiedDrainSourceRegistrationPasskeyProof,
+    issue_request: DrainSourceRegistrationPermitIssueRequestV1,
+}
+
+impl ValidatedDrainSourceRegistrationIssuer {
+    pub(crate) fn issue_request(&self) -> &DrainSourceRegistrationPermitIssueRequestV1 {
+        &self.issue_request
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ValidatedDrainSourceRegistrationCommit {
+    authority: ValidatedDrainSourceRegistrationAuthorityPhase,
+    begin_intent: DrainSourceRegistrationBeginIntentV1,
+    action: DrainSourceRegistrationActionV1,
+    passkey_proof: VerifiedDrainSourceRegistrationPasskeyProof,
+    issue_request: DrainSourceRegistrationPermitIssueRequestV1,
+    permit: VerifiedDrainSourceRegistrationPermit,
+}
+
+impl ValidatedDrainSourceRegistrationCommit {
+    pub(crate) fn command_evidence(
+        &self,
+    ) -> (
+        &DrainSourceRegistrationActionV1,
+        &VerifiedDrainSourceRegistrationPasskeyProof,
+        &VerifiedDrainSourceRegistrationPermit,
+    ) {
+        (&self.action, &self.passkey_proof, &self.permit)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,6 +176,11 @@ pub(crate) enum DrainSourceRegistrationCoordinatorError {
     AuthorityExpired,
     AuthorityDrift,
     ActionMismatch,
+    CeremonyMismatch,
+    PhaseChainMismatch,
+    PhaseBindingMismatch,
+    PermitMismatch,
+    PermitExpired,
 }
 
 impl DrainSourceRegistrationCoordinatorError {
@@ -130,6 +200,11 @@ impl DrainSourceRegistrationCoordinatorError {
             Self::AuthorityExpired => "drain_source_registration_authority_expired",
             Self::AuthorityDrift => "drain_source_registration_authority_drift",
             Self::ActionMismatch => "drain_source_registration_action_mismatch",
+            Self::CeremonyMismatch => "drain_source_registration_ceremony_mismatch",
+            Self::PhaseChainMismatch => "drain_source_registration_phase_chain_mismatch",
+            Self::PhaseBindingMismatch => "drain_source_registration_phase_binding_mismatch",
+            Self::PermitMismatch => "drain_source_registration_permit_mismatch",
+            Self::PermitExpired => "drain_source_registration_permit_expired",
         }
     }
 }
@@ -144,77 +219,216 @@ impl std::error::Error for DrainSourceRegistrationCoordinatorError {}
 
 pub(crate) fn validate_before_challenge(
     snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
-    expected_environment: &str,
-    expected_authorization_id_sha256: &str,
     session_proof: &VerifiedRootSessionPhaseProof,
-) -> Result<ValidatedDrainSourceRegistrationPhase, DrainSourceRegistrationCoordinatorError> {
-    validate_phase(
+    begin_intent: &DrainSourceRegistrationBeginIntentV1,
+) -> Result<ValidatedDrainSourceRegistrationChallenge, DrainSourceRegistrationCoordinatorError> {
+    let mut authority = validate_authority_phase(
         snapshot,
-        expected_environment,
-        expected_authorization_id_sha256,
         session_proof,
-        DrainSourceRegistrationCoordinatorPhase::BeforeChallenge,
-        None,
-        None,
-    )
+        AuthorityPhaseEvidence::BeforeChallenge { begin_intent },
+    )?;
+    let begin_intent_sha256 = begin_intent
+        .sha256()
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::InvalidInput)?;
+    let phase_subject =
+        RootSessionPhaseSubjectV1::BeforeChallenge(RootSessionBeforeChallengeSubjectV1 {
+            context: phase_subject_context(begin_intent, &authority.semantic_fingerprint_sha256),
+            begin_intent_sha256: &begin_intent_sha256,
+            authorization_subject_sha256: &authority.authorization.authorization_subject_sha256,
+            authorization_signature_envelope_sha256: &authority
+                .authorization
+                .authorization_signature_envelope_sha256,
+        });
+    authority.phase_binding_sha256 = validate_phase_binding(session_proof, phase_subject)?;
+    Ok(ValidatedDrainSourceRegistrationChallenge {
+        authority,
+        begin_intent: begin_intent.clone(),
+    })
 }
 
 pub(crate) fn validate_before_issuer(
     snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
-    expected_environment: &str,
-    expected_authorization_id_sha256: &str,
     session_proof: &VerifiedRootSessionPhaseProof,
-    action: &DrainSourceRegistrationActionV1,
-    expected_semantic_fingerprint_sha256: &str,
-) -> Result<ValidatedDrainSourceRegistrationPhase, DrainSourceRegistrationCoordinatorError> {
-    validate_phase(
+    challenge: &ValidatedDrainSourceRegistrationChallenge,
+    ceremony: &DrainSourceRegistrationCeremonyState,
+    passkey_proof: &VerifiedDrainSourceRegistrationPasskeyProof,
+) -> Result<ValidatedDrainSourceRegistrationIssuer, DrainSourceRegistrationCoordinatorError> {
+    if !challenge.begin_intent.matches_action(ceremony.action())
+        || ceremony.rp_id() != challenge.begin_intent.rp_id()
+        || ceremony.origin() != challenge.begin_intent.origin()
+        || ceremony.issued_at() != challenge.begin_intent.issued_at()
+    {
+        return Err(DrainSourceRegistrationCoordinatorError::CeremonyMismatch);
+    }
+    let bindings = ceremony
+        .registration_permit_bindings(passkey_proof)
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::CeremonyMismatch)?;
+    let issue_request = bindings
+        .issue_request()
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::CeremonyMismatch)?;
+    let mut authority = validate_authority_phase(
         snapshot,
-        expected_environment,
-        expected_authorization_id_sha256,
         session_proof,
-        DrainSourceRegistrationCoordinatorPhase::BeforeIssuer,
-        Some(action),
-        Some(expected_semantic_fingerprint_sha256),
-    )
+        AuthorityPhaseEvidence::BeforeIssuer {
+            challenge,
+            action: ceremony.action(),
+        },
+    )?;
+    validate_passkey_proof_against_snapshot(passkey_proof, &authority)?;
+    let challenge_sha256 = ceremony
+        .secure_verification_challenge_sha256()
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::CeremonyMismatch)?;
+    let action_subject_sha256 = ceremony
+        .action_subject_sha256()
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::CeremonyMismatch)?;
+    let issue_request_sha256 = issue_request
+        .sha256()
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::CeremonyMismatch)?;
+    let phase_subject = RootSessionPhaseSubjectV1::BeforeIssuer(RootSessionBeforeIssuerSubjectV1 {
+        context: phase_subject_context(
+            &challenge.begin_intent,
+            &authority.semantic_fingerprint_sha256,
+        ),
+        secure_verification_challenge_sha256: &challenge_sha256,
+        action_subject_sha256: &action_subject_sha256,
+        permit_issue_request_sha256: &issue_request_sha256,
+    });
+    authority.phase_binding_sha256 = validate_phase_binding(session_proof, phase_subject)?;
+    Ok(ValidatedDrainSourceRegistrationIssuer {
+        authority,
+        begin_intent: challenge.begin_intent.clone(),
+        ceremony: ceremony.clone(),
+        passkey_proof: passkey_proof.clone(),
+        issue_request,
+    })
 }
 
 pub(crate) fn validate_before_commit(
     snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
-    expected_environment: &str,
-    expected_authorization_id_sha256: &str,
     session_proof: &VerifiedRootSessionPhaseProof,
-    action: &DrainSourceRegistrationActionV1,
-    expected_semantic_fingerprint_sha256: &str,
-) -> Result<ValidatedDrainSourceRegistrationPhase, DrainSourceRegistrationCoordinatorError> {
-    validate_phase(
+    issuer: &ValidatedDrainSourceRegistrationIssuer,
+    permit: &VerifiedDrainSourceRegistrationPermit,
+) -> Result<ValidatedDrainSourceRegistrationCommit, DrainSourceRegistrationCoordinatorError> {
+    permit
+        .validate_issue_request(&issuer.issue_request)
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::PermitMismatch)?;
+    permit
+        .validate_at(snapshot.database_now)
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::PermitExpired)?;
+    let mut authority = validate_authority_phase(
         snapshot,
-        expected_environment,
-        expected_authorization_id_sha256,
         session_proof,
-        DrainSourceRegistrationCoordinatorPhase::BeforeCommit,
-        Some(action),
-        Some(expected_semantic_fingerprint_sha256),
-    )
+        AuthorityPhaseEvidence::BeforeCommit { issuer },
+    )?;
+    validate_passkey_proof_against_snapshot(&issuer.passkey_proof, &authority)?;
+    if session_proof.claims().authority_expires_at > permit.writer_projection().expires_at() {
+        return Err(DrainSourceRegistrationCoordinatorError::PermitExpired);
+    }
+    let action_subject_sha256 = issuer
+        .ceremony
+        .action_subject_sha256()
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::CeremonyMismatch)?;
+    let issuer_request_sha256 = issuer
+        .issue_request
+        .sha256()
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::PermitMismatch)?;
+    let authenticated_issuer_request_id_sha256 = permit
+        .authenticated_request_id_sha256()
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::PermitMismatch)?;
+    let phase_subject = RootSessionPhaseSubjectV1::BeforeCommit(RootSessionBeforeCommitSubjectV1 {
+        context: phase_subject_context(
+            &issuer.begin_intent,
+            &authority.semantic_fingerprint_sha256,
+        ),
+        action_subject_sha256: &action_subject_sha256,
+        issuer_request_sha256: &issuer_request_sha256,
+        authenticated_issuer_request_id_sha256: &authenticated_issuer_request_id_sha256,
+        issuer_version_id: permit.issuer_version_id(),
+        permit_id_sha256: permit.permit_id_sha256(),
+        permit_subject_sha256: permit.subject_sha256(),
+        permit_signature_envelope_sha256: permit.signature_envelope_sha256(),
+    });
+    authority.phase_binding_sha256 = validate_phase_binding(session_proof, phase_subject)?;
+    Ok(ValidatedDrainSourceRegistrationCommit {
+        authority,
+        begin_intent: issuer.begin_intent.clone(),
+        action: issuer.ceremony.action().clone(),
+        passkey_proof: issuer.passkey_proof.clone(),
+        issue_request: issuer.issue_request.clone(),
+        permit: permit.clone(),
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn validate_phase(
-    snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
-    expected_environment: &str,
-    expected_authorization_id_sha256: &str,
-    session_proof: &VerifiedRootSessionPhaseProof,
-    phase: DrainSourceRegistrationCoordinatorPhase,
-    action: Option<&DrainSourceRegistrationActionV1>,
-    expected_semantic_fingerprint_sha256: Option<&str>,
-) -> Result<ValidatedDrainSourceRegistrationPhase, DrainSourceRegistrationCoordinatorError> {
-    let session = session_proof.claims();
-    let expected_proof_phase = match phase {
-        DrainSourceRegistrationCoordinatorPhase::BeforeChallenge => {
-            RootSessionPhase::BeforeChallenge
+enum AuthorityPhaseEvidence<'a> {
+    BeforeChallenge {
+        begin_intent: &'a DrainSourceRegistrationBeginIntentV1,
+    },
+    BeforeIssuer {
+        challenge: &'a ValidatedDrainSourceRegistrationChallenge,
+        action: &'a DrainSourceRegistrationActionV1,
+    },
+    BeforeCommit {
+        issuer: &'a ValidatedDrainSourceRegistrationIssuer,
+    },
+}
+
+impl AuthorityPhaseEvidence<'_> {
+    fn phase(&self) -> RootSessionPhase {
+        match self {
+            Self::BeforeChallenge { .. } => RootSessionPhase::BeforeChallenge,
+            Self::BeforeIssuer { .. } => RootSessionPhase::BeforeIssuer,
+            Self::BeforeCommit { .. } => RootSessionPhase::BeforeCommit,
         }
-        DrainSourceRegistrationCoordinatorPhase::BeforeIssuer => RootSessionPhase::BeforeIssuer,
-        DrainSourceRegistrationCoordinatorPhase::BeforeCommit => RootSessionPhase::BeforeCommit,
-    };
+    }
+
+    fn begin_intent(&self) -> &DrainSourceRegistrationBeginIntentV1 {
+        match self {
+            Self::BeforeChallenge { begin_intent } => begin_intent,
+            Self::BeforeIssuer { challenge, .. } => &challenge.begin_intent,
+            Self::BeforeCommit { issuer } => &issuer.begin_intent,
+        }
+    }
+
+    fn expected_parent_proof_sha256(&self) -> Option<&str> {
+        match self {
+            Self::BeforeChallenge { .. } => None,
+            Self::BeforeIssuer { challenge, .. } => {
+                Some(&challenge.authority.session_phase_proof_sha256)
+            }
+            Self::BeforeCommit { issuer } => Some(&issuer.authority.session_phase_proof_sha256),
+        }
+    }
+
+    fn expected_semantic_fingerprint_sha256(&self) -> Option<&str> {
+        match self {
+            Self::BeforeChallenge { .. } => None,
+            Self::BeforeIssuer { challenge, .. } => {
+                Some(&challenge.authority.semantic_fingerprint_sha256)
+            }
+            Self::BeforeCommit { issuer } => Some(&issuer.authority.semantic_fingerprint_sha256),
+        }
+    }
+
+    fn action(&self) -> Option<&DrainSourceRegistrationActionV1> {
+        match self {
+            Self::BeforeChallenge { .. } => None,
+            Self::BeforeIssuer { action, .. } => Some(action),
+            Self::BeforeCommit { issuer } => Some(issuer.ceremony.action()),
+        }
+    }
+}
+
+fn validate_authority_phase(
+    snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
+    session_proof: &VerifiedRootSessionPhaseProof,
+    evidence: AuthorityPhaseEvidence<'_>,
+) -> Result<ValidatedDrainSourceRegistrationAuthorityPhase, DrainSourceRegistrationCoordinatorError>
+{
+    let begin_intent = evidence.begin_intent();
+    let expected_environment = begin_intent.environment();
+    let expected_authorization_id_sha256 = begin_intent.authorization_id_sha256();
+    let session = session_proof.claims();
+    let expected_proof_phase = evidence.phase();
     if expected_environment != "staging"
         || snapshot.authorization.environment == "production"
         || expected_authorization_id_sha256 != expected_authorization_id_sha256.trim()
@@ -222,9 +436,14 @@ fn validate_phase(
         || session.environment != expected_environment
         || session.authorization_id_sha256 != expected_authorization_id_sha256
         || session.phase != expected_proof_phase
+        || session.operation_id_sha256 != begin_intent.operation_id_sha256()
+        || session.ceremony_id_sha256 != begin_intent.ceremony_id_sha256()
+        || session.request_intent_sha256 != begin_intent.request_intent_sha256()
         || !valid_sha256(&session.root_session_binding_sha256)
         || !valid_sha256(&session.root_session_id_sha256)
         || !valid_sha256(&session.operation_id_sha256)
+        || !valid_sha256(&session.ceremony_id_sha256)
+        || !valid_sha256(&session.request_intent_sha256)
         || !valid_sha256(&session.phase_binding_sha256)
         || !valid_sha256(&session.semantic_authority_fingerprint_sha256)
         || session.root_admin_id <= 0
@@ -239,8 +458,12 @@ fn validate_phase(
         || session.root_session_expires_at <= session.root_session_issued_at
         || session.root_session_expires_at > MAXIMUM_SAFE_INTEGER
         || session.d1_observed_at != session.issued_at
+        || session.d1_observed_at != snapshot.database_now
         || session.not_before != session.issued_at
         || session.authority_expires_at <= session.d1_observed_at
+        || begin_intent.issued_at() > snapshot.database_now
+        || expected_proof_phase == RootSessionPhase::BeforeChallenge
+            && begin_intent.issued_at() != snapshot.database_now
     {
         return Err(
             if expected_environment != "staging"
@@ -252,18 +475,8 @@ fn validate_phase(
             },
         );
     }
-    match phase {
-        DrainSourceRegistrationCoordinatorPhase::BeforeChallenge => {
-            if action.is_some() || expected_semantic_fingerprint_sha256.is_some() {
-                return Err(DrainSourceRegistrationCoordinatorError::InvalidInput);
-            }
-        }
-        DrainSourceRegistrationCoordinatorPhase::BeforeIssuer
-        | DrainSourceRegistrationCoordinatorPhase::BeforeCommit => {
-            if action.is_none() || !expected_semantic_fingerprint_sha256.is_some_and(valid_sha256) {
-                return Err(DrainSourceRegistrationCoordinatorError::InvalidInput);
-            }
-        }
+    if session.parent_proof_sha256.as_deref() != evidence.expected_parent_proof_sha256() {
+        return Err(DrainSourceRegistrationCoordinatorError::PhaseChainMismatch);
     }
 
     let authorization = validate_authorization(
@@ -300,7 +513,8 @@ fn validate_phase(
         receipt_sequence,
         &ledger_head_before_sha256,
     )?;
-    if expected_semantic_fingerprint_sha256
+    if evidence
+        .expected_semantic_fingerprint_sha256()
         .is_some_and(|expected| expected != semantic_fingerprint_sha256)
         || session.semantic_authority_fingerprint_sha256 != semantic_fingerprint_sha256
     {
@@ -310,7 +524,7 @@ fn validate_phase(
         return Err(DrainSourceRegistrationCoordinatorError::AuthorityExpired);
     }
 
-    if let Some(action) = action {
+    if let Some(action) = evidence.action() {
         validate_action(
             action,
             &authorization,
@@ -322,14 +536,12 @@ fn validate_phase(
         )?;
     }
 
-    Ok(ValidatedDrainSourceRegistrationPhase {
-        phase,
+    Ok(ValidatedDrainSourceRegistrationAuthorityPhase {
+        phase: expected_proof_phase,
         semantic_fingerprint_sha256,
-        operation_id_sha256: session.operation_id_sha256.clone(),
-        ceremony_id_sha256: session.ceremony_id_sha256.clone(),
-        request_intent_sha256: session.request_intent_sha256.clone(),
         parent_session_phase_proof_sha256: session.parent_proof_sha256.clone(),
-        phase_binding_sha256: session.phase_binding_sha256.clone(),
+        phase_binding_sha256: String::new(),
+        session_phase_proof_sha256: session_proof.token_sha256().to_owned(),
         session_phase_proof_id_sha256: session.proof_id_sha256.clone(),
         session_phase_proof_key_id: session_proof.protected().kid.clone(),
         session_phase_proof_key_version: session_proof.protected().key_version,
@@ -340,6 +552,54 @@ fn validate_phase(
         ledger_head_before_sha256,
         database_now: snapshot.database_now,
     })
+}
+
+fn phase_subject_context<'a>(
+    begin_intent: &'a DrainSourceRegistrationBeginIntentV1,
+    semantic_authority_fingerprint_sha256: &'a str,
+) -> RootSessionPhaseSubjectContext<'a> {
+    RootSessionPhaseSubjectContext {
+        environment: begin_intent.environment(),
+        operation_id_sha256: begin_intent.operation_id_sha256(),
+        authorization_id_sha256: begin_intent.authorization_id_sha256(),
+        ceremony_id_sha256: begin_intent.ceremony_id_sha256(),
+        request_intent_sha256: begin_intent.request_intent_sha256(),
+        semantic_authority_fingerprint_sha256,
+    }
+}
+
+fn validate_phase_binding(
+    session_proof: &VerifiedRootSessionPhaseProof,
+    phase_subject: RootSessionPhaseSubjectV1<'_>,
+) -> Result<String, DrainSourceRegistrationCoordinatorError> {
+    let phase_binding_sha256 = phase_subject
+        .phase_binding_sha256()
+        .map_err(|_| DrainSourceRegistrationCoordinatorError::InvalidInput)?;
+    if session_proof.claims().phase_binding_sha256 != phase_binding_sha256 {
+        return Err(DrainSourceRegistrationCoordinatorError::PhaseBindingMismatch);
+    }
+    Ok(phase_binding_sha256)
+}
+
+fn validate_passkey_proof_against_snapshot(
+    proof: &VerifiedDrainSourceRegistrationPasskeyProof,
+    authority: &ValidatedDrainSourceRegistrationAuthorityPhase,
+) -> Result<(), DrainSourceRegistrationCoordinatorError> {
+    let projection = proof.writer_projection();
+    if projection.passkey_credential_row_id() != authority.passkey.row_id
+        || projection.passkey_credential_id_sha256() != authority.passkey.credential_id_sha256
+        || projection.passkey_credential_registration_id_sha256()
+            != authority.passkey.credential_registration_id_sha256
+        || projection.passkey_credential_binding_sha256()
+            != authority.passkey.credential_binding_sha256
+        || projection.passkey_previous_use_generation() != authority.passkey.use_generation
+        || projection.previous_sign_count() != authority.passkey.sign_count
+        || projection.backup_eligible() != authority.passkey.backup_eligible
+        || projection.verified_at() > authority.database_now
+    {
+        return Err(DrainSourceRegistrationCoordinatorError::PasskeyStateChanged);
+    }
+    Ok(())
 }
 
 fn validate_authorization(
@@ -782,7 +1042,9 @@ mod tests {
     use super::*;
     use crate::container_drain_source_registration_action::{
         AdminNetworkIdentityHmacSha256, DrainSourceRegistrationActionInput,
+        DrainSourceRegistrationBeginIntentInput, DrainSourceRegistrationPermitBindings,
     };
+    use crate::container_drain_source_registration_command::VerifiedDrainSourceRegistrationCommand;
 
     const NOW: i64 = 2_100_000_000;
     const PHASE_PROOF_SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
@@ -938,22 +1200,14 @@ mod tests {
 
     fn phase_proof(
         snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
-        phase: RootSessionPhase,
+        phase_subject: RootSessionPhaseSubjectV1<'_>,
+        parent_proof_sha256: Option<&str>,
         test_session: &TestSession,
-        semantic_fingerprint_sha256: &str,
+        authority_expires_at: i64,
     ) -> VerifiedRootSessionPhaseProof {
-        let operation_id_sha256 = digest("operation");
-        let ceremony_id_sha256 = digest("ceremony");
-        let request_intent_sha256 = digest("request-intent");
+        let phase = phase_subject.phase();
+        let context = phase_subject.context();
         let proof_id_sha256 = digest(&format!("proof-{phase:?}"));
-        let parent_proof_sha256 =
-            (phase != RootSessionPhase::BeforeChallenge).then(|| digest("parent-proof"));
-        let phase_binding_sha256 = digest(&format!("phase-binding-{phase:?}"));
-        let authority_expires_at = if phase == RootSessionPhase::BeforeChallenge {
-            snapshot.authorization.permit_expires_at
-        } else {
-            NOW + 120
-        };
         let key = RootSessionPhaseKey {
             kid: "application-root-session-v1",
             key_version: 1,
@@ -967,10 +1221,11 @@ mod tests {
                 application_version_id: "application-build-1",
                 environment: STAGING_ENVIRONMENT,
                 phase,
-                operation_id_sha256: &operation_id_sha256,
-                authorization_id_sha256: &snapshot.authorization.authorization_id_sha256,
-                ceremony_id_sha256: &ceremony_id_sha256,
-                request_intent_sha256: &request_intent_sha256,
+                phase_subject,
+                operation_id_sha256: context.operation_id_sha256,
+                authorization_id_sha256: context.authorization_id_sha256,
+                ceremony_id_sha256: context.ceremony_id_sha256,
+                request_intent_sha256: context.request_intent_sha256,
                 proof_id_sha256: &proof_id_sha256,
                 root_admin_id: test_session.root_admin_id,
                 root_role: ROLE_ROOT_USER,
@@ -982,9 +1237,9 @@ mod tests {
                 root_session_binding_sha256: &test_session.binding_sha256,
                 root_session_id_sha256: &test_session.session_id_sha256,
                 d1_observed_at: snapshot.database_now,
-                parent_proof_sha256: parent_proof_sha256.as_deref(),
-                phase_binding_sha256: &phase_binding_sha256,
-                semantic_authority_fingerprint_sha256: semantic_fingerprint_sha256,
+                parent_proof_sha256,
+                semantic_authority_fingerprint_sha256: context
+                    .semantic_authority_fingerprint_sha256,
                 authority_expires_at,
             },
         )
@@ -1001,13 +1256,14 @@ mod tests {
                 application_version_id: "application-build-1",
                 environment: STAGING_ENVIRONMENT,
                 phase,
-                operation_id_sha256: &operation_id_sha256,
-                authorization_id_sha256: &snapshot.authorization.authorization_id_sha256,
-                ceremony_id_sha256: &ceremony_id_sha256,
-                request_intent_sha256: &request_intent_sha256,
-                parent_proof_sha256: parent_proof_sha256.as_deref(),
-                phase_binding_sha256: &phase_binding_sha256,
-                semantic_authority_fingerprint_sha256: semantic_fingerprint_sha256,
+                phase_subject,
+                operation_id_sha256: context.operation_id_sha256,
+                authorization_id_sha256: context.authorization_id_sha256,
+                ceremony_id_sha256: context.ceremony_id_sha256,
+                request_intent_sha256: context.request_intent_sha256,
+                parent_proof_sha256,
+                semantic_authority_fingerprint_sha256: context
+                    .semantic_authority_fingerprint_sha256,
                 authority_expires_at,
                 root_admin_id: test_session.root_admin_id,
                 expected_session: Some(RootSessionAnchorExpectation {
@@ -1023,251 +1279,440 @@ mod tests {
         .unwrap()
     }
 
-    fn action(
-        validated: &ValidatedDrainSourceRegistrationPhase,
+    fn begin_action_input() -> DrainSourceRegistrationBeginIntentInput {
+        DrainSourceRegistrationBeginIntentInput {
+            action_digest_sha256: digest("action"),
+            registration_request_sha256: digest("request"),
+            admin_audit_digest_sha256: digest("audit"),
+            admin_network_identity_hmac_sha256: AdminNetworkIdentityHmacSha256::derive(
+                &[0x42; 32],
+                "203.0.113.42",
+            )
+            .unwrap(),
+            change_ticket_sha256: digest("change-ticket"),
+            reason_code: "migration.source-capture".to_owned(),
+            verification_expires_at: NOW + 120,
+            registered_by_service_name: "cinatoken-application".to_owned(),
+            registered_by_version_id: "build-2026-07-30".to_owned(),
+            registration_execution_id_sha256: digest("registration-execution"),
+            registration_credential_id_sha256: digest("registration-credential"),
+            ceremony_nonce_sha256: digest("ceremony-nonce"),
+        }
+    }
+
+    fn begin_intent(
+        snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
+    ) -> DrainSourceRegistrationBeginIntentV1 {
+        DrainSourceRegistrationBeginIntentV1::new(
+            "staging",
+            digest("operation"),
+            snapshot.authorization.authorization_id_sha256.clone(),
+            digest("ceremony"),
+            digest("request-intent"),
+            "cinatoken.com",
+            "https://admin.cinatoken.com",
+            snapshot.database_now,
+            begin_action_input(),
+        )
+        .unwrap()
+    }
+
+    fn challenge_proof(
+        snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
+        begin_intent: &DrainSourceRegistrationBeginIntentV1,
+    ) -> VerifiedRootSessionPhaseProof {
+        let semantic_fingerprint_sha256 = fingerprint(snapshot);
+        let begin_intent_sha256 = begin_intent.sha256().unwrap();
+        let subject =
+            RootSessionPhaseSubjectV1::BeforeChallenge(RootSessionBeforeChallengeSubjectV1 {
+                context: phase_subject_context(begin_intent, &semantic_fingerprint_sha256),
+                begin_intent_sha256: &begin_intent_sha256,
+                authorization_subject_sha256: &snapshot.authorization.authorization_subject_sha256,
+                authorization_signature_envelope_sha256: &snapshot
+                    .authorization
+                    .authorization_signature_envelope_sha256,
+            });
+        phase_proof(
+            snapshot,
+            subject,
+            None,
+            &session(),
+            snapshot.authorization.permit_expires_at,
+        )
+    }
+
+    fn issuer_proof(
+        snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
+        challenge: &ValidatedDrainSourceRegistrationChallenge,
+        ceremony: &DrainSourceRegistrationCeremonyState,
+        passkey_proof: &VerifiedDrainSourceRegistrationPasskeyProof,
+        parent_proof_sha256: &str,
+    ) -> VerifiedRootSessionPhaseProof {
+        let issue_request = ceremony
+            .registration_permit_bindings(passkey_proof)
+            .unwrap()
+            .issue_request()
+            .unwrap();
+        let challenge_sha256 = ceremony.secure_verification_challenge_sha256().unwrap();
+        let action_subject_sha256 = ceremony.action_subject_sha256().unwrap();
+        let issue_request_sha256 = issue_request.sha256().unwrap();
+        let subject = RootSessionPhaseSubjectV1::BeforeIssuer(RootSessionBeforeIssuerSubjectV1 {
+            context: phase_subject_context(
+                &challenge.begin_intent,
+                &challenge.authority.semantic_fingerprint_sha256,
+            ),
+            secure_verification_challenge_sha256: &challenge_sha256,
+            action_subject_sha256: &action_subject_sha256,
+            permit_issue_request_sha256: &issue_request_sha256,
+        });
+        phase_proof(
+            snapshot,
+            subject,
+            Some(parent_proof_sha256),
+            &session(),
+            NOW + 120,
+        )
+    }
+
+    fn commit_proof(
+        snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
+        issuer: &ValidatedDrainSourceRegistrationIssuer,
+        permit: &VerifiedDrainSourceRegistrationPermit,
+        parent_proof_sha256: &str,
+    ) -> VerifiedRootSessionPhaseProof {
+        let action_subject_sha256 = issuer.ceremony.action_subject_sha256().unwrap();
+        let issuer_request_sha256 = issuer.issue_request.sha256().unwrap();
+        let authenticated_request_id_sha256 = permit.authenticated_request_id_sha256().unwrap();
+        let subject = RootSessionPhaseSubjectV1::BeforeCommit(RootSessionBeforeCommitSubjectV1 {
+            context: phase_subject_context(
+                &issuer.begin_intent,
+                &issuer.authority.semantic_fingerprint_sha256,
+            ),
+            action_subject_sha256: &action_subject_sha256,
+            issuer_request_sha256: &issuer_request_sha256,
+            authenticated_issuer_request_id_sha256: &authenticated_request_id_sha256,
+            issuer_version_id: permit.issuer_version_id(),
+            permit_id_sha256: permit.permit_id_sha256(),
+            permit_subject_sha256: permit.subject_sha256(),
+            permit_signature_envelope_sha256: permit.signature_envelope_sha256(),
+        });
+        phase_proof(
+            snapshot,
+            subject,
+            Some(parent_proof_sha256),
+            &session(),
+            permit.writer_projection().expires_at(),
+        )
+    }
+
+    fn action_with_begin_input(
+        validated: &ValidatedDrainSourceRegistrationChallenge,
+        begin_input: DrainSourceRegistrationBeginIntentInput,
     ) -> DrainSourceRegistrationActionV1 {
         DrainSourceRegistrationActionV1::from_verified_authorization(
-            &validated.authorization,
+            validated.authorization(),
             DrainSourceRegistrationActionInput {
-                action_digest_sha256: digest("action"),
-                registration_request_sha256: digest("request"),
-                admin_audit_digest_sha256: digest("audit"),
-                admin_network_identity_hmac_sha256: AdminNetworkIdentityHmacSha256::derive(
-                    &[0x42; 32],
-                    "203.0.113.42",
-                )
-                .unwrap(),
-                change_ticket_sha256: digest("change-ticket"),
-                reason_code: "migration.source-capture".to_owned(),
-                verification_expires_at: NOW + 120,
-                receipt_sequence: validated.receipt_sequence,
-                ledger_head_before_sha256: validated.ledger_head_before_sha256.clone(),
+                action_digest_sha256: begin_input.action_digest_sha256,
+                registration_request_sha256: begin_input.registration_request_sha256,
+                admin_audit_digest_sha256: begin_input.admin_audit_digest_sha256,
+                admin_network_identity_hmac_sha256: begin_input.admin_network_identity_hmac_sha256,
+                change_ticket_sha256: begin_input.change_ticket_sha256,
+                reason_code: begin_input.reason_code,
+                verification_expires_at: begin_input.verification_expires_at,
+                receipt_sequence: validated.receipt_sequence(),
+                ledger_head_before_sha256: validated.ledger_head_before_sha256().to_owned(),
                 root_session_epoch: session().session_epoch,
                 root_session_issued_at: session().issued_at,
                 root_session_expires_at: session().expires_at,
                 root_session_binding_sha256: session().binding_sha256,
-                passkey_credential_row_id: validated.passkey.row_id,
-                passkey_credential_id_sha256: validated.passkey.credential_id_sha256.clone(),
+                passkey_credential_row_id: validated.passkey().row_id,
+                passkey_credential_id_sha256: validated.passkey().credential_id_sha256.clone(),
                 passkey_credential_registration_id_sha256: validated
-                    .passkey
+                    .passkey()
                     .credential_registration_id_sha256
                     .clone(),
                 passkey_credential_binding_sha256: validated
-                    .passkey
+                    .passkey()
                     .credential_binding_sha256
                     .clone(),
-                passkey_previous_use_generation: validated.passkey.use_generation,
-                registered_by_service_name: "cinatoken-application".to_owned(),
-                registered_by_version_id: "build-2026-07-30".to_owned(),
-                registration_execution_id_sha256: digest("registration-execution"),
-                registration_credential_id_sha256: digest("registration-credential"),
-                ceremony_nonce_sha256: digest("ceremony-nonce"),
+                passkey_previous_use_generation: validated.passkey().use_generation,
+                registered_by_service_name: begin_input.registered_by_service_name,
+                registered_by_version_id: begin_input.registered_by_version_id,
+                registration_execution_id_sha256: begin_input.registration_execution_id_sha256,
+                registration_credential_id_sha256: begin_input.registration_credential_id_sha256,
+                ceremony_nonce_sha256: begin_input.ceremony_nonce_sha256,
             },
         )
     }
 
-    fn begin() -> ValidatedDrainSourceRegistrationPhase {
-        let snapshot = snapshot();
-        let fingerprint = fingerprint(&snapshot);
-        let proof = phase_proof(
-            &snapshot,
-            RootSessionPhase::BeforeChallenge,
-            &session(),
-            &fingerprint,
-        );
-        validate_before_challenge(
-            &snapshot,
-            "staging",
-            &snapshot.authorization.authorization_id_sha256,
-            &proof,
+    fn action(
+        validated: &ValidatedDrainSourceRegistrationChallenge,
+    ) -> DrainSourceRegistrationActionV1 {
+        action_with_begin_input(validated, begin_action_input())
+    }
+
+    fn ceremony(
+        challenge: &ValidatedDrainSourceRegistrationChallenge,
+    ) -> DrainSourceRegistrationCeremonyState {
+        DrainSourceRegistrationCeremonyState::new(
+            action(challenge),
+            challenge.begin_intent().rp_id(),
+            challenge.begin_intent().origin(),
+            challenge.begin_intent().issued_at(),
+        )
+        .unwrap()
+    }
+
+    fn passkey_proof(
+        ceremony: &DrainSourceRegistrationCeremonyState,
+    ) -> VerifiedDrainSourceRegistrationPasskeyProof {
+        VerifiedDrainSourceRegistrationPasskeyProof::test_fixture_for_state(
+            ceremony, 7, 8, true, false, NOW,
         )
         .unwrap()
     }
 
     #[test]
-    fn three_phase_validation_ignores_only_time_and_bookmark_evidence() {
-        let snapshot = snapshot();
-        let expected_fingerprint = fingerprint(&snapshot);
-        let begin_proof = phase_proof(
-            &snapshot,
-            RootSessionPhase::BeforeChallenge,
-            &session(),
-            &expected_fingerprint,
-        );
-        let begin = validate_before_challenge(
-            &snapshot,
-            "staging",
-            &snapshot.authorization.authorization_id_sha256,
-            &begin_proof,
-        )
-        .unwrap();
-        let action = action(&begin);
+    fn typed_three_phase_chain_is_coherent_and_command_cannot_bypass_commit() {
+        let initial = snapshot();
+        let begin_intent = begin_intent(&initial);
+        let begin_proof = challenge_proof(&initial, &begin_intent);
+        let begin = validate_before_challenge(&initial, &begin_proof, &begin_intent).unwrap();
+        let ceremony = ceremony(&begin);
+        let passkey_proof = passkey_proof(&ceremony);
 
-        let mut later = snapshot.clone();
-        later.database_now += 1;
-        later.read_bookmark_sha256 = digest("later-bookmark");
-        let issuer_proof = phase_proof(
-            &later,
-            RootSessionPhase::BeforeIssuer,
-            &session(),
-            &expected_fingerprint,
+        let mut issuer_snapshot = initial.clone();
+        issuer_snapshot.database_now += 1;
+        issuer_snapshot.read_bookmark_sha256 = digest("issuer-bookmark");
+        let issuer_phase_proof = issuer_proof(
+            &issuer_snapshot,
+            &begin,
+            &ceremony,
+            &passkey_proof,
+            begin_proof.token_sha256(),
         );
         let issuer = validate_before_issuer(
-            &later,
-            "staging",
-            &later.authorization.authorization_id_sha256,
-            &issuer_proof,
-            &action,
-            &begin.semantic_fingerprint_sha256,
+            &issuer_snapshot,
+            &issuer_phase_proof,
+            &begin,
+            &ceremony,
+            &passkey_proof,
         )
         .unwrap();
-        let commit_proof = phase_proof(
-            &later,
-            RootSessionPhase::BeforeCommit,
-            &session(),
-            &expected_fingerprint,
-        );
-        let commit = validate_before_commit(
-            &later,
-            "staging",
-            &later.authorization.authorization_id_sha256,
-            &commit_proof,
-            &action,
-            &begin.semantic_fingerprint_sha256,
+        let permit = VerifiedDrainSourceRegistrationPermit::test_fixture_from_issue_request(
+            issuer.issue_request(),
+            "registration-request-001",
+            "registration-permit-issuer-version-001",
         )
         .unwrap();
 
+        let mut commit_snapshot = issuer_snapshot.clone();
+        commit_snapshot.database_now += 1;
+        commit_snapshot.read_bookmark_sha256 = digest("commit-bookmark");
+        let commit_phase_proof = commit_proof(
+            &commit_snapshot,
+            &issuer,
+            &permit,
+            issuer_phase_proof.token_sha256(),
+        );
+        let commit =
+            validate_before_commit(&commit_snapshot, &commit_phase_proof, &issuer, &permit)
+                .unwrap();
+        let command =
+            VerifiedDrainSourceRegistrationCommand::from_validated_commit(&commit).unwrap();
+
         assert_eq!(
-            begin.semantic_fingerprint_sha256,
-            issuer.semantic_fingerprint_sha256
+            begin.authority.semantic_fingerprint_sha256,
+            issuer.authority.semantic_fingerprint_sha256
         );
         assert_eq!(
-            issuer.semantic_fingerprint_sha256,
-            commit.semantic_fingerprint_sha256
+            issuer.authority.semantic_fingerprint_sha256,
+            commit.authority.semantic_fingerprint_sha256
         );
+        assert_eq!(issuer.authority.phase, RootSessionPhase::BeforeIssuer);
+        assert_eq!(commit.authority.phase, RootSessionPhase::BeforeCommit);
+        assert_eq!(commit.authority.database_now, NOW + 2);
         assert_eq!(
-            issuer.phase,
-            DrainSourceRegistrationCoordinatorPhase::BeforeIssuer
-        );
-        assert_eq!(
-            commit.phase,
-            DrainSourceRegistrationCoordinatorPhase::BeforeCommit
-        );
-        assert_eq!(commit.database_now, NOW + 1);
-        assert_eq!(
-            commit.passkey.stored_credential().credential.credential_id,
+            commit
+                .authority
+                .passkey
+                .stored_credential()
+                .credential
+                .credential_id,
             b"credential-id"
+        );
+        assert_eq!(command.permit_id_sha256(), permit.permit_id_sha256());
+        assert_eq!(
+            command.issuer_request_id_sha256(),
+            permit.authenticated_request_id_sha256().unwrap()
+        );
+        assert_eq!(
+            begin.authority.session_phase_proof_sha256,
+            begin_proof.token_sha256()
+        );
+        assert_eq!(
+            issuer
+                .authority
+                .parent_session_phase_proof_sha256
+                .as_deref(),
+            Some(begin_proof.token_sha256())
+        );
+        assert_eq!(
+            commit
+                .authority
+                .parent_session_phase_proof_sha256
+                .as_deref(),
+            Some(issuer_phase_proof.token_sha256())
         );
     }
 
     #[test]
-    fn root_session_and_production_drift_fail_closed() {
-        let baseline = begin();
-        let action = action(&baseline);
-        let baseline_snapshot = snapshot();
-        let expected_fingerprint = fingerprint(&baseline_snapshot);
-        let commit_proof = phase_proof(
-            &baseline_snapshot,
-            RootSessionPhase::BeforeCommit,
-            &session(),
-            &expected_fingerprint,
-        );
-        let assert_error = |snapshot: &RelayContainerDrainSourceRegistrationPhaseSnapshot,
-                            proof: &VerifiedRootSessionPhaseProof,
-                            expected| {
-            assert_eq!(
-                validate_before_commit(
-                    snapshot,
-                    "staging",
-                    &snapshot.authorization.authorization_id_sha256,
-                    proof,
-                    &action,
-                    &baseline.semantic_fingerprint_sha256,
-                ),
-                Err(expected)
-            );
-        };
-
-        let mut changed = snapshot();
-        changed.root.as_mut().unwrap().role -= 1;
-        assert_error(
-            &changed,
-            &commit_proof,
-            DrainSourceRegistrationCoordinatorError::RootStateChanged,
+    fn phase_binding_parent_chain_and_production_drift_fail_closed() {
+        let initial = snapshot();
+        let begin_intent = begin_intent(&initial);
+        let begin_proof = challenge_proof(&initial, &begin_intent);
+        let changed_begin_intent = DrainSourceRegistrationBeginIntentV1::new(
+            "staging",
+            begin_intent.operation_id_sha256(),
+            begin_intent.authorization_id_sha256(),
+            begin_intent.ceremony_id_sha256(),
+            begin_intent.request_intent_sha256(),
+            "cinatoken.com",
+            "https://root.cinatoken.com",
+            begin_intent.issued_at(),
+            begin_action_input(),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_before_challenge(&initial, &begin_proof, &changed_begin_intent),
+            Err(DrainSourceRegistrationCoordinatorError::PhaseBindingMismatch)
         );
 
-        let mut changed = snapshot();
-        changed.root.as_mut().unwrap().status = 0;
-        assert_error(
-            &changed,
-            &commit_proof,
-            DrainSourceRegistrationCoordinatorError::RootStateChanged,
-        );
-
-        let mut changed = snapshot();
-        changed.root.as_mut().unwrap().deleted_at = Some(NOW);
-        assert_error(
-            &changed,
-            &commit_proof,
-            DrainSourceRegistrationCoordinatorError::RootStateChanged,
-        );
-
-        let mut changed = snapshot();
-        changed.root.as_mut().unwrap().session_epoch += 1;
-        assert_error(
-            &changed,
-            &commit_proof,
-            DrainSourceRegistrationCoordinatorError::SessionStateChanged,
-        );
-
-        let mut expired_proof_snapshot = snapshot();
-        expired_proof_snapshot.database_now = NOW + 11;
-        assert_error(
-            &expired_proof_snapshot,
-            &commit_proof,
-            DrainSourceRegistrationCoordinatorError::SessionStateChanged,
-        );
-
-        let mut production = snapshot();
-        production.authorization.environment = "production".to_owned();
-        let begin_proof = phase_proof(
-            &baseline_snapshot,
-            RootSessionPhase::BeforeChallenge,
-            &session(),
-            &expected_fingerprint,
+        let challenge = validate_before_challenge(&initial, &begin_proof, &begin_intent).unwrap();
+        let ceremony = ceremony(&challenge);
+        let passkey_proof = passkey_proof(&ceremony);
+        let mut issuer_snapshot = initial.clone();
+        issuer_snapshot.database_now += 1;
+        let wrong_parent_proof = issuer_proof(
+            &issuer_snapshot,
+            &challenge,
+            &ceremony,
+            &passkey_proof,
+            &digest("wrong-parent"),
         );
         assert_eq!(
-            validate_before_challenge(
-                &production,
-                "production",
-                &production.authorization.authorization_id_sha256,
-                &begin_proof,
+            validate_before_issuer(
+                &issuer_snapshot,
+                &wrong_parent_proof,
+                &challenge,
+                &ceremony,
+                &passkey_proof,
             ),
+            Err(DrainSourceRegistrationCoordinatorError::PhaseChainMismatch)
+        );
+
+        let challenge_sha256 = ceremony.secure_verification_challenge_sha256().unwrap();
+        let action_subject_sha256 = ceremony.action_subject_sha256().unwrap();
+        let wrong_request_sha256 = digest("wrong-issuer-request");
+        let wrong_binding_subject =
+            RootSessionPhaseSubjectV1::BeforeIssuer(RootSessionBeforeIssuerSubjectV1 {
+                context: phase_subject_context(
+                    &challenge.begin_intent,
+                    &challenge.authority.semantic_fingerprint_sha256,
+                ),
+                secure_verification_challenge_sha256: &challenge_sha256,
+                action_subject_sha256: &action_subject_sha256,
+                permit_issue_request_sha256: &wrong_request_sha256,
+            });
+        let wrong_binding_proof = phase_proof(
+            &issuer_snapshot,
+            wrong_binding_subject,
+            Some(begin_proof.token_sha256()),
+            &session(),
+            NOW + 120,
+        );
+        assert_eq!(
+            validate_before_issuer(
+                &issuer_snapshot,
+                &wrong_binding_proof,
+                &challenge,
+                &ceremony,
+                &passkey_proof,
+            ),
+            Err(DrainSourceRegistrationCoordinatorError::PhaseBindingMismatch)
+        );
+
+        let mut production = initial.clone();
+        production.authorization.environment = "production".to_owned();
+        assert_eq!(
+            validate_before_challenge(&production, &begin_proof, &begin_intent),
             Err(DrainSourceRegistrationCoordinatorError::UnsupportedEnvironment)
         );
     }
 
     #[test]
+    fn challenge_cannot_be_replayed_with_a_different_action_intent() {
+        let initial = snapshot();
+        let begin_intent = begin_intent(&initial);
+        let begin_proof = challenge_proof(&initial, &begin_intent);
+        let challenge = validate_before_challenge(&initial, &begin_proof, &begin_intent).unwrap();
+        let mut changed_input = begin_action_input();
+        changed_input.reason_code = "migration.source-replay".to_owned();
+        let changed_ceremony = DrainSourceRegistrationCeremonyState::new(
+            action_with_begin_input(&challenge, changed_input),
+            challenge.begin_intent().rp_id(),
+            challenge.begin_intent().origin(),
+            challenge.begin_intent().issued_at(),
+        )
+        .unwrap();
+        let passkey_proof = passkey_proof(&changed_ceremony);
+        let mut issuer_snapshot = initial.clone();
+        issuer_snapshot.database_now += 1;
+        let issuer_phase_proof = issuer_proof(
+            &issuer_snapshot,
+            &challenge,
+            &changed_ceremony,
+            &passkey_proof,
+            begin_proof.token_sha256(),
+        );
+
+        assert_eq!(
+            validate_before_issuer(
+                &issuer_snapshot,
+                &issuer_phase_proof,
+                &challenge,
+                &changed_ceremony,
+                &passkey_proof,
+            ),
+            Err(DrainSourceRegistrationCoordinatorError::CeremonyMismatch)
+        );
+    }
+
+    #[test]
     fn passkey_fence_and_consumption_drift_fail_closed() {
-        let baseline = begin();
-        let action = action(&baseline);
-        let baseline_snapshot = snapshot();
-        let expected_fingerprint = fingerprint(&baseline_snapshot);
-        let issuer_proof = phase_proof(
-            &baseline_snapshot,
-            RootSessionPhase::BeforeIssuer,
-            &session(),
-            &expected_fingerprint,
+        let initial = snapshot();
+        let begin_intent = begin_intent(&initial);
+        let begin_proof = challenge_proof(&initial, &begin_intent);
+        let challenge = validate_before_challenge(&initial, &begin_proof, &begin_intent).unwrap();
+        let ceremony = ceremony(&challenge);
+        let passkey_proof = passkey_proof(&ceremony);
+        let mut issuer_snapshot = initial.clone();
+        issuer_snapshot.database_now += 1;
+        let issuer_phase_proof = issuer_proof(
+            &issuer_snapshot,
+            &challenge,
+            &ceremony,
+            &passkey_proof,
+            begin_proof.token_sha256(),
         );
         let check = |changed: &RelayContainerDrainSourceRegistrationPhaseSnapshot, expected| {
             assert_eq!(
                 validate_before_issuer(
                     changed,
-                    "staging",
-                    &changed.authorization.authorization_id_sha256,
-                    &issuer_proof,
-                    &action,
-                    &baseline.semantic_fingerprint_sha256,
+                    &issuer_phase_proof,
+                    &challenge,
+                    &ceremony,
+                    &passkey_proof,
                 ),
                 Err(expected)
             );
@@ -1285,7 +1730,7 @@ mod tests {
                 row.public_key = STANDARD.encode(b"other-public-key")
             },
         ] {
-            let mut changed = snapshot();
+            let mut changed = issuer_snapshot.clone();
             mutate(changed.passkey.as_mut().unwrap());
             check(
                 &changed,
@@ -1293,28 +1738,28 @@ mod tests {
             );
         }
 
-        let mut changed = snapshot();
+        let mut changed = issuer_snapshot.clone();
         changed.passkey.as_mut().unwrap().clone_warning = 1;
         check(
             &changed,
             DrainSourceRegistrationCoordinatorError::PasskeyStateChanged,
         );
 
-        let mut changed = snapshot();
+        let mut changed = issuer_snapshot.clone();
         changed.passkey.as_mut().unwrap().deleted_at = Some(NOW);
         check(
             &changed,
             DrainSourceRegistrationCoordinatorError::PasskeyStateChanged,
         );
 
-        let mut changed = snapshot();
+        let mut changed = issuer_snapshot.clone();
         changed.head.as_mut().unwrap().head_digest_sha256 = digest("other-head");
         check(
             &changed,
             DrainSourceRegistrationCoordinatorError::FenceStateChanged,
         );
 
-        let mut changed = snapshot();
+        let mut changed = issuer_snapshot.clone();
         changed.fence.as_mut().unwrap().admission_open = 0;
         changed.fence.as_mut().unwrap().closed_at = Some(NOW);
         check(
@@ -1339,7 +1784,7 @@ mod tests {
                 snapshot.source_scan_count = 1
             },
         ] {
-            let mut changed = snapshot();
+            let mut changed = issuer_snapshot.clone();
             set_consumed(&mut changed);
             check(
                 &changed,
@@ -1362,80 +1807,111 @@ mod tests {
             receipt_digest_sha256: digest("previous-terminal"),
             recorded_at: NOW - 20,
         });
-        let expected_fingerprint = fingerprint(&snapshot);
-        let proof = phase_proof(
-            &snapshot,
-            RootSessionPhase::BeforeChallenge,
-            &session(),
-            &expected_fingerprint,
-        );
-        let validated = validate_before_challenge(
-            &snapshot,
-            "staging",
-            &snapshot.authorization.authorization_id_sha256,
-            &proof,
-        )
-        .unwrap();
-        assert_eq!(validated.receipt_sequence, 4);
+        let begin_intent = begin_intent(&snapshot);
+        let proof = challenge_proof(&snapshot, &begin_intent);
+        let validated = validate_before_challenge(&snapshot, &proof, &begin_intent).unwrap();
+        assert_eq!(validated.receipt_sequence(), 4);
         assert_eq!(
-            validated.ledger_head_before_sha256,
+            validated.ledger_head_before_sha256(),
             digest("previous-terminal")
         );
 
         snapshot.latest_ledger.as_mut().unwrap().event_kind = "registration".to_owned();
         assert_eq!(
-            validate_before_challenge(
-                &snapshot,
-                "staging",
-                &snapshot.authorization.authorization_id_sha256,
-                &proof,
-            ),
+            validate_before_challenge(&snapshot, &proof, &begin_intent),
             Err(DrainSourceRegistrationCoordinatorError::LedgerStateChanged)
         );
     }
 
     #[test]
-    fn action_and_validity_windows_are_rechecked_at_each_later_phase() {
-        let baseline = begin();
-        let baseline_snapshot = snapshot();
-        let expected_fingerprint = fingerprint(&baseline_snapshot);
-        let begin_proof = phase_proof(
-            &baseline_snapshot,
-            RootSessionPhase::BeforeChallenge,
-            &session(),
-            &expected_fingerprint,
+    fn commit_requires_the_exact_live_verified_permit_and_fresh_root_state() {
+        let initial = snapshot();
+        let begin_intent = begin_intent(&initial);
+        let begin_proof = challenge_proof(&initial, &begin_intent);
+        let challenge = validate_before_challenge(&initial, &begin_proof, &begin_intent).unwrap();
+        let ceremony = ceremony(&challenge);
+        let passkey_proof = passkey_proof(&ceremony);
+        let mut issuer_snapshot = initial.clone();
+        issuer_snapshot.database_now += 1;
+        let issuer_phase_proof = issuer_proof(
+            &issuer_snapshot,
+            &challenge,
+            &ceremony,
+            &passkey_proof,
+            begin_proof.token_sha256(),
+        );
+        let issuer = validate_before_issuer(
+            &issuer_snapshot,
+            &issuer_phase_proof,
+            &challenge,
+            &ceremony,
+            &passkey_proof,
+        )
+        .unwrap();
+        let permit = VerifiedDrainSourceRegistrationPermit::test_fixture_from_issue_request(
+            issuer.issue_request(),
+            "registration-request-001",
+            "registration-permit-issuer-version-001",
+        )
+        .unwrap();
+        let mut commit_snapshot = issuer_snapshot.clone();
+        commit_snapshot.database_now += 1;
+        let commit_phase_proof = commit_proof(
+            &commit_snapshot,
+            &issuer,
+            &permit,
+            issuer_phase_proof.token_sha256(),
         );
 
-        let mut expired = snapshot();
-        expired.database_now = expired.authorization.permit_expires_at;
-        assert_eq!(
-            validate_before_challenge(
-                &expired,
-                "staging",
-                &expired.authorization.authorization_id_sha256,
-                &begin_proof,
-            ),
-            Err(DrainSourceRegistrationCoordinatorError::SessionStateChanged)
-        );
-
-        let mut different_session = session();
-        different_session.binding_sha256 = digest("other-session");
-        let different_proof = phase_proof(
-            &baseline_snapshot,
-            RootSessionPhase::BeforeCommit,
-            &different_session,
-            &expected_fingerprint,
-        );
+        let unrelated_request = DrainSourceRegistrationPermitBindings::test_fixture(NOW)
+            .issue_request()
+            .unwrap();
+        let unrelated_permit =
+            VerifiedDrainSourceRegistrationPermit::test_fixture_from_issue_request(
+                &unrelated_request,
+                "registration-request-unrelated",
+                "registration-permit-issuer-version-001",
+            )
+            .unwrap();
         assert_eq!(
             validate_before_commit(
-                &snapshot(),
-                "staging",
-                &snapshot().authorization.authorization_id_sha256,
-                &different_proof,
-                &action(&baseline),
-                &baseline.semantic_fingerprint_sha256,
+                &commit_snapshot,
+                &commit_phase_proof,
+                &issuer,
+                &unrelated_permit,
             ),
-            Err(DrainSourceRegistrationCoordinatorError::ActionMismatch)
+            Err(DrainSourceRegistrationCoordinatorError::PermitMismatch)
+        );
+
+        let different_permit =
+            VerifiedDrainSourceRegistrationPermit::test_fixture_from_issue_request(
+                issuer.issue_request(),
+                "registration-request-002",
+                "registration-permit-issuer-version-002",
+            )
+            .unwrap();
+        assert_eq!(
+            validate_before_commit(
+                &commit_snapshot,
+                &commit_phase_proof,
+                &issuer,
+                &different_permit,
+            ),
+            Err(DrainSourceRegistrationCoordinatorError::PhaseBindingMismatch)
+        );
+
+        let mut expired = commit_snapshot.clone();
+        expired.database_now = permit.writer_projection().expires_at();
+        assert_eq!(
+            validate_before_commit(&expired, &commit_phase_proof, &issuer, &permit),
+            Err(DrainSourceRegistrationCoordinatorError::PermitExpired)
+        );
+
+        let mut changed_root = commit_snapshot.clone();
+        changed_root.root.as_mut().unwrap().role -= 1;
+        assert_eq!(
+            validate_before_commit(&changed_root, &commit_phase_proof, &issuer, &permit,),
+            Err(DrainSourceRegistrationCoordinatorError::RootStateChanged)
         );
     }
 }

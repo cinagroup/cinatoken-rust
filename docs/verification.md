@@ -12564,11 +12564,11 @@ cargo test -p cinatoken-worker --lib \
 
 cargo test -p cinatoken-worker --lib \
   container_drain_source_registration_
-  20 passed
+  23 passed
 
 cargo test -p cinatoken-worker --lib \
   container_drain_source_registration_coordinator
-  5 passed
+  6 passed
 ```
 
 The D1 repository now reads all challenge/issuer/commit authority in one
@@ -12607,7 +12607,7 @@ cargo test -p cinatoken-root-session-phase-proof
   13 passed
 
 bun test tests/root-session-phase-proof.test.mjs
-  1 passed; 8 assertions
+  5 passed; 20 assertions
 
 cargo test -p cinatoken-session -p cinatoken-auth
   session 14 passed
@@ -12622,7 +12622,7 @@ python tools/verify_sqlite.py
 
 bun run check
   complete repository gate passed
-  Worker 988 passed after the final fail-closed self-delete regression test
+  Worker 991 passed, including the typed three-phase coordinator chain
   real-Workerd atomic admission 43 passed
   all required wasm32 checks passed
 ```
@@ -12634,10 +12634,13 @@ chains. It accepts exactly one current key and optionally one distinct,
 strictly older previous key. Claims are parsed only after signature
 verification.
 
-The fixture freezes the header and claim byte order, HMAC signature, and
-domain-separated complete-token digest. The independent Bun/WebCrypto test
-reconstructs the protocol without calling Rust. This detects cross-language
-encoding drift rather than merely exercising two Rust code paths.
+The fixture freezes the typed 22-field begin intent with an explicit `u32be`
+framing canary, all three canonical phase subjects and bindings with separate
+Root `u64be` framing, and the before-commit header and claim byte order, HMAC
+signature, and domain-separated complete-token digest. The independent
+Bun/WebCrypto tests reconstruct the protocol without calling Rust. This
+detects cross-language encoding drift rather than merely exercising two Rust
+code paths.
 
 Migration 0075 rejects invalid legacy user roles or generations before apply,
 guards future role and generation writes, and protects both registration
@@ -12667,8 +12670,17 @@ advance the generation in the same D1 `UPDATE` as the security mutation.
 Generation exhaustion or guard failure therefore cannot leave a completed
 account mutation with an unrevoked old Cookie.
 
-This local 0076 matrix does not freeze typed challenge/issuer/commit subject
-schemas or prove that commit binding is derived from a verified permit. No
-proof issuer route, private binding, persistent replay coordinator, production
-key, remote 0075/0076 migration, or traffic change was exercised. The proof is
-not independently single-use. Production remains **NO-GO**.
+The local coordinator now freezes typed challenge/issuer/commit subjects and
+derives each binding from typed evidence. The retained begin intent freezes
+all twelve caller-controlled action inputs, and a different otherwise-valid
+action is rejected even when the issuer phase proof is freshly signed for it.
+The coordinator requires an exact parent chain, generates the issuer request
+from ceremony plus verified Passkey proof, rechecks the verified permit
+against those exact bytes and current D1 time, and exposes only an opaque
+validated commit to command assembly. Negative tests cover begin/action,
+issuer/permit binding drift, parent jumps, authority drift, permit mismatch,
+and permit expiry.
+
+No proof issuer route, private binding, persistent replay coordinator,
+production key, remote 0075/0076 migration, or traffic change was exercised.
+The proof is not independently single-use. Production remains **NO-GO**.

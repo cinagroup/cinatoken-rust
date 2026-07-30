@@ -26222,18 +26222,30 @@ and Root username are excluded from immutable persistence. The current fixed
 shapes are:
 
 ```text
+begin intent:         22 fields
 action subject:       57 fields
 permit issue request: 39 fields
 permit subject:       49 fields
 ```
 
+The begin intent freezes operation/authorization/ceremony/request identity,
+canonical RP/Origin and D1 issue time plus all twelve caller-controlled action
+inputs. It uses its own `u32be` length-prefixed domain. Before issuer, the
+coordinator compares the retained intent with the complete action, so a valid
+challenge cannot be paired with a newly signed but different action.
+
 The verified permit retains the authenticated issuer request ID and issuer
-version ID. `VerifiedDrainSourceRegistrationCommand::from_verified` accepts
-only the typed action, verified WebAuthn proof, and verified permit, compares
-all shared bindings, derives `next_use_generation = previous + 1`, and derives
-the issuer-request digest, secure-verification receipt, command ID, and
-registration receipt under four separate length-prefixed SHA-256 domains.
-Caller-provided command or receipt identities are ineligible.
+version ID. Command assembly now accepts only
+`ValidatedDrainSourceRegistrationCommit`, the opaque output of a fresh
+before-commit D1 reread. The coordinator has already consumed the typed
+action, verified WebAuthn proof, exact frozen issuer request, and opaque
+verified permit; it rechecks request equality and permit validity, derives the
+commit phase binding, and verifies the exact parent proof. Command assembly
+then compares all shared bindings, derives
+`next_use_generation = previous + 1`, and derives the issuer-request digest,
+secure-verification receipt, command ID, and registration receipt under four
+separate length-prefixed SHA-256 domains. Caller-provided command or receipt
+identities and the former direct three-evidence constructor are ineligible.
 
 Session epoch/binding and iat/exp are distinct. The command requires
 `session_iat < session_exp`, verification within the session, permit expiry
@@ -26325,7 +26337,7 @@ The 43-test real-Workerd suite, aggregate SQLite verifier, focused Rust
 registration-chain tests, and contiguous migration-head audit pass.
 The isolated issuer additionally passes 29 TypeScript tests and 7 Workerd
 tests against the same versioned 39-request/49-subject fixed-vector manifest
-consumed by Rust. The complete Worker Rust library passes 988 tests. Two Bun
+consumed by Rust. The complete Worker Rust library passes 991 tests. Two Bun
 SQLite coordinator tests prepare the exact phase query through migration 0076
 and project every authority component plus the current terminal ledger head.
 The repository-root `bun run check` aggregate also passes the Worker builds,
@@ -26441,11 +26453,14 @@ transport and persistence. Domain-separated digests bind the values that must
 cross.
 
 The version-controlled fixed vector is verified by both Rust and an
-independent Bun/WebCrypto implementation. It freezes header and claim byte
-order, HMAC output, and the complete-token digest. Focused tests cover
-canonicality, tampering, key rotation, TTL and clock boundaries, exact session
-matching, invalid Root state, application/phase/operation drift, pairwise
-digest separation, and the three-proof parent chain.
+independent Bun/WebCrypto implementation. It freezes the typed 22-field begin
+intent with explicit `u32be` framing, all three canonical phase subjects and
+bindings with their separate `u64be` Root framing, and the before-commit
+header/claim byte order, HMAC output, and complete-token digest. Focused tests
+cover canonicality, tampering, key rotation, TTL and clock boundaries, exact
+session matching, invalid Root state, application/phase/operation drift,
+challenge/action substitution, pairwise digest separation, and the
+three-proof parent chain.
 
 #### Promotion sequence from local to isolated staging
 
@@ -26471,8 +26486,9 @@ complete staging packet is approved.
 
 #### Remaining hard blockers
 
-- phase-specific canonical subjects are not frozen, and commit verification
-  does not yet derive its proof binding from the verified permit;
+- the typed begin intent, phase-specific canonical subjects, action-match
+  check, and opaque commit boundary are closed locally, but they are not yet
+  exercised through a private deployed caller;
 - no dedicated replay/state coordinator DO;
 - no Application issue path or private transport;
 - no current/previous staging secret lifecycle evidence;

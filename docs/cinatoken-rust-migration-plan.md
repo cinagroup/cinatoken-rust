@@ -26236,9 +26236,11 @@ Caller-provided command or receipt identities are ineligible.
 Session epoch/binding and iat/exp are distinct. The command requires
 `session_iat < session_exp`, verification within the session, permit expiry
 within verification expiry, and D1 `unixepoch()` before both session and
-permit expiry. This remains defense in depth: the future private coordinator
-must still reread live Root/session authority before the challenge, issuer
-call, and 0074 insert.
+permit expiry. The route-free private coordinator foundation now rereads live
+Root/session authority before the challenge, issuer call, and 0074 insert.
+Each reread is one first-primary SQL statement and shares a semantic authority
+fingerprint across phases. The caller route and private transport remain
+absent.
 The previous credential-use generation is bounded to
 `0..=Number.MAX_SAFE_INTEGER - 1`, preserving an exactly representable
 mandatory increment. Credential ID, immutable registration ID, and credential
@@ -26279,6 +26281,20 @@ protected audit, optional current passkey, registration, and ledger. The Session
 provides sequential consistency, not a cross-statement transaction; atomicity
 comes from the one SQLite insert.
 
+The route-free coordinator adds a separate one-statement first-primary phase
+snapshot. It projects authorization, exact Root state, the current Root
+Passkey, scope head, fence, latest global ledger head, all current
+authorization consumption counts, and D1 time. Its semantic fingerprint
+excludes only time and the hashed bookmark, so later D1 progress does not
+create false drift while every authority-bearing mutation fails closed. The
+focused contract is
+[`relay-container-drain-registration-coordinator.md`](relay-container-drain-registration-coordinator.md).
+
+Credential-ID verification now reuses the exact registration-time,
+domain-separated length-prefixed digest. The previous plain-SHA comparison
+was incompatible with the persisted D1 identity and is covered by a
+regression test.
+
 Real Workerd now proves fresh `meta.changes=5`, replay `0`, a nonempty Session
 bookmark, joined readback, `0/0` generation advancement, exact replay after
 the passkey row is deleted, ordinary-log cleanup that preserves protected
@@ -26307,7 +26323,9 @@ The 38-test real-Workerd suite, aggregate SQLite verifier, focused Rust
 registration-chain tests, and contiguous migration-head audit pass.
 The isolated issuer additionally passes 29 TypeScript tests and 7 Workerd
 tests against the same versioned 39-request/49-subject fixed-vector manifest
-consumed by Rust. The complete Worker Rust library passes 980 tests.
+consumed by Rust. The complete Worker Rust library passes 986 tests. Two Bun
+SQLite coordinator tests prepare the exact phase query through migration 0074
+and project every authority component plus the current terminal ledger head.
 The repository-root `bun run check` aggregate also passes the Worker builds,
 Workerd/Vitest contracts, frontend gates, SQLite verification, complete Rust
 workspace, and required WASM target checks.
@@ -26332,13 +26350,22 @@ Go/VPS hot, classify unknown commands through first-primary readback, preserve
 all five effects, and repair forward with a new migration. There is no
 production down migration or selective deletion of protected evidence.
 
-The private coordinator, remote isolated-staging readback, concurrency and
-response-loss campaigns, credential/trust rotation, dedicated network-HMAC
-secret provisioning/rotation plus immutable non-secret key ID/version,
+The private coordinator transport and begin/finish route, remote
+isolated-staging readback, concurrency and response-loss campaigns,
+credential/trust rotation, dedicated network-HMAC secret
+provisioning/rotation plus immutable non-secret key ID/version,
 retention/legal approval, load/cost/SLO/alerts, rollback rehearsal, source
 claim/terminal collection, P5, billing/reconciliation, reverse sync,
 traffic/DNS, and independent approvals remain open. No remote Cloudflare
 resource, credential, deployment, route, traffic, or Go/VPS state was changed.
+
+The next route-free boundary must first close three P0/P1 protocol gaps:
+Application-issued short-lived Root session phase proof because the Cookie
+does not carry a coordinator-verifiable epoch; a dedicated persistent
+coordinator DO because the generic Passkey take cannot recover a lost finish
+response; and full winner recovery by command ID plus every stable alias
+before any unknown-outcome retry. The public main Worker's `/internal/*`
+router is not a private transport boundary.
 The disabled local issuer is a build/test surface only while the Application
 verifier remains staging-only. The repository also still lacks a
 version-controlled, read-only-by-default 0074 remote

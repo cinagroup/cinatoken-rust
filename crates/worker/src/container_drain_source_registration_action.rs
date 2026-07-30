@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use worker::Env;
 
+use crate::admin_passkey::passkey_credential_id_sha256;
 use crate::container_drain_source_authorization::{
     VerifiedDrainSourceAuthorization, DRAIN_SOURCE_AUTHORIZATION_CONTRACT,
 };
@@ -931,7 +932,7 @@ impl DrainSourceRegistrationCeremonyState {
     ) -> Result<(), DrainSourceRegistrationCeremonyError> {
         if stored.row_id != self.action.passkey_credential_row_id
             || stored.user_id != self.action.root_admin_id
-            || sha256_hex(stored.credential.credential_id)
+            || passkey_credential_id_sha256(stored.credential.credential_id)
                 != self.action.passkey_credential_id_sha256
             || stored.passkey_credential_registration_id_sha256
                 != self.action.passkey_credential_registration_id_sha256
@@ -1496,7 +1497,7 @@ mod tests {
                 root_session_expires_at: NOW + 300,
                 root_session_binding_sha256: digest("session-binding"),
                 passkey_credential_row_id: 11,
-                passkey_credential_id_sha256: digest("credential-id"),
+                passkey_credential_id_sha256: passkey_credential_id_sha256(b"credential-id"),
                 passkey_credential_registration_id_sha256: digest("credential-registration-id"),
                 passkey_credential_binding_sha256: digest("credential-binding"),
                 passkey_previous_use_generation: 17,
@@ -2037,6 +2038,11 @@ mod tests {
         };
 
         let proof = state.proof_from_verified(&stored, &verified, NOW).unwrap();
+        assert_ne!(
+            state.action.passkey_credential_id_sha256,
+            digest("credential-id"),
+            "persisted Passkey credential ids are domain-separated"
+        );
         assert_eq!(
             proof.passkey_assertion_subject_sha256,
             sha256_hex(b"signed-subject")
@@ -2201,6 +2207,20 @@ mod tests {
         };
         assert_eq!(
             state.proof_from_verified(&wrong_row, &verified, NOW),
+            Err(DrainSourceRegistrationCeremonyError::StoredCredentialMismatch)
+        );
+
+        let mut plain_digest_action = state.action.clone();
+        plain_digest_action.passkey_credential_id_sha256 = digest("credential-id");
+        let plain_digest_state = DrainSourceRegistrationCeremonyState::new(
+            plain_digest_action,
+            "cinatoken.com",
+            "https://admin.cinatoken.com",
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            plain_digest_state.proof_from_verified(&stored, &verified, NOW),
             Err(DrainSourceRegistrationCeremonyError::StoredCredentialMismatch)
         );
 

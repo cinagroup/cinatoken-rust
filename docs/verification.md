@@ -12539,3 +12539,59 @@ addition to command, audit, registration, and ledger. No count is accepted
 until the final migration runs under real Workerd with exact same-Session
 readback and fault/concurrency tests. No remote resource, secret, route, gate,
 or deployment was used. Production remains **NO-GO**.
+
+## 2026-07-30 Route-Free Registration Coordinator Verification
+
+This checkpoint supersedes only the preceding statement that 0074 had not
+yet run under local Workerd. The atomic 0074 command and its `5/0` local
+evidence are documented in
+[`relay-container-drain-registration-command.md`](relay-container-drain-registration-command.md).
+
+Targeted current-worktree verification:
+
+```text
+bun test tests/drain-source-registration-coordinator-snapshot.test.mjs
+  2 passed
+  exact phase SQL prepared after migrations 0001 through 0074
+  nested authorization/Root/Passkey/head/fence/ledger projection passed
+
+cargo test -p cinatoken-worker --lib \
+  drain_source_registration_phase_snapshot_is_one_authoritative_read
+  1 passed
+
+cargo test -p cinatoken-worker --lib \
+  container_drain_source_registration_
+  20 passed
+
+cargo test -p cinatoken-worker --lib \
+  container_drain_source_registration_coordinator
+  5 passed
+```
+
+The D1 repository now reads all challenge/issuer/commit authority in one
+`first-primary` SQL statement: immutable authorization, exact Root state,
+current owned Passkey, global scope head, admission fence, current terminal
+ledger predecessor, every current-authorization consumption count, and D1
+time. The opaque Session bookmark is reduced to a digest after the read.
+
+The pure coordinator rejects production and validates the same authority
+before challenge, issuer, and commit. A domain-separated semantic fingerprint
+includes every authority-bearing field but excludes D1 time and bookmark
+evidence. Tests prove that time/bookmark progress preserves the fingerprint,
+while Root role/status/deletion/epoch, session, Passkey
+generation/count/digests/public-key/clone/deletion, head/fence, ledger, and
+consumption drift fail closed.
+
+Credential-ID validation now reuses the persisted Passkey registration
+primitive,
+`SHA256("cinatoken:passkey:credential-id:v1" || len || credential_id)`.
+The former plain-SHA comparison could reject a valid real D1 credential even
+though fixtures passed; a regression test now rejects the plain digest.
+
+This is still route-free local evidence. Existing Cookie claims do not form a
+coordinator-verifiable epoch proof, the generic Passkey Durable Object cannot
+recover a lost finish response, `/internal/*` is not a private transport
+boundary, and unknown outcomes still need full command/alias winner recovery.
+No Service Binding, coordinator DO, route, gate, issuer call, remote D1
+operation, deployment, or traffic change was tested. Go/VPS remains
+authoritative and production remains **NO-GO**.

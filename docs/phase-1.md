@@ -4980,11 +4980,26 @@ response loss, unexpected change counts, or readback drift remain
 `OutcomeUnknown` until same-Session command and alternate-identity readback
 classifies them; blind retry is forbidden.
 
-The private coordinator, fresh Root/session/credential/fence/head/ledger
-rereads, isolated-staging apply and fault campaigns, credential/trust
-rotation, network-HMAC key provisioning/rotation and retention/legal
-approval, load/cost/SLO/alerts, rollback, collection/claim/terminal, P5,
-billing/reconciliation, reverse sync, traffic/DNS, and approvals remain open.
+The route-free coordinator foundation now performs one-statement
+first-primary Root/session/credential/authorization/fence/head/ledger
+snapshots before challenge, issuer, and commit, with a stable semantic
+authority fingerprint that excludes only D1 time and bookmark evidence. It
+also fixes Passkey credential-ID validation to reuse the persisted
+domain-separated, length-prefixed digest instead of plain SHA-256. Its focused
+contract is
+[`relay-container-drain-registration-coordinator.md`](relay-container-drain-registration-coordinator.md).
+No begin/finish route or issuer Service Binding exists.
+
+Private transport wiring, isolated-staging apply and fault campaigns,
+credential/trust rotation, network-HMAC key provisioning/rotation and
+retention/legal approval, load/cost/SLO/alerts, rollback,
+collection/claim/terminal, P5, billing/reconciliation, reverse sync,
+traffic/DNS, and approvals remain open.
+The immediate route-free blockers are an Application-issued Root session
+phase proof, a dedicated response-loss-recoverable coordinator DO, complete
+command/alias winner recovery, and an immutable issuer-auth HMAC key
+ID/version. The public `/internal/*` router and generic Passkey step-up path
+are explicitly ineligible.
 The signed chain still needs an immutable non-secret network-HMAC key
 ID/version, and the disabled local issuer remains build/test-only while the
 Application verifier is staging-only. A version-controlled, read-only-by-

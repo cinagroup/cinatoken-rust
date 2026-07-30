@@ -7,7 +7,7 @@ use cinatoken_core::format_matching_model_name;
 use cinatoken_relay::{channel_type_supported, clamp_i64_to_i32 as d1_i32, csv_contains};
 use cinatoken_storage::{AuditLogEvent, AuthenticatedToken, RelayAuditLog, RelayChannel};
 use rust_decimal::Decimal;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1208,6 +1208,117 @@ pub struct RelayContainerDrainSourceAuthorityReadback {
     pub authorization: RelayContainerDrainSourceAuthorizationRow,
     pub attestations: Vec<RelayContainerDrainSourceAttestationRow>,
     pub read_bookmark_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // route-free 0074 coordinator authority snapshot
+pub(crate) struct RelayContainerDrainSourceRegistrationRootState {
+    pub id: i64,
+    pub role: i64,
+    pub status: i64,
+    pub session_epoch: i64,
+    pub deleted_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // route-free 0074 coordinator authority snapshot
+pub(crate) struct RelayContainerDrainSourceRegistrationPasskeyState {
+    pub id: i64,
+    pub user_id: i64,
+    pub credential_id: String,
+    pub public_key: String,
+    pub credential_registration_id_sha256: Option<String>,
+    pub credential_id_sha256: Option<String>,
+    pub credential_binding_sha256: Option<String>,
+    pub credential_use_generation: i64,
+    pub sign_count: i64,
+    pub clone_warning: i64,
+    pub user_present: i64,
+    pub user_verified: i64,
+    pub backup_eligible: i64,
+    pub backup_state: i64,
+    pub updated_at: i64,
+    pub deleted_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // route-free 0074 coordinator authority snapshot
+pub(crate) struct RelayContainerDrainSourceRegistrationHeadState {
+    pub environment: String,
+    pub scope_kind: String,
+    pub scope_id_sha256: String,
+    pub current_fence_id_sha256: String,
+    pub current_fence_generation: i64,
+    pub head_version: i64,
+    pub head_digest_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // route-free 0074 coordinator authority snapshot
+pub(crate) struct RelayContainerDrainSourceRegistrationFenceState {
+    pub admission_fence_id_sha256: String,
+    pub fence_kind: String,
+    pub environment: String,
+    pub scope_kind: String,
+    pub scope_id_sha256: String,
+    pub fence_generation: i64,
+    pub admission_open: i64,
+    pub state_digest_sha256: String,
+    pub closed_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // route-free 0074 coordinator authority snapshot
+pub(crate) struct RelayContainerDrainSourceRegistrationLedgerHead {
+    pub authority_ledger_identity_sha256: String,
+    pub receipt_sequence: i64,
+    pub event_kind: String,
+    pub authorization_id_sha256: String,
+    pub predecessor_receipt_sha256: String,
+    pub receipt_digest_sha256: String,
+    pub recorded_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // first-primary 0074 coordinator authority snapshot
+pub(crate) struct RelayContainerDrainSourceRegistrationPhaseSnapshot {
+    pub authorization: RelayContainerDrainSourceAuthorizationRow,
+    pub root: Option<RelayContainerDrainSourceRegistrationRootState>,
+    pub passkey: Option<RelayContainerDrainSourceRegistrationPasskeyState>,
+    pub head: Option<RelayContainerDrainSourceRegistrationHeadState>,
+    pub fence: Option<RelayContainerDrainSourceRegistrationFenceState>,
+    pub latest_ledger: Option<RelayContainerDrainSourceRegistrationLedgerHead>,
+    pub ledger_count: i64,
+    pub registration_command_count: i64,
+    pub registration_count: i64,
+    pub claim_count: i64,
+    pub terminal_count: i64,
+    pub source_scan_count: i64,
+    pub database_now: i64,
+    pub read_bookmark_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RelayContainerDrainSourceRegistrationPhaseSnapshotQueryRow {
+    authorization_json: String,
+    root_json: Option<String>,
+    passkey_json: Option<String>,
+    head_json: Option<String>,
+    fence_json: Option<String>,
+    latest_ledger_json: Option<String>,
+    ledger_count: i64,
+    registration_command_count: i64,
+    registration_count: i64,
+    claim_count: i64,
+    terminal_count: i64,
+    source_scan_count: i64,
+    database_now: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -17340,6 +17451,301 @@ pub async fn relay_container_drain_source_authority_readback(
     }))
 }
 
+#[allow(dead_code)] // route-free 0074 begin/finish coordinator foundation
+pub(crate) async fn relay_container_drain_source_registration_phase_snapshot(
+    db: &D1Database,
+    authorization_id_sha256: &str,
+    authenticated_root_admin_id: i64,
+) -> worker::Result<Option<RelayContainerDrainSourceRegistrationPhaseSnapshot>> {
+    validate_relay_container_sha256(authorization_id_sha256, "drain source authorization ID")?;
+    let root_admin_id = i32::try_from(authenticated_root_admin_id).map_err(|_| {
+        worker::Error::RustError(
+            "drain source registration Root identity is out of range".to_string(),
+        )
+    })?;
+    if root_admin_id <= 0 {
+        return Err(worker::Error::RustError(
+            "drain source registration Root identity is invalid".to_string(),
+        ));
+    }
+
+    let session = D1Session::first_primary(db)?;
+    let args = [
+        D1Type::Text(authorization_id_sha256),
+        D1Type::Integer(root_admin_id),
+        D1Type::Text(RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256),
+    ];
+    let Some(row) = session
+        .prepare(
+            r#"
+            WITH latest_ledger AS (
+              SELECT authority_ledger_identity_sha256, receipt_sequence,
+                     event_kind, authorization_id_sha256,
+                     predecessor_receipt_sha256, receipt_digest_sha256,
+                     recorded_at
+              FROM relay_container_drain_source_receipt_ledger
+              WHERE authority_ledger_identity_sha256 = ?3
+              ORDER BY receipt_sequence DESC
+              LIMIT 1
+            )
+            SELECT
+              json_object(
+                'authorization_id_sha256',
+                  authorization.authorization_id_sha256,
+                'contract_version', authorization.contract_version,
+                'authorization_contract',
+                  authorization.authorization_contract,
+                'authorization_migration',
+                  authorization.authorization_migration,
+                'environment', authorization.environment,
+                'scope_kind', authorization.scope_kind,
+                'scope_id_sha256', authorization.scope_id_sha256,
+                'admission_fence_id_sha256',
+                  authorization.admission_fence_id_sha256,
+                'fence_generation', authorization.fence_generation,
+                'expected_fence_state_digest_sha256',
+                  authorization.expected_fence_state_digest_sha256,
+                'expected_head_version',
+                  authorization.expected_head_version,
+                'expected_head_digest_sha256',
+                  authorization.expected_head_digest_sha256,
+                'source_scan_id_sha256',
+                  authorization.source_scan_id_sha256,
+                'collector_service_name',
+                  authorization.collector_service_name,
+                'collector_version_id',
+                  authorization.collector_version_id,
+                'collector_run_id_sha256',
+                  authorization.collector_run_id_sha256,
+                'started_by_credential_id_sha256',
+                  authorization.started_by_credential_id_sha256,
+                'page_size', authorization.page_size,
+                'shard_count', authorization.shard_count,
+                'accepted_source_schema_sha256',
+                  authorization.accepted_source_schema_sha256,
+                'authorizer_issuer', authorization.authorizer_issuer,
+                'authorizer_key_id', authorization.authorizer_key_id,
+                'authorizer_identity_sha256',
+                  authorization.authorizer_identity_sha256,
+                'authorizer_spki_sha256',
+                  authorization.authorizer_spki_sha256,
+                'authorization_subject_sha256',
+                  authorization.authorization_subject_sha256,
+                'authorization_signature_envelope_sha256',
+                  authorization.authorization_signature_envelope_sha256,
+                'execution_nonce_sha256',
+                  authorization.execution_nonce_sha256,
+                'permit_issued_at', authorization.permit_issued_at,
+                'permit_expires_at', authorization.permit_expires_at,
+                'authorized_by_admin_id',
+                  authorization.authorized_by_admin_id,
+                'recorded_at', authorization.recorded_at
+              ) AS authorization_json,
+              CASE WHEN root_user.id IS NULL THEN NULL ELSE json_object(
+                'id', root_user.id,
+                'role', root_user.role,
+                'status', root_user.status,
+                'session_epoch', root_user.session_epoch,
+                'deleted_at', root_user.deleted_at
+              ) END AS root_json,
+              CASE WHEN passkey.id IS NULL THEN NULL ELSE json_object(
+                'id', passkey.id,
+                'user_id', passkey.user_id,
+                'credential_id', passkey.credential_id,
+                'public_key', passkey.public_key,
+                'credential_registration_id_sha256',
+                  passkey.credential_registration_id_sha256,
+                'credential_id_sha256', passkey.credential_id_sha256,
+                'credential_binding_sha256',
+                  passkey.credential_binding_sha256,
+                'credential_use_generation',
+                  passkey.credential_use_generation,
+                'sign_count', passkey.sign_count,
+                'clone_warning', passkey.clone_warning,
+                'user_present', passkey.user_present,
+                'user_verified', passkey.user_verified,
+                'backup_eligible', passkey.backup_eligible,
+                'backup_state', passkey.backup_state,
+                'updated_at', passkey.updated_at,
+                'deleted_at', passkey.deleted_at
+              ) END AS passkey_json,
+              CASE WHEN head.scope_id_sha256 IS NULL THEN NULL ELSE json_object(
+                'environment', head.environment,
+                'scope_kind', head.scope_kind,
+                'scope_id_sha256', head.scope_id_sha256,
+                'current_fence_id_sha256',
+                  head.current_fence_id_sha256,
+                'current_fence_generation',
+                  head.current_fence_generation,
+                'head_version', head.head_version,
+                'head_digest_sha256', head.head_digest_sha256
+              ) END AS head_json,
+              CASE WHEN fence.admission_fence_id_sha256 IS NULL
+                THEN NULL ELSE json_object(
+                  'admission_fence_id_sha256',
+                    fence.admission_fence_id_sha256,
+                  'fence_kind', fence.fence_kind,
+                  'environment', fence.environment,
+                  'scope_kind', fence.scope_kind,
+                  'scope_id_sha256', fence.scope_id_sha256,
+                  'fence_generation', fence.fence_generation,
+                  'admission_open', fence.admission_open,
+                  'state_digest_sha256', fence.state_digest_sha256,
+                  'closed_at', fence.closed_at
+                )
+              END AS fence_json,
+              CASE WHEN latest_ledger.receipt_sequence IS NULL
+                THEN NULL ELSE json_object(
+                  'authority_ledger_identity_sha256',
+                    latest_ledger.authority_ledger_identity_sha256,
+                  'receipt_sequence', latest_ledger.receipt_sequence,
+                  'event_kind', latest_ledger.event_kind,
+                  'authorization_id_sha256',
+                    latest_ledger.authorization_id_sha256,
+                  'predecessor_receipt_sha256',
+                    latest_ledger.predecessor_receipt_sha256,
+                  'receipt_digest_sha256',
+                    latest_ledger.receipt_digest_sha256,
+                  'recorded_at', latest_ledger.recorded_at
+                )
+              END AS latest_ledger_json,
+              (
+                SELECT COUNT(1)
+                FROM relay_container_drain_source_receipt_ledger AS ledger
+                WHERE ledger.authority_ledger_identity_sha256 = ?3
+              ) AS ledger_count,
+              (
+                SELECT COUNT(1)
+                FROM relay_container_drain_source_registration_commands
+                  AS command
+                WHERE command.authorization_id_sha256 =
+                        authorization.authorization_id_sha256
+              ) AS registration_command_count,
+              (
+                SELECT COUNT(1)
+                FROM relay_container_drain_source_authorization_registrations
+                  AS registration
+                WHERE registration.authorization_id_sha256 =
+                        authorization.authorization_id_sha256
+              ) AS registration_count,
+              (
+                SELECT COUNT(1)
+                FROM relay_container_drain_source_authorization_claims AS claim
+                WHERE claim.authorization_id_sha256 =
+                        authorization.authorization_id_sha256
+              ) AS claim_count,
+              (
+                SELECT COUNT(1)
+                FROM relay_container_drain_source_terminal_receipts AS terminal
+                WHERE terminal.authorization_id_sha256 =
+                        authorization.authorization_id_sha256
+              ) AS terminal_count,
+              (
+                SELECT COUNT(1)
+                FROM relay_container_drain_source_scans AS scan
+                WHERE scan.source_scan_id_sha256 =
+                        authorization.source_scan_id_sha256
+              ) AS source_scan_count,
+              unixepoch() AS database_now
+            FROM relay_container_drain_source_authorizations AS authorization
+            LEFT JOIN users AS root_user
+              ON root_user.id = ?2
+             AND root_user.id = authorization.authorized_by_admin_id
+            LEFT JOIN passkey_credentials AS passkey
+              ON passkey.user_id = root_user.id
+            LEFT JOIN relay_container_admission_scope_heads AS head
+              ON head.environment = authorization.environment
+             AND head.scope_kind = authorization.scope_kind
+             AND head.scope_id_sha256 = authorization.scope_id_sha256
+            LEFT JOIN relay_container_admission_fences AS fence
+              ON fence.admission_fence_id_sha256 =
+                   head.current_fence_id_sha256
+            LEFT JOIN latest_ledger ON TRUE
+            WHERE authorization.authorization_id_sha256 = ?1
+            LIMIT 1
+            "#,
+        )?
+        .bind_refs(&args)?
+        .first::<RelayContainerDrainSourceRegistrationPhaseSnapshotQueryRow>(None)
+        .await?
+    else {
+        return Ok(None);
+    };
+
+    let read_bookmark_sha256 = session.bookmark_sha256()?;
+    validate_relay_container_sha256(
+        &read_bookmark_sha256,
+        "drain source registration phase bookmark",
+    )?;
+    if row.database_now <= 0
+        || [
+            row.ledger_count,
+            row.registration_command_count,
+            row.registration_count,
+            row.claim_count,
+            row.terminal_count,
+            row.source_scan_count,
+        ]
+        .into_iter()
+        .any(|count| count < 0)
+    {
+        return Err(worker::Error::RustError(
+            "drain source registration phase snapshot is invalid".to_string(),
+        ));
+    }
+
+    let snapshot = RelayContainerDrainSourceRegistrationPhaseSnapshot {
+        authorization: decode_d1_json(
+            &row.authorization_json,
+            "drain source registration authorization",
+        )?,
+        root: decode_optional_d1_json(row.root_json.as_deref(), "drain source registration Root")?,
+        passkey: decode_optional_d1_json(
+            row.passkey_json.as_deref(),
+            "drain source registration Passkey",
+        )?,
+        head: decode_optional_d1_json(
+            row.head_json.as_deref(),
+            "drain source registration admission head",
+        )?,
+        fence: decode_optional_d1_json(
+            row.fence_json.as_deref(),
+            "drain source registration admission fence",
+        )?,
+        latest_ledger: decode_optional_d1_json(
+            row.latest_ledger_json.as_deref(),
+            "drain source registration ledger head",
+        )?,
+        ledger_count: row.ledger_count,
+        registration_command_count: row.registration_command_count,
+        registration_count: row.registration_count,
+        claim_count: row.claim_count,
+        terminal_count: row.terminal_count,
+        source_scan_count: row.source_scan_count,
+        database_now: row.database_now,
+        read_bookmark_sha256,
+    };
+    if (snapshot.ledger_count == 0) != snapshot.latest_ledger.is_none() {
+        return Err(worker::Error::RustError(
+            "drain source registration ledger snapshot is incomplete".to_string(),
+        ));
+    }
+    validate_relay_container_drain_source_authorization_row(&snapshot.authorization)?;
+    Ok(Some(snapshot))
+}
+
+fn decode_d1_json<T: DeserializeOwned>(value: &str, label: &str) -> worker::Result<T> {
+    serde_json::from_str(value)
+        .map_err(|_| worker::Error::RustError(format!("{label} snapshot is unreadable")))
+}
+
+fn decode_optional_d1_json<T: DeserializeOwned>(
+    value: Option<&str>,
+    label: &str,
+) -> worker::Result<Option<T>> {
+    value.map(|value| decode_d1_json(value, label)).transpose()
+}
+
 #[allow(dead_code)] // fail-closed 0073 probe; no route or production gate is enabled
 pub async fn relay_container_drain_source_consumption_schema_ready(
     db: &D1Database,
@@ -19741,6 +20147,47 @@ fn validate_relay_container_drain_source_authority_readback(
     attestations: &[RelayContainerDrainSourceAttestationRow],
     read_bookmark_sha256: &str,
 ) -> worker::Result<()> {
+    validate_relay_container_drain_source_authorization_row(authorization)?;
+    validate_relay_container_sha256(read_bookmark_sha256, "drain source authority read bookmark")?;
+    if attestations.len() != 2 {
+        return Err(worker::Error::RustError(
+            "relay container drain source authority readback is non-canonical".to_string(),
+        ));
+    }
+    let assembler = &attestations[0];
+    let verifier = &attestations[1];
+    validate_relay_container_drain_source_attestation_row(authorization, assembler, "assembler")?;
+    validate_relay_container_drain_source_attestation_row(authorization, verifier, "verifier")?;
+    if assembler.source_seal_id_sha256 != verifier.source_seal_id_sha256
+        || assembler.identity_sha256 == verifier.identity_sha256
+        || assembler.signer_spki_sha256 == verifier.signer_spki_sha256
+        || assembler.signature_envelope_sha256 == verifier.signature_envelope_sha256
+        || assembler.attested_at > verifier.attested_at
+        || assembler.accepted_bookmark_sha256 != verifier.accepted_bookmark_sha256
+        || assembler.accepted_set_manifest_sha256 != verifier.accepted_set_manifest_sha256
+        || assembler.accepted_source_schema_sha256 != verifier.accepted_source_schema_sha256
+        || assembler.accepted_source_readback_sha256 != verifier.accepted_source_readback_sha256
+        || assembler.page_count != verifier.page_count
+        || assembler.first_page_digest_sha256 != verifier.first_page_digest_sha256
+        || assembler.last_page_digest_sha256 != verifier.last_page_digest_sha256
+        || assembler.shard_set_manifest_sha256 != verifier.shard_set_manifest_sha256
+        || assembler.captured_high_watermark != verifier.captured_high_watermark
+        || assembler.captured_member_count != verifier.captured_member_count
+        || assembler.captured_first_sequence != verifier.captured_first_sequence
+        || assembler.captured_first_operation_id != verifier.captured_first_operation_id
+        || assembler.captured_last_sequence != verifier.captured_last_sequence
+        || assembler.captured_last_operation_id != verifier.captured_last_operation_id
+    {
+        return Err(worker::Error::RustError(
+            "relay container drain source attestations diverge".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_relay_container_drain_source_authorization_row(
+    authorization: &RelayContainerDrainSourceAuthorizationRow,
+) -> worker::Result<()> {
     for (value, field) in [
         (
             authorization.authorization_id_sha256.as_str(),
@@ -19792,7 +20239,6 @@ fn validate_relay_container_drain_source_authority_readback(
             authorization.execution_nonce_sha256.as_str(),
             "drain source authorization nonce",
         ),
-        (read_bookmark_sha256, "drain source authority read bookmark"),
     ] {
         validate_relay_container_sha256(value, field)?;
     }
@@ -19819,38 +20265,9 @@ fn validate_relay_container_drain_source_authority_readback(
         || authorization.authorizer_identity_sha256 == authorization.authorizer_spki_sha256
         || authorization.authorization_subject_sha256
             == authorization.authorization_signature_envelope_sha256
-        || attestations.len() != 2
     {
         return Err(worker::Error::RustError(
-            "relay container drain source authority readback is non-canonical".to_string(),
-        ));
-    }
-    let assembler = &attestations[0];
-    let verifier = &attestations[1];
-    validate_relay_container_drain_source_attestation_row(authorization, assembler, "assembler")?;
-    validate_relay_container_drain_source_attestation_row(authorization, verifier, "verifier")?;
-    if assembler.source_seal_id_sha256 != verifier.source_seal_id_sha256
-        || assembler.identity_sha256 == verifier.identity_sha256
-        || assembler.signer_spki_sha256 == verifier.signer_spki_sha256
-        || assembler.signature_envelope_sha256 == verifier.signature_envelope_sha256
-        || assembler.attested_at > verifier.attested_at
-        || assembler.accepted_bookmark_sha256 != verifier.accepted_bookmark_sha256
-        || assembler.accepted_set_manifest_sha256 != verifier.accepted_set_manifest_sha256
-        || assembler.accepted_source_schema_sha256 != verifier.accepted_source_schema_sha256
-        || assembler.accepted_source_readback_sha256 != verifier.accepted_source_readback_sha256
-        || assembler.page_count != verifier.page_count
-        || assembler.first_page_digest_sha256 != verifier.first_page_digest_sha256
-        || assembler.last_page_digest_sha256 != verifier.last_page_digest_sha256
-        || assembler.shard_set_manifest_sha256 != verifier.shard_set_manifest_sha256
-        || assembler.captured_high_watermark != verifier.captured_high_watermark
-        || assembler.captured_member_count != verifier.captured_member_count
-        || assembler.captured_first_sequence != verifier.captured_first_sequence
-        || assembler.captured_first_operation_id != verifier.captured_first_operation_id
-        || assembler.captured_last_sequence != verifier.captured_last_sequence
-        || assembler.captured_last_operation_id != verifier.captured_last_operation_id
-    {
-        return Err(worker::Error::RustError(
-            "relay container drain source attestations diverge".to_string(),
+            "relay container drain source authorization is non-canonical".to_string(),
         ));
     }
     Ok(())
@@ -41063,6 +41480,68 @@ mod tests {
         assert!(!readback.contains("INSERT INTO"));
         assert!(!readback.contains("UPDATE relay_container"));
         assert!(!readback.contains("DELETE FROM"));
+    }
+
+    #[test]
+    fn drain_source_registration_phase_snapshot_is_one_authoritative_read() {
+        let source = include_str!("d1_repositories.rs");
+        let snapshot_start = source
+            .find("pub(crate) async fn relay_container_drain_source_registration_phase_snapshot")
+            .unwrap();
+        let snapshot_end = source[snapshot_start..]
+            .find("pub async fn relay_container_drain_source_consumption_schema_ready")
+            .map(|offset| snapshot_start + offset)
+            .unwrap();
+        let snapshot = &source[snapshot_start..snapshot_end];
+
+        for fragment in [
+            "D1Session::first_primary(db)?",
+            "WITH latest_ledger AS",
+            "json_object(",
+            "FROM relay_container_drain_source_authorizations AS authorization",
+            "LEFT JOIN users AS root_user",
+            "root_user.id = ?2",
+            "root_user.id = authorization.authorized_by_admin_id",
+            "LEFT JOIN passkey_credentials AS passkey",
+            "LEFT JOIN relay_container_admission_scope_heads AS head",
+            "LEFT JOIN relay_container_admission_fences AS fence",
+            "FROM relay_container_drain_source_receipt_ledger",
+            "FROM relay_container_drain_source_registration_commands",
+            "FROM relay_container_drain_source_authorization_registrations",
+            "FROM relay_container_drain_source_authorization_claims",
+            "FROM relay_container_drain_source_terminal_receipts",
+            "FROM relay_container_drain_source_scans",
+            "unixepoch() AS database_now",
+            ".first::<RelayContainerDrainSourceRegistrationPhaseSnapshotQueryRow>",
+            "session.bookmark_sha256()?",
+            "validate_relay_container_drain_source_authorization_row",
+        ] {
+            assert!(
+                snapshot.contains(fragment),
+                "missing one-read 0074 phase snapshot boundary: {fragment}"
+            );
+        }
+        assert_eq!(
+            snapshot.matches(".prepare(").count(),
+            1,
+            "the phase snapshot must observe authority in one SQL statement"
+        );
+        assert_eq!(snapshot.matches(".first::<").count(), 1);
+        for forbidden in [
+            ".all()",
+            ".results::<",
+            ".batch(",
+            ".run().await",
+            "INSERT INTO",
+            "UPDATE relay_container",
+            "DELETE FROM",
+            "constraint_or_bookmark",
+        ] {
+            assert!(
+                !snapshot.contains(forbidden),
+                "phase snapshot crossed its read-only boundary: {forbidden}"
+            );
+        }
     }
 
     #[test]

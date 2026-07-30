@@ -419,8 +419,11 @@ At this checkpoint:
   cross-engine-stable 0074 SQL fingerprints, and three complete table PRAGMA
   fingerprints;
 - the typed command's focused Rust derivation tests pass;
-- the complete Worker Rust library passes 980 tests, including the private
-  0074 repository source-contract tests;
+- the complete Worker Rust library passes 986 tests, including the private
+  0074 repository and route-free coordinator source-contract tests;
+- two Bun SQLite coordinator tests prepare the exact phase query against
+  migrations 0001 through 0074 and project every authority component plus the
+  current terminal ledger head;
 - the isolated issuer aggregate passes 29 TypeScript protocol tests and 7
   Workerd runtime tests. Rust and TypeScript consume the same versioned
   39-request/49-subject fixed-vector canary manifest;
@@ -444,9 +447,25 @@ contracts. These are local implementation facts, not remote staging evidence.
 
 ### 0074-specific
 
-- Implement the private begin/finish coordinator with fresh Root, session,
-  credential, authorization, fence/head, and ledger rereads at every phase
-  boundary.
+- The route-free coordinator foundation is implemented and documented in
+  [`relay-container-drain-registration-coordinator.md`](relay-container-drain-registration-coordinator.md).
+  It uses one first-primary SQL statement per phase, validates fresh Root,
+  session, credential, authorization, fence/head, ledger, and consumption
+  state, and pins a semantic authority fingerprint across challenge, issuer,
+  and commit phases.
+- Wire that foundation only through a private, default-off begin/finish
+  protocol after the Service-Binding-only or named-entrypoint caller boundary
+  is frozen and tested. No coordinator route exists yet.
+- Add an Application-issued, short-lived Root session phase proof. Existing
+  Cookie claims do not themselves carry a coordinator-verifiable
+  `session_epoch`, and neither the Cookie nor `SESSION_SECRET` may cross the
+  Service Binding.
+- Use a dedicated persistent coordinator DO. The generic Passkey ceremony and
+  generic admin Passkey step-up paths cannot provide response-loss recovery
+  while preserving 0074's atomic Passkey consumption.
+- Add complete command/alias winner recovery before any
+  `OutcomeUnknown` retry, and bind an immutable issuer-auth HMAC key
+  ID/version without overloading the permit signing key ID.
 - Keep the isolated permit issuer storage-free, private, separately keyed,
   rate limited, and absent from production Application configuration.
 - Freeze the environment matrix. The disabled `local` issuer is currently a

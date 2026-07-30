@@ -940,8 +940,7 @@ fn derive_passkey_credential_bindings(
 
     let user_id_bytes = user_id.to_be_bytes();
     let created_at_bytes = created_at.to_be_bytes();
-    let credential_id_sha256 =
-        passkey_sha256_len_prefixed(PASSKEY_CREDENTIAL_ID_DIGEST_DOMAIN, &[credential_id]);
+    let credential_id_sha256 = passkey_credential_id_sha256(credential_id);
     let public_key_sha256 =
         passkey_sha256_len_prefixed(PASSKEY_PUBLIC_KEY_DIGEST_DOMAIN, &[public_key_cose]);
     let immutable_fields = [
@@ -982,6 +981,10 @@ fn passkey_sha256_len_prefixed(domain: &[u8], fields: &[&[u8]]) -> String {
         hasher.update(field);
     }
     format!("{:x}", hasher.finalize())
+}
+
+pub(crate) fn passkey_credential_id_sha256(credential_id: &[u8]) -> String {
+    passkey_sha256_len_prefixed(PASSKEY_CREDENTIAL_ID_DIGEST_DOMAIN, &[credential_id])
 }
 
 async fn put_challenge(
@@ -1087,7 +1090,7 @@ fn browser_credential_id(value: &str) -> Option<(Vec<u8>, String)> {
     Some((bytes, standard))
 }
 
-fn decode_stored_binary(value: &str, max_decoded_len: usize) -> Option<Vec<u8>> {
+pub(crate) fn decode_stored_passkey_binary(value: &str, max_decoded_len: usize) -> Option<Vec<u8>> {
     let value = value.trim();
     if value.is_empty() || value.len() > ((max_decoded_len + 2) / 3 * 4 + 2) {
         return None;
@@ -1113,10 +1116,11 @@ fn verify_assertion(
     stored: &PasskeyCredentialRow,
     raw_credential_id: &[u8],
 ) -> std::result::Result<VerifiedAssertion, Response> {
-    let stored_id = decode_stored_binary(&stored.credential_id, webauthn::MAX_CREDENTIAL_ID_BYTES)
-        .filter(|value| value.as_slice() == raw_credential_id)
-        .ok_or_else(|| envelope_error_response(401, "Passkey verification failed"))?;
-    let public_key = decode_stored_binary(&stored.public_key, webauthn::MAX_COSE_KEY_BYTES)
+    let stored_id =
+        decode_stored_passkey_binary(&stored.credential_id, webauthn::MAX_CREDENTIAL_ID_BYTES)
+            .filter(|value| value.as_slice() == raw_credential_id)
+            .ok_or_else(|| envelope_error_response(401, "Passkey verification failed"))?;
+    let public_key = decode_stored_passkey_binary(&stored.public_key, webauthn::MAX_COSE_KEY_BYTES)
         .ok_or_else(|| envelope_error_response(401, "Passkey verification failed"))?;
     let sign_count = u32::try_from(stored.sign_count)
         .map_err(|_| envelope_error_response(401, "Passkey verification failed"))?;

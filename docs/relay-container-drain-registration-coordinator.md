@@ -21,21 +21,29 @@ Implemented locally:
 - exact parent-proof chaining and derived phase-binding comparison;
 - exact frozen issuer-request and latest-D1-time verified-permit checks;
 - phase-specific opaque challenge, issuer, and commit outputs;
+- a dedicated SQLite-backed coordinator Durable Object foundation with
+  deterministic operation naming, canonical private HMAC requests, atomic
+  state/replay/event writes, response-loss replay, alarms, and recovery;
 - production rejection;
 - route-free typed output for the later WebAuthn and command layers; and
 - SQLite-schema, projection, and Rust drift-matrix tests.
 
 Not implemented or enabled:
 
-- no HTTP or RPC begin/finish entrypoint;
+- no Application-facing HTTP or RPC begin/finish entrypoint;
 - no Application-to-issuer Service Binding;
-- no Access policy or private-caller proof;
+- no deployed Access policy or Service-Binding-only caller;
 - no coordinator enable flag;
 - no remote D1 read or write;
 - no issuer call;
 - no 0074 command call from a route;
 - no local, staging, or production deployment change; and
 - no traffic, DNS, source collection, or Go/VPS authority change.
+
+The DO fetch protocol is implemented only for isolated Workerd. Its namespace
+binding and fake current/previous caller keys are absent from every tracked
+Wrangler deployment configuration. See
+[`relay-container-drain-registration-coordinator-do.md`](relay-container-drain-registration-coordinator-do.md).
 
 Go/VPS remains authoritative and production remains **NO-GO**.
 
@@ -328,8 +336,8 @@ only an expired/consumed result. The generic admin Passkey finish path also
 updates Passkey state before writing a KV step-up marker, which would violate
 0074's five-effect atomic consumption.
 
-0074 therefore requires a dedicated coordinator Durable Object with a
-persistent SQLite state machine:
+The local foundation now implements the dedicated coordinator Durable Object
+with a persistent SQLite-backed state machine:
 
 ```text
 Empty
@@ -342,28 +350,40 @@ Empty
   -> Applied | ExactReplay | Conflict | RecoveryPending
 ```
 
-`RecoveryPending` may advance only through authoritative command and alias
-winner readback. It may never reopen the challenge, call the issuer again, or
-blindly replay the 0074 insert.
+`RecoveryPending` may advance only through an authenticated, command-bound
+terminal classification. The deployed caller still must derive that
+classification through authoritative command and alias winner readback. It
+may never reopen the challenge, call the issuer again, or blindly replay the
+0074 insert.
 
 Required behavior:
 
 - deterministic, versioned naming from environment, Root, global scope, and
   operation identity, never fixed modulo pools or one global Root object;
-- begin creates `ChallengeIssued` once;
+- begin creates `ChallengeIssued` once through an expected-generation-zero
+  transaction;
 - finish persists `FinishClaimed` before parsing or verifying the assertion;
 - every failed finish burns the assertion opportunity;
 - proof, frozen issuer request, verified permit, and commit attempt each
   become durable before the next external await;
-- response-loss retries return persisted terminal evidence;
+- response-loss retries return persisted phase or terminal evidence through an
+  exact path/request/body replay index;
 - expiration is bounded by action, session, and authorization lifetime;
 - raw Cookie, token, IP, assertion, private credential, and issuer secret are
   never retained; and
-- Durable Object state never advances D1 authority.
+- Durable Object state never advances D1 authority;
+- every transition appends a domain-separated event-chain record; and
+- a deadline before commit expires the operation, while a deadline after
+  `CommitAttempted` enters recovery instead of claiming expiry.
 
 ## Private transport requirements
 
-Before any route is added, the Application caller boundary must prove:
+The local DO now freezes an independent current/previous HMAC envelope over
+caller identity, method, path, deterministic object name, request ID, exact
+body digest, issuer/audience, and a 30-second time window. This is defense in
+depth, not a substitute for the still-required private caller boundary.
+
+Before any Application route is added, that caller boundary must prove:
 
 - a private Service Binding or named entrypoint that cannot be reached by the
   public router;
@@ -397,7 +417,7 @@ permit minting, and secret-access methods are forbidden.
 
 | Environment | Coordinator | Permit issuer | 0074 write |
 |---|---|---|---|
-| local | Route absent; pure tests only | Disabled build/test surface | Disabled |
+| local | Public route absent; isolated SQLite Workerd binding only | Disabled build/test surface | Disabled |
 | isolated staging | Future default-off private entrypoint | Future private Service Binding | Future explicit fault campaign only |
 | production | Absent | Absent | Disabled |
 
@@ -433,12 +453,23 @@ Local implemented coverage includes:
   challenge with a different otherwise-valid action intent;
 - exact frozen issuer-request and permit mismatch/expiry negatives; and
 - command assembly through only the opaque validated commit.
+- coordinator object-name and event-genesis fixed vectors;
+- 32-way equivalent begin concurrency and divergent request conflict;
+- exact request replay, current/previous HMAC keys, canonical JSON, time,
+  object, media-type, and body-limit failures;
+- all durable phases, discarded response-body replay, two explicit object
+  evictions, alarm expiry, uncertain-commit recovery, and eight-event terminal
+  closure;
+- structured fail-closed handling for corrupt durable state and staging-only
+  Worker Secret loading with local test-variable fallback;
+- source/config proof that deployment Wrangler files have no coordinator
+  binding, class migration, authority variables, or public route; and
+- the complete existing 60-test Workerd Durable Object lifecycle regression.
 
 Still required before staging enablement:
 
 - Application issuance wiring and private transport key provisioning for the
   implemented `RootSessionPhaseProofV1` protocol;
-- dedicated recoverable coordinator DO and its persistent transition log;
 - full winner recovery by command ID and every stable 0074 alias;
 - immutable issuer-auth HMAC key ID/version evidence, likely through an
   additive migration rather than overloading the permit signing key ID;
@@ -463,20 +494,19 @@ Still required before staging enablement:
 The next code increment is not a public route and not a production gate. It
 must:
 
-1. freeze the private caller protocol;
+1. create the route-free coordinator Worker and freeze its Service Binding or
+   named-entrypoint caller boundary;
 2. wire the implemented Application-issued Root session phase proof only
    behind that private boundary;
-3. implement the dedicated durable coordinator state machine and alias-winner
-   recovery without any public route;
-4. choose and test the Service-Binding-only or named-entrypoint boundary;
-5. add default-off staging configuration while keeping production authority
+3. implement full alias-winner recovery without any public route;
+4. add default-off staging configuration while keeping production authority
    absent;
-6. wire begin to the first phase snapshot and durable `ChallengeIssued`;
-7. wire finish through durable claim, WebAuthn verification, issuer reread/call,
+5. wire begin to the first phase snapshot and durable `ChallengeIssued`;
+6. wire finish through durable claim, WebAuthn verification, issuer reread/call,
    final reread, and 0074 command;
-8. preserve the four-state
+7. preserve the four-state
    `FreshApplied`/`ExactReplay`/`Conflict`/`OutcomeUnknown` result model; and
-9. add a version-controlled isolated-staging 0075/0076
+8. add a version-controlled isolated-staging 0075/0076
     backup/apply/readback/fault campaign before any remote mutation is
     attempted.
 

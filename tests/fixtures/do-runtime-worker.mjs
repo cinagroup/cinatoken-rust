@@ -1,4 +1,5 @@
 import {
+  DrainSourceRegistrationCoordinator,
   PasskeyCeremony,
   QuotaCoordinator,
   RealtimeSession,
@@ -8,6 +9,7 @@ import {
 import WorkerEntrypoint from "../../crates/worker/build/index.js";
 
 export {
+  DrainSourceRegistrationCoordinator,
   PasskeyCeremony,
   QuotaCoordinator,
   RealtimeSession,

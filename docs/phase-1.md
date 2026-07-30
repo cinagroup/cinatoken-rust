@@ -4990,7 +4990,9 @@ also fixes Passkey credential-ID validation to reuse the persisted
 domain-separated, length-prefixed digest instead of plain SHA-256. Its focused
 contract is
 [`relay-container-drain-registration-coordinator.md`](relay-container-drain-registration-coordinator.md).
-No begin/finish route or issuer Service Binding exists.
+No Application begin/finish route or issuer Service Binding exists. The
+dedicated journal DO now exists only behind an isolated Workerd binding; no
+tracked deployment configuration binds it.
 
 Private transport wiring, isolated-staging apply and fault campaigns,
 credential/trust rotation, network-HMAC key provisioning/rotation and
@@ -5001,10 +5003,9 @@ The Application-issued Root session phase proof is now implemented and frozen
 as a route-free Rust protocol with an independent Bun/WebCrypto fixed vector.
 Rust Cookies carry the exact D1 revocation generation plus a random per-issue
 `sid`; legacy cookies fail closed. The remaining immediate blockers are
-Application/private-transport wiring, a dedicated response-loss-recoverable
-coordinator DO, complete command/alias winner recovery, and an immutable
-issuer-auth HMAC key ID/version. The public `/internal/*` router and generic
-Passkey step-up path are explicitly ineligible. See
+Application/private-transport wiring, complete command/alias winner recovery,
+and an immutable issuer-auth HMAC key ID/version. The public `/internal/*`
+router and generic Passkey step-up path are explicitly ineligible. See
 [`root-session-phase-proof-v1.md`](root-session-phase-proof-v1.md).
 The signed chain still needs an immutable non-secret network-HMAC key
 ID/version, and the disabled local issuer remains build/test-only while the
@@ -5071,7 +5072,74 @@ latest-D1-time validity are rechecked, and command assembly accepts only
 constructor is unavailable.
 
 This closes the local proof-format, typed-subject, commit-consumption, and
-schema exact-generation foundations only. Replay consumption, response-loss
-recovery, private transport authentication, secret provisioning, remote
-0075/0076 D1 apply/readback/`5/0`, fault campaigns, and production approvals
-remain open. Go/VPS remains authoritative and production remains **NO-GO**.
+schema exact-generation foundations only. Private transport integration,
+authoritative command/alias response-loss recovery, secret provisioning,
+remote 0075/0076 D1 apply/readback/`5/0`, fault campaigns, and production
+approvals remain open. Go/VPS remains authoritative and production remains
+**NO-GO**.
+
+## 2026-07-31 Recoverable Registration Coordinator DO Checkpoint
+
+The dedicated drain-source registration coordinator Durable Object is now a
+local, route-free Rust foundation. Its namespace exists only in
+`vitest.do.config.mjs` with `useSQLite=true`; default, staging, production,
+service, and crate Wrangler configurations contain no binding, class
+migration, caller authority variable, route, or key.
+
+The private V1 adapter accepts only canonical, bounded JSON `POST` requests
+for `begin`, phased `finish`, `status`, and `recover`. An independent
+current/previous HMAC key ring binds issuer, audience, caller identity, exact
+method/path, deterministic object name, request ID, exact body digest, and a
+maximum 30-second authority window. Signature verification precedes claims
+deserialization. Production is rejected structurally because no namespace or
+authority configuration exists.
+
+One deterministic object is derived from environment, Root ID, global scope,
+and operation identity with explicit `u32be` length prefixes. Every request
+recomputes the name and namespace ID. A changed authorization for the same
+operation conflicts with retained state instead of creating parallel
+authority.
+
+The persisted state advances monotonically:
+
+```text
+ChallengeIssued
+  -> FinishClaimed
+  -> ProofVerified
+  -> PermitRequestFrozen
+  -> PermitVerified
+  -> CommitAttempted
+  -> Applied | ExactReplay | Conflict | RecoveryPending
+  -> RecoveryPending -> Applied | ExactReplay | Conflict
+```
+
+Each retriable storage transaction atomically appends one hash-chain event,
+updates current state, and writes an exact path/request/body replay index.
+Exact replay performs no mutation; reused request ID with a changed body or
+path conflicts. Claim evidence is durable before later assertion parsing,
+and only digests of assertion, proof, issuer request, permit, command, and
+readback evidence are retained.
+
+Deadline handling is fail closed. Before commit, the alarm appends terminal
+`Expired`. After `CommitAttempted`, the same deadline appends
+`RecoveryPending`, because D1 may already have committed. Recovery accepts no
+`OutcomeUnknown` and cannot reopen the challenge, reissue a permit, or retry
+0074. The future private caller must first classify the command ID and every
+stable alias through authoritative same-Session D1 readback.
+
+Focused evidence passes:
+
+- 4 Rust state-machine and fixed-vector tests;
+- 5 independent Workerd tests covering 32-way begin concurrency, HMAC
+  rotation, discarded response-body replay, alarms, two object evictions,
+  full eight-generation recovery, and corrupt-state fail-closed handling;
+- 4 source/config audit tests with 96 assertions; and
+- the aggregate 60-test Workerd Durable Object lifecycle suite.
+
+See
+[`relay-container-drain-registration-coordinator-do.md`](relay-container-drain-registration-coordinator-do.md).
+Next P0 is the separate route-free coordinator Worker and Service Binding,
+Application phase-proof issuance, live WebAuthn/issuer/0074 orchestration, and
+complete alias winner recovery. No Cloudflare resource, credential, remote
+mutation, deployment, traffic, DNS, or Go/VPS state changed. Production
+remains **NO-GO**.

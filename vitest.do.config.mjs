@@ -7,6 +7,10 @@ import { defineConfig } from "vitest/config";
 const authoritySecret = "0123456789abcdef0123456789abcdef";
 const dispatchConsumptionHistorySecret =
   "history-read-runtime-secret-0123456789abcdef";
+const registrationCoordinatorCurrentSecret =
+  "registration-coordinator-current-runtime-secret-v1";
+const registrationCoordinatorPreviousSecret =
+  "registration-coordinator-previous-runtime-secret-v0";
 const authorityWorker = "tenant-runtime-test";
 const accountId = "0123456789abcdef0123456789abcdef";
 const compiledWasmModules = [
@@ -61,6 +65,21 @@ export default defineConfig({
           CONTAINER_SCHEDULER_SHARD_COUNT: "8",
           CONTAINER_SCHEDULER_ENABLED: "false",
           CONTAINER_SCHEDULER_STAGING_VERIFIED: "false",
+          DRAIN_SOURCE_REGISTRATION_COORDINATOR_ENVIRONMENT: "local",
+          DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER:
+            "cinatoken-application-runtime-test",
+          DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_AUDIENCE:
+            "drain-source-registration-coordinator-runtime-test",
+          DRAIN_SOURCE_REGISTRATION_COORDINATOR_CALLER_IDENTITY_SHA256:
+            "7a".repeat(32),
+          DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_KID:
+            "registration-coordinator-runtime-v1",
+          DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_SECRET:
+            registrationCoordinatorCurrentSecret,
+          DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_PREVIOUS_KID:
+            "registration-coordinator-runtime-v0",
+          DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_PREVIOUS_SECRET:
+            registrationCoordinatorPreviousSecret,
           CONTAINER_RECONCILIATION_RETRY_APPLY_ENABLED: "true",
           CONTAINER_TERMINAL_OUTBOX_ENABLED: "true",
           CONTAINER_TERMINAL_OUTBOX_STAGING_VERIFIED: "true",
@@ -147,6 +166,10 @@ export default defineConfig({
           CONTAINER_CONTROLLER: "container-terminal-ack-mock",
         },
         durableObjects: {
+          DRAIN_SOURCE_REGISTRATION_COORDINATORS: {
+            className: "DrainSourceRegistrationCoordinator",
+            useSQLite: true,
+          },
           PASSKEY_CEREMONIES: {
             className: "PasskeyCeremony",
             useSQLite: true,
@@ -320,6 +343,11 @@ export default defineConfig({
     }),
   ],
   test: {
-    include: ["tests/do-lifecycle-runtime.test.mjs"],
+    // These suites intentionally crash and evict actors, so isolate their files.
+    fileParallelism: false,
+    include: [
+      "tests/do-lifecycle-runtime.test.mjs",
+      "tests/drain-source-registration-coordinator-do-runtime.test.mjs",
+    ],
   },
 });

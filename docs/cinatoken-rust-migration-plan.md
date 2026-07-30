@@ -26337,7 +26337,7 @@ The 43-test real-Workerd suite, aggregate SQLite verifier, focused Rust
 registration-chain tests, and contiguous migration-head audit pass.
 The isolated issuer additionally passes 29 TypeScript tests and 7 Workerd
 tests against the same versioned 39-request/49-subject fixed-vector manifest
-consumed by Rust. The complete Worker Rust library passes 991 tests. Two Bun
+consumed by Rust. The complete Worker Rust library passes 995 tests. Two Bun
 SQLite coordinator tests prepare the exact phase query through migration 0076
 and project every authority component plus the current terminal ledger head.
 The repository-root `bun run check` aggregate also passes the Worker builds,
@@ -26377,10 +26377,10 @@ The Application-issued short-lived Root session phase proof is now a frozen
 route-free protocol, and Rust Cookies now carry an exact D1 revocation
 generation plus random per-issue `sid`. The next route-free boundary must
 close the remaining P0/P1 gaps: Application/private-transport proof wiring, a
-dedicated persistent coordinator DO because the generic Passkey take cannot
-recover a lost finish response, and full winner recovery by command ID plus
-every stable alias before any unknown-outcome retry. The public main Worker's
-`/internal/*` router is not a private transport boundary.
+route-free caller around the now-implemented persistent coordinator DO, and
+full winner recovery by command ID plus every stable alias before any
+unknown-outcome retry. The public main Worker's `/internal/*` router is not a
+private transport boundary.
 The disabled local issuer is a build/test surface only while the Application
 verifier remains staging-only. The repository also still lacks a
 version-controlled, read-only-by-default 0074 remote
@@ -26489,7 +26489,6 @@ complete staging packet is approved.
 - the typed begin intent, phase-specific canonical subjects, action-match
   check, and opaque commit boundary are closed locally, but they are not yet
   exercised through a private deployed caller;
-- no dedicated replay/state coordinator DO;
 - no Application issue path or private transport;
 - no current/previous staging secret lifecycle evidence;
 - password changes/resets, role changes, disable, and soft delete now mutate
@@ -26506,3 +26505,90 @@ This increment changes local protocol, session, schema, and verification
 contracts only. It does not create a Cloudflare resource, route, credential,
 deployment, runtime gate, traffic shift, or Go/VPS state change. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+### Recoverable registration coordinator DO overlay (2026-07-31)
+
+Promotion step 2 now has a local implementation candidate. The Rust Worker
+exports `DrainSourceRegistrationCoordinator`, but only the isolated Workerd
+configuration binds it. Every tracked Wrangler TOML/JSONC file remains free
+of its namespace, class migration, authority variables, route, and key. This
+preserves the ordered rollout rule: implementation evidence precedes private
+transport and staging provisioning, and cannot accidentally enable either.
+
+The coordinator uses one deterministic SQLite-backed Durable Object per
+environment/Root/global-scope/operation identity. Object names are
+domain-separated SHA-256 values with explicit `u32be` framing; raw Cookie,
+session ID, username, network address, assertion, credential material, and
+secrets never enter the name.
+
+The frozen local caller protocol has four capabilities:
+
+| Capability | Durable effect |
+|---|---|
+| `begin` | create `ChallengeIssued` at expected generation zero |
+| phased `finish` | claim assertion, persist proof, freeze issuer request, persist permit, record commit attempt and immediate outcome |
+| `status` | redacted current/terminal readback with no mutation except overdue deadline closure |
+| `recover` | convert only `RecoveryPending` to a D1-readback-derived terminal classification |
+
+Every request is exact canonical JSON, streamed to a 16 KiB maximum, and
+authenticated by a dedicated current/previous HMAC key ring. The signed
+claims bind caller identity, issuer/audience, method, path, deterministic
+object name, request ID, exact body SHA-256, and a 30-second maximum time
+window. This is defense in depth for the future Service Binding, not a claim
+that an ordinary main-Worker route is private.
+
+The monotonic journal persists only digest evidence across:
+
+```text
+ChallengeIssued
+  -> FinishClaimed
+  -> ProofVerified
+  -> PermitRequestFrozen
+  -> PermitVerified
+  -> CommitAttempted
+  -> Applied | ExactReplay | Conflict | RecoveryPending
+  -> RecoveryPending -> Applied | ExactReplay | Conflict
+```
+
+One retriable DO transaction writes current state, one immutable hash-chain
+event, and one path/request/body replay index. An exact replay returns the
+persisted phase without a write. A reused request ID with changed bytes or
+path, stale generation, phase skip, changed identity, changed command, or
+invalid winner conflicts.
+
+Alarm semantics preserve uncertainty:
+
+- deadline before commit -> terminal `Expired`;
+- deadline after `CommitAttempted` -> `RecoveryPending`;
+- terminal/pending state -> alarm deleted, evidence retained; and
+- delayed alarm -> status applies the same monotonic closure.
+
+Thus a lost response after a command attempt can never be mistaken for an
+unused ceremony. `recover` still requires the future caller to perform exact
+same-Session D1 command and all-alias winner readback; the DO does not itself
+make a winner authoritative and exposes no blind retry.
+
+Local evidence now includes Rust fixed vectors and full state transitions,
+independent Bun/WebCrypto naming/HMAC issuance, 32-way concurrent begin,
+current/previous key rotation, canonical/body/time/object negatives, discarded
+response-body replay, alarm expiry, uncertain-commit recovery, two process
+evictions, atomic event/replay counts, corrupt-state fail-closed handling, and
+the complete 60-test existing Workerd DO regression. A separate 96-assertion
+source/config audit enforces deployment absence and staging-only Worker Secret
+loading with local test-variable fallback.
+
+The next ordered boundary is now:
+
+1. add the separate route-free coordinator Worker;
+2. prove Service-Binding-only or named-entrypoint reachability;
+3. wire Application `RootSessionPhaseProofV1` issuance after fresh D1 checks;
+4. orchestrate durable claim, WebAuthn, permit issuer, final reread, and 0074;
+5. implement command-ID plus every stable alias recovery;
+6. add default-off isolated-staging binding/key lifecycle and remote fault
+   evidence; and
+7. retain production absence until the complete approval packet passes.
+
+The focused contract is
+[`relay-container-drain-registration-coordinator-do.md`](relay-container-drain-registration-coordinator-do.md).
+No remote action occurred. Go/VPS remains authoritative and production
+remains **NO-GO**.

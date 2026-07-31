@@ -5143,3 +5143,63 @@ Application phase-proof issuance, live WebAuthn/issuer/0074 orchestration, and
 complete alias winner recovery. No Cloudflare resource, credential, remote
 mutation, deployment, traffic, DNS, or Go/VPS state changed. Production
 remains **NO-GO**.
+
+## 2026-07-31 Private Registration Coordinator Worker Checkpoint
+
+The prior route-free Durable Object candidate now has a dedicated deployment
+unit and a private transport boundary. Its Rust implementation moved into the
+minimal `cinatoken-drain-source-registration-coordinator` cdylib/rlib crate;
+the main Rust Worker re-exports the class only to preserve the established
+aggregate DO lifecycle harness. The target Worker imports that minimal build,
+not the full Application Wasm bundle.
+
+`services/drain-source-registration-coordinator` now owns:
+
+- one default-off local Worker configuration;
+- one default-off staging-shaped Worker configuration;
+- `workers_dev=false`, `preview_urls=false`, and no route in both;
+- exactly one SQLite Durable Object namespace and one
+  `new_sqlite_classes` migration;
+- no D1, KV, R2, Queue, AI, Container, asset, downstream service, or public
+  trigger capability; and
+- no tracked current or previous HMAC secret value.
+
+The Application Wrangler matrix declares
+`DRAIN_SOURCE_REGISTRATION_COORDINATOR` only for local and staging. Production
+contains neither that Service Binding nor coordinator variables. The binding
+is deliberately not consumed by Application code yet, so this increment
+cannot begin a browser ceremony or mutate D1.
+
+The private adapter accepts only exact `POST /v1/begin|finish|status|recover`
+without a query and rejects Authorization, Cookie, Origin, and
+Content-Encoding. Before `getByName`, it caps and canonicalizes the exact
+body, verifies the current/previous HMAC, caller, audience, request/body/path
+bindings and time window, and derives the object name from typed body
+identity. The object independently repeats authentication and checks the
+namespace ID against `state.id()`.
+
+Local evidence now proves:
+
+- seven adapter unit tests for default-off, route/media/body/header rejection,
+  current/previous HMAC, pre-lookup authentication, exact-byte forwarding,
+  and unavailable namespace behavior;
+- three multi-Worker Workerd tests for real Service Binding execution, a
+  fresh SQLite write, exact replay, object/body mismatch, and route rejection;
+- eight source/config tests with 207 assertions for the exact capability,
+  secret, local/staging, and production-absence matrices; and
+- successful local and staging Wrangler dry runs of a roughly 725 KiB upload
+  bundle, roughly 266 KiB gzip; and
+- the complete repository `bun run check`, including 991 main Worker tests,
+  all remaining workspace tests, Workerd suites, frontend gates, Wrangler
+  dry runs, and required wasm32 checks.
+
+No Cloudflare resource, Durable Object migration, secret, Worker version,
+route, traffic, DNS, or Go/VPS state changed. The staging files are a
+reviewable candidate only. Go/VPS remains authoritative and production
+remains **NO-GO**.
+
+Next P0 is an Application-owned private client plus one-shot ceremony state.
+Application must retain Cookie/session validation, raw WebAuthn assertion and
+public key, phase-proof signing, issuer credentials, fresh first-primary D1
+snapshots, 0074 execution, and same-Session command/all-alias winner readback.
+None of those values or capabilities may move into the coordinator Worker.

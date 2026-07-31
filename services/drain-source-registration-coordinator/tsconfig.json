@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "lib": ["ESNext"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "types": ["./worker-configuration.d.ts"]
+  },
+  "include": [
+    "src/**/*.d.ts",
+    "src/**/*.mjs",
+    "tests/**/*.ts",
+    "worker-configuration.d.ts"
+  ]
+}

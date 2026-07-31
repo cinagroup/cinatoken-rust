@@ -361,6 +361,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cinatoken-drain-source-registration-coordinator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "futures-util",
+ "hmac",
+ "js-sys",
+ "serde",
+ "serde-wasm-bindgen 0.6.5",
+ "serde_json",
+ "sha2",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "worker",
+]
+
+[[package]]
 name = "cinatoken-gateway"
 version = "0.1.0"
 
@@ -576,6 +594,7 @@ dependencies = [
  "cinatoken-container-authority",
  "cinatoken-coordinator",
  "cinatoken-core",
+ "cinatoken-drain-source-registration-coordinator",
  "cinatoken-gateway",
  "cinatoken-payments",
  "cinatoken-providers",

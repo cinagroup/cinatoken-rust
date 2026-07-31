@@ -26592,3 +26592,118 @@ The focused contract is
 [`relay-container-drain-registration-coordinator-do.md`](relay-container-drain-registration-coordinator-do.md).
 No remote action occurred. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+### Private coordinator Worker and Service Binding overlay (2026-07-31)
+
+Promotion step 4 now has a local implementation candidate. This supersedes
+the previous overlay's deployment-absence description without changing the
+remote or production decision.
+
+The coordinator Durable Object has moved into the dedicated
+`cinatoken-drain-source-registration-coordinator` Rust crate. The main Worker
+re-exports it only for the existing aggregate DO harness; the deployable
+coordinator Worker imports the minimal coordinator artifact rather than the
+full Application bundle. This keeps independent release ownership and avoids
+granting the target Application routes, D1, KV, R2, Queue, AI, Container,
+asset, or downstream-service capabilities.
+
+The target matrix is:
+
+| Scope | Target config | Public reachability | Enabled | Application binding | Remote state |
+|---|---|---|---|---|---|
+| local | tracked | none | false | present | local evidence only |
+| staging candidate | tracked | none | false | present | not deployed; no secret or migration applied |
+| production | absent | none | n/a | absent | unchanged |
+
+Both tracked target configs require `workers_dev=false`,
+`preview_urls=false`, no route, one SQLite namespace, and one V1
+`new_sqlite_classes` migration. HMAC current/previous secret values are not
+tracked. The target must be deployed before a staging Application version
+that declares its Service Binding; until then the staging files are a
+reviewable candidate, not deployability evidence.
+
+The internal HTTP adapter has four exact POST capabilities and rejects query
+strings plus Authorization, Cookie, Origin, and Content-Encoding. Before
+object selection, it streams and caps the exact body, requires canonical JSON,
+verifies the current/previous HMAC plus caller/audience/request/body/path/time
+bindings, and derives the object name from typed body identity. The Durable
+Object independently repeats those checks, derives the namespace ID, and
+compares it with `state.id()` before state access.
+
+A multi-Worker Workerd topology now proves:
+
+```text
+test Application caller
+  -> DRAIN_SOURCE_REGISTRATION_COORDINATOR Service Binding
+  -> route-free coordinator Worker
+  -> named SQLite Durable Object
+  -> fresh write / exact replay / fail-closed mismatch
+```
+
+This closes only private reachability and ownership locally. The Application
+does not yet consume its binding. It still must own all browser and global
+authority:
+
+- Cookie/session verification and fresh exact Root/session D1 snapshots;
+- CSRF, fixed Origin/RPID, rate limiting, and one-shot ceremony state;
+- raw WebAuthn assertion, credential public key, UV verification, and counter
+  transition;
+- `RootSessionPhaseProofV1` signing and parent-chain validation;
+- permit-issuer credentials and bounded request/response handling;
+- one 0074 command execution; and
+- same first-primary D1 Session command-ID plus all-stable-alias winner
+  readback before recovery.
+
+These values must not cross the coordinator binding: Cookie, raw `sid`,
+session secret, username, network identity, raw assertion, credential public
+key, issuer private/auth material, D1 handle/bookmark, and unredacted winner
+rows.
+
+The source-architecture cross-check freezes what may and may not be carried
+forward:
+
+| Source behavior | Migration decision | Production consequence |
+|---|---|---|
+| Go Application owns Cookie/session, Root authorization, Passkey ceremonies, relay selection, and billing inputs | preserve the authority boundary, but replace stale session snapshots with fresh D1 checks | coordinator receives only typed digests and phase evidence; Application remains the only browser-facing orchestrator |
+| Go drain-source registration handler | none exists at the audited source HEAD | no compatibility claim may be based on an invented Go endpoint; the Rust protocol must be approved as a new security boundary |
+| Go in-memory billing session and asynchronous refund | do not migrate | settlement requires a durable request ledger, conditional quota mutation, outbox, and reconciliation |
+| Go billing expression contract | preserve compile/smoke-test, frozen input snapshot, normalized actual usage, and one final half-away rounding | implementation work must continue to follow `C:\cinagroup\cinatoken\pkg\billingexpr\expr.md`; the Go save-time validation gap is not compatibility |
+| Go process-local caches, goroutines, filesystem data, and startup migration | replace by bounded request work, D1, Durable Object alarms, Queues/Cron, R2, and explicit deployment migrations | no correctness or recovery invariant may depend on one warm isolate or local disk |
+| cinaVibeSDK deterministic per-entity Durable Objects, SQLite state, private bindings, and environment isolation | reuse the architecture pattern | one deterministic registration operation maps to one coordinator DO in one environment |
+| cinaVibeSDK modulo container pool, in-process retry, public preview/dynamic worker surfaces, SSH, and fail-open limits | reject for this boundary | no pool remapping, unbounded retry, public route, dynamic code capability, or fail-open security decision enters the coordinator |
+
+The Go audit also freezes relay parity requirements outside this increment:
+group/priority/weight/affinity selection, mapping only after channel choice,
+specific-channel no-retry behavior, complete request-body replay, and
+frozen-snapshot billing settlement. Cache and database channel-selection
+paths in Go are not fully equivalent, so production parity fixtures must
+select and document one exact Rust policy rather than declaring both
+compatible.
+
+The updated strict promotion order is:
+
+1. implement the Application private client and versioned one-shot ceremony
+   state with no public route;
+2. issue the before-challenge proof only after a fresh first-primary Root,
+   session, credential, authorization, fence, head, and ledger snapshot;
+3. persist `ChallengeIssued`, then expose a browser begin response through the
+   reviewed CSRF/Origin/rate-limit boundary;
+4. persist `FinishClaimed` before parsing assertion bytes, then verify
+   mandatory-UV WebAuthn and persist proof evidence;
+5. freeze and call the permit issuer, reread D1, persist permit and commit
+   attempt, and execute 0074 once;
+6. classify command ID and every stable alias in the same D1 Session before
+   recording immediate or recovered outcome;
+7. provision and rotate staging secrets, deploy target first and caller
+   second with every mutation gate false;
+8. run remote concurrency, revocation, timeout, response/process-loss,
+   eviction/alarm, N/N-1, load/cost/SLO/alert, redaction, retention, and
+   rollback campaigns; and
+9. retain production absence until the complete independent approval packet
+   passes.
+
+Local unit, multi-Worker runtime, config matrix, Rust, Wasm, and local/staging
+Wrangler dry-run evidence is required in CI. It is not a substitute for
+staging migration application, secret readback, deployment version readback,
+or fault-campaign evidence. No Cloudflare remote action occurred. Go/VPS
+remains authoritative and production remains **NO-GO**.

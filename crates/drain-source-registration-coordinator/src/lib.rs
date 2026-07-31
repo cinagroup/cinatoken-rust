@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
 //! Route-free durable journal for drain-source registration.
 //!
-//! The class is intentionally absent from tracked Wrangler bindings. It is
-//! exercised through an isolated Workerd binding until the private caller,
-//! Service Binding, D1 winner readback, and staging key lifecycle are ready.
+//! The class is owned by the dedicated coordinator Worker and is reachable
+//! only through an explicit Service Binding. Application orchestration, D1
+//! winner readback, and secret lifecycle remain outside this crate.
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use futures_util::StreamExt;

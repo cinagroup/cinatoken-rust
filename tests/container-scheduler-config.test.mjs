@@ -143,6 +143,11 @@ describe("container scheduler Wrangler foundation", () => {
           binding: "SHARD_PLACEMENT_AUTHORITY",
           service: `cinatoken-shard-placement-authority-${authorityEnvironment}`,
         });
+        expectedServices.push({
+          binding: "DRAIN_SOURCE_REGISTRATION_COORDINATOR",
+          service:
+            `cinatoken-drain-source-registration-coordinator-${authorityEnvironment}`,
+        });
         expect(
           vars.RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_ENABLED,
         ).toBe("false");

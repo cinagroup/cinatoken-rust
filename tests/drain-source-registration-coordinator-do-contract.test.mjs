@@ -6,9 +6,32 @@ import {
 import { describe, expect, it } from "bun:test";
 
 const sourcePath =
-  "crates/worker/src/container_drain_source_registration_coordinator_do.rs";
+  "crates/drain-source-registration-coordinator/src/lib.rs";
 const source = readFileSync(sourcePath, "utf8");
 const workerEntrypoint = readFileSync("crates/worker/src/lib.rs", "utf8");
+const serviceSource = readFileSync(
+  "services/drain-source-registration-coordinator/src/index.mjs",
+  "utf8",
+);
+const serviceAdapterSource = readFileSync(
+  "services/drain-source-registration-coordinator/src/adapter.mjs",
+  "utf8",
+);
+const localServiceConfig = JSON.parse(
+  readFileSync(
+    "services/drain-source-registration-coordinator/wrangler.jsonc",
+    "utf8",
+  ),
+);
+const stagingServiceConfig = JSON.parse(
+  readFileSync(
+    "services/drain-source-registration-coordinator/wrangler.staging.jsonc",
+    "utf8",
+  ),
+);
+const applicationConfig = Bun.TOML.parse(
+  readFileSync("wrangler.toml", "utf8"),
+);
 const runtimeFixture = readFileSync(
   "tests/fixtures/do-runtime-worker.mjs",
   "utf8",
@@ -17,31 +40,141 @@ const runtimeConfig = readFileSync("vitest.do.config.mjs", "utf8");
 
 const binding = "DRAIN_SOURCE_REGISTRATION_COORDINATORS";
 const className = "DrainSourceRegistrationCoordinator";
-const authorityPrefix = "DRAIN_SOURCE_REGISTRATION_COORDINATOR_";
 
 describe("drain-source registration coordinator DO source contract", () => {
-  it("is exported only through the isolated SQLite Workerd binding", () => {
+  it("is hosted by an isolated route-free Worker and remains compatible with the DO test harness", () => {
     expect(workerEntrypoint).toContain(
-      "mod container_drain_source_registration_coordinator_do;",
+      "pub use cinatoken_drain_source_registration_coordinator::DrainSourceRegistrationCoordinator;",
     );
     expect(runtimeFixture).toContain(className);
     expect(runtimeConfig).toContain(`${binding}: {`);
     expect(runtimeConfig).toContain(`className: "${className}"`);
     expect(runtimeConfig).toContain("useSQLite: true");
+    expect(serviceSource).toContain(
+      "../../../crates/drain-source-registration-coordinator/build/index.js",
+    );
+    expect(serviceSource).not.toContain("../../../crates/worker/build/index.js");
+    expect(serviceAdapterSource).toContain("return await stub.fetch(");
+    expect(serviceAdapterSource).toContain("async function verifyAuthority(");
+    expect(serviceAdapterSource).toContain("async function verifyHmac(");
+    expect(serviceAdapterSource).toContain(
+      "async function coordinatorObjectName(",
+    );
+    expect(serviceAdapterSource).toContain("const MAX_BODY_BYTES = 16 * 1024;");
+    expect(serviceAdapterSource).toContain(
+      'request.headers.has("authorization")',
+    );
+    expect(serviceAdapterSource.indexOf("await verifyAuthority(")).toBeLessThan(
+      serviceAdapterSource.indexOf(
+        "namespace.getByName(authentication.objectName)",
+      ),
+    );
+    expect(serviceSource).not.toContain("console.");
+    expect(serviceAdapterSource).not.toContain("console.");
 
-    for (const path of trackedWranglerConfigurations(".")) {
-      const value = readFileSync(path, "utf8");
-      expect(value, `${path} must not bind the coordinator`).not.toContain(
-        binding,
+    for (const [environment, config] of [
+      ["local", localServiceConfig],
+      ["staging", stagingServiceConfig],
+    ]) {
+      expect(Object.keys(config).sort()).toEqual(
+        [
+          "$schema",
+          "build",
+          "compatibility_date",
+          "durable_objects",
+          "main",
+          "migrations",
+          "name",
+          "observability",
+          "preview_urls",
+          "vars",
+          "version_metadata",
+          "workers_dev",
+        ].sort(),
       );
-      expect(
-        value,
-        `${path} must not configure coordinator authority`,
-      ).not.toContain(authorityPrefix);
-      expect(value, `${path} must not migrate the coordinator class`).not.toContain(
-        className,
+      expect(config.name).toBe(
+        `cinatoken-drain-source-registration-coordinator-${environment}`,
       );
+      expect(config.main).toBe("src/index.mjs");
+      expect(config.workers_dev).toBeFalse();
+      expect(config.preview_urls).toBeFalse();
+      expect(config.route).toBeUndefined();
+      expect(config.routes).toBeUndefined();
+      expect(config.build).toEqual({
+        command:
+          "bun tools/build_worker.mjs --crate drain-source-registration-coordinator --release",
+        watch_dir: [
+          "crates/drain-source-registration-coordinator",
+          "services/drain-source-registration-coordinator/src",
+        ],
+      });
+      expect(config.vars).toMatchObject({
+        DRAIN_SOURCE_REGISTRATION_COORDINATOR_ENVIRONMENT: environment,
+        DRAIN_SOURCE_REGISTRATION_COORDINATOR_ENABLED: "false",
+      });
+      expect(config.durable_objects).toEqual({
+        bindings: [{ name: binding, class_name: className }],
+      });
+      expect(config.migrations).toEqual([
+        {
+          tag: "v1-drain-source-registration-coordinator",
+          new_sqlite_classes: [className],
+        },
+      ]);
+      for (const secret of [
+        "DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_SECRET",
+        "DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_PREVIOUS_SECRET",
+      ]) {
+        expect(config.vars[secret]).toBeUndefined();
+      }
+      for (const capability of [
+        "ai",
+        "assets",
+        "containers",
+        "d1_databases",
+        "dispatch_namespaces",
+        "kv_namespaces",
+        "queues",
+        "r2_buckets",
+        "ratelimits",
+        "services",
+        "workflows",
+      ]) {
+        expect(config[capability]).toBeUndefined();
+      }
     }
+
+    expect(
+      applicationConfig.services.find(({ binding: name }) => name ===
+        "DRAIN_SOURCE_REGISTRATION_COORDINATOR"),
+    ).toEqual({
+      binding: "DRAIN_SOURCE_REGISTRATION_COORDINATOR",
+      service: "cinatoken-drain-source-registration-coordinator-local",
+    });
+    expect(
+      applicationConfig.env.staging.services.find(
+        ({ binding: name }) =>
+          name === "DRAIN_SOURCE_REGISTRATION_COORDINATOR",
+      ),
+    ).toEqual({
+      binding: "DRAIN_SOURCE_REGISTRATION_COORDINATOR",
+      service: "cinatoken-drain-source-registration-coordinator-staging",
+    });
+    expect(applicationConfig.env.production.services).not.toContainEqual(
+      expect.objectContaining({
+        binding: "DRAIN_SOURCE_REGISTRATION_COORDINATOR",
+      }),
+    );
+    expect(
+      Object.keys(applicationConfig.env.production.vars).filter((name) =>
+        name.startsWith("DRAIN_SOURCE_REGISTRATION_COORDINATOR_"),
+      ),
+    ).toEqual([]);
+    expect(
+      trackedWranglerConfigurations(".").filter((path) =>
+        /drain-source-registration-coordinator[\\/]wrangler/u.test(path),
+      ),
+    ).toHaveLength(2);
   });
 
   it("has no public Worker route or production call site", () => {
@@ -57,10 +190,14 @@ describe("drain-source registration coordinator DO source contract", () => {
       );
     }
     expect(workerEntrypoint.match(
-      /container_drain_source_registration_coordinator_do/gu,
+      /cinatoken_drain_source_registration_coordinator/gu,
     )).toHaveLength(1);
     expect(source).not.toContain("Router::");
     expect(source).not.toContain("route_async(");
+    expect(serviceSource).not.toContain("Router::");
+    expect(serviceSource).not.toContain("route_async(");
+    expect(serviceAdapterSource).not.toContain("Router::");
+    expect(serviceAdapterSource).not.toContain("route_async(");
   });
 
   it("persists only bounded digest evidence with atomic journal records", () => {

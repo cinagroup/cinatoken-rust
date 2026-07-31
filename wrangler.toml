@@ -50,8 +50,8 @@ binding = "AI"
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
-# Private, capability-scoped Worker-to-Worker path. The controller must be
-# deployed before this caller; no public controller URL is used.
+# Private, capability-scoped Worker-to-Worker paths. Each target must be
+# deployed before this caller; no public target URL is used.
 [[services]]
 binding = "CONTAINER_CONTROLLER"
 service = "cinatoken-container-controller-local"
@@ -59,6 +59,10 @@ service = "cinatoken-container-controller-local"
 [[services]]
 binding = "SHARD_PLACEMENT_AUTHORITY"
 service = "cinatoken-shard-placement-authority-local"
+
+[[services]]
+binding = "DRAIN_SOURCE_REGISTRATION_COORDINATOR"
+service = "cinatoken-drain-source-registration-coordinator-local"
 
 # Relay admission limits use Cloudflare's in-process Rate Limiting binding.
 # Namespace IDs are account-local numeric identifiers, not credentials or
@@ -379,6 +383,10 @@ service = "cinatoken-container-controller-staging"
 [[env.staging.services]]
 binding = "SHARD_PLACEMENT_AUTHORITY"
 service = "cinatoken-shard-placement-authority-staging"
+
+[[env.staging.services]]
+binding = "DRAIN_SOURCE_REGISTRATION_COORDINATOR"
+service = "cinatoken-drain-source-registration-coordinator-staging"
 
 [[env.staging.ratelimits]]
 name = "RELAY_TOKEN_RATE_LIMITER"

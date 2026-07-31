@@ -5,7 +5,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const workerBuildVersion = "0.1.14";
-const supportedCrates = ["worker", "wfp-tenant", "wfp-outbound", "container-egress"];
+const supportedCrates = [
+  "worker",
+  "wfp-tenant",
+  "wfp-outbound",
+  "container-egress",
+  "drain-source-registration-coordinator",
+];
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const cargoLockPath = join(root, "Cargo.lock");
 
@@ -223,6 +229,20 @@ function runSelfTest() {
     containerEgressTarget.args.join(" ") !== "--release"
   ) {
     throw new Error("worker build self-test failed to parse container egress crate target");
+  }
+  const registrationCoordinatorTarget = parseBuildTarget([
+    "--crate",
+    "drain-source-registration-coordinator",
+    "--release",
+  ]);
+  if (
+    registrationCoordinatorTarget.crate !==
+      "drain-source-registration-coordinator" ||
+    registrationCoordinatorTarget.args.join(" ") !== "--release"
+  ) {
+    throw new Error(
+      "worker build self-test failed to parse drain-source registration coordinator target",
+    );
   }
   for (const invalid of ["", "wasm-bindgen 0.2", "wasm-bindgen-cli 0.2.125"]) {
     try {

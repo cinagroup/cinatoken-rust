@@ -1,0 +1,11 @@
+{
+  "name": "@cinatoken/drain-source-registration-coordinator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:rust": "bun ../../tools/build_worker.mjs --crate drain-source-registration-coordinator --release",
+    "check": "bun run build:rust && tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts",
+    "test": "vitest run --config vitest.config.ts",
+    "types": "bun run --cwd ../.. generate:drain-source-registration-coordinator:types"
+  }
+}

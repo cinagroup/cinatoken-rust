@@ -12684,3 +12684,61 @@ and permit expiry.
 No proof issuer route, private binding, persistent replay coordinator,
 production key, remote 0075/0076 migration, or traffic change was exercised.
 The proof is not independently single-use. Production remains **NO-GO**.
+
+## 2026-07-31 Private Registration Coordinator Worker Verification
+
+This increment separates the recoverable drain-source registration
+coordinator into a minimal Rust Worker and gives local/staging Application
+configs a private Service Binding. Both target configs are default-off,
+route-free, `workers_dev=false`, and `preview_urls=false`. Production has no
+target config, binding, coordinator variable, migration, or secret name.
+
+Verified current-worktree evidence:
+
+```text
+bun run --cwd services/drain-source-registration-coordinator check
+  TypeScript strict check passed
+  7 adapter tests passed
+
+bun run test:drain-source-registration-coordinator:runtime
+  3 multi-Worker Workerd tests passed
+
+bun run check:drain-source-registration-coordinator:config
+  8 tests passed; 207 assertions
+
+cargo test -p cinatoken-drain-source-registration-coordinator
+  4 tests passed
+
+cargo check -p cinatoken-drain-source-registration-coordinator \
+  --target wasm32-unknown-unknown
+  passed
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+  passed with the pre-existing worker dead-code warnings
+
+bun run build:drain-source-registration-coordinator
+  local and staging Wrangler dry runs passed
+  725.41 KiB total upload; 266.31 KiB gzip
+
+bunx vitest run --config vitest.do.config.mjs
+  2 files passed; 60 aggregate Durable Object lifecycle tests passed
+
+bun run check
+  complete repository gate passed
+  991 main Worker tests passed
+  remaining Rust workspace, Workerd, frontend, Wrangler dry-run, migration,
+  policy, and required wasm32 gates passed
+```
+
+The adapter verifies the current/previous HMAC, exact caller/audience/path,
+request and body bindings, time window, canonical body, and deterministic
+object name before `getByName`. It forwards only exact body bytes plus the
+coordinator authority header. The Durable Object independently repeats
+authorization and compares the derived namespace ID with `state.id()`.
+
+No remote Cloudflare command, deployment, Durable Object migration, secret
+write, route, DNS, traffic, D1 mutation, or Go/VPS state change occurred.
+The tracked staging target remains only a deployment candidate. Application
+orchestration, one-shot ceremony state, remote fault campaigns, observability,
+rollback evidence, and independent approval remain mandatory. Go/VPS remains
+authoritative and production remains **NO-GO**.

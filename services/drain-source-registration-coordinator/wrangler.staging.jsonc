@@ -1,0 +1,45 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-drain-source-registration-coordinator-staging",
+  "main": "src/index.mjs",
+  "compatibility_date": "2026-07-28",
+  "workers_dev": false,
+  "preview_urls": false,
+  "build": {
+    "command": "bun tools/build_worker.mjs --crate drain-source-registration-coordinator --release",
+    "watch_dir": [
+      "crates/drain-source-registration-coordinator",
+      "services/drain-source-registration-coordinator/src"
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "DRAIN_SOURCE_REGISTRATION_COORDINATOR_ENVIRONMENT": "staging",
+    "DRAIN_SOURCE_REGISTRATION_COORDINATOR_ENABLED": "false",
+    "DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER": "cinatoken-rust-api-staging",
+    "DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_AUDIENCE": "cinatoken-drain-source-registration-coordinator-staging",
+    "DRAIN_SOURCE_REGISTRATION_COORDINATOR_CALLER_IDENTITY_SHA256": "",
+    "DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_KID": "",
+    "DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_PREVIOUS_KID": ""
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DRAIN_SOURCE_REGISTRATION_COORDINATORS",
+        "class_name": "DrainSourceRegistrationCoordinator"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-drain-source-registration-coordinator",
+      "new_sqlite_classes": ["DrainSourceRegistrationCoordinator"]
+    }
+  ]
+}

@@ -2,10 +2,11 @@
 
 ## Status
 
-This document freezes the local, route-free durable journal that will
-eventually surround the three-phase drain-source registration coordinator.
-The implementation is
-`crates/worker/src/container_drain_source_registration_coordinator_do.rs`.
+This document freezes the route-free durable journal and its private Worker
+transport for the three-phase drain-source registration coordinator. The
+Durable Object implementation is
+`crates/drain-source-registration-coordinator/src/lib.rs`; the transport is
+`services/drain-source-registration-coordinator/src/index.mjs`.
 
 Implemented and verified locally:
 
@@ -19,37 +20,46 @@ Implemented and verified locally:
 - exact-request replay and divergent-request conflict handling;
 - bounded alarms, precommit expiry, and uncertain-commit recovery;
 - redacted status and terminal readback;
+- a separately built Rust/Wasm crate rather than the full Application bundle;
+- a dedicated Worker with no route, `workers_dev=false`, and
+  `preview_urls=false`;
+- default-off local and staging-shaped Worker configurations;
+- local and staging Application Service Bindings with no production binding;
+- authority-claim-based deterministic dispatch to the named SQLite object;
 - SQLite-backed Workerd concurrency, response-loss, alarm, and eviction tests;
-  and
-- source/config tests proving that tracked Wrangler configurations have no
-  binding, migration, authority variable, or public route for this class.
+- a multi-Worker Workerd test proving caller Service Binding -> private Worker
+  -> SQLite Durable Object execution and replay; and
+- source/config tests proving exact capability, secret, and environment
+  matrices.
 
 Not implemented or enabled:
 
-- no Application caller;
-- no dedicated route-free coordinator Worker;
-- no Service Binding or named entrypoint;
+- no Application protocol client or call site;
 - no browser begin/finish route, CSRF, Origin, or rate-limit integration;
 - no Root phase-proof call site;
 - no WebAuthn assertion parser or verifier call site;
 - no permit-issuer call;
 - no D1 0074 command call;
 - no command/alias winner-readback adapter;
-- no staging binding, secret, migration, deployment, or remote evidence; and
+- no staging secret, deployment, migration application, or remote evidence;
+  and
 - no production binding, route, authority, or traffic.
 
-The class is exported by the compiled Rust module only so isolated Workerd can
-instantiate it. `DRAIN_SOURCE_REGISTRATION_COORDINATORS` exists only in
-`vitest.do.config.mjs`. Go/VPS remains authoritative and production remains
-**NO-GO**.
+The Application declares
+`DRAIN_SOURCE_REGISTRATION_COORDINATOR` only in local and staging. The target
+Worker owns `DRAIN_SOURCE_REGISTRATION_COORDINATORS` and its
+`new_sqlite_classes` migration. Both target configurations remain disabled;
+no target Worker or migration has been deployed. Go/VPS remains authoritative
+and production remains **NO-GO**.
 
 ## Trust boundary
 
 The Durable Object is a durable operation journal, not global authority.
 
 ```text
-future private Application caller
-  -> authenticated coordinator entrypoint
+Application Worker
+  -> explicit DRAIN_SOURCE_REGISTRATION_COORDINATOR Service Binding
+  -> route-free coordinator Worker
   -> one deterministically named coordinator DO
   -> phase journal around external awaits
   -> authoritative D1 0074 command
@@ -61,10 +71,24 @@ assertion opportunity, verified proof, issuer request, permit, or command
 attempt was already recorded. It may not select a D1 winner or convert an
 unknown command outcome into success without authoritative readback.
 
-The current DO fetch adapter is defense in depth for the future route-free
-entrypoint. It is not evidence that a public `/internal/*` path is private.
-The eventual caller still requires a Service Binding or separately reviewed
-named entrypoint with `workers_dev=false`, `preview_urls=false`, and no route.
+Service Binding is the reachability boundary, not an unguessable URL. The
+target Worker has no route, workers.dev endpoint, preview URL, D1, KV, R2,
+Queue, AI, Container, asset, or downstream Service Binding capability. The
+adapter accepts only the four exact POST paths, no query, and rejects Cookie,
+Origin, and Content-Encoding before dispatch.
+
+Before calling `getByName`, the adapter streams and caps the exact body,
+requires canonical JSON, verifies the current/previous HMAC, caller,
+issuer/audience, method, path, request ID, exact body digest, and 30-second
+time window, and derives the deterministic object name from typed body
+identity. It forwards the same body bytes with only Content-Type and the
+coordinator authority header.
+
+The Durable Object independently repeats the complete authentication and body
+validation. It recomputes the object name, derives the namespace ID, and
+compares that ID with `state.id()` before reading or mutating state. This
+defense prevents invalid signed envelopes from allocating arbitrary named
+objects while retaining a second authority boundary inside the object.
 
 ## Deterministic object name
 
@@ -197,9 +221,10 @@ secrets must be pairwise distinct across the two slots; secrets are 32 to 256
 bytes. Caller identity is stable across rotation and is separately bound into
 every signed claim. Only `local` and `staging` are accepted. HMAC bytes in
 `staging` are accepted only from Worker Secret bindings; ordinary variable
-fallback is restricted to `local` Workerd. These variables exist as fake
-values only in the Workerd test configuration. Production configuration must
-omit them.
+fallback is restricted to `local` Workerd. Secret values exist only as fake
+Workerd bindings. Tracked local and staging configs contain no HMAC secret.
+Production configuration omits the Worker binding and every coordinator
+variable.
 
 ## Persistent state machine
 
@@ -346,29 +371,40 @@ The checked-in tests cover:
 - alarm-driven expiry and recovery;
 - structured fail-closed response for corrupt durable state;
 - event/replay key counts and absence of raw secret markers; and
-- complete existing Workerd DO lifecycle regression.
+- complete existing Workerd DO lifecycle regression;
+- adapter default-off, route/media/body/ambient-header, current/previous HMAC,
+  pre-lookup authentication, exact-byte forwarding, and
+  namespace-unavailable behavior;
+- a real multi-Worker Service Binding fresh write and exact replay;
+- signed object/body mismatch rejection by the target Durable Object;
+- local and staging Worker dry-run builds; and
+- production absence plus exact target capability and secret matrices.
 
-The source/config audit fails if any tracked Wrangler TOML/JSONC file gains the
-binding, class migration, or authority prefix. A future staging increment
-must intentionally update that contract and replace it with an equally strict
-environment matrix rather than weakening the check.
+The config audit permits exactly two target Wrangler files: local and
+staging-shaped. It rejects public routes, target Service Bindings, and every
+storage/runtime capability except the one SQLite Durable Object namespace.
+It also requires the Application binding in local/staging and its absence
+from production.
 
 ## Promotion gates
 
 The next ordered work is:
 
-1. create the separate route-free coordinator Worker;
-2. freeze its Service Binding or named-entrypoint contract;
-3. wire Application-issued `RootSessionPhaseProofV1`;
-4. wire begin through fresh first-primary D1 validation;
-5. wire finish claim before WebAuthn parsing;
-6. wire full WebAuthn verification and Passkey generation/count CAS evidence;
-7. call the isolated permit issuer with bounded timeout and response body;
-8. reread D1 and persist verified permit plus commit attempt;
-9. execute one 0074 command and persist its four-state result;
-10. implement same-Session command and all-alias recovery;
-11. add default-off, route-free isolated-staging bindings and key provisioning;
-12. run remote concurrency, revocation, timeout, response/process-loss,
+1. implement a private Application client that signs the frozen coordinator
+   authority without forwarding Cookie, session, WebAuthn, public-key, issuer,
+   or database material;
+2. wire Application-issued `RootSessionPhaseProofV1`;
+3. wire begin through fresh first-primary D1 validation and one-shot,
+   server-side ceremony state;
+4. wire finish claim before WebAuthn parsing;
+5. wire full WebAuthn verification and Passkey generation/count CAS evidence;
+6. call the isolated permit issuer with bounded timeout and response body;
+7. reread D1 and persist verified permit plus commit attempt;
+8. execute one 0074 command and persist its four-state result;
+9. implement same-Session command and all-alias recovery;
+10. provision staging secrets and deploy the target before the Application
+    caller, while every gate remains false;
+11. run remote concurrency, revocation, timeout, response/process-loss,
     N/N-1, load, cost, alert, redaction, retention, and rollback campaigns.
 
 No later item compensates for an earlier missing gate. Production remains

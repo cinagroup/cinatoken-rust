@@ -9,6 +9,7 @@ members = [
   "crates/container-runtime",
   "crates/coordinator",
   "crates/core",
+  "crates/drain-source-registration-coordinator",
   "crates/gateway",
   "crates/migration",
   "crates/observability",

@@ -34,8 +34,7 @@ mod container_drain_source_registration_action;
 mod container_drain_source_registration_command;
 #[allow(dead_code)]
 mod container_drain_source_registration_coordinator;
-#[allow(dead_code)]
-mod container_drain_source_registration_coordinator_do;
+pub use cinatoken_drain_source_registration_coordinator::DrainSourceRegistrationCoordinator;
 #[allow(dead_code)]
 mod container_drain_source_registration_permit;
 mod container_r2_inventory;

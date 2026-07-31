@@ -12,6 +12,8 @@
 /services/container-controller/.env*
 /services/drain-source-registration-permit-issuer/.dev.vars*
 /services/drain-source-registration-permit-issuer/.env*
+/services/drain-source-registration-coordinator/.dev.vars*
+/services/drain-source-registration-coordinator/.env*
 /exports/
 *.cinatoken-export.json
 *.log

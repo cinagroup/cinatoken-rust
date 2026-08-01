@@ -5252,3 +5252,39 @@ independent approvals remain open.
 No remote Cloudflare resource, secret, migration, deployment, route, traffic,
 DNS, or Go/VPS state changed. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-08-01 Retained Begin Orchestrator Checkpoint
+
+The route-free Application now has an explicit before-challenge authority and
+begin dispatch/reconciliation layer. The one-statement D1 phase snapshot takes
+an exact Passkey credential-ID digest and constrains the Passkey join by both
+Root user and digest. This preserves current Go one-Passkey-per-user behavior
+without making that historical cardinality a permanent security assumption.
+
+`prepare_before_challenge_authority` validates the exact Root/session,
+authorization, Passkey, admission fence/head, zero-consumption, ledger, time,
+and bookmark snapshot before deriving the semantic authority fingerprint. A
+staging-only signer then creates and immediately verifies the typed
+before-challenge Root phase proof using a Worker Secret and
+`CF_VERSION_METADATA`; the secret-bearing config has no `Debug` surface.
+
+Fresh begin dispatch now commits `Prepared` as its first await and only then
+calls the coordinator Service Binding. Reconciliation reads the deterministic
+Application object first, returns retained `ChallengeIssued` directly, or
+replays the exact stored begin request from retained `Prepared`. It never
+mints a replacement operation or request ID after an indeterminate result.
+
+Local and staging keep both
+`DRAIN_SOURCE_REGISTRATION_APPLICATION_BEGIN_ENABLED=false` and the
+coordinator client gate false. Phase key metadata is empty/zero and no secret
+is tracked. Production has none of this capability. Focused evidence passes 36
+Rust tests and nine source/config tests with 287 assertions.
+
+Immediate P0 remains the bounded browser entrypoint and finish assembly:
+Cookie-to-redacted-session-anchor derivation, Origin/RPID/CSRF/rate-limit
+enforcement, exact action/begin construction from the D1 snapshot,
+claim-before-assertion parsing, mandatory-UV WebAuthn, issuer and commit phase
+proofs, bounded permit issuance, one immutable 0074 command, and same-Session
+command/all-alias recovery. Combined live Rust orchestration and remote staging
+proof are absent. Go/VPS remains authoritative and production remains
+**NO-GO**.

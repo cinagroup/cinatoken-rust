@@ -86,6 +86,16 @@ impl CoordinatorClientError {
     }
 }
 
+pub(crate) fn preflight(env: &Env) -> Result<(), CoordinatorClientError> {
+    if !runtime_flag(env, COORDINATOR_CLIENT_ENABLED_ENV) {
+        return Err(CoordinatorClientError::Disabled);
+    }
+    client_config(env).ok_or(CoordinatorClientError::Configuration)?;
+    env.service(COORDINATOR_SERVICE_BINDING)
+        .map_err(|_| CoordinatorClientError::Binding)?;
+    Ok(())
+}
+
 #[derive(Clone)]
 struct CoordinatorClientConfig {
     environment: String,
@@ -331,9 +341,7 @@ async fn execute<T: Serialize>(
     request: &T,
     metadata: RequestMetadata<'_>,
 ) -> Result<CoordinatorStatusResponseV1, CoordinatorClientError> {
-    if !runtime_flag(env, COORDINATOR_CLIENT_ENABLED_ENV) {
-        return Err(CoordinatorClientError::Disabled);
-    }
+    preflight(env)?;
     let config = client_config(env).ok_or(CoordinatorClientError::Configuration)?;
     let body = canonical_json_bytes(request).map_err(|_| CoordinatorClientError::Request)?;
     if !validate_wire_request_v1(path, &config.environment, &body)

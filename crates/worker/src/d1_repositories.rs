@@ -17500,8 +17500,13 @@ pub(crate) async fn relay_container_drain_source_registration_phase_snapshot(
     db: &D1Database,
     authorization_id_sha256: &str,
     authenticated_root_admin_id: i64,
+    passkey_credential_id_sha256: &str,
 ) -> worker::Result<Option<RelayContainerDrainSourceRegistrationPhaseSnapshot>> {
     validate_relay_container_sha256(authorization_id_sha256, "drain source authorization ID")?;
+    validate_relay_container_sha256(
+        passkey_credential_id_sha256,
+        "drain source registration Passkey credential ID",
+    )?;
     let root_admin_id = i32::try_from(authenticated_root_admin_id).map_err(|_| {
         worker::Error::RustError(
             "drain source registration Root identity is out of range".to_string(),
@@ -17518,6 +17523,7 @@ pub(crate) async fn relay_container_drain_source_registration_phase_snapshot(
         D1Type::Text(authorization_id_sha256),
         D1Type::Integer(root_admin_id),
         D1Type::Text(RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256),
+        D1Type::Text(passkey_credential_id_sha256),
     ];
     let Some(row) = session
         .prepare(
@@ -17697,6 +17703,7 @@ pub(crate) async fn relay_container_drain_source_registration_phase_snapshot(
              AND root_user.id = authorization.authorized_by_admin_id
             LEFT JOIN passkey_credentials AS passkey
               ON passkey.user_id = root_user.id
+             AND passkey.credential_id_sha256 = ?4
             LEFT JOIN relay_container_admission_scope_heads AS head
               ON head.environment = authorization.environment
              AND head.scope_kind = authorization.scope_kind
@@ -41678,6 +41685,7 @@ mod tests {
             "root_user.id = ?2",
             "root_user.id = authorization.authorized_by_admin_id",
             "LEFT JOIN passkey_credentials AS passkey",
+            "passkey.credential_id_sha256 = ?4",
             "LEFT JOIN relay_container_admission_scope_heads AS head",
             "LEFT JOIN relay_container_admission_fences AS fence",
             "FROM relay_container_drain_source_receipt_ledger",
@@ -41702,6 +41710,8 @@ mod tests {
             "the phase snapshot must observe authority in one SQL statement"
         );
         assert_eq!(snapshot.matches(".first::<").count(), 1);
+        assert!(snapshot.contains("passkey_credential_id_sha256: &str"));
+        assert!(snapshot.contains("D1Type::Text(passkey_credential_id_sha256)"));
         for forbidden in [
             ".all()",
             ".results::<",

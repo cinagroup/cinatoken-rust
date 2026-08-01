@@ -152,6 +152,10 @@ impl DrainSourceRegistrationApplicationCeremonyV1 {
         self.phase == ApplicationCeremonyPhase::Prepared
     }
 
+    pub(crate) fn is_challenge_issued(&self) -> bool {
+        self.phase == ApplicationCeremonyPhase::ChallengeIssued
+    }
+
     pub(crate) fn confirm_challenge_issued(
         &self,
         mut coordinator_status: CoordinatorStatusResponseV1,
@@ -191,12 +195,19 @@ impl DrainSourceRegistrationApplicationCeremonyV1 {
         env: &Env,
         ceremony_key: &str,
     ) -> Result<Self, DrainSourceRegistrationCeremonyError> {
-        let payload = passkey_ceremony::read_json(env, ceremony_key).await?;
-        let state = Self::from_payload(&payload, ceremony_key, unix_timestamp())?;
+        let state = Self::load_existing(env, ceremony_key).await?;
         if !state.is_prepared() {
             return Err(DrainSourceRegistrationCeremonyError::InvalidCeremony);
         }
         Ok(state)
+    }
+
+    pub(crate) async fn load_existing(
+        env: &Env,
+        ceremony_key: &str,
+    ) -> Result<Self, DrainSourceRegistrationCeremonyError> {
+        let payload = passkey_ceremony::read_json(env, ceremony_key).await?;
+        Self::from_payload(&payload, ceremony_key, unix_timestamp())
     }
 
     pub(crate) async fn persist_challenge_issued(

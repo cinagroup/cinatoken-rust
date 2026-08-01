@@ -175,6 +175,9 @@ describe("container scheduler Wrangler foundation", () => {
           vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_CLIENT_ENABLED,
         ).toBe("false");
         expect(
+          vars.DRAIN_SOURCE_REGISTRATION_APPLICATION_BEGIN_ENABLED,
+        ).toBe("false");
+        expect(
           vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER,
         ).toBe(`cinatoken-rust-api-${authorityEnvironment}`);
         expect(
@@ -188,13 +191,22 @@ describe("container scheduler Wrangler foundation", () => {
         expect(
           vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_KID,
         ).toBe("");
+        expect(
+          vars.DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_KID,
+        ).toBe("");
+        expect(
+          vars.DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_KEY_VERSION,
+        ).toBe("0");
       } else {
         for (const name of [
           "DRAIN_SOURCE_REGISTRATION_COORDINATOR_CLIENT_ENABLED",
+          "DRAIN_SOURCE_REGISTRATION_APPLICATION_BEGIN_ENABLED",
           "DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER",
           "DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_AUDIENCE",
           "DRAIN_SOURCE_REGISTRATION_COORDINATOR_CALLER_IDENTITY_SHA256",
           "DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_KID",
+          "DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_KID",
+          "DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_KEY_VERSION",
           "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_ENABLED",
           "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ISSUER",
           "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_AUDIENCE",
@@ -213,6 +225,9 @@ describe("container scheduler Wrangler foundation", () => {
       ).toBeUndefined();
       expect(
         vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_SECRET,
+      ).toBeUndefined();
+      expect(
+        vars.DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_SECRET,
       ).toBeUndefined();
       expect(scope?.services).toEqual(expectedServices);
 

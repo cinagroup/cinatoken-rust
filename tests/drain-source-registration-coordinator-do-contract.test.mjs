@@ -13,6 +13,12 @@ const applicationCeremonySource = readFileSync(
   "crates/worker/src/container_drain_source_registration_application_ceremony.rs",
   "utf8",
 );
+const applicationOrchestratorSource = readFileSync(
+  "crates/worker/src/container_drain_source_registration_application_orchestrator.rs",
+  "utf8",
+);
+const applicationOrchestratorImplementation =
+  applicationOrchestratorSource.split("#[cfg(test)]", 1)[0];
 const passkeyCeremonySource = readFileSync(
   "crates/worker/src/passkey_ceremony.rs",
   "utf8",
@@ -175,15 +181,21 @@ describe("drain-source registration coordinator DO source contract", () => {
     ]) {
       expect(scope.vars).toMatchObject({
         DRAIN_SOURCE_REGISTRATION_COORDINATOR_CLIENT_ENABLED: "false",
+        DRAIN_SOURCE_REGISTRATION_APPLICATION_BEGIN_ENABLED: "false",
         DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER:
           `cinatoken-rust-api-${environment}`,
         DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_AUDIENCE:
           `cinatoken-drain-source-registration-coordinator-${environment}`,
         DRAIN_SOURCE_REGISTRATION_COORDINATOR_CALLER_IDENTITY_SHA256: "",
         DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_KID: "",
+        DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_KID: "",
+        DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_KEY_VERSION: "0",
       });
       expect(
         scope.vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_SECRET,
+      ).toBeUndefined();
+      expect(
+        scope.vars.DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_SECRET,
       ).toBeUndefined();
     }
     expect(applicationConfig.env.production.services).not.toContainEqual(
@@ -193,7 +205,7 @@ describe("drain-source registration coordinator DO source contract", () => {
     );
     expect(
       Object.keys(applicationConfig.env.production.vars).filter((name) =>
-        name.startsWith("DRAIN_SOURCE_REGISTRATION_COORDINATOR_"),
+        name.startsWith("DRAIN_SOURCE_REGISTRATION_"),
       ),
     ).toEqual([]);
     expect(
@@ -237,6 +249,9 @@ describe("drain-source registration coordinator DO source contract", () => {
     expect(clientSource).toContain(".with_redirect(RequestRedirect::Error)");
     expect(clientSource).not.toContain("Router::");
     expect(clientSource).not.toContain("route_async(");
+    expect(applicationOrchestratorImplementation).not.toContain("Router::");
+    expect(applicationOrchestratorImplementation).not.toContain("route_async(");
+    expect(applicationOrchestratorImplementation).not.toContain("Request::new");
     expect(serviceSource).not.toContain("Router::");
     expect(serviceSource).not.toContain("route_async(");
     expect(serviceAdapterSource).not.toContain("Router::");
@@ -269,6 +284,30 @@ describe("drain-source registration coordinator DO source contract", () => {
     );
     expect(applicationCeremonySource.indexOf("passkey_ceremony::read_json"))
       .toBeLessThan(applicationCeremonySource.indexOf("passkey_ceremony::claim_json"));
+    expect(applicationOrchestratorSource).toContain(
+      "pub(crate) async fn dispatch_prepared_begin(",
+    );
+    expect(applicationOrchestratorSource).toContain(
+      "pub(crate) async fn reconcile_prepared_begin(",
+    );
+    expect(applicationOrchestratorSource.indexOf(".store_prepared_once(env)"))
+      .toBeLessThan(
+        applicationOrchestratorSource.indexOf(
+          "dispatch_retained_prepared_begin(env, prepared).await",
+        ),
+      );
+    expect(applicationOrchestratorSource).toContain(
+      "issue_before_challenge_phase_proof(",
+    );
+    expect(applicationOrchestratorSource).toContain(
+      ".get_binding::<WorkerVersionMetadata>(\"CF_VERSION_METADATA\")",
+    );
+    expect(applicationOrchestratorSource).toContain(
+      ".secret(PHASE_PROOF_CURRENT_SECRET_ENV)",
+    );
+    expect(applicationOrchestratorSource).not.toContain(
+      "DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_SECRET =",
+    );
 
     for (const route of ["/put-once", "/read", "/replace", "/claim"]) {
       expect(passkeyCeremonySource).toContain(`\"${route}\"`);

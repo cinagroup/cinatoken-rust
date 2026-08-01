@@ -213,14 +213,19 @@ describe("drain source registration phase snapshot SQL", () => {
     expect(
       database
         .query(snapshotSql())
-        .get(digest("a"), 1, globalScope),
+        .get(digest("a"), 1, globalScope, digest("9")),
     ).toBeNull();
   });
 
   it("projects every authority component and the current terminal ledger head", () => {
     const fixture = fixtureDatabase();
     const query = fixture.database.query(snapshotSql());
-    const initial = query.get(digest("a"), 1, globalScope);
+    const initial = query.get(
+      digest("a"),
+      1,
+      globalScope,
+      fixture.passkey.credential_id_sha256,
+    );
 
     expect(JSON.parse(initial.authorization_json)).toEqual(
       fixture.authorization,
@@ -237,6 +242,15 @@ describe("drain source registration phase snapshot SQL", () => {
     expect(initial.terminal_count).toBe(0);
     expect(initial.source_scan_count).toBe(0);
     expect(initial.database_now).toBeGreaterThan(0);
+
+    const wrongCredential = query.get(
+      digest("a"),
+      1,
+      globalScope,
+      digest("8"),
+    );
+    expect(wrongCredential).not.toBeNull();
+    expect(wrongCredential.passkey_json).toBeNull();
 
     for (const receipt_sequence of [1, 2, 3]) {
       insertRow(
@@ -256,7 +270,12 @@ describe("drain source registration phase snapshot SQL", () => {
         },
       );
     }
-    const withLedger = query.get(digest("a"), 1, globalScope);
+    const withLedger = query.get(
+      digest("a"),
+      1,
+      globalScope,
+      fixture.passkey.credential_id_sha256,
+    );
     expect(withLedger.ledger_count).toBe(3);
     expect(JSON.parse(withLedger.latest_ledger_json)).toEqual({
       ...fixture.ledgerPrototype,

@@ -433,19 +433,47 @@ handle, or unredacted winner rows. Finish performs a validated read before the
 claim transaction, so `Prepared` cannot be poisoned by a premature claim. The
 same claim is replayable until expiry and a different claim is excluded.
 
-No Application route invokes these methods yet. A real orchestrator must make
-`store_prepared_once` the last durable action before the first coordinator
-await and `persist_challenge_issued` the last durable action before returning
-the browser challenge.
+No Application route invokes these methods yet.
+
+## Retained begin orchestrator
+
+The route-free begin orchestrator now makes `store_prepared_once` its first
+await and does not call the coordinator until that commit returns. It then
+uses only the `BeginRequestV1` retained inside the checkpoint. A valid
+generation-one response is persisted through the prepared-payload SHA-256 CAS
+before the confirmed state can be returned.
+
+The matching reconciliation entrypoint reads the deterministic Application
+object before any coordinator call. Retained `ChallengeIssued` is returned
+directly. Retained `Prepared` reuses the exact operation, request ID, body and
+proof digest. Reconciliation contains no entropy generation and cannot build
+a replacement operation.
+
+Before phase-proof signing, `prepare_before_challenge_authority` now validates
+the complete one-statement D1 snapshot and derives the semantic authority
+fingerprint. The D1 query takes the exact Passkey credential-ID digest and
+binds it in the same Passkey join as the Root user. This is stricter than
+depending only on the current Go/Rust one-Passkey-per-user schema.
+
+The staging-only phase signer reads its secret from a Worker Secret, its key
+ID/version from non-secret variables, and the exact caller deployment ID from
+`CF_VERSION_METADATA`. It signs and immediately verifies the same typed
+before-challenge subject and Root session anchor. Fresh dispatch requires the
+signer plus begin/client gates; reconciliation intentionally uses the retained
+proof and does not require an old signing secret after rotation.
+
+The combined browser-to-Rust-orchestrator runtime path is not wired. Current
+runtime evidence still proves checkpoint storage and coordinator Service
+Binding separately; source/order and Rust tests prove their composition.
 
 ## Promotion gates
 
 The next ordered work is:
 
-1. wire the implemented private client and `Prepared` checkpoint into one
-   private Application orchestrator with persistence before dispatch;
-2. wire Application-issued `RootSessionPhaseProofV1` after an exact fresh D1
-   read;
+1. derive the redacted Root session anchor from a verified Cookie and discard
+   raw Cookie/`sid` material before the D1 phase query;
+2. build the typed action, begin intent and coordinator request from the exact
+   snapshot, then invoke the implemented phase signer and retained dispatcher;
 3. expose begin only after the coordinator and Application
    `ChallengeIssued` commits both succeed;
 4. wire finish claim before WebAuthn parsing;

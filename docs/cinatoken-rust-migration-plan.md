@@ -26870,3 +26870,137 @@ independent approval evidence is complete.
 No remote Cloudflare command, resource, secret, migration, deployment, route,
 traffic, DNS, or Go/VPS mutation was used for this increment. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+### Before-challenge authority and retained-dispatch overlay (2026-08-01)
+
+The Application begin path now has a route-free orchestration layer above the
+persist-before-dispatch checkpoint. It still has no browser handler or live
+call site, but the previously separate D1 snapshot, Root phase-proof,
+Application ceremony, and coordinator client contracts now have an explicit
+ordering boundary.
+
+#### Exact credential snapshot
+
+The one-statement first-primary D1 phase snapshot now requires both the
+authorization digest and the exact Passkey credential-ID digest. The Passkey
+join is constrained by Root user ID and `credential_id_sha256` inside the same
+SQL statement. No follow-up credential query may select a different row.
+
+This deliberately strengthens, rather than merely copies, the Go behavior.
+The audited Go model currently keeps one active Passkey per user through a
+unique user relation and replacement on upsert. That is compatibility context,
+not a permanent Rust authority invariant. An exact digest remains mandatory so
+a later multi-credential schema cannot silently make the security snapshot
+nondeterministic.
+
+The new `prepare_before_challenge_authority` step consumes only:
+
+- the complete one-statement snapshot;
+- a redacted, cryptographically derived Root session anchor; and
+- the typed begin intent whose D1 issue time equals `database_now`.
+
+Before any phase-proof signing, it independently verifies the authorization,
+exact Root role/status/session generation, selected Passkey identity and COSE
+material, admission head/fence, zero-consumption state, ledger predecessor,
+authority lifetime, and snapshot bookmark shape. It then returns an opaque
+prepared authority containing the semantic fingerprint and validated typed
+projections. Raw Cookie, `sid`, username, IP, assertion, and signing key are
+not fields of this object, and it intentionally has no `Debug` implementation.
+
+This resolves the prior circularity in which a phase proof needed a semantic
+authority fingerprint before the runtime had a public API for deriving that
+fingerprint. The sequence is now:
+
+```text
+one D1 phase snapshot
+  -> exact Root/session/Passkey/fence/ledger validation
+  -> semantic authority fingerprint
+  -> typed before-challenge phase subject
+  -> short-lived phase-proof sign and immediate verify
+  -> Application Prepared checkpoint
+```
+
+#### Staging-only phase signer
+
+The Application phase signer accepts only staging configuration. It reads the
+current key from `DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_SECRET`, the
+key ID/version from non-secret variables, and the exact Application deployment
+ID from `CF_VERSION_METADATA`. The signer configuration and secret have no
+`Debug` representation. The token is immediately verified with the same typed
+subject, Root session anchor, D1 observation time, semantic fingerprint, and
+authority expiry before it may enter an Application checkpoint.
+
+Local and staging configuration track
+`DRAIN_SOURCE_REGISTRATION_APPLICATION_BEGIN_ENABLED=false`, an empty phase
+key ID, and key version `0`. No secret value is tracked. Production contains
+none of the begin gate, coordinator binding, coordinator variables, phase-key
+metadata, or phase secret name.
+
+Fresh begin dispatch requires both the Application begin gate and the private
+coordinator client gate. Reconciliation requires the begin/client capability
+but deliberately does not require the old phase-signing secret: a rotated
+signer must not make an already retained exact checkpoint unrecoverable.
+
+#### Retained dispatch and reconciliation
+
+`dispatch_prepared_begin` performs synchronous capability preflight, rejects
+anything other than `Prepared`, and makes the durable `store_prepared_once`
+commit its first await. Only after that response does it call the coordinator
+with the retained canonical `BeginRequestV1`. A valid coordinator response is
+converted to generation-one `ChallengeIssued` and persisted with the existing
+SHA-256 compare-and-swap.
+
+`reconcile_prepared_begin` accepts only the deterministic Application ceremony
+key. It reads the retained object first:
+
+- retained `ChallengeIssued` is returned without coordinator traffic;
+- retained `Prepared` replays the exact stored coordinator request and request
+  ID;
+- any other or corrupt state fails closed; and
+- no random value, operation ID, ceremony ID, proof ID, or request ID is minted
+  during reconciliation.
+
+Failure handling remains explicit:
+
+| Failure point | Classification | Mutation knowledge | Recovery |
+|---|---|---|---|
+| disabled/invalid signer or client preflight | `NotDispatched` | no coordinator request | repair configuration; do not invent a replacement operation |
+| Application checkpoint write response lost | `Indeterminate` | coordinator not called; checkpoint commit unknown | read the deterministic Application object |
+| authenticated coordinator 4xx | `DeterministicRejection` | exact request rejected | retain evidence and resolve state; no blind retry |
+| coordinator timeout/transport/5xx | `Indeterminate` | coordinator commit unknown | reload `Prepared` and exact-replay its bytes |
+| impossible coordinator/Application confirmation | `ProtocolViolation` | untrusted response semantics | fail closed and alert |
+| confirmation CAS response lost | `Indeterminate` | coordinator committed; Application CAS unknown | read Application object, then exact CAS/replay if still `Prepared` |
+
+This follows the reusable cinaVibeSDK distinction between deterministic
+per-entity Durable Object identity and ephemeral container execution: durable
+operation authority lives in the named object before a downstream execution
+boundary is crossed. The migration does not copy cinaVibeSDK public preview,
+dynamic-code, remote-sandbox, or fail-open behaviors into this administrative
+security path.
+
+#### Remaining P0 begin and finish assembly
+
+The next slice must connect this route-free layer to a bounded Application
+entrypoint without weakening the order:
+
+1. parse and verify the Rust session Cookie, immediately derive redacted
+   session-binding/session-ID digests, and discard raw Cookie material;
+2. enforce exact Origin/RPID, CSRF, Root-only authorization, request bounds,
+   rate limits, and audit identity before generating operation entropy;
+3. derive the typed begin input, select the exact Passkey digest, call the
+   one-statement snapshot, materialize the action and canonical begin request,
+   issue/verify the proof, then invoke `dispatch_prepared_begin`;
+4. expose no browser challenge until `ChallengeIssued` readback is durable;
+5. implement finish claim before assertion parsing, mandatory-UV verification,
+   fresh before-issuer/before-commit snapshots and proof chain, bounded permit
+   issuance, and immutable 0074 execution; and
+6. classify command ID plus every stable alias in one first-primary Session
+   before any immediate or recovered outcome is recorded.
+
+Current evidence is local: 36 focused Rust registration tests and nine
+source/config tests with 287 assertions pass. Existing Workerd suites prove the
+Application ceremony storage and coordinator Service Binding separately; they
+do not yet prove one live Rust browser-to-coordinator orchestration call. No
+remote Cloudflare resource, secret, migration, deployment, route, traffic,
+DNS, or Go/VPS state changed. Go/VPS remains authoritative and production
+remains **NO-GO**.

@@ -2,13 +2,13 @@
 
 Date: 2026-07-31
 
-Status: frozen route-free protocol with typed three-phase subjects and local
-coordinator integration. It is implemented in
+Status: frozen route-free protocol with typed three-phase subjects, local
+coordinator integration, and a default-off staging Application signer. It is implemented in
 `crates/root-session-phase-proof`; the pure drain-source registration
 coordinator independently reconstructs every subject from typed evidence and
 compares the derived binding with the signed claim. It is not wired to a
-public route, Service Binding, persistent Durable Object, remote D1 database,
-or production secret. Production remains **NO-GO**.
+public route, complete browser call chain, remote D1 database, or production
+secret. Production remains **NO-GO**.
 
 ## Purpose And Trust Boundary
 
@@ -25,6 +25,14 @@ The private coordinator receives the proof, not the Cookie or
 `SESSION_SECRET`. It accepts authority only through the opaque
 `VerifiedRootSessionPhaseProof` returned after strict signature and claim
 verification.
+
+The Application runtime now has a route-free before-challenge signer candidate.
+It first validates the exact one-statement authority snapshot and derives the
+semantic fingerprint, then signs and immediately verifies the typed subject.
+Its current secret is read only from a staging Worker Secret, key metadata is
+non-secret, and `CF_VERSION_METADATA` supplies the exact Application version.
+Both Application begin and coordinator client gates remain false, production
+contains no capability, and no browser handler calls this path.
 
 This protocol does not make the proof single-use. A dedicated coordinator
 Durable Object must persist the operation and phase transition before any
@@ -297,8 +305,9 @@ Before isolated staging enablement:
 
 1. apply 0075/0076 only to isolated staging after backup, then retain exact
    catalog/PRAGMA readback, rollback-fault, and `5/0` evidence;
-2. wire Application issuance only after cookie verification and fresh D1
-   exact-Root/session snapshot;
+2. wire the implemented Application issuance to verified Cookie-to-redacted
+   session-anchor derivation and the exact action/begin builder after the fresh
+   D1 Root/session/credential snapshot;
 3. add a private Service-Binding-only or named-entrypoint transport with its
    own authenticated caller protocol;
 4. prove the private caller protocol carries only the typed inputs required

@@ -12829,3 +12829,85 @@ traffic, DNS, D1 write, or Go/VPS state change was used. The actual private
 Application orchestrator, remote staging fault evidence, observability,
 retention/deletion, rollback, and approvals remain open. Production remains
 **NO-GO**.
+
+## 2026-08-01 Exact Authority Snapshot and Retained Begin Verification
+
+This checkpoint verifies the default-off Application begin orchestrator and
+the authority preparation that must precede phase-proof signing. It does not
+enable a browser route, production binding, remote staging resource, or D1
+migration 0074.
+
+The D1 source snapshot now binds the exact Passkey credential digest in the
+same statement that reads the root user, Root session epoch, action
+authorization, admission fence/head, ledger, and drain-source consumption
+state. The coordinator accepts only an exact Root/session anchor and prepares
+a bounded semantic authority before the staging signer can issue a
+before-challenge proof. The signer reads its key only from a Worker Secret,
+binds Worker Version Metadata, uses 32 bytes of CSPRNG output, and immediately
+verifies the typed proof. Fixed entropy and direct signer construction exist
+only under `cfg(test)`.
+
+The begin orchestrator performs a synchronous capability preflight, persists
+the exact `Prepared` checkpoint before its first dispatch await, confirms the
+coordinator's generation-one response with CAS, and retains it. Recovery reads
+the deterministic Application object first and either returns the retained
+result or replays the exact retained request bytes; it cannot mint a new
+operation identifier or replacement request.
+
+Verified current-worktree evidence:
+
+```text
+cargo test -p cinatoken-worker --lib container_drain_source_registration_
+  36 passed
+
+bun run check:drain-source-registration-coordinator
+  passed in 215 seconds
+  7 adapter tests, 3 multi-Worker Workerd tests, 9 static contract tests,
+  coordinator Rust tests, Worker integration tests, local/staging dry runs,
+  and the coordinator wasm32 gate passed
+  local/staging dry-run upload: 747.09 KiB; gzip 275.29 KiB
+
+bun run check:drain-source-registration-coordinator:config
+  9 passed; 287 assertions
+
+bun test --path-ignore-patterns="target/**" \
+  tests/drain-source-registration-coordinator-snapshot.test.mjs
+  2 passed; 18 assertions
+  includes a wrong-credential digest projection rejection
+
+bun run check:drain-source-registration-permit-issuer
+  passed
+  includes 29 issuer service tests, 7 Workerd tests, 15 config tests,
+  2 D1 snapshot tests, and 36 Worker registration tests
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+  passed with pre-existing dead-code warnings
+
+cargo fmt --all --check
+git diff --check
+  passed
+
+bun run check
+  passed in 1039 seconds on the final audited worktree
+  complete Rust workspace and doc tests, Workerd suites, frontend, migration,
+  supply-chain policy, Wrangler dry-run, and required wasm32 gates passed
+```
+
+The first aggregate run correctly rejected the independent SQLite fixture
+because it still supplied the former three-parameter snapshot query. The
+fixture now passes the exact credential digest as parameter four and asserts
+that a different digest cannot project a Passkey. The affected aggregate gate
+and then the complete repository gate were rerun successfully.
+
+The tracked local and staging begin gates remain `false`; their phase-proof
+key identifiers are empty and key versions are zero. Production has no begin
+gate, phase-proof configuration, secret name, coordinator capability, or call
+site. No raw Passkey credential ID, authenticator data, client data, browser
+cookie, HMAC secret, or phase-proof secret is retained by this overlay.
+
+No remote Cloudflare command, resource, secret write, migration, deployment,
+route, traffic, DNS, D1 mutation, or Go/VPS state change occurred. A real
+Cookie-to-redacted-Root-session adapter, exact request builder, live D1 loader,
+migration 0074 enablement, remote fault campaign, observability, rollback, and
+independent approval remain mandatory. Go/VPS remains authoritative and
+production remains **NO-GO**.

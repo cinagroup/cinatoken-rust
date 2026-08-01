@@ -178,6 +178,9 @@ describe("container scheduler Wrangler foundation", () => {
           vars.DRAIN_SOURCE_REGISTRATION_APPLICATION_BEGIN_ENABLED,
         ).toBe("false");
         expect(
+          vars.DRAIN_SOURCE_REGISTRATION_APPLICATION_CREDENTIAL_ID_SHA256,
+        ).toBe("");
+        expect(
           vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER,
         ).toBe(`cinatoken-rust-api-${authorityEnvironment}`);
         expect(
@@ -201,6 +204,7 @@ describe("container scheduler Wrangler foundation", () => {
         for (const name of [
           "DRAIN_SOURCE_REGISTRATION_COORDINATOR_CLIENT_ENABLED",
           "DRAIN_SOURCE_REGISTRATION_APPLICATION_BEGIN_ENABLED",
+          "DRAIN_SOURCE_REGISTRATION_APPLICATION_CREDENTIAL_ID_SHA256",
           "DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER",
           "DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_AUDIENCE",
           "DRAIN_SOURCE_REGISTRATION_COORDINATOR_CALLER_IDENTITY_SHA256",

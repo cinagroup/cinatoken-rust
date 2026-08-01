@@ -12911,3 +12911,73 @@ Cookie-to-redacted-Root-session adapter, exact request builder, live D1 loader,
 migration 0074 enablement, remote fault campaign, observability, rollback, and
 independent approval remain mandatory. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-08-01 Live Session To Prepared Assembly Verification
+
+This checkpoint verifies the route-free composition from live-refreshed Rust
+session claims through one exact D1 authority snapshot to a complete
+Application `Prepared` checkpoint. It does not verify a browser route, remote
+staging resource, populated credential identity, or finish/0074 execution.
+
+The Root-session adapter requires exact Root/enabled/epoch/time/canonical
+32-byte `sid` claims and emits only separately domain-framed session-ID and
+session-binding SHA-256 values. It stores no Cookie, username, group, or raw
+`sid`, and the wrapper has no `Debug` implementation. Fixed vectors were
+computed independently with Bun/Node and asserted by Rust tests.
+
+The begin assembly performs signer/client/config preflight before D1 and drops
+secret-bearing configuration before the await. It then reads one first-primary
+snapshot using authorization digest, Root ID, and exact Passkey digest. The
+snapshot's `database_now` controls the begin intent, action, challenge, proof,
+and checkpoint issue time. Application version comes from
+`CF_VERSION_METADATA`; the credential identity comes from a non-secret variable
+that remains empty in tracked local/staging configuration.
+
+The coordinator begin request is constructed from semantic authority,
+begin-intent, challenge, verified phase proof, exact expiry, and canonical
+identity. Its request ID is deterministically domain-derived from the
+begin-intent digest. The draft cannot choose it. The resulting checkpoint then
+uses the existing create-only persist-before-Service-Binding and CAS/recovery
+path.
+
+Verified current-worktree evidence:
+
+```text
+cargo test -p cinatoken-worker --lib \
+  container_drain_source_registration_application_
+  7 passed
+
+cargo test -p cinatoken-worker --lib container_drain_source_registration_
+  40 passed
+
+bun test --path-ignore-patterns="target/**" \
+  tests/drain-source-registration-coordinator-snapshot.test.mjs
+  2 passed; 18 assertions
+
+bun run check:drain-source-registration-coordinator:config
+  9 passed; 310 assertions
+
+bun run check:drain-source-registration-coordinator
+  passed
+  coordinator service, multi-Worker Workerd, static config/source, Rust,
+  local/staging Wrangler dry-run, and coordinator wasm32 gates passed
+
+bun run check
+  passed in 1041.9 seconds before this evidence record was appended
+  complete Rust workspace and doc tests, Workerd suites, frontend, migration,
+  supply-chain policy, Wrangler dry-run, and required wasm32 gates passed
+```
+
+The source contract proves the new modules contain no route or request
+construction, the session adapter contains no Cookie parser or presentation
+identity fields, preflight precedes the exact D1 call, the D1 result precedes
+phase signing, the phase proof precedes checkpoint freeze, and retained
+dispatch remains downstream of preparation.
+
+No remote Cloudflare command, resource, secret write, migration, deployment,
+route, traffic, DNS, D1 mutation, or Go/VPS state change occurred. The bounded
+Root/Origin/RPID/CSRF/body/network/rate-limit/audit request adapter, combined
+Workerd/remote staging call, complete finish proof chain, immutable 0074
+execution, recovery evidence, observability, rollback, retention, and approvals
+remain mandatory. Go/VPS remains authoritative and production remains
+**NO-GO**.

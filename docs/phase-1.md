@@ -5288,3 +5288,39 @@ proofs, bounded permit issuance, one immutable 0074 command, and same-Session
 command/all-alias recovery. Combined live Rust orchestration and remote staging
 proof are absent. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-08-01 Live Session To Prepared Checkpoint
+
+The route-free begin candidate now composes the existing live-refreshed Rust
+session claims with the exact D1 authority snapshot. A dedicated adapter
+requires exact Root/enabled/session epoch/time/canonical 32-byte `sid` claims,
+then derives independently domain-separated session-ID and session-binding
+digests. Cookie, username, group, and raw `sid` are not retained, and the
+resulting authority type has no `Debug` surface.
+
+`prepare_application_begin` synchronously verifies the default-off
+signer/client capability and drops secret-bearing configuration before its D1
+await. It loads one snapshot by authorization digest, Root ID, and exact
+Passkey digest, then freezes the action, begin intent, mandatory-UV challenge,
+before-challenge proof, deterministic coordinator begin request, and
+Application `Prepared` checkpoint from that observation. The coordinator
+request ID is domain-derived from the begin-intent digest rather than supplied
+by the caller.
+
+`prepare_and_dispatch_application_begin` connects the result to the existing
+persist-before-dispatch orchestrator. No route invokes it. The tracked
+Application credential digest is empty in local/staging, both begin/client
+gates remain false, and production contains none of the capability.
+
+Focused evidence now passes 40 registration Rust tests, two independent D1
+SQLite tests, and nine source/config tests with 310 assertions. The coordinator
+service/Workerd/dry-run/wasm aggregate also passes. See
+`docs/relay-container-drain-registration-application-begin.md` for the exact
+contract.
+
+Immediate P0 is now the bounded request adapter plus finish assembly. It must
+derive the draft only after Root auth, exact Origin/RPID, CSRF, body, trusted
+network, rate-limit, audit, and change-ticket controls. Finish still requires
+claim-before-parse, mandatory UV, fresh issuer/commit authority, permit
+issuance, immutable 0074 execution, and same-Session alias recovery. Go/VPS
+remains authoritative and production remains **NO-GO**.

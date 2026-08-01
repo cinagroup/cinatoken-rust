@@ -34,6 +34,14 @@ non-secret, and `CF_VERSION_METADATA` supplies the exact Application version.
 Both Application begin and coordinator client gates remain false, production
 contains no capability, and no browser handler calls this path.
 
+The route-free Application assembly now derives the proof subject from one
+exact D1 snapshot and a redacted live Root-session anchor. The anchor hashes
+the canonical 32-byte session ID and separately hashes the Root ID, live role,
+status, session epoch, issue/expiry times, and session ID under distinct
+length-framed domains. It retains neither Cookie nor raw `sid`. The resulting
+proof is frozen into the same Application checkpoint as the exact action,
+challenge, begin intent, and deterministic coordinator request.
+
 This protocol does not make the proof single-use. A dedicated coordinator
 Durable Object must persist the operation and phase transition before any
 staging route can be enabled.
@@ -305,9 +313,8 @@ Before isolated staging enablement:
 
 1. apply 0075/0076 only to isolated staging after backup, then retain exact
    catalog/PRAGMA readback, rollback-fault, and `5/0` evidence;
-2. wire the implemented Application issuance to verified Cookie-to-redacted
-   session-anchor derivation and the exact action/begin builder after the fresh
-   D1 Root/session/credential snapshot;
+2. wire the implemented live-session/snapshot/action/begin/proof assembly to a
+   bounded request adapter after exact Root/Origin/RPID/CSRF/rate-limit checks;
 3. add a private Service-Binding-only or named-entrypoint transport with its
    own authenticated caller protocol;
 4. prove the private caller protocol carries only the typed inputs required

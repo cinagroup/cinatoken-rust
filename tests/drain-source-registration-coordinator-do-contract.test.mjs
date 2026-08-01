@@ -13,12 +13,28 @@ const applicationCeremonySource = readFileSync(
   "crates/worker/src/container_drain_source_registration_application_ceremony.rs",
   "utf8",
 );
+const applicationBeginSource = readFileSync(
+  "crates/worker/src/container_drain_source_registration_application_begin.rs",
+  "utf8",
+);
+const applicationBeginImplementation = applicationBeginSource.split(
+  "#[cfg(test)]",
+  1,
+)[0];
 const applicationOrchestratorSource = readFileSync(
   "crates/worker/src/container_drain_source_registration_application_orchestrator.rs",
   "utf8",
 );
 const applicationOrchestratorImplementation =
   applicationOrchestratorSource.split("#[cfg(test)]", 1)[0];
+const applicationSessionSource = readFileSync(
+  "crates/worker/src/container_drain_source_registration_application_session.rs",
+  "utf8",
+);
+const applicationSessionImplementation = applicationSessionSource.split(
+  "#[cfg(test)]",
+  1,
+)[0];
 const passkeyCeremonySource = readFileSync(
   "crates/worker/src/passkey_ceremony.rs",
   "utf8",
@@ -182,6 +198,7 @@ describe("drain-source registration coordinator DO source contract", () => {
       expect(scope.vars).toMatchObject({
         DRAIN_SOURCE_REGISTRATION_COORDINATOR_CLIENT_ENABLED: "false",
         DRAIN_SOURCE_REGISTRATION_APPLICATION_BEGIN_ENABLED: "false",
+        DRAIN_SOURCE_REGISTRATION_APPLICATION_CREDENTIAL_ID_SHA256: "",
         DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER:
           `cinatoken-rust-api-${environment}`,
         DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_AUDIENCE:
@@ -252,6 +269,14 @@ describe("drain-source registration coordinator DO source contract", () => {
     expect(applicationOrchestratorImplementation).not.toContain("Router::");
     expect(applicationOrchestratorImplementation).not.toContain("route_async(");
     expect(applicationOrchestratorImplementation).not.toContain("Request::new");
+    expect(applicationBeginImplementation).not.toContain("Router::");
+    expect(applicationBeginImplementation).not.toContain("route_async(");
+    expect(applicationBeginImplementation).not.toContain("Request::new");
+    expect(applicationSessionImplementation).not.toContain("worker::Request");
+    expect(applicationSessionImplementation).not.toContain("session_cookie(");
+    expect(applicationSessionImplementation).not.toContain("username: String");
+    expect(applicationSessionImplementation).not.toContain("group: String");
+    expect(applicationSessionImplementation).not.toContain("session_id: String");
     expect(serviceSource).not.toContain("Router::");
     expect(serviceSource).not.toContain("route_async(");
     expect(serviceAdapterSource).not.toContain("Router::");
@@ -308,6 +333,56 @@ describe("drain-source registration coordinator DO source contract", () => {
     expect(applicationOrchestratorSource).not.toContain(
       "DRAIN_SOURCE_REGISTRATION_PHASE_PROOF_CURRENT_SECRET =",
     );
+    expect(applicationBeginSource).toContain(
+      "VerifiedApplicationRootSessionV1::from_live_root_claims",
+    );
+    expect(applicationBeginSource).toContain(
+      "relay_container_drain_source_registration_phase_snapshot(",
+    );
+    expect(applicationBeginSource).toContain(
+      "issue_before_challenge_phase_proof(",
+    );
+    expect(applicationBeginSource).toContain(
+      "freeze_application_checkpoint(materialized, &phase_proof)",
+    );
+    expect(applicationBeginSource).toContain(
+      "derive_coordinator_begin_request_id_sha256(&begin_intent_sha256)",
+    );
+    expect(applicationBeginSource).toContain(
+      "let prepared = prepare_application_begin(env, live_root_claims, draft).await?;",
+    );
+    expect(applicationBeginSource).toContain(
+      "application_orchestrator::dispatch_prepared_begin(env, &prepared)",
+    );
+    expect(
+      applicationBeginSource.indexOf(
+        "let prepared = prepare_application_begin(env, live_root_claims, draft).await?;",
+      ),
+    ).toBeLessThan(
+      applicationBeginSource.indexOf(
+        "application_orchestrator::dispatch_prepared_begin(env, &prepared)",
+      ),
+    );
+    expect(
+      applicationBeginSource.indexOf(
+        "application_orchestrator::preflight_fresh_application_begin(env)",
+      ),
+    ).toBeLessThan(
+      applicationBeginSource.indexOf(
+        "relay_container_drain_source_registration_phase_snapshot(",
+      ),
+    );
+    expect(
+      applicationBeginSource.indexOf(
+        "relay_container_drain_source_registration_phase_snapshot(",
+      ),
+    ).toBeLessThan(
+      applicationBeginSource.indexOf(
+        "application_orchestrator::issue_before_challenge_phase_proof(",
+      ),
+    );
+    expect(applicationBeginImplementation).not.toContain("Cookie");
+    expect(applicationBeginImplementation).not.toContain("session_id:");
 
     for (const route of ["/put-once", "/read", "/replace", "/claim"]) {
       expect(passkeyCeremonySource).toContain(`\"${route}\"`);

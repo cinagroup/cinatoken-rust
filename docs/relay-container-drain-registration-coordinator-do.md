@@ -466,14 +466,23 @@ The combined browser-to-Rust-orchestrator runtime path is not wired. Current
 runtime evidence still proves checkpoint storage and coordinator Service
 Binding separately; source/order and Rust tests prove their composition.
 
+The route-free Application caller now also implements the composition above
+that boundary. Live-refreshed Root session claims are reduced to
+domain-separated session-ID/binding digests, one exact D1 snapshot constructs
+the action/begin/challenge/proof, and the coordinator request ID is
+deterministically derived from the begin-intent digest. The result is a
+complete `Prepared` checkpoint that can be passed to the retained dispatcher.
+See `relay-container-drain-registration-application-begin.md`.
+
 ## Promotion gates
 
 The next ordered work is:
 
-1. derive the redacted Root session anchor from a verified Cookie and discard
-   raw Cookie/`sid` material before the D1 phase query;
-2. build the typed action, begin intent and coordinator request from the exact
-   snapshot, then invoke the implemented phase signer and retained dispatcher;
+1. add a bounded request adapter that calls the existing Root session verifier,
+   enforces Origin/RPID/CSRF/body/network/rate-limit/audit controls, and derives
+   the digest-only begin draft before invoking the implemented assembly;
+2. prove one combined browser-adapter-to-coordinator Workerd call plus
+   indeterminate-response recovery without exposing a public production route;
 3. expose begin only after the coordinator and Application
    `ChallengeIssued` commits both succeed;
 4. wire finish claim before WebAuthn parsing;

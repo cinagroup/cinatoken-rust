@@ -238,12 +238,7 @@ fn phase_proof_signer_config(
     if runtime_value(env, "ENVIRONMENT").as_deref() != Some("staging") {
         return Err(ApplicationBeginOrchestratorError::PhaseProofConfiguration);
     }
-    let application_version_id = env
-        .get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")
-        .ok()
-        .map(|metadata| metadata.id())
-        .filter(|value| valid_identifier(value))
-        .ok_or(ApplicationBeginOrchestratorError::PhaseProofConfiguration)?;
+    let application_version_id = application_version_id(env)?;
     let key_version = runtime_value(env, PHASE_PROOF_CURRENT_KEY_VERSION_ENV)
         .and_then(|value| value.parse::<u32>().ok())
         .ok_or(ApplicationBeginOrchestratorError::PhaseProofConfiguration)?;
@@ -265,6 +260,23 @@ fn phase_proof_signer_config(
     )
 }
 
+pub(crate) fn application_version_id(
+    env: &Env,
+) -> Result<String, ApplicationBeginOrchestratorError> {
+    env.get_binding::<WorkerVersionMetadata>("CF_VERSION_METADATA")
+        .ok()
+        .map(|metadata| metadata.id())
+        .filter(|value| valid_identifier(value))
+        .ok_or(ApplicationBeginOrchestratorError::PhaseProofConfiguration)
+}
+
+pub(crate) fn preflight_fresh_application_begin(
+    env: &Env,
+) -> Result<(), ApplicationBeginOrchestratorError> {
+    drop(phase_proof_signer_config(env)?);
+    Ok(())
+}
+
 fn application_begin_preflight(env: &Env) -> Result<(), ApplicationBeginOrchestratorError> {
     if runtime_value(env, APPLICATION_BEGIN_ENABLED_ENV).as_deref() != Some("true") {
         return Err(ApplicationBeginOrchestratorError::Disabled);
@@ -279,7 +291,7 @@ pub(crate) async fn dispatch_prepared_begin(
     // Fresh dispatch requires the same signer capability that created the
     // retained proof. Reconciliation below intentionally needs only the
     // already-retained checkpoint and coordinator client.
-    drop(phase_proof_signer_config(env)?);
+    preflight_fresh_application_begin(env)?;
     if !prepared.is_prepared() {
         return Err(ApplicationBeginOrchestratorError::InvalidCheckpoint);
     }

@@ -27004,3 +27004,126 @@ do not yet prove one live Rust browser-to-coordinator orchestration call. No
 remote Cloudflare resource, secret, migration, deployment, route, traffic,
 DNS, or Go/VPS state changed. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+### Live-session to exact Prepared assembly (2026-08-01)
+
+The route-free Application caller now closes the next begin-path composition
+gap. It accepts the existing Rust session claims only after the normal session
+codec and live-user D1 recheck, removes presentation identity, derives a
+redacted Root-session anchor, performs one exact first-primary registration
+snapshot, and freezes every challenge-side artifact from that observation.
+
+#### Session authority adapter
+
+`VerifiedApplicationRootSessionV1` accepts only an exact Root role, enabled
+status, JavaScript-safe ID/epoch/time fields, and a canonical base64url `sid`
+that decodes to 32 bytes. It creates two independent length-framed SHA-256
+domains:
+
+- a session-ID digest over the decoded `sid`; and
+- a session-binding digest over Root ID, live role/status, session epoch,
+  issue/expiry time, and decoded `sid`.
+
+The adapter retains neither Cookie, username, group, nor raw `sid`, and it has
+no `Debug` implementation. The existing `require_user_auth` path already
+verifies the Cookie signature/expiry and refreshes role, status, deletion, and
+session epoch from D1. The registration snapshot then independently checks the
+same Root and epoch alongside the exact Passkey and authorization authority.
+
+This deliberately avoids copying the Go session's opaque server-side map into
+the Rust authority object. Go compatibility remains at the browser session
+surface, while the security boundary uses typed, independently revocable,
+digest-only evidence.
+
+#### One-observation assembly
+
+`DrainSourceRegistrationApplicationBeginDraftV1` is an internal non-serde
+object containing only bounded digest metadata, RP/Origin, a typed trusted
+network HMAC, reason code, and a 30-300 second lifetime. It is not a browser
+schema. A future request adapter must derive it from canonical server-owned
+inputs only after Root, Origin/RPID, CSRF, body, network, rate-limit, audit, and
+change-ticket checks.
+
+`prepare_application_begin` performs this order:
+
+1. synchronously validate begin/signer/client/binding capability and drop the
+   secret-bearing signer config before any await;
+2. read `CF_VERSION_METADATA` and the non-secret Application credential
+   identity;
+3. derive the redacted Root-session anchor;
+4. read one first-primary D1 snapshot by authorization digest, Root ID, and
+   exact Passkey credential digest;
+5. use `snapshot.database_now` as the issue time for the typed begin intent;
+6. validate semantic authority before constructing the action;
+7. construct the action from the validated authorization, Root/session,
+   Passkey, fence/head, ledger, deployment identity, and draft;
+8. create the mandatory-UV challenge and prove exact action/intent equality;
+9. issue and immediately verify the typed before-challenge phase proof; and
+10. freeze one Application `Prepared` checkpoint and canonical coordinator
+    begin request.
+
+The coordinator request ID is no longer caller supplied. It is derived under a
+dedicated length-framed domain from the begin-intent digest. Initial dispatch,
+Application persistence, coordinator idempotency, and reconciliation therefore
+share one request identity without minting replacement entropy.
+
+`prepare_and_dispatch_application_begin` passes the result to the retained
+dispatcher. The dispatcher still persists `Prepared` create-only before its
+first Service Binding dispatch await, then CAS-upgrades the checkpoint only
+after an exact generation-one coordinator response. Reconciliation continues
+to read the deterministic Application object and exact-replay retained bytes.
+
+#### Capability isolation
+
+Tracked local and staging configuration now include
+`DRAIN_SOURCE_REGISTRATION_APPLICATION_CREDENTIAL_ID_SHA256=""`. Empty is
+intentionally invalid. Together with both false begin/client gates and empty
+phase key metadata, this keeps the complete assembly inert. Production omits
+the credential identity, begin gate, coordinator capability, phase metadata,
+and secret name.
+
+No raw session or phase-signing secret crosses a network or async boundary.
+The phase signer is loaded again after the D1 read so a key rotation cannot
+leave old secret material alive across the await.
+
+#### Architecture alignment
+
+The cinaVibeSDK lesson remains applied at the authority boundary rather than
+copied mechanically: deterministic per-entity Durable Object identity owns
+lifecycle state, while container execution is a later effect. In this path,
+the named Application ceremony and registration coordinator become durable
+before any 0074 command or container-side work can occur. Public preview,
+dynamic sandbox, and fail-open behavior remain excluded.
+
+#### Evidence and remaining P0
+
+Current local evidence passes:
+
+- 40 focused registration Rust tests;
+- two independent SQLite exact-snapshot tests;
+- nine source/config tests with 310 assertions;
+- the coordinator service, Workerd, Wrangler dry-run, Rust, and wasm32
+  aggregate gate; and
+- the complete `bun run check` repository gate in 1041.9 seconds.
+
+Independent Bun/Node SHA-256 implementations produced fixed vectors for both
+Root-session domains and the deterministic coordinator request-ID domain.
+
+This does not yet prove a browser call. There is no route or named entrypoint,
+the Application credential digest is empty, and both gates are false. The next
+P0 slice is:
+
+1. implement the bounded request adapter and derive all draft entropy/digests
+   only after Root/Origin/RPID/CSRF/body/network/rate-limit/audit controls;
+2. return no challenge until Application and coordinator readback both prove
+   `ChallengeIssued`;
+3. add combined Workerd and isolated remote staging begin/recovery evidence;
+4. implement finish claim before assertion parse, mandatory UV, fresh issuer
+   and commit snapshots/proofs, bounded permit issuance, immutable 0074
+   execution, and same-Session command/all-alias recovery; and
+5. complete observability, retention/deletion, load/SLO, rollback, and
+   independent approval evidence.
+
+No remote Cloudflare command, resource, secret, migration, deployment, route,
+traffic, DNS, D1 mutation, or Go/VPS change occurred. Go/VPS remains
+authoritative and production remains **NO-GO**.

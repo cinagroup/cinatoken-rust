@@ -5203,3 +5203,52 @@ Application must retain Cookie/session validation, raw WebAuthn assertion and
 public key, phase-proof signing, issuer credentials, fresh first-primary D1
 snapshots, 0074 execution, and same-Session command/all-alias winner readback.
 None of those values or capabilities may move into the coordinator Worker.
+
+## 2026-08-01 Persist-Before-Dispatch Application Checkpoint
+
+The route-free Application client and short-lived ceremony state now exist
+locally. Local and staging retain the private coordinator Service Binding with
+`DRAIN_SOURCE_REGISTRATION_COORDINATOR_CLIENT_ENABLED=false`; staging accepts
+the caller HMAC only from a Worker Secret. Production contains no binding,
+client variable, secret name, route, or target configuration.
+
+The Application checkpoint is explicitly two phase:
+
+```text
+Prepared / generation 0 / no coordinator status
+  -> ChallengeIssued / generation 1 / exact coordinator status
+  -> retained deterministic finish claim
+```
+
+`Prepared` contains the exact typed begin request and only the bounded
+WebAuthn challenge plus redacted authority anchors. It is written create-only
+before any Service Binding dispatch. A valid generation-one coordinator
+response upgrades it with a SHA-256 compare-and-swap. Exact replacement replay
+is idempotent; changed stale state conflicts; claimed state cannot be replaced.
+The browser challenge must not be returned before both durable commits exist.
+
+The private client supports every begin/finish/status/recover transition with
+canonical JSON, current-key HMAC, deterministic object naming, redirect
+rejection, a three-second timeout, an 8 KiB response cap, strict response
+shape/media validation, and four failure classes: `NotDispatched`,
+`DeterministicRejection`, `Indeterminate`, and `ProtocolViolation`. Historical
+exact replay is checked against its immutable event and may report only a
+reachable current generation; it never rewinds the coordinator.
+
+Passkey ceremony claim is retained rather than destructively taken. Thirty-two
+concurrent identical claims return the same payload, a different claim
+conflicts, the claim survives object eviction, and the old destructive path
+rejects it. Coordinator state reads now verify every event and predecessor
+digest, not only the current state row.
+
+This is still a route-free foundation. Immediate P0 remains one private
+Application begin/finish orchestrator that proves Prepared persistence before
+dispatch, fresh D1 proof issuance, claim-before-assertion-parse, mandatory-UV
+WebAuthn, bounded permit issuance, final D1 reread, commit-attempt persistence,
+one 0074 execution, and command/all-alias same-Session recovery. Staging secret
+rotation, deployment readback, fault/load/SLO/retention/rollback evidence, and
+independent approvals remain open.
+
+No remote Cloudflare resource, secret, migration, deployment, route, traffic,
+DNS, or Go/VPS state changed. Go/VPS remains authoritative and production
+remains **NO-GO**.

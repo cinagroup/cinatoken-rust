@@ -22,15 +22,15 @@ type HmacSha256 = Hmac<Sha256>;
 
 pub(crate) const COORDINATOR_BINDING: &str = "DRAIN_SOURCE_REGISTRATION_COORDINATORS";
 
-const BEGIN_PATH: &str = "/v1/begin";
-const FINISH_PATH: &str = "/v1/finish";
-const STATUS_PATH: &str = "/v1/status";
-const RECOVER_PATH: &str = "/v1/recover";
-const AUTHORITY_HEADER: &str = "x-cinatoken-drain-source-registration-coordinator-authority";
-const AUTHORITY_TYPE: &str = "CINATOKEN-DRAIN-SOURCE-REGISTRATION-COORDINATOR";
-const AUTHORITY_DOMAIN: &[u8] =
+pub const BEGIN_PATH: &str = "/v1/begin";
+pub const FINISH_PATH: &str = "/v1/finish";
+pub const STATUS_PATH: &str = "/v1/status";
+pub const RECOVER_PATH: &str = "/v1/recover";
+pub const AUTHORITY_HEADER: &str = "x-cinatoken-drain-source-registration-coordinator-authority";
+pub const AUTHORITY_TYPE: &str = "CINATOKEN-DRAIN-SOURCE-REGISTRATION-COORDINATOR";
+pub const AUTHORITY_DOMAIN: &[u8] =
     b"cinatoken:relay-container:drain-source-registration:coordinator-authority:v1:";
-const OBJECT_NAME_DOMAIN: &[u8] =
+pub const OBJECT_NAME_DOMAIN: &[u8] =
     b"cinatoken:relay-container:drain-source-registration:coordinator-object:v1";
 const EVENT_DOMAIN: &[u8] =
     b"cinatoken:relay-container:drain-source-registration:coordinator-event:v1";
@@ -42,12 +42,12 @@ const EXPIRATION_EVIDENCE_DOMAIN: &[u8] =
 const STATE_KEY: &str = "drain_source_registration_coordinator_state_v1";
 const EVENT_PREFIX: &str = "event:v1:";
 const REPLAY_PREFIX: &str = "request:v1:";
-const MAX_JSON_BODY_BYTES: usize = 16 * 1024;
-const MAX_RESPONSE_BYTES: usize = 8 * 1024;
+pub const MAX_JSON_BODY_BYTES: usize = 16 * 1024;
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024;
 const MAX_AUTHORITY_BYTES: usize = 4096;
 const MAX_AUTHORITY_PART_BYTES: usize = 4096;
 const MAX_CEREMONY_LIFETIME_MS: i64 = 300_000;
-const AUTHORITY_WINDOW_SECONDS: i64 = 30;
+pub const AUTHORITY_WINDOW_SECONDS: i64 = 30;
 const CLOCK_SKEW_SECONDS: i64 = 5;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -110,13 +110,13 @@ impl ProtocolError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct HmacKey {
     kid: String,
     secret: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct AuthorityConfiguration {
     environment: String,
     issuer: String,
@@ -157,70 +157,70 @@ struct AuthenticatedRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CoordinatorIdentityV1 {
-    authorization_id_sha256: String,
-    contract_version: u8,
-    environment: String,
-    operation_id_sha256: String,
-    root_user_id: String,
-    scope_id_sha256: String,
-    scope_kind: String,
+pub struct CoordinatorIdentityV1 {
+    pub authorization_id_sha256: String,
+    pub contract_version: u8,
+    pub environment: String,
+    pub operation_id_sha256: String,
+    pub root_user_id: String,
+    pub scope_id_sha256: String,
+    pub scope_kind: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct BeginEvidenceV1 {
-    authority_fingerprint_sha256: String,
-    begin_intent_sha256: String,
-    ceremony_id_sha256: String,
-    challenge_phase_proof_sha256: String,
-    challenge_sha256: String,
+pub struct BeginEvidenceV1 {
+    pub authority_fingerprint_sha256: String,
+    pub begin_intent_sha256: String,
+    pub ceremony_id_sha256: String,
+    pub challenge_phase_proof_sha256: String,
+    pub challenge_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct FinishClaimEvidenceV1 {
-    assertion_envelope_sha256: String,
-    finish_claim_id_sha256: String,
+pub struct FinishClaimEvidenceV1 {
+    pub assertion_envelope_sha256: String,
+    pub finish_claim_id_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct ProofVerifiedEvidenceV1 {
-    passkey_assertion_signature_sha256: String,
-    passkey_state_transition_sha256: String,
-    verified_passkey_proof_sha256: String,
+pub struct ProofVerifiedEvidenceV1 {
+    pub passkey_assertion_signature_sha256: String,
+    pub passkey_state_transition_sha256: String,
+    pub verified_passkey_proof_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct PermitRequestEvidenceV1 {
-    issuer_auth_key_id_sha256: String,
-    issuer_phase_proof_sha256: String,
-    issuer_request_id_sha256: String,
-    issuer_request_sha256: String,
+pub struct PermitRequestEvidenceV1 {
+    pub issuer_auth_key_id_sha256: String,
+    pub issuer_phase_proof_sha256: String,
+    pub issuer_request_id_sha256: String,
+    pub issuer_request_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct PermitVerifiedEvidenceV1 {
-    issuer_version_sha256: String,
-    permit_id_sha256: String,
-    permit_signature_envelope_sha256: String,
-    permit_subject_sha256: String,
+pub struct PermitVerifiedEvidenceV1 {
+    pub issuer_version_sha256: String,
+    pub permit_id_sha256: String,
+    pub permit_signature_envelope_sha256: String,
+    pub permit_subject_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CommitAttemptEvidenceV1 {
-    command_body_sha256: String,
-    command_id_sha256: String,
-    commit_phase_proof_sha256: String,
+pub struct CommitAttemptEvidenceV1 {
+    pub command_body_sha256: String,
+    pub command_id_sha256: String,
+    pub commit_phase_proof_sha256: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum RegistrationOutcome {
+pub enum RegistrationOutcome {
     FreshApplied,
     ExactReplay,
     Conflict,
@@ -229,11 +229,11 @@ enum RegistrationOutcome {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct OutcomeEvidenceV1 {
-    authoritative_readback_sha256: String,
-    command_id_sha256: String,
-    outcome: RegistrationOutcome,
-    winner_command_id_sha256: Option<String>,
+pub struct OutcomeEvidenceV1 {
+    pub authoritative_readback_sha256: String,
+    pub command_id_sha256: String,
+    pub outcome: RegistrationOutcome,
+    pub winner_command_id_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -246,7 +246,7 @@ struct ExpirationEvidenceV1 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum CoordinatorPhase {
+pub enum CoordinatorPhase {
     ChallengeIssued,
     FinishClaimed,
     ProofVerified,
@@ -261,7 +261,7 @@ enum CoordinatorPhase {
 }
 
 impl CoordinatorPhase {
-    fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::ChallengeIssued => "challenge_issued",
             Self::FinishClaimed => "finish_claimed",
@@ -277,7 +277,7 @@ impl CoordinatorPhase {
         }
     }
 
-    fn terminal(self) -> bool {
+    pub const fn terminal(self) -> bool {
         matches!(
             self,
             Self::Applied | Self::ExactReplay | Self::Conflict | Self::Expired
@@ -356,93 +356,93 @@ struct ReplayRecordV1 {
     resulting_phase: CoordinatorPhase,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct BeginRequestV1 {
-    command: String,
-    evidence: BeginEvidenceV1,
-    expected_generation: u32,
-    expires_at_ms: i64,
-    identity: CoordinatorIdentityV1,
-    request_id_sha256: String,
+pub struct BeginRequestV1 {
+    pub command: String,
+    pub evidence: BeginEvidenceV1,
+    pub expected_generation: u32,
+    pub expires_at_ms: i64,
+    pub identity: CoordinatorIdentityV1,
+    pub request_id_sha256: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct FinishClaimRequestV1 {
-    command: String,
-    evidence: FinishClaimEvidenceV1,
-    expected_generation: u32,
-    identity: CoordinatorIdentityV1,
-    request_id_sha256: String,
+pub struct FinishClaimRequestV1 {
+    pub command: String,
+    pub evidence: FinishClaimEvidenceV1,
+    pub expected_generation: u32,
+    pub identity: CoordinatorIdentityV1,
+    pub request_id_sha256: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct ProofVerifiedRequestV1 {
-    command: String,
-    evidence: ProofVerifiedEvidenceV1,
-    expected_generation: u32,
-    identity: CoordinatorIdentityV1,
-    request_id_sha256: String,
+pub struct ProofVerifiedRequestV1 {
+    pub command: String,
+    pub evidence: ProofVerifiedEvidenceV1,
+    pub expected_generation: u32,
+    pub identity: CoordinatorIdentityV1,
+    pub request_id_sha256: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct PermitRequestFrozenRequestV1 {
-    command: String,
-    evidence: PermitRequestEvidenceV1,
-    expected_generation: u32,
-    identity: CoordinatorIdentityV1,
-    request_id_sha256: String,
+pub struct PermitRequestFrozenRequestV1 {
+    pub command: String,
+    pub evidence: PermitRequestEvidenceV1,
+    pub expected_generation: u32,
+    pub identity: CoordinatorIdentityV1,
+    pub request_id_sha256: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct PermitVerifiedRequestV1 {
-    command: String,
-    evidence: PermitVerifiedEvidenceV1,
-    expected_generation: u32,
-    identity: CoordinatorIdentityV1,
-    request_id_sha256: String,
+pub struct PermitVerifiedRequestV1 {
+    pub command: String,
+    pub evidence: PermitVerifiedEvidenceV1,
+    pub expected_generation: u32,
+    pub identity: CoordinatorIdentityV1,
+    pub request_id_sha256: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct CommitAttemptedRequestV1 {
-    command: String,
-    evidence: CommitAttemptEvidenceV1,
-    expected_generation: u32,
-    identity: CoordinatorIdentityV1,
-    request_id_sha256: String,
+pub struct CommitAttemptedRequestV1 {
+    pub command: String,
+    pub evidence: CommitAttemptEvidenceV1,
+    pub expected_generation: u32,
+    pub identity: CoordinatorIdentityV1,
+    pub request_id_sha256: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct OutcomeRecordedRequestV1 {
-    command: String,
-    evidence: OutcomeEvidenceV1,
-    expected_generation: u32,
-    identity: CoordinatorIdentityV1,
-    request_id_sha256: String,
+pub struct OutcomeRecordedRequestV1 {
+    pub command: String,
+    pub evidence: OutcomeEvidenceV1,
+    pub expected_generation: u32,
+    pub identity: CoordinatorIdentityV1,
+    pub request_id_sha256: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct StatusRequestV1 {
-    command: String,
-    identity: CoordinatorIdentityV1,
-    request_id_sha256: String,
+pub struct StatusRequestV1 {
+    pub command: String,
+    pub identity: CoordinatorIdentityV1,
+    pub request_id_sha256: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct RecoverRequestV1 {
-    command: String,
-    evidence: OutcomeEvidenceV1,
-    expected_generation: u32,
-    identity: CoordinatorIdentityV1,
-    request_id_sha256: String,
+pub struct RecoverRequestV1 {
+    pub command: String,
+    pub evidence: OutcomeEvidenceV1,
+    pub expected_generation: u32,
+    pub identity: CoordinatorIdentityV1,
+    pub request_id_sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -498,24 +498,26 @@ impl MutationRequestV1 {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct StatusResponseV1<'a> {
-    contract_version: u8,
-    event_count: u32,
-    expires_at_ms: i64,
-    generation: u32,
-    latest_event_sha256: &'a str,
-    operation_id_sha256: &'a str,
-    outcome: Option<&'a OutcomeEvidenceV1>,
-    phase: CoordinatorPhase,
-    replayed: bool,
-    terminal: bool,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CoordinatorStatusResponseV1 {
+    pub contract_version: u8,
+    pub event_count: u32,
+    pub expires_at_ms: i64,
+    pub generation: u32,
+    pub latest_event_sha256: String,
+    pub operation_id_sha256: String,
+    pub outcome: Option<OutcomeEvidenceV1>,
+    pub phase: CoordinatorPhase,
+    pub replayed: bool,
+    pub terminal: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct ErrorResponseV1 {
-    code: &'static str,
-    contract_version: u8,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CoordinatorErrorResponseV1 {
+    pub code: String,
+    pub contract_version: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -691,6 +693,17 @@ impl DrainSourceRegistrationCoordinator {
                         && replay.path == route.path()
                         && replay.request_id_sha256 == request.request_id_sha256()
                     {
+                        let replay_event_key = event_key(replay.resulting_generation);
+                        let replay_event_values = transaction
+                            .get_multiple(vec![replay_event_key.clone()])
+                            .await?;
+                        let replay_event = map_record::<CoordinatorEventV1>(
+                            &replay_event_values,
+                            &replay_event_key,
+                        )
+                        .map_err(storage_error)?
+                        .ok_or_else(|| Error::RustError(TX_STORAGE_CORRUPT.to_string()))?;
+                        validate_replay_record(&replay, &replay_event).map_err(storage_error)?;
                         return Err(Error::RustError(TX_EXACT_REPLAY.to_string()));
                     }
                     return Err(Error::RustError(TX_REQUEST_CONFLICT.to_string()));
@@ -791,14 +804,33 @@ impl DrainSourceRegistrationCoordinator {
         validate_stored_state(&state)
             .map_err(storage_error)
             .map_err(|_| Error::RustError(TX_STORAGE_CORRUPT.to_string()))?;
-        let latest_key = event_key(state.generation);
-        let event_values = storage.get_multiple(vec![latest_key.clone()]).await?;
-        let event = map_record::<CoordinatorEventV1>(&event_values, &latest_key)
-            .map_err(storage_error)?
-            .ok_or_else(|| Error::RustError(TX_STORAGE_CORRUPT.to_string()))?;
-        if event.event_sha256 != state.latest_event_sha256
-            || event.generation != state.generation
-            || event.to_phase != state.phase
+        let event_keys = (1..=state.generation).map(event_key).collect::<Vec<_>>();
+        let event_values = storage.get_multiple(event_keys.clone()).await?;
+        let object_name = coordinator_object_name(&state.identity)
+            .map_err(|_| Error::RustError(TX_STORAGE_CORRUPT.to_string()))?;
+        let mut previous_event_sha256 = event_genesis_sha256(&object_name);
+        let mut previous_phase = None;
+        let mut previous_occurred_at_ms = state.created_at_ms;
+        for (index, key) in event_keys.iter().enumerate() {
+            let event = map_record::<CoordinatorEventV1>(&event_values, key)
+                .map_err(storage_error)?
+                .ok_or_else(|| Error::RustError(TX_STORAGE_CORRUPT.to_string()))?;
+            validate_event_record(
+                &event,
+                (index as u32) + 1,
+                previous_phase,
+                &previous_event_sha256,
+                previous_occurred_at_ms,
+                state.updated_at_ms,
+            )
+            .map_err(|_| Error::RustError(TX_STORAGE_CORRUPT.to_string()))?;
+            previous_event_sha256 = event.event_sha256;
+            previous_phase = Some(event.to_phase);
+            previous_occurred_at_ms = event.occurred_at_ms;
+        }
+        if previous_event_sha256 != state.latest_event_sha256
+            || previous_phase != Some(state.phase)
+            || previous_occurred_at_ms != state.updated_at_ms
         {
             return Err(Error::RustError(TX_STORAGE_CORRUPT.to_string()));
         }
@@ -1038,6 +1070,24 @@ fn parse_status_request(body: &[u8]) -> Result<StatusRequestV1, ProtocolError> {
         return Err(ProtocolError::new(400, "invalid_request"));
     }
     Ok(value)
+}
+
+pub fn validate_wire_request_v1(path: &str, expected_environment: &str, body: &[u8]) -> bool {
+    if body.is_empty() || body.len() > MAX_JSON_BODY_BYTES {
+        return false;
+    }
+    let route = CoordinatorRoute::parse(path);
+    match route {
+        CoordinatorRoute::Begin | CoordinatorRoute::Finish | CoordinatorRoute::Recover => {
+            parse_mutation_request(route, body).is_ok_and(|request| {
+                validate_identity(request.identity(), expected_environment).is_ok()
+            })
+        }
+        CoordinatorRoute::Status => parse_status_request(body).is_ok_and(|request| {
+            validate_identity(&request.identity, expected_environment).is_ok()
+        }),
+        CoordinatorRoute::NotFound => false,
+    }
 }
 
 fn apply_mutation(
@@ -1354,6 +1404,149 @@ fn build_event(
     }
 }
 
+fn validate_event_record(
+    event: &CoordinatorEventV1,
+    expected_generation: u32,
+    expected_from_phase: Option<CoordinatorPhase>,
+    expected_previous_event_sha256: &str,
+    minimum_occurred_at_ms: i64,
+    maximum_occurred_at_ms: i64,
+) -> Result<(), &'static str> {
+    let valid_actor_evidence = match event.actor {
+        EventActor::Caller => {
+            event.body_sha256.as_deref() == Some(event.evidence_sha256.as_str())
+                && event.request_id_sha256.is_some()
+        }
+        EventActor::Alarm => {
+            event.body_sha256.is_none()
+                && event.request_id_sha256.is_none()
+                && matches!(
+                    event.to_phase,
+                    CoordinatorPhase::Expired | CoordinatorPhase::RecoveryPending
+                )
+        }
+    };
+    if event.contract_version != 1
+        || event.generation != expected_generation
+        || event.from_phase != expected_from_phase
+        || event.previous_event_sha256 != expected_previous_event_sha256
+        || event.occurred_at_ms < minimum_occurred_at_ms
+        || event.occurred_at_ms > maximum_occurred_at_ms
+        || !valid_sha256(&event.event_sha256)
+        || !valid_sha256(&event.evidence_sha256)
+        || event
+            .body_sha256
+            .as_ref()
+            .is_some_and(|value| !valid_sha256(value))
+        || event
+            .request_id_sha256
+            .as_ref()
+            .is_some_and(|value| !valid_sha256(value))
+        || !valid_actor_evidence
+        || !valid_event_transition(event.from_phase, event.to_phase)
+        || !valid_phase_generation_v1(event.to_phase, event.generation)
+    {
+        return Err(TX_STORAGE_CORRUPT);
+    }
+    let rebuilt = build_event(
+        event.actor,
+        event.body_sha256.as_deref(),
+        &event.evidence_sha256,
+        event.from_phase,
+        event.generation,
+        event.occurred_at_ms,
+        &event.previous_event_sha256,
+        event.request_id_sha256.as_deref(),
+        event.to_phase,
+    );
+    if rebuilt.event_sha256 != event.event_sha256 {
+        return Err(TX_STORAGE_CORRUPT);
+    }
+    Ok(())
+}
+
+fn validate_replay_record(
+    replay: &ReplayRecordV1,
+    event: &CoordinatorEventV1,
+) -> Result<(), &'static str> {
+    if replay.contract_version != 1
+        || !matches!(
+            replay.path.as_str(),
+            BEGIN_PATH | FINISH_PATH | RECOVER_PATH
+        )
+        || !valid_sha256(&replay.body_sha256)
+        || !valid_sha256(&replay.event_sha256)
+        || !valid_sha256(&replay.request_id_sha256)
+        || !valid_phase_generation_v1(replay.resulting_phase, replay.resulting_generation)
+        || event.contract_version != 1
+        || event.actor != EventActor::Caller
+        || event.generation != replay.resulting_generation
+        || event.to_phase != replay.resulting_phase
+        || event.event_sha256 != replay.event_sha256
+        || event.body_sha256.as_deref() != Some(replay.body_sha256.as_str())
+        || event.request_id_sha256.as_deref() != Some(replay.request_id_sha256.as_str())
+    {
+        return Err(TX_STORAGE_CORRUPT);
+    }
+    Ok(())
+}
+
+const fn valid_event_transition(from: Option<CoordinatorPhase>, to: CoordinatorPhase) -> bool {
+    matches!(
+        (from, to),
+        (None, CoordinatorPhase::ChallengeIssued)
+            | (
+                Some(CoordinatorPhase::ChallengeIssued),
+                CoordinatorPhase::FinishClaimed | CoordinatorPhase::Expired
+            )
+            | (
+                Some(CoordinatorPhase::FinishClaimed),
+                CoordinatorPhase::ProofVerified | CoordinatorPhase::Expired
+            )
+            | (
+                Some(CoordinatorPhase::ProofVerified),
+                CoordinatorPhase::PermitRequestFrozen | CoordinatorPhase::Expired
+            )
+            | (
+                Some(CoordinatorPhase::PermitRequestFrozen),
+                CoordinatorPhase::PermitVerified | CoordinatorPhase::Expired
+            )
+            | (
+                Some(CoordinatorPhase::PermitVerified),
+                CoordinatorPhase::CommitAttempted | CoordinatorPhase::Expired
+            )
+            | (
+                Some(CoordinatorPhase::CommitAttempted),
+                CoordinatorPhase::RecoveryPending
+                    | CoordinatorPhase::Applied
+                    | CoordinatorPhase::ExactReplay
+                    | CoordinatorPhase::Conflict
+            )
+            | (
+                Some(CoordinatorPhase::RecoveryPending),
+                CoordinatorPhase::Applied
+                    | CoordinatorPhase::ExactReplay
+                    | CoordinatorPhase::Conflict
+            )
+    )
+}
+
+const fn valid_phase_generation_v1(phase: CoordinatorPhase, generation: u32) -> bool {
+    match phase {
+        CoordinatorPhase::ChallengeIssued => generation == 1,
+        CoordinatorPhase::FinishClaimed => generation == 2,
+        CoordinatorPhase::ProofVerified => generation == 3,
+        CoordinatorPhase::PermitRequestFrozen => generation == 4,
+        CoordinatorPhase::PermitVerified => generation == 5,
+        CoordinatorPhase::CommitAttempted => generation == 6,
+        CoordinatorPhase::RecoveryPending => generation == 7,
+        CoordinatorPhase::Applied | CoordinatorPhase::ExactReplay | CoordinatorPhase::Conflict => {
+            generation == 7 || generation == 8
+        }
+        CoordinatorPhase::Expired => generation >= 2 && generation <= 6,
+    }
+}
+
 fn validate_stored_state(state: &CoordinatorStateV1) -> Result<(), &'static str> {
     validate_identity(&state.identity, &state.identity.environment)
         .map_err(|_| TX_STORAGE_CORRUPT)?;
@@ -1397,6 +1590,16 @@ fn validate_stored_state(state: &CoordinatorStateV1) -> Result<(), &'static str>
             }
         }
     };
+    let valid_generation = match state.phase {
+        CoordinatorPhase::Applied | CoordinatorPhase::ExactReplay | CoordinatorPhase::Conflict => {
+            matches!(state.generation, 7 | 8)
+        }
+        CoordinatorPhase::Expired => state.generation == progress + 1,
+        _ => state.generation == progress,
+    };
+    if !valid_generation {
+        return Err(TX_STORAGE_CORRUPT);
+    }
     if (state.finish_claim.is_some()) != (progress >= 2)
         || (state.proof_verified.is_some()) != (progress >= 3)
         || (state.permit_request.is_some()) != (progress >= 4)
@@ -1610,6 +1813,21 @@ fn validate_distinct_digests(values: &[&String]) -> Result<(), ProtocolError> {
     Ok(())
 }
 
+pub fn derive_coordinator_object_name_v1(identity: &CoordinatorIdentityV1) -> Option<String> {
+    coordinator_object_name(identity).ok()
+}
+
+pub fn canonical_json_bytes<T: Serialize>(
+    value: &T,
+) -> std::result::Result<Vec<u8>, serde_json::Error> {
+    let value = serde_json::to_value(value)?;
+    serde_json::to_vec(&canonicalize_json_value(value))
+}
+
+pub fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    sha256_hex(bytes)
+}
+
 fn coordinator_object_name(identity: &CoordinatorIdentityV1) -> Result<String, ProtocolError> {
     validate_identity(identity, &identity.environment)?;
     let digest = length_prefixed_sha256(
@@ -1659,11 +1877,30 @@ fn canonical_json_value(body: &[u8]) -> Result<serde_json::Value, ProtocolError>
     let value = serde_json::from_slice::<serde_json::Value>(body)
         .map_err(|_| ProtocolError::new(400, "invalid_request"))?;
     let canonical =
-        serde_json::to_vec(&value).map_err(|_| ProtocolError::new(400, "invalid_request"))?;
+        canonical_json_bytes(&value).map_err(|_| ProtocolError::new(400, "invalid_request"))?;
     if canonical != body {
         return Err(ProtocolError::new(400, "invalid_canonical_json"));
     }
     Ok(value)
+}
+
+fn canonicalize_json_value(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.into_iter().map(canonicalize_json_value).collect())
+        }
+        serde_json::Value::Object(values) => {
+            let mut entries = values.into_iter().collect::<Vec<_>>();
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key, canonicalize_json_value(value)))
+                    .collect(),
+            )
+        }
+        value => value,
+    }
 }
 
 fn parse_canonical_json<T: DeserializeOwned>(body: &[u8]) -> Result<T, ProtocolError> {
@@ -1840,14 +2077,14 @@ fn status_response(
     replayed: bool,
     status: u16,
 ) -> WorkerResult<Response> {
-    let body = StatusResponseV1 {
+    let body = CoordinatorStatusResponseV1 {
         contract_version: 1,
         event_count: state.generation,
         expires_at_ms: state.expires_at_ms,
         generation: state.generation,
-        latest_event_sha256: &state.latest_event_sha256,
-        operation_id_sha256: &state.identity.operation_id_sha256,
-        outcome: state.outcome.as_ref(),
+        latest_event_sha256: state.latest_event_sha256.clone(),
+        operation_id_sha256: state.identity.operation_id_sha256.clone(),
+        outcome: state.outcome.clone(),
         phase: state.phase,
         replayed,
         terminal: state.phase.terminal(),
@@ -1857,8 +2094,8 @@ fn status_response(
 
 fn error_response(status: u16, code: &'static str) -> WorkerResult<Response> {
     bounded_json_response(
-        &ErrorResponseV1 {
-            code,
+        &CoordinatorErrorResponseV1 {
+            code: code.to_string(),
             contract_version: 1,
         },
         status,
@@ -1897,12 +2134,13 @@ fn unix_timestamp_seconds() -> i64 {
 mod tests {
     use super::{
         apply_mutation, coordinator_object_name, deadline_transition, event_genesis_sha256,
-        validate_stored_state, BeginEvidenceV1, BeginRequestV1, CommitAttemptEvidenceV1,
-        CommitAttemptedRequestV1, CoordinatorIdentityV1, CoordinatorPhase, CoordinatorRoute,
-        EventActor, FinishClaimEvidenceV1, FinishClaimRequestV1, MutationRequestV1,
-        OutcomeEvidenceV1, OutcomeRecordedRequestV1, PermitRequestEvidenceV1,
-        PermitRequestFrozenRequestV1, PermitVerifiedEvidenceV1, PermitVerifiedRequestV1,
-        ProofVerifiedEvidenceV1, ProofVerifiedRequestV1, RecoverRequestV1, RegistrationOutcome,
+        validate_event_record, validate_replay_record, validate_stored_state, BeginEvidenceV1,
+        BeginRequestV1, CommitAttemptEvidenceV1, CommitAttemptedRequestV1, CoordinatorIdentityV1,
+        CoordinatorPhase, CoordinatorRoute, EventActor, FinishClaimEvidenceV1,
+        FinishClaimRequestV1, MutationRequestV1, OutcomeEvidenceV1, OutcomeRecordedRequestV1,
+        PermitRequestEvidenceV1, PermitRequestFrozenRequestV1, PermitVerifiedEvidenceV1,
+        PermitVerifiedRequestV1, ProofVerifiedEvidenceV1, ProofVerifiedRequestV1, RecoverRequestV1,
+        RegistrationOutcome,
     };
 
     fn digest(character: char) -> String {
@@ -2168,5 +2406,40 @@ mod tests {
             now + 1
         )
         .is_err());
+    }
+
+    #[test]
+    fn stored_generation_event_and_replay_tampering_are_rejected() {
+        let now = 2_100_000_000_000;
+        let object_name = coordinator_object_name(&identity()).unwrap();
+        let transition = apply_mutation(
+            None,
+            begin('3', now),
+            CoordinatorRoute::Begin,
+            &digest('4'),
+            now,
+        )
+        .unwrap();
+        let genesis = event_genesis_sha256(&object_name);
+
+        validate_stored_state(&transition.state).unwrap();
+        validate_event_record(&transition.event, 1, None, &genesis, now, now).unwrap();
+        validate_replay_record(transition.replay.as_ref().unwrap(), &transition.event).unwrap();
+
+        let mut drifted_state = transition.state.clone();
+        drifted_state.generation = 2;
+        assert!(validate_stored_state(&drifted_state).is_err());
+
+        let mut drifted_event = transition.event.clone();
+        drifted_event.generation = 2;
+        assert!(validate_event_record(&drifted_event, 2, None, &genesis, now, now).is_err());
+
+        let mut forged_event = transition.event.clone();
+        forged_event.event_sha256 = digest('5');
+        assert!(validate_event_record(&forged_event, 1, None, &genesis, now, now).is_err());
+
+        let mut drifted_replay = transition.replay.unwrap();
+        drifted_replay.resulting_phase = CoordinatorPhase::FinishClaimed;
+        assert!(validate_replay_record(&drifted_replay, &transition.event).is_err());
     }
 }

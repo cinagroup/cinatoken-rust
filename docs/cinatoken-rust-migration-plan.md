@@ -26707,3 +26707,166 @@ Wrangler dry-run evidence is required in CI. It is not a substitute for
 staging migration application, secret readback, deployment version readback,
 or fault-campaign evidence. No Cloudflare remote action occurred. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+### Application persist-before-dispatch coordinator client overlay (2026-08-01)
+
+Promotion step 1 from the preceding private-Worker checkpoint now has a local,
+route-free implementation candidate. The Application Worker contains a typed
+Rust Service Binding client and a versioned short-lived Application ceremony
+checkpoint. Neither is connected to a browser route or a live orchestration
+call site.
+
+The tracked capability matrix remains deliberately asymmetric:
+
+| Scope | Coordinator Service Binding | Client gate | Caller secret source | Public route |
+|---|---|---|---|---|
+| local | present | false | untracked local variable or Worker Secret | absent |
+| staging candidate | present | false | Worker Secret only | absent |
+| production | absent | variable absent | absent | absent |
+
+The client calls only the route-free coordinator Worker through
+`DRAIN_SOURCE_REGISTRATION_COORDINATOR`. HTTP Service Binding transport is
+retained for this boundary because it preserves one portable, independently
+testable signed-wire protocol across the target Worker and Workerd. It is not
+public HTTP: there is no route, `workers_dev`, preview URL, or ambient browser
+credential path. A future RPC conversion must preserve the same canonical
+body, object, request, authority, response, and failure-class contracts rather
+than silently weakening them.
+
+#### Bounded private client
+
+The client implements all nine typed operations:
+
+```text
+begin
+claim_finish
+record_proof
+freeze_permit_request
+record_permit
+record_commit_attempt
+record_outcome
+status
+recover
+```
+
+For every operation it:
+
+- derives the deterministic coordinator object from the typed identity;
+- serializes one canonical JSON request no larger than 16 KiB;
+- signs method, path, object, request ID, exact body digest, caller identity,
+  issuer, audience, and a bounded time window with the current caller key;
+- uses a three-second timeout, rejects redirects, and reads at most 8 KiB of
+  response body;
+- accepts only canonical JSON with exact `application/json` media type and at
+  most one UTF-8 charset parameter;
+- verifies operation identity, generation/phase reachability, expiry, terminal
+  state, outcome, command ID, and winner evidence before returning an opaque
+  status; and
+- rejects `production` even if a developer were to add incomplete variables.
+
+The current caller secret is held only in the private client configuration and
+that type intentionally has no `Debug` implementation. No secret, Cookie,
+session, assertion, credential key, D1 handle, or winner row is serialized into
+an error or ceremony payload.
+
+Failures are not one undifferentiated retry signal:
+
+| Class | Examples | Required caller action |
+|---|---|---|
+| `NotDispatched` | gate disabled, invalid config/request, missing binding | no coordinator mutation is possible; repair config or request before retry |
+| `DeterministicRejection` | authenticated bounded 4xx protocol response | do not blind retry changed bytes; retain evidence and resolve the rejected state |
+| `Indeterminate` | timeout, transport failure, authenticated 5xx | reload the prepared checkpoint and use exact replay/status; never mint a new operation |
+| `ProtocolViolation` | malformed, noncanonical, oversized, or semantically impossible response | fail closed, alert, and preserve both sides for investigation |
+
+An exact historical replay is bound to its immutable event, but returns the
+currently verified coordinator state. The client therefore permits only a
+reachable monotonic generation at or after the original transition. It does
+not require the object to rewind to the historical phase. The Application
+begin checkpoint is stricter: it may become browser-visible only from exact
+generation-one `ChallengeIssued`; observing a higher phase while still locally
+`Prepared` is a reconciliation incident, not permission to reconstruct state.
+
+#### Persist-before-dispatch Application checkpoint
+
+The Application ceremony has two durable phases:
+
+```text
+Prepared (application generation 0, no coordinator status)
+  -> ChallengeIssued (application generation 1, exact coordinator status)
+  -> deterministic finish claim retained until expiry
+```
+
+`Prepared` freezes the full typed begin intent, bounded WebAuthn challenge
+state, redacted before-challenge Root phase-proof header/claims and token
+digest, semantic authority fingerprint, coordinator identity/object/body
+digests, and the exact typed `BeginRequestV1`. It excludes raw Cookie, `sid`,
+assertion bytes, client data, authenticator data, credential public key,
+private key, HMAC secret, network address, and unredacted D1 rows.
+
+The required begin ordering is now:
+
+1. perform the fresh first-primary Root/session/credential/authorization/
+   fence/head/ledger read and verify the before-challenge proof;
+2. construct and validate exact canonical coordinator begin bytes;
+3. create `Prepared` in the per-ceremony Durable Object with a single
+   create-only transaction that writes both the lifetime lock and record;
+4. only after that commit, dispatch the exact signed `begin` request;
+5. validate exact generation-one `ChallengeIssued` response evidence;
+6. compare-and-swap the Application payload from the exact prepared-payload
+   SHA-256 to `ChallengeIssued`; and
+7. only after the CAS commit, return a browser challenge.
+
+This ordering removes the crash window in which the coordinator could burn an
+operation before the Application retained the bytes needed to replay it. A
+lost dispatch response converges through exact replay. A lost Application CAS
+response converges by reading the retained checkpoint: exact next-payload CAS
+is idempotent, a stale changed payload returns conflict, and a claimed record
+cannot be replaced.
+
+Finish claiming is no longer destructive. The Application first reads and
+validates a canonical `ChallengeIssued` payload, then atomically records a
+deterministic 32-byte-digest claim. Every exact claim receives the same retained
+payload until expiry; a different claim conflicts. The legacy destructive
+`take` path rejects claimed state, so a lost finish response cannot reopen or
+erase the ceremony.
+
+The coordinator read path now validates the complete event sequence from
+generation one through the current state, including every recomputed event
+digest, predecessor hash, from/to transition, actor/body/request shape,
+phase/generation pairing, and timestamp bound. Exact replay additionally
+cross-checks its index against the immutable historical event. Corrupted
+generation, event, replay, or latest-state linkage fails closed before a status
+is returned.
+
+#### Remaining P0 orchestration
+
+This foundation does not yet execute the ordered workflow. The next code slice
+must add one private Application begin/finish orchestrator that:
+
+1. issues phase proofs only after the fresh one-statement D1 snapshots;
+2. calls `store_prepared_once` before the first coordinator await;
+3. resolves every client failure by its explicit class and never constructs a
+   replacement operation after an indeterminate result;
+4. persists finish claim before parsing assertion bytes;
+5. verifies mandatory-UV WebAuthn and Passkey generation/sign-count CAS;
+6. freezes one issuer request, uses bounded issuer transport, and persists the
+   exact verified permit;
+7. performs the final D1 reread, records `CommitAttempted`, and executes one
+   immutable 0074 command;
+8. classifies command ID plus every stable alias in one first-primary Session
+   before recording immediate or recovered outcome; and
+9. emits redacted audit/metrics without operation, credential, session, or
+   network material becoming a metric dimension.
+
+Deployment remains target-first and caller-second. Staging must first prove
+secret provisioning and N/N-1 rotation, then deploy the disabled coordinator,
+read back its version and namespace migration, deploy the disabled Application
+caller, and run authenticated smoke/fault campaigns before either mutation gate
+may change. Production configuration must continue to omit the entire
+capability until concurrency, revocation, timeout, response/process-loss,
+eviction/alarm, load/cost/SLO/alert, retention/deletion, rollback, and
+independent approval evidence is complete.
+
+No remote Cloudflare command, resource, secret, migration, deployment, route,
+traffic, DNS, or Go/VPS mutation was used for this increment. Go/VPS remains
+authoritative and production remains **NO-GO**.

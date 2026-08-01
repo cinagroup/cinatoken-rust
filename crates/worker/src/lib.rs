@@ -31,9 +31,13 @@ mod container_drain_source_authorization;
 #[allow(dead_code)]
 mod container_drain_source_registration_action;
 #[allow(dead_code)]
+mod container_drain_source_registration_application_ceremony;
+#[allow(dead_code)]
 mod container_drain_source_registration_command;
 #[allow(dead_code)]
 mod container_drain_source_registration_coordinator;
+#[allow(dead_code)]
+mod container_drain_source_registration_coordinator_client;
 pub use cinatoken_drain_source_registration_coordinator::DrainSourceRegistrationCoordinator;
 #[allow(dead_code)]
 mod container_drain_source_registration_permit;

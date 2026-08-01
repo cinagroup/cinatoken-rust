@@ -1016,6 +1016,13 @@ fn challenge_error_response(error: PasskeyCeremonyError) -> Response {
             409,
             "Passkey challenge already exists; finish it or start a new flow",
         ),
+        PasskeyCeremonyError::StateConflict => {
+            envelope_error_response(409, "Passkey challenge state changed; start a new flow")
+        }
+        PasskeyCeremonyError::ClaimConflict => envelope_error_response(
+            409,
+            "Passkey challenge is already claimed; start a new flow",
+        ),
         PasskeyCeremonyError::ExpiredOrConsumed => envelope_error_response(
             400,
             "Passkey challenge expired or was already consumed; start again",

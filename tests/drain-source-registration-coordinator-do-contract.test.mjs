@@ -9,6 +9,15 @@ const sourcePath =
   "crates/drain-source-registration-coordinator/src/lib.rs";
 const source = readFileSync(sourcePath, "utf8");
 const workerEntrypoint = readFileSync("crates/worker/src/lib.rs", "utf8");
+const applicationCeremonySource = readFileSync(
+  "crates/worker/src/container_drain_source_registration_application_ceremony.rs",
+  "utf8",
+);
+const passkeyCeremonySource = readFileSync(
+  "crates/worker/src/passkey_ceremony.rs",
+  "utf8",
+);
+const packageSource = readFileSync("package.json", "utf8");
 const serviceSource = readFileSync(
   "services/drain-source-registration-coordinator/src/index.mjs",
   "utf8",
@@ -160,6 +169,23 @@ describe("drain-source registration coordinator DO source contract", () => {
       binding: "DRAIN_SOURCE_REGISTRATION_COORDINATOR",
       service: "cinatoken-drain-source-registration-coordinator-staging",
     });
+    for (const [scope, environment] of [
+      [applicationConfig, "local"],
+      [applicationConfig.env.staging, "staging"],
+    ]) {
+      expect(scope.vars).toMatchObject({
+        DRAIN_SOURCE_REGISTRATION_COORDINATOR_CLIENT_ENABLED: "false",
+        DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER:
+          `cinatoken-rust-api-${environment}`,
+        DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_AUDIENCE:
+          `cinatoken-drain-source-registration-coordinator-${environment}`,
+        DRAIN_SOURCE_REGISTRATION_COORDINATOR_CALLER_IDENTITY_SHA256: "",
+        DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_KID: "",
+      });
+      expect(
+        scope.vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_SECRET,
+      ).toBeUndefined();
+    }
     expect(applicationConfig.env.production.services).not.toContainEqual(
       expect.objectContaining({
         binding: "DRAIN_SOURCE_REGISTRATION_COORDINATOR",
@@ -194,10 +220,97 @@ describe("drain-source registration coordinator DO source contract", () => {
     )).toHaveLength(1);
     expect(source).not.toContain("Router::");
     expect(source).not.toContain("route_async(");
+    const clientSource = readFileSync(
+      "crates/worker/src/container_drain_source_registration_coordinator_client.rs",
+      "utf8",
+    );
+    expect(workerEntrypoint).toContain(
+      "mod container_drain_source_registration_coordinator_client;",
+    );
+    expect(clientSource).toContain(".service(COORDINATOR_SERVICE_BINDING)");
+    expect(clientSource).toContain(
+      "const CLIENT_TIMEOUT: Duration = Duration::from_secs(3);",
+    );
+    expect(clientSource).toContain(
+      "read_response_bytes_limited(&mut response, MAX_RESPONSE_BYTES)",
+    );
+    expect(clientSource).toContain(".with_redirect(RequestRedirect::Error)");
+    expect(clientSource).not.toContain("Router::");
+    expect(clientSource).not.toContain("route_async(");
     expect(serviceSource).not.toContain("Router::");
     expect(serviceSource).not.toContain("route_async(");
     expect(serviceAdapterSource).not.toContain("Router::");
     expect(serviceAdapterSource).not.toContain("route_async(");
+  });
+
+  it("persists prepared application authority before bounded coordinator dispatch", () => {
+    expect(applicationCeremonySource).toContain("Prepared,");
+    expect(applicationCeremonySource).toContain("ChallengeIssued,");
+    expect(applicationCeremonySource).toContain(
+      "coordinator_status: Option<CoordinatorStatusResponseV1>",
+    );
+    expect(applicationCeremonySource).toContain(
+      "pub(crate) async fn store_prepared_once(",
+    );
+    expect(applicationCeremonySource).toContain(
+      "pub(crate) async fn load_prepared(",
+    );
+    expect(applicationCeremonySource).toContain(
+      "pub(crate) async fn persist_challenge_issued(",
+    );
+    expect(applicationCeremonySource).toContain(
+      "passkey_ceremony::put_once_json",
+    );
+    expect(applicationCeremonySource).toContain(
+      "passkey_ceremony::replace_json_if",
+    );
+    expect(applicationCeremonySource).toContain(
+      "validate_wire_request_v1(",
+    );
+    expect(applicationCeremonySource.indexOf("passkey_ceremony::read_json"))
+      .toBeLessThan(applicationCeremonySource.indexOf("passkey_ceremony::claim_json"));
+
+    for (const route of ["/put-once", "/read", "/replace", "/claim"]) {
+      expect(passkeyCeremonySource).toContain(`\"${route}\"`);
+    }
+    expect(passkeyCeremonySource).toContain(
+      "CEREMONY_EXPECTED_PAYLOAD_SHA256_HEADER",
+    );
+    expect(passkeyCeremonySource).toContain(
+      "while let Some(chunk) = stream.next().await",
+    );
+    expect(passkeyCeremonySource).toContain(
+      "read_response_bytes_limited(response, MAX_PAYLOAD_BYTES)",
+    );
+    expect(passkeyCeremonySource).toMatch(
+      /transaction\s*\.put\(\s*CREATE_LOCK_KEY/u,
+    );
+    expect(passkeyCeremonySource).toMatch(
+      /transaction\s*\.put\(\s*RECORD_KEY,\s*record\)/u,
+    );
+
+    const clientSource = readFileSync(
+      "crates/worker/src/container_drain_source_registration_coordinator_client.rs",
+      "utf8",
+    );
+    expect(clientSource).toContain("CoordinatorClientFailureClass");
+    for (const failureClass of [
+      "NotDispatched",
+      "DeterministicRejection",
+      "Indeterminate",
+      "ProtocolViolation",
+    ]) {
+      expect(clientSource).toContain(failureClass);
+    }
+    expect(clientSource).toMatch(
+      /#\[derive\(Clone\)\]\s*struct CoordinatorClientConfig/u,
+    );
+    expect(applicationCeremonySource).toMatch(
+      /#\[derive\(Clone, Serialize, Deserialize, PartialEq, Eq\)\]\s*#\[serde\(deny_unknown_fields\)\]\s*pub\(crate\) struct DrainSourceRegistrationApplicationCeremonyV1/u,
+    );
+    expect(packageSource).toContain(
+      "cargo test -p cinatoken-worker --lib container_drain_source_registration_",
+    );
   });
 
   it("persists only bounded digest evidence with atomic journal records", () => {

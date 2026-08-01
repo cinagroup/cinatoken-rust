@@ -122,6 +122,118 @@ describe("Rust Durable Object lifecycle contracts", () => {
     expect((await putOnce()).status).toBe(409);
   });
 
+  it("persists, confirms, and retains an exact passkey ceremony claim", async () => {
+    const ceremonyKey = `drain-source-registration-application:${"c".repeat(64)}`;
+    const stub = env.PASSKEY_CEREMONIES.getByName(ceremonyKey);
+    const preparedPayload = JSON.stringify({
+      contract:
+        "relay-container-drain-source-registration-application-ceremony-v1",
+      phase: "prepared",
+    });
+    const challengePayload = JSON.stringify({
+      contract:
+        "relay-container-drain-source-registration-application-ceremony-v1",
+      phase: "challenge_issued",
+    });
+    const put = await stub.fetch("https://passkey-ceremony/put-once", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-cinatoken-passkey-ceremony-key": ceremonyKey,
+        "x-cinatoken-passkey-ceremony-ttl": "120",
+      },
+      body: preparedPayload,
+    });
+    expect(put.status).toBe(204);
+    await put.arrayBuffer();
+
+    const read = () =>
+      stub.fetch("https://passkey-ceremony/read", {
+        method: "POST",
+        headers: {
+          "x-cinatoken-passkey-ceremony-key": ceremonyKey,
+        },
+      });
+    const preparedRead = await read();
+    expect(preparedRead.status).toBe(200);
+    expect(preparedRead.headers.get("cache-control")).toBe("no-store");
+    expect(await preparedRead.text()).toBe(preparedPayload);
+
+    const replace = (expectedPayloadSha256, payload) =>
+      stub.fetch("https://passkey-ceremony/replace", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-cinatoken-passkey-ceremony-key": ceremonyKey,
+          "x-cinatoken-passkey-ceremony-expected-payload-sha256":
+            expectedPayloadSha256,
+        },
+        body: payload,
+      });
+    const staleReplacement = await replace("00".repeat(32), challengePayload);
+    expect(staleReplacement.status).toBe(409);
+    await staleReplacement.arrayBuffer();
+    expect(await (await read()).text()).toBe(preparedPayload);
+
+    const preparedPayloadSha256 = await sha256Hex(
+      new TextEncoder().encode(preparedPayload),
+    );
+    const freshConfirmation = await replace(
+      preparedPayloadSha256,
+      challengePayload,
+    );
+    expect(freshConfirmation.status).toBe(204);
+    await freshConfirmation.arrayBuffer();
+    const replayedConfirmation = await replace(
+      preparedPayloadSha256,
+      challengePayload,
+    );
+    expect(replayedConfirmation.status).toBe(204);
+    await replayedConfirmation.arrayBuffer();
+    const driftedConfirmation = await replace(
+      preparedPayloadSha256,
+      JSON.stringify({ contract: "drift", phase: "challenge_issued" }),
+    );
+    expect(driftedConfirmation.status).toBe(409);
+    await driftedConfirmation.arrayBuffer();
+    expect(await (await read()).text()).toBe(challengePayload);
+
+    const claimId = "01".repeat(32);
+    const claim = (id) =>
+      stub.fetch("https://passkey-ceremony/claim", {
+        method: "POST",
+        headers: {
+          "x-cinatoken-passkey-ceremony-key": ceremonyKey,
+          "x-cinatoken-passkey-ceremony-claim": id,
+        },
+      });
+    const claims = await Promise.all(
+      Array.from({ length: 32 }, () => claim(claimId)),
+    );
+    expect(claims.every((response) => response.status === 200)).toBe(true);
+    for (const response of claims) {
+      expect(await response.text()).toBe(challengePayload);
+    }
+    claims.length = 0;
+    const conflictingClaim = await claim("02".repeat(32));
+    expect(conflictingClaim.status).toBe(409);
+    await conflictingClaim.arrayBuffer();
+
+    await evictDurableObject(stub);
+    const replay = await claim(claimId);
+    expect(replay.status).toBe(200);
+    expect(await replay.text()).toBe(challengePayload);
+
+    const take = await stub.fetch("https://passkey-ceremony/take", {
+      method: "POST",
+      headers: {
+        "x-cinatoken-passkey-ceremony-key": ceremonyKey,
+        "x-cinatoken-passkey-ceremony-claim": "03".repeat(16),
+      },
+    });
+    expect(take.status).toBe(410);
+  }, 60_000);
+
   it("applies quota reserve replay and settle atomically across eviction", async () => {
     const tokenId = 701;
     const reservationFingerprint = quotaHex("b");

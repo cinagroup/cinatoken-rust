@@ -12742,3 +12742,90 @@ The tracked staging target remains only a deployment candidate. Application
 orchestration, one-shot ceremony state, remote fault campaigns, observability,
 rollback evidence, and independent approval remain mandatory. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-08-01 Application Persist-Before-Dispatch Verification
+
+This checkpoint verifies the route-free Application caller foundation. It does
+not verify a live browser route, remote Service Binding, staging secret, or
+0074 orchestration.
+
+Targeted current-worktree evidence:
+
+```text
+cargo test -p cinatoken-drain-source-registration-coordinator
+  5 passed
+  includes corrupted generation/event/replay rejection
+
+cargo test -p cinatoken-worker --lib container_drain_source_registration_
+  33 passed
+  includes client, Prepared checkpoint, proof/permit/command, and D1 contracts
+
+cargo test -p cinatoken-worker --lib passkey_ceremony
+  6 passed
+
+bun test --path-ignore-patterns="target/**" \
+  tests/drain-source-registration-coordinator-do-contract.test.mjs \
+  tests/container-scheduler-config.test.mjs
+  9 passed; 263 assertions
+
+bunx vitest run --config vitest.do.config.mjs \
+  tests/do-lifecycle-runtime.test.mjs \
+  -t "persists, confirms, and retains an exact passkey ceremony claim"
+  1 passed; 55 skipped
+```
+
+The Rust integration fixture signs and verifies a real before-challenge Root
+session proof, freezes an exact coordinator begin request, persists a
+generation-zero state shape without coordinator status, validates an exact
+generation-one response, normalizes transport replay metadata, and rejects
+generation drift. Serialized state remains below 16 KiB and contains none of
+the forbidden raw browser, assertion, credential-key, or secret field names.
+
+The Workerd test exercises the actual SQLite Durable Object path:
+
+1. create-only `Prepared` write;
+2. no-store readback;
+3. wrong old-payload digest rejection;
+4. fresh SHA-256 CAS and exact replacement replay;
+5. changed stale replacement rejection;
+6. 32 concurrent identical finish claims;
+7. different-claim conflict;
+8. object eviction and exact claim replay; and
+9. rejection by the legacy destructive take path.
+
+Every test Response is drained before forced eviction; this is required by the
+Cloudflare Vitest helper and also prevents a test-held stream from being
+mistaken for Durable Object liveness.
+
+The private client tests cover all nine typed methods, the independent HMAC
+fixed vector, canonical request and response bytes, timeout/redirect/body
+bounds, strict media type, four failure classes, state and outcome drift,
+historical replay reachability, command/winner binding, and secret-free
+configuration diagnostics. Static config tests prove local/staging default-off
+bindings and complete production absence.
+
+The focused repository gate now runs the Application registration tests from
+`check:drain-source-registration-coordinator`, so a target-Worker-only pass can
+no longer omit caller protocol regressions.
+
+Final aggregate evidence:
+
+```text
+bun run check:drain-source-registration-coordinator
+  passed
+  local/staging dry-run upload: 747.09 KiB; gzip 275.29 KiB
+
+cargo check -p cinatoken-worker --target wasm32-unknown-unknown
+  passed with pre-existing dead-code warnings
+
+bun run check
+  passed in 1126 seconds
+  complete Rust workspace/doc tests, Workerd suites, frontend, migration,
+  Wrangler dry-run, container policy, and required wasm32 gates passed
+```
+
+No remote Cloudflare command, resource, secret, migration, deployment, route,
+traffic, DNS, D1 write, or Go/VPS state change was used. The actual private
+Application orchestrator, remote staging fault evidence, observability,
+retention/deletion, rollback, and approvals remain open. Production remains
+**NO-GO**.

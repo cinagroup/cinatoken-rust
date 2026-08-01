@@ -171,8 +171,30 @@ describe("container scheduler Wrangler foundation", () => {
           vars
             .RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_HMAC_CURRENT_CREDENTIAL_ID_SHA256,
         ).toBe("");
+        expect(
+          vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_CLIENT_ENABLED,
+        ).toBe("false");
+        expect(
+          vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER,
+        ).toBe(`cinatoken-rust-api-${authorityEnvironment}`);
+        expect(
+          vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_AUDIENCE,
+        ).toBe(
+          `cinatoken-drain-source-registration-coordinator-${authorityEnvironment}`,
+        );
+        expect(
+          vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_CALLER_IDENTITY_SHA256,
+        ).toBe("");
+        expect(
+          vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_KID,
+        ).toBe("");
       } else {
         for (const name of [
+          "DRAIN_SOURCE_REGISTRATION_COORDINATOR_CLIENT_ENABLED",
+          "DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_ISSUER",
+          "DRAIN_SOURCE_REGISTRATION_COORDINATOR_AUTHORITY_AUDIENCE",
+          "DRAIN_SOURCE_REGISTRATION_COORDINATOR_CALLER_IDENTITY_SHA256",
+          "DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_KID",
           "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_ENABLED",
           "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_ISSUER",
           "RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_AUDIENCE",
@@ -188,6 +210,9 @@ describe("container scheduler Wrangler foundation", () => {
       }
       expect(
         vars.RELAY_CONTAINER_SHARD_PLACEMENT_AUTHORITY_READ_HMAC_CURRENT_SECRET,
+      ).toBeUndefined();
+      expect(
+        vars.DRAIN_SOURCE_REGISTRATION_COORDINATOR_HMAC_CURRENT_SECRET,
       ).toBeUndefined();
       expect(scope?.services).toEqual(expectedServices);
 

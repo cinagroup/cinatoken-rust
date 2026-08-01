@@ -10,7 +10,6 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use worker::Env;
 
 use crate::admin_passkey::passkey_credential_id_sha256;
 use crate::container_drain_source_authorization::{
@@ -19,7 +18,7 @@ use crate::container_drain_source_authorization::{
 use crate::d1_repositories::{
     RELAY_CONTAINER_DRAIN_SOURCE_SCHEMA_SHA256, RELAY_CONTAINER_GLOBAL_ADMISSION_SCOPE_ID_SHA256,
 };
-use crate::passkey_ceremony::{self, PasskeyCeremonyError};
+use crate::passkey_ceremony::PasskeyCeremonyError;
 use crate::webauthn::{
     self, AssertionCredential, CeremonyExpectation, StoredCredential, VerifiedAssertion,
     WebauthnError,
@@ -188,7 +187,8 @@ pub(crate) struct DrainSourceRegistrationBeginIntentInput {
     pub(crate) ceremony_nonce_sha256: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DrainSourceRegistrationBeginIntentV1 {
     environment: String,
     operation_id_sha256: String,
@@ -336,7 +336,7 @@ impl DrainSourceRegistrationBeginIntentV1 {
         Ok(sha256_hex(canonical_message(BEGIN_INTENT_DOMAIN, &fields)?))
     }
 
-    fn validate(&self) -> Result<(), DrainSourceRegistrationCeremonyError> {
+    pub(crate) fn validate(&self) -> Result<(), DrainSourceRegistrationCeremonyError> {
         let verification_lifetime = self.verification_expires_at.checked_sub(self.issued_at);
         if self.environment != "staging"
             || self.issued_at <= 0
@@ -1140,34 +1140,6 @@ impl DrainSourceRegistrationCeremonyState {
         })
     }
 
-    pub(crate) async fn store_once(
-        &self,
-        env: &Env,
-    ) -> Result<(), DrainSourceRegistrationCeremonyError> {
-        let now = unix_timestamp();
-        self.validate_at(now)?;
-        let payload = serde_json::to_string(self)
-            .map_err(|_| DrainSourceRegistrationCeremonyError::InvalidCeremony)?;
-        let ttl_seconds = u64::try_from(self.action.verification_expires_at - now)
-            .map_err(|_| DrainSourceRegistrationCeremonyError::InvalidCeremony)?;
-        passkey_ceremony::put_once_json(env, &self.ceremony_key()?, &payload, ttl_seconds).await?;
-        Ok(())
-    }
-
-    pub(crate) async fn consume(
-        env: &Env,
-        ceremony_key: &str,
-    ) -> Result<Self, DrainSourceRegistrationCeremonyError> {
-        let payload = passkey_ceremony::take_json(env, ceremony_key).await?;
-        let state: Self = serde_json::from_str(&payload)
-            .map_err(|_| DrainSourceRegistrationCeremonyError::InvalidCeremony)?;
-        state.validate_at(unix_timestamp())?;
-        if state.ceremony_key()? != ceremony_key {
-            return Err(DrainSourceRegistrationCeremonyError::InvalidCeremony);
-        }
-        Ok(state)
-    }
-
     pub(crate) fn verify_assertion(
         &self,
         assertion: &AssertionCredential,
@@ -1182,7 +1154,7 @@ impl DrainSourceRegistrationCeremonyState {
         self.proof_from_verified(stored, &verified, now)
     }
 
-    fn validate(&self) -> Result<(), DrainSourceRegistrationCeremonyError> {
+    pub(crate) fn validate(&self) -> Result<(), DrainSourceRegistrationCeremonyError> {
         self.action.validate(self.issued_at)?;
         validate_relying_party(&self.rp_id, &self.origin)?;
         if self.user_verification != RequiredUserVerification::Required
@@ -1722,6 +1694,18 @@ fn unix_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::container_drain_source_registration_application_ceremony::DrainSourceRegistrationApplicationCeremonyV1;
+    use cinatoken_drain_source_registration_coordinator::{
+        BeginEvidenceV1, BeginRequestV1, CoordinatorIdentityV1, CoordinatorPhase,
+        CoordinatorStatusResponseV1,
+    };
+    use cinatoken_root_session_phase_proof::{
+        sign_root_session_phase_proof, verify_root_session_phase_proof,
+        RootSessionAnchorExpectation, RootSessionBeforeChallengeSubjectV1, RootSessionPhase,
+        RootSessionPhaseExpectation, RootSessionPhaseInput, RootSessionPhaseKey,
+        RootSessionPhaseKeyRing, RootSessionPhaseSubjectContext, RootSessionPhaseSubjectV1,
+        ENABLED_STATUS, GLOBAL_SCOPE_ID_SHA256, ROOT_ROLE,
+    };
 
     const NOW: i64 = 2_100_000_000;
 
@@ -2691,5 +2675,195 @@ mod tests {
             state.proof_from_verified(&stored, &wrong_challenge, NOW),
             Err(DrainSourceRegistrationCeremonyError::StoredCredentialMismatch)
         );
+    }
+
+    #[test]
+    fn application_ceremony_persists_prepared_authority_before_coordinator_confirmation() {
+        let webauthn = state();
+        let begin_intent = DrainSourceRegistrationBeginIntentV1::new(
+            "staging",
+            digest("operation"),
+            digest("authorization"),
+            digest("ceremony"),
+            digest("request-intent"),
+            "cinatoken.com",
+            "https://admin.cinatoken.com",
+            NOW,
+            begin_intent_input(),
+        )
+        .unwrap();
+        let semantic_fingerprint = digest("semantic-authority-fingerprint");
+        let session_id_sha256 = digest("root-session-id");
+        let proof_id_sha256 = digest("before-challenge-proof-id");
+        let begin_intent_sha256 = begin_intent.sha256().unwrap();
+        let action = webauthn.action().writer_projection();
+        let context = RootSessionPhaseSubjectContext {
+            environment: "staging",
+            operation_id_sha256: begin_intent.operation_id_sha256(),
+            authorization_id_sha256: begin_intent.authorization_id_sha256(),
+            ceremony_id_sha256: begin_intent.ceremony_id_sha256(),
+            request_intent_sha256: begin_intent.request_intent_sha256(),
+            semantic_authority_fingerprint_sha256: &semantic_fingerprint,
+        };
+        let phase_subject =
+            RootSessionPhaseSubjectV1::BeforeChallenge(RootSessionBeforeChallengeSubjectV1 {
+                context,
+                begin_intent_sha256: &begin_intent_sha256,
+                authorization_subject_sha256: action.authorization_subject_sha256(),
+                authorization_signature_envelope_sha256: action
+                    .authorization_signature_envelope_sha256(),
+            });
+        let key = RootSessionPhaseKey {
+            kid: "application-root-session-v1",
+            key_version: 1,
+            secret: &[0x55; 32],
+        };
+        let token = sign_root_session_phase_proof(
+            key,
+            RootSessionPhaseInput {
+                issuer: "cinatoken-rust-api-staging",
+                audience: "cinatoken-drain-source-registration-coordinator-staging",
+                application_version_id: "application-build-1",
+                environment: "staging",
+                phase: RootSessionPhase::BeforeChallenge,
+                phase_subject,
+                operation_id_sha256: begin_intent.operation_id_sha256(),
+                authorization_id_sha256: begin_intent.authorization_id_sha256(),
+                ceremony_id_sha256: begin_intent.ceremony_id_sha256(),
+                request_intent_sha256: begin_intent.request_intent_sha256(),
+                proof_id_sha256: &proof_id_sha256,
+                root_admin_id: action.root_admin_id(),
+                root_role: ROOT_ROLE,
+                root_status: ENABLED_STATUS,
+                root_deleted_at: None,
+                root_session_epoch: action.root_session_epoch(),
+                root_session_issued_at: action.root_session_issued_at(),
+                root_session_expires_at: action.root_session_expires_at(),
+                root_session_binding_sha256: action.root_session_binding_sha256(),
+                root_session_id_sha256: &session_id_sha256,
+                d1_observed_at: NOW,
+                parent_proof_sha256: None,
+                semantic_authority_fingerprint_sha256: &semantic_fingerprint,
+                authority_expires_at: action.permit_expires_at(),
+            },
+        )
+        .unwrap();
+        let verified_phase_proof = verify_root_session_phase_proof(
+            RootSessionPhaseKeyRing {
+                current: key,
+                previous: None,
+            },
+            &token,
+            RootSessionPhaseExpectation {
+                issuer: "cinatoken-rust-api-staging",
+                audience: "cinatoken-drain-source-registration-coordinator-staging",
+                application_version_id: "application-build-1",
+                environment: "staging",
+                phase: RootSessionPhase::BeforeChallenge,
+                phase_subject,
+                operation_id_sha256: begin_intent.operation_id_sha256(),
+                authorization_id_sha256: begin_intent.authorization_id_sha256(),
+                ceremony_id_sha256: begin_intent.ceremony_id_sha256(),
+                request_intent_sha256: begin_intent.request_intent_sha256(),
+                parent_proof_sha256: None,
+                semantic_authority_fingerprint_sha256: &semantic_fingerprint,
+                authority_expires_at: action.permit_expires_at(),
+                root_admin_id: action.root_admin_id(),
+                expected_session: Some(RootSessionAnchorExpectation {
+                    root_session_epoch: action.root_session_epoch(),
+                    root_session_issued_at: action.root_session_issued_at(),
+                    root_session_expires_at: action.root_session_expires_at(),
+                    root_session_binding_sha256: action.root_session_binding_sha256(),
+                    root_session_id_sha256: &session_id_sha256,
+                }),
+                now: NOW,
+            },
+        )
+        .unwrap();
+        let identity = CoordinatorIdentityV1 {
+            authorization_id_sha256: begin_intent.authorization_id_sha256().to_string(),
+            contract_version: 1,
+            environment: "staging".to_string(),
+            operation_id_sha256: begin_intent.operation_id_sha256().to_string(),
+            root_user_id: action.root_admin_id().to_string(),
+            scope_id_sha256: GLOBAL_SCOPE_ID_SHA256.to_string(),
+            scope_kind: "global".to_string(),
+        };
+        let expires_at_ms = action.verification_expires_at() * 1_000;
+        let coordinator_begin = BeginRequestV1 {
+            command: "begin".to_string(),
+            evidence: BeginEvidenceV1 {
+                authority_fingerprint_sha256: semantic_fingerprint,
+                begin_intent_sha256,
+                ceremony_id_sha256: begin_intent.ceremony_id_sha256().to_string(),
+                challenge_phase_proof_sha256: verified_phase_proof.token_sha256().to_string(),
+                challenge_sha256: webauthn.secure_verification_challenge_sha256().unwrap(),
+            },
+            expected_generation: 0,
+            expires_at_ms,
+            identity,
+            request_id_sha256: digest("coordinator-begin-request"),
+        };
+        let coordinator_status = CoordinatorStatusResponseV1 {
+            contract_version: 1,
+            event_count: 1,
+            expires_at_ms,
+            generation: 1,
+            latest_event_sha256: digest("coordinator-begin-event"),
+            operation_id_sha256: begin_intent.operation_id_sha256().to_string(),
+            outcome: None,
+            phase: CoordinatorPhase::ChallengeIssued,
+            replayed: false,
+            terminal: false,
+        };
+        let prepared = DrainSourceRegistrationApplicationCeremonyV1::prepare(
+            webauthn,
+            begin_intent,
+            &verified_phase_proof,
+            coordinator_begin.clone(),
+            NOW,
+        )
+        .unwrap();
+        let prepared_payload = serde_json::to_string(&prepared).unwrap();
+        assert!(prepared.is_prepared());
+        assert!(prepared.coordinator_status().is_none());
+        assert_eq!(prepared.coordinator_begin(), &coordinator_begin);
+        assert!(prepared_payload.contains(r#""phase":"prepared""#));
+        assert!(!prepared_payload.contains("coordinator_status"));
+
+        let application = prepared
+            .confirm_challenge_issued(coordinator_status.clone())
+            .unwrap();
+        let payload = serde_json::to_string(&application).unwrap();
+        assert!(payload.len() <= crate::passkey_ceremony::MAX_PAYLOAD_BYTES);
+        assert_eq!(
+            application.phase_proof_sha256(),
+            verified_phase_proof.token_sha256()
+        );
+        assert_eq!(application.coordinator_status().unwrap().generation, 1);
+        assert_eq!(application.begin_intent().environment(), "staging");
+        assert_eq!(application.webauthn().issued_at(), NOW);
+        assert!(application.ceremony_key().len() <= 256);
+        for forbidden in [
+            "signed_cookie",
+            "raw_cookie",
+            "raw_sid",
+            "raw_assertion",
+            "client_data_json",
+            "authenticator_data",
+            "private_key",
+            "hmac_secret",
+        ] {
+            assert!(!payload.contains(forbidden));
+        }
+
+        let mut drifted_status = coordinator_status.clone();
+        drifted_status.generation = 2;
+        assert!(prepared.confirm_challenge_issued(drifted_status).is_err());
+
+        let mut replayed_status = coordinator_status;
+        replayed_status.replayed = true;
+        let replayed = prepared.confirm_challenge_issued(replayed_status).unwrap();
+        assert!(!replayed.coordinator_status().unwrap().replayed);
     }
 }

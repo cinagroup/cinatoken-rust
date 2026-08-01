@@ -304,20 +304,25 @@ path, exact body digest, resulting generation, phase, and event digest.
 
 Events form a domain-separated SHA-256 chain over actor, body/evidence digest,
 from/to phase, generation, timestamp, previous event digest, and request ID.
-State stores the latest event digest. Every read verifies the latest event
-exists and matches the state generation and phase.
+State stores the latest event digest. Every read loads generation one through
+the current generation, recomputes every event digest, and verifies actor/body/
+request shape, predecessor hash, from/to phase, phase/generation pairing,
+monotonic timestamps, and the final state linkage.
 
-An exact request replay returns persisted current evidence with
-`replayed=true` and performs no write. Reusing the request ID with any other
-path or body is a conflict. A semantically similar request with a different
-request ID is not silently merged; generation CAS decides one winner.
+An exact request replay first cross-checks the replay index against its
+immutable historical event, then returns verified current evidence with
+`replayed=true` and performs no write. The current generation may be later than
+the historical event only when it is reachable through the frozen state
+machine. Reusing the request ID with any other path or body is a conflict. A
+semantically similar request with a different request ID is not silently
+merged; generation CAS decides one winner.
 
 ## Response-loss and recovery rules
 
 | Loss point | Retry behavior |
 |---|---|
 | before durable transaction | caller may retry exact signed request |
-| after phase transaction, before response | replay index returns persisted phase |
+| after phase transaction, before response | replay index validates the historical event and returns reachable current state |
 | after assertion claim | assertion opportunity stays burned |
 | after issuer request freeze | exact issuer bytes remain frozen; no changed request |
 | after permit persistence | same verified permit remains bound |
@@ -371,6 +376,8 @@ The checked-in tests cover:
 - alarm-driven expiry and recovery;
 - structured fail-closed response for corrupt durable state;
 - event/replay key counts and absence of raw secret markers; and
+- corrupted state generation, event digest/transition, replay binding, and
+  predecessor-chain rejection;
 - complete existing Workerd DO lifecycle regression;
 - adapter default-off, route/media/body/ambient-header, current/previous HMAC,
   pre-lookup authentication, exact-byte forwarding, and
@@ -386,16 +393,61 @@ storage/runtime capability except the one SQLite Durable Object namespace.
 It also requires the Application binding in local/staging and its absence
 from production.
 
+## Application caller checkpoint
+
+The Application now has a route-free Rust client for all nine typed operations
+and a separate versioned ceremony checkpoint. This is a caller foundation, not
+an enabled flow.
+
+The client calls only the private Service Binding, rejects production, uses a
+three-second timeout, rejects redirects, caps responses at 8 KiB, and validates
+canonical JSON plus the exact status semantics before returning. Its failure
+classes are intentionally operational:
+
+| Failure class | Mutation knowledge | Recovery rule |
+|---|---|---|
+| `NotDispatched` | known absent | correct local request/config before retry |
+| `DeterministicRejection` | authenticated rejection | retain the same operation; no changed-byte blind retry |
+| `Indeterminate` | mutation may have committed | reload retained bytes and use exact replay/status |
+| `ProtocolViolation` | peer response cannot be trusted | fail closed and alert |
+
+The Application checkpoint enforces:
+
+```text
+Prepared (generation 0)
+  -- exact signed begin after Prepared commit -->
+ChallengeIssued (generation 1)
+  -- deterministic retained claim --> finish owner
+```
+
+`Prepared` has no coordinator status. It freezes the exact typed begin bytes
+and redacted authority required for replay, then writes the create lock and
+payload in one Durable Object transaction. After the exact coordinator
+response is validated, the caller replaces the payload only when the stored
+prepared-payload SHA-256 matches. Exact next-payload replay returns success;
+changed stale state or a claimed ceremony conflicts.
+
+The checkpoint never stores Cookie, raw `sid`, assertion bytes, authenticator
+data, client data, credential public key, issuer secret, coordinator HMAC, D1
+handle, or unredacted winner rows. Finish performs a validated read before the
+claim transaction, so `Prepared` cannot be poisoned by a premature claim. The
+same claim is replayable until expiry and a different claim is excluded.
+
+No Application route invokes these methods yet. A real orchestrator must make
+`store_prepared_once` the last durable action before the first coordinator
+await and `persist_challenge_issued` the last durable action before returning
+the browser challenge.
+
 ## Promotion gates
 
 The next ordered work is:
 
-1. implement a private Application client that signs the frozen coordinator
-   authority without forwarding Cookie, session, WebAuthn, public-key, issuer,
-   or database material;
-2. wire Application-issued `RootSessionPhaseProofV1`;
-3. wire begin through fresh first-primary D1 validation and one-shot,
-   server-side ceremony state;
+1. wire the implemented private client and `Prepared` checkpoint into one
+   private Application orchestrator with persistence before dispatch;
+2. wire Application-issued `RootSessionPhaseProofV1` after an exact fresh D1
+   read;
+3. expose begin only after the coordinator and Application
+   `ChallengeIssued` commits both succeed;
 4. wire finish claim before WebAuthn parsing;
 5. wire full WebAuthn verification and Passkey generation/count CAS evidence;
 6. call the isolated permit issuer with bounded timeout and response body;

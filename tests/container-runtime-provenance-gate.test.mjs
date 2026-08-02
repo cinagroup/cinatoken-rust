@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DSSE_PAYLOAD_TYPE,
   SIGSTORE_BUNDLE_MEDIA_TYPE,
+  SOURCE_DEPENDENCIES,
   auditRepositoryContract,
   buildProvenanceStatement,
   canonicalJson,
@@ -14,6 +15,14 @@ import {
 } from "../tools/verify_container_runtime_provenance.mjs";
 
 describe("container runtime provenance gate", () => {
+  test("fingerprints every non-Cargo build-context dependency", () => {
+    expect(SOURCE_DEPENDENCIES).toContainEqual([".dockerignore", "text/plain"]);
+    expect(SOURCE_DEPENDENCIES).toContainEqual([
+      "contracts/container-runtime/v1/generated/container-runtime.pb",
+      "application/x-protobuf",
+    ]);
+  });
+
   test("keeps offline and real modes mutually exclusive", () => {
     expect(parseArgs(["--self-test", "--json"])).toMatchObject({
       selfTest: true,

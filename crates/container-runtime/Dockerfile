@@ -13,6 +13,7 @@ COPY --from=musl-target \
     /usr/local/rustup/toolchains/1.78.0-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-musl/
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ ./crates/
+COPY contracts/container-runtime/v1/generated/container-runtime.pb ./contracts/container-runtime/v1/generated/container-runtime.pb
 RUN cargo build --locked --release -p cinatoken-container-runtime \
     && readelf -l /build/target/x86_64-unknown-linux-musl/release/cinatoken-container-runtime \
         > /tmp/cinatoken-container-runtime-program-headers \

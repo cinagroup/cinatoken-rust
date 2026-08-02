@@ -3,3 +3,12 @@
 !Cargo.lock
 !crates/
 !crates/**
+!contracts/
+contracts/*
+!contracts/container-runtime/
+contracts/container-runtime/*
+!contracts/container-runtime/v1/
+contracts/container-runtime/v1/*
+!contracts/container-runtime/v1/generated/
+contracts/container-runtime/v1/generated/*
+!contracts/container-runtime/v1/generated/container-runtime.pb

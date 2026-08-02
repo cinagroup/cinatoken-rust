@@ -22,9 +22,12 @@ export const CHECKOUT_ACTION =
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0";
 export const UPLOAD_ARTIFACT_ACTION =
   "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a";
+export const RUNTIME_PROTOBUF_DESCRIPTOR_PATH =
+  "contracts/container-runtime/v1/generated/container-runtime.pb";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
+const DOCKERIGNORE = resolve(ROOT, ".dockerignore");
 const DOCKERFILE = resolve(ROOT, "crates/container-runtime/Dockerfile");
 const RUNTIME_MAIN = resolve(ROOT, "crates/container-runtime/src/main.rs");
 const RUNTIME_ATTESTATION = resolve(
@@ -70,6 +73,22 @@ const WRITABLE_MOUNT_ALLOWLIST = new Set([
   "/proc/timer_list",
   "/tmp",
 ]);
+const EXPECTED_RUNTIME_DOCKERIGNORE = [
+  "*",
+  "!Cargo.toml",
+  "!Cargo.lock",
+  "!crates/",
+  "!crates/**",
+  "!contracts/",
+  "contracts/*",
+  "!contracts/container-runtime/",
+  "contracts/container-runtime/*",
+  "!contracts/container-runtime/v1/",
+  "contracts/container-runtime/v1/*",
+  "!contracts/container-runtime/v1/generated/",
+  "contracts/container-runtime/v1/generated/*",
+  `!${RUNTIME_PROTOBUF_DESCRIPTOR_PATH}`,
+].join("\n");
 
 export function parseArgs(argv) {
   const options = {
@@ -116,6 +135,7 @@ export function parseArgs(argv) {
 
 export async function auditRepositoryContract() {
   const [
+    dockerignore,
     dockerfile,
     runtimeMain,
     runtimeAttestation,
@@ -125,6 +145,7 @@ export async function auditRepositoryContract() {
     packageJsonText,
     verifier,
   ] = await Promise.all([
+      readFile(DOCKERIGNORE, "utf8"),
       readFile(DOCKERFILE, "utf8"),
       readFile(RUNTIME_MAIN, "utf8"),
       readFile(RUNTIME_ATTESTATION, "utf8"),
@@ -148,6 +169,10 @@ export async function auditRepositoryContract() {
       fromLines[1] === `FROM ${RUST_BUILDER_IMAGE} AS builder` &&
       fromLines[2] === `FROM ${DISTROLESS_RUNTIME_IMAGE}`,
     "Dockerfile must use the three exact digest-pinned base images",
+  );
+  requireCondition(
+    protobufDescriptorBuildInputPinned(dockerfile, dockerignore),
+    "Docker build context must include only the canonical protobuf descriptor branch required by build.rs",
   );
   requireCondition(
     dockerfile.startsWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`) &&
@@ -264,6 +289,7 @@ export async function auditRepositoryContract() {
     contractVersion: LINUX_GATE_CONTRACT_VERSION,
     status: "passed",
     dockerfileBaseImagesPinned: true,
+    protobufDescriptorBuildInputPinned: true,
     sourceDateEpoch: SOURCE_DATE_EPOCH,
     independentImageBuildsRequired: 2,
     imageLayerTimestampsRewritten: true,
@@ -282,6 +308,18 @@ export async function auditRepositoryContract() {
     customerTrafficAuthorized: false,
     productionCutoverAuthorized: false,
   };
+}
+
+export function protobufDescriptorBuildInputPinned(dockerfile, dockerignore) {
+  const normalizedDockerignore = dockerignore
+    .replaceAll("\r\n", "\n")
+    .trimEnd();
+  return (
+    normalizedDockerignore === EXPECTED_RUNTIME_DOCKERIGNORE &&
+    dockerfile.includes(
+      `COPY ${RUNTIME_PROTOBUF_DESCRIPTOR_PATH} ./${RUNTIME_PROTOBUF_DESCRIPTOR_PATH}`,
+    )
+  );
 }
 
 export function buildOperationEnvelope({ operationId, kind, now = currentEpochSeconds() }) {

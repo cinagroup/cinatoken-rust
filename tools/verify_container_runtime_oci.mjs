@@ -17,6 +17,7 @@ import { gunzipSync } from "node:zlib";
 import { runBoundedSubprocess } from "./lib/bounded_subprocess.mjs";
 import {
   DISTROLESS_RUNTIME_IMAGE,
+  protobufDescriptorBuildInputPinned,
   RUST_BUILDER_IMAGE,
   RUST_MUSL_TARGET_IMAGE,
 } from "./verify_container_runtime_linux.mjs";
@@ -41,6 +42,7 @@ export const UPLOAD_ARTIFACT_ACTION =
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
+const DOCKERIGNORE = resolve(ROOT, ".dockerignore");
 const WORKFLOW = resolve(ROOT, ".github/workflows/container-runtime-oci.yml");
 const DOCKERFILE = resolve(ROOT, "crates/container-runtime/Dockerfile");
 const PACKAGE_JSON = resolve(ROOT, "package.json");
@@ -101,7 +103,8 @@ export function parseArgs(argv) {
 }
 
 export async function auditRepositoryContract() {
-  const [workflowText, dockerfileText, packageJsonText] = await Promise.all([
+  const [dockerignoreText, workflowText, dockerfileText, packageJsonText] = await Promise.all([
+    readFile(DOCKERIGNORE, "utf8"),
     readFile(WORKFLOW, "utf8"),
     readFile(DOCKERFILE, "utf8"),
     readFile(PACKAGE_JSON, "utf8"),
@@ -206,6 +209,10 @@ export async function auditRepositoryContract() {
     "runtime Dockerfile must use the exact digest-pinned musl target, builder, and runtime images",
   );
   requireCondition(
+    protobufDescriptorBuildInputPinned(dockerfile, dockerignoreText),
+    "runtime Docker build context must pin the canonical protobuf descriptor required by build.rs",
+  );
+  requireCondition(
     dockerfile.startsWith(`ARG SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}\n`) &&
       dockerfile.includes("CARGO_BUILD_TARGET=x86_64-unknown-linux-musl") &&
       dockerfile.includes("CARGO_INCREMENTAL=0") &&
@@ -259,6 +266,7 @@ export async function auditRepositoryContract() {
   return {
     contractVersion: OCI_GATE_CONTRACT_VERSION,
     status: "passed",
+    protobufDescriptorBuildInputPinned: true,
     buildkitImage: BUILDKIT_IMAGE,
     buildkitPinnedByDigest: true,
     sourceDateEpoch: SOURCE_DATE_EPOCH,

@@ -10,6 +10,7 @@ import {
   RUST_MUSL_TARGET_IMAGE,
   RUNTIME_ATTESTATION_CONTRACT_VERSION,
   RUNTIME_GID,
+  RUNTIME_PROTOBUF_DESCRIPTOR_PATH,
   RUNTIME_UID,
   SOURCE_DATE_EPOCH,
   UPLOAD_ARTIFACT_ACTION,
@@ -18,6 +19,7 @@ import {
   classifyRuntimeFileDescriptorTarget,
   parseLinuxMountInfo,
   parseArgs,
+  protobufDescriptorBuildInputPinned,
   validateContainerPolicy,
   validateReproducibleImages,
   validateRuntimeProcessAttestation,
@@ -25,6 +27,9 @@ import {
 
 const dockerfile = await Bun.file(
   new URL("../crates/container-runtime/Dockerfile", import.meta.url),
+).text();
+const dockerignore = await Bun.file(
+  new URL("../.dockerignore", import.meta.url),
 ).text();
 const workflow = await Bun.file(
   new URL("../.github/workflows/container-runtime-linux.yml", import.meta.url),
@@ -93,6 +98,22 @@ describe("linux container release gate", () => {
     expect(dockerfile).toContain(
       "COPY --from=builder --chown=0:0 /runtime-root/ /",
     );
+    expect(protobufDescriptorBuildInputPinned(dockerfile, dockerignore)).toBe(true);
+    expect(dockerfile).toContain(
+      `COPY ${RUNTIME_PROTOBUF_DESCRIPTOR_PATH} ./${RUNTIME_PROTOBUF_DESCRIPTOR_PATH}`,
+    );
+    expect(
+      protobufDescriptorBuildInputPinned(
+        dockerfile.replace(RUNTIME_PROTOBUF_DESCRIPTOR_PATH, "missing.pb"),
+        dockerignore,
+      ),
+    ).toBe(false);
+    expect(
+      protobufDescriptorBuildInputPinned(
+        dockerfile,
+        dockerignore.replace(`!${RUNTIME_PROTOBUF_DESCRIPTOR_PATH}`, "!contracts/**"),
+      ),
+    ).toBe(false);
     expect(verifierSource).toContain(NODE_MOCK_IMAGE);
     expect(verifierSource).toContain('"network", "create", "--internal"');
     expect(verifierSource).toContain('"r2-input.cinatoken.internal"');
@@ -201,6 +222,7 @@ describe("linux container release gate", () => {
       contractVersion: LINUX_GATE_CONTRACT_VERSION,
       status: "passed",
       dockerfileBaseImagesPinned: true,
+      protobufDescriptorBuildInputPinned: true,
       sourceDateEpoch: SOURCE_DATE_EPOCH,
       independentImageBuildsRequired: 2,
       imageLayerTimestampsRewritten: true,

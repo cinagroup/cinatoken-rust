@@ -96,9 +96,14 @@ const EVIDENCE_FILES = Object.freeze([
   ["container-runtime-vulnerability-verification.json", MAX_JSON_BYTES, "application/json"],
 ]);
 
-const SOURCE_DEPENDENCIES = Object.freeze([
+export const SOURCE_DEPENDENCIES = Object.freeze([
+  [".dockerignore", "text/plain"],
   [".github/workflows/container-runtime-oci.yml", "application/yaml"],
   ["Cargo.lock", "text/plain"],
+  [
+    "contracts/container-runtime/v1/generated/container-runtime.pb",
+    "application/x-protobuf",
+  ],
   ["crates/container-runtime/Dockerfile", "text/plain"],
   ["config/container-runtime-vulnerability-db.json", "application/json"],
   ["config/container-runtime-vulnerability-db-listing.json", "application/json"],

@@ -158,6 +158,7 @@ describe("container runtime OCI release gate", () => {
       contractVersion: OCI_GATE_CONTRACT_VERSION,
       status: "passed",
       buildkitImage: BUILDKIT_IMAGE,
+      protobufDescriptorBuildInputPinned: true,
       buildkitPinnedByDigest: true,
       independentOciBuildsRequired: 2,
       sourceDateEpoch: SOURCE_DATE_EPOCH,

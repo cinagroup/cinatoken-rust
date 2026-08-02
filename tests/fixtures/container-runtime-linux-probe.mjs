@@ -153,8 +153,6 @@ function buildOperationEnvelope(operationId, kind) {
           sha256: createHash("sha256").update("").digest("hex"),
           size: 0,
           content_type: "application/json",
-          request_object_key: null,
-          object_version: null,
         }
       : {
           mode: "r2",

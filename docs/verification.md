@@ -12981,3 +12981,77 @@ Workerd/remote staging call, complete finish proof chain, immutable 0074
 execution, recovery evidence, observability, rollback, retention, and approvals
 remain mandatory. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-08-02 TypeScript Control Plane And Container Contract Verification
+
+This checkpoint corrects the target language boundary and establishes the
+first machine-enforced TypeScript/Rust Container contract. ADR 0001 now owns
+the target architecture: TypeScript edge ingress and core session/shard
+Durable Objects coordinate disposable Rust Linux Container compute. Existing
+Rust Worker and core Rust DO code remains a gated compatibility path, not the
+target control plane.
+
+The OpenAPI 3.1 document is canonical for the implemented private JSON v1 HTTP
+surface. The proto3 schema reserves the target `application/x-protobuf` model,
+but both schema metadata and the structural gate explicitly keep that transport
+`target-not-implemented`. Redocly and Buf lint the schemas; a structured
+`protobufjs` gate resolves every OpenAPI reference, compares nine message field
+sets, freezes proto field numbers and enums, and checks protocol/body/boundary
+constants. TypeScript and Rust consume the same six acceptance/rejection
+vectors.
+
+The audit found and fixed a real drift: the Rust request reader previously
+accepted explicit null optionals, wider content types and R2 identifiers,
+identifier characters rejected by the Controller, and unsigned values beyond
+the TypeScript safe-integer range. The runtime now enforces the Controller's
+stricter common subset; Linux probes omit optional inline references instead
+of serializing null.
+
+Verified current-worktree evidence:
+
+```text
+bun run check:container-runtime:contracts
+  OpenAPI valid; Buf format/lint passed
+  9 OpenAPI/protobuf message sets and fixed field numbers passed
+  7 TypeScript tests passed across 6 shared vectors
+
+cargo test -p cinatoken-container-runtime
+  15 unit tests, 7 HTTP tests, and doc tests passed
+
+bun test --path-ignore-patterns="target/**" \
+  services/container-controller/tests/protocol.test.ts \
+  tests/container-runtime-linux-gate.test.mjs
+  34 tests passed; 240 assertions
+
+bun run check:container-controller
+  generated Wrangler types, TypeScript/dry-run builds, portable protocol,
+  Workerd SQLite, and Controller suites passed; 267 local tests passed
+
+bun run check:container-runtime:linux-contract
+  9 tests passed; offline release contract passed
+
+bun install --frozen-lockfile
+cargo fmt --all --check
+git diff --check
+npx.cmd --yes yaml-lint \
+  .github/workflows/container-runtime-contracts.yml \
+  .github/workflows/container-runtime-linux.yml \
+  .github/workflows/container-runtime-oci.yml
+  passed
+
+bun run check
+  passed in 1191.5 seconds before this evidence result was appended
+  complete Rust workspace and doc tests, Workerd suites, frontend, migration,
+  supply-chain policy, Wrangler dry-run, and required wasm32 gates passed
+```
+
+The new GitHub Actions gate runs contract parity and Rust shared-vector tests,
+and future pull requests run Buf breaking analysis against their base commit.
+Container Linux/OCI workflows now trigger on contract and parity-gate changes.
+
+No remote Cloudflare command, resource, secret write, migration, deployment,
+route, traffic, DNS, D1 mutation, or Go/VPS state change occurred. Generated
+wire types, protobuf content negotiation, the TypeScript edge gateway, the
+TypeScript RealtimeSession V2 namespace, remote fault campaigns, canary,
+rollback, and production reconciliation remain required. Go/VPS remains
+authoritative and production remains **NO-GO**.

@@ -1,12 +1,21 @@
 # Layered Gateway Architecture — Implementation Scheme
 
+> **Architecture authority update (2026-08-02):**
+> `docs/adr/0001-typescript-control-plane-rust-container.md` supersedes this
+> document wherever it describes a Rust edge gateway or Rust core
+> session/shard Durable Object as the target state. The target control plane is
+> TypeScript edge Worker + TypeScript session/shard DOs; Rust remains the Linux
+> Container compute layer. The implementation ledger below is retained as
+> compatibility-path history and parity evidence, not future ownership
+> guidance. Its older precedence statements cannot override ADR 0001.
+
 Reference provenance update (2026-07-12): cinaVibeSDK commit `918e974` is a
 TypeScript Workers and Agents SDK implementation; it has no Rust crate. The
-Rust gateway, Durable Objects, and WFP tenant in this repository are a
-language/runtime translation of its topology, with cinatoken-specific auth,
-billing, replay, and redaction invariants. Dynamic Dispatch and an external
-Durable Object namespace are bindings, but they are not ordinary Worker
-service bindings.
+Rust gateway, Durable Objects, and WFP tenant in this repository were a
+language/runtime translation of its topology. That translation remains useful
+for compatibility evidence, but new control-plane ownership follows the
+TypeScript reference stack and the cinatoken-specific fail-closed auth,
+billing, replay, and redaction invariants in ADR 0001.
 
 > **Status:** Partially implemented · updated 2026-07-11 — the provider registry
 > (wired), the AI-Gateway cutover planner, the RealtimeSession DO substrate, and

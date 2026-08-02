@@ -1,0 +1,6 @@
+extends:
+  - recommended
+
+rules:
+  # Loopback health probes have no application-level 4xx response contract.
+  operation-4xx-response: off

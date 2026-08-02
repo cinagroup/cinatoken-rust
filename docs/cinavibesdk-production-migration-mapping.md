@@ -7,13 +7,20 @@ Latest evidence increment: 2026-07-26
 Status: production migration mapping for applying cinaVibeSDK architecture
 patterns to `cinatoken-rust`.
 
+Architecture authority update: 2026-08-02. ADR 0001 is authoritative for the
+target runtime boundary; older Rust edge/DO entries below are compatibility
+history until individually retired.
+
 ## Scope
 
 This document turns the cinaVibeSDK patterns into an operator-facing migration
 contract for `cinatoken-rust`:
 
-- Rust scheduling gateway at the edge.
-- Rust Durable Object long-session ownership for realtime sessions.
+- TypeScript scheduling/admission Worker at the edge.
+- TypeScript Durable Object ownership for long sessions and sharded Container
+  lifecycle.
+- Rust `cinatoken-rust` Linux Containers for provider and CPU-heavy compute.
+- OpenAPI and Protobuf as the generated TypeScript/Rust boundary.
 - Workers for Platforms Rust tenant scripts for isolated tenant execution.
 - Cloudflare AI Gateway forwarding for supported relay and tenant routes.
 
@@ -51,44 +58,40 @@ Architecture provenance correction (2026-07-12): the reviewed cinaVibeSDK
 commit `918e974` contains no Rust crate or Cargo manifest. Its authoritative
 implementation is TypeScript Workers plus the Agents SDK. `cinatoken-rust`
 reuses the routing, hibernation, dispatch-namespace, and AI Gateway topology,
-then implements that topology with a Rust scheduling planner, Rust Durable
-Objects, and a Rust/Wasm WFP tenant. Do not describe those Rust components as
-source copied from cinaVibeSDK.
+then preserves its TypeScript control-plane ownership while using Rust Linux
+Containers for compute. Existing Rust scheduling/DO components are migration
+compatibility implementations, not source copied from cinaVibeSDK and not the
+target ownership model.
 
 ## Target Production Shape
 
-`cinatoken-rust` should use cinaVibeSDK's topology as a pattern, translated to
-Rust and to cinatoken's relay, billing, and admin semantics:
+`cinatoken-rust` should use cinaVibeSDK's TypeScript Workers/Agents topology
+directly for the control plane, with cinatoken's relay, billing, and admin
+semantics and a Rust Container compute boundary:
 
 ```text
 Client / Admin / Tenant host
         |
 Cloudflare WAF / CDN / rate controls
         |
-Rust scheduling gateway
+TypeScript edge ingress Worker
   - route classification
   - relay token or admin auth
-  - tenant dispatch decision
-  - realtime dispatch decision
-  - AI Gateway cutover decision
+  - bounded admission and deterministic dispatch
         |
-        +--> Main Rust relay pipeline
-        |     - direct provider path
-        |     - optional Cloudflare AI Gateway REST path
-        |     - same-channel direct fallback
-        |     - existing billing and audit settlement
-        |
-        +--> RealtimeSession Durable Object
+        +--> TypeScript RealtimeSession V2 Durable Object
         |     - hibernatable client WebSocket
-        |     - redacted upstream plan in attachments/status
-        |     - request-scoped upstream secret handoff only
-        |     - usage accumulation and settlement before v1 cutover
+        |     - ordered, bounded, durable session coordination
         |
-        +--> WFP DISPATCHER namespace
-              - Rust/Wasm tenant script
-              - internal-path-only AI routes
-              - sanitized inbound headers
-              - route-specific AI Gateway policy
+        +--> TypeScript RelayShardContainer Durable Object cluster
+              - stable tenant/hash-ring shard identity
+              - operation lease, replay fence and Container lifecycle
+              - private OpenAPI/Protobuf dispatch
+                    |
+                    +--> Rust cinatoken-rust Linux Container
+                          - provider adapters and approved egress
+                          - CPU-heavy transforms and usage parsing
+                          - disposable process/local disk
 ```
 
 Persistent state remains split by responsibility:

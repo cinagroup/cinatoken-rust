@@ -1,0 +1,11 @@
+version: v2
+modules:
+  - path: contracts/container-runtime/v1
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_DIRECTORY_MATCH
+breaking:
+  use:
+    - FILE

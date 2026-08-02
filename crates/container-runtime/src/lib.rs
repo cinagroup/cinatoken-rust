@@ -44,10 +44,15 @@ const MAX_OPERATION_ID_BYTES: usize = 128;
 const MAX_OPERATION_KIND_BYTES: usize = 64;
 const MAX_PROVIDER_OPERATION_ID_BYTES: usize = 128;
 const MAX_TRACE_ID_BYTES: usize = 128;
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const MAX_CONTENT_TYPE_BYTES: usize = 255;
 const MAX_OBJECT_KEY_BYTES: usize = 1_024;
 const MAX_OBJECT_VERSION_BYTES: usize = 256;
 const MAX_RESPONSE_ARTIFACT_OBJECT_VERSION_BYTES: usize = 128;
+const MAX_REQUEST_CONTENT_TYPE_BYTES: usize = 128;
+const MIN_REQUEST_OBJECT_KEY_BYTES: usize = 8;
+const MAX_REQUEST_OBJECT_KEY_BYTES: usize = 512;
+const MAX_REQUEST_OBJECT_VERSION_BYTES: usize = 128;
 const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_CLIENT_RESPONSE_ARTIFACT_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CONTAINER_SHARDS: u16 = 1_024;
@@ -886,29 +891,31 @@ impl OperationEnvelope {
                 "protocol_version must be 1",
             ));
         }
-        validate_identifier(
+        validate_controller_identifier(
             &self.operation_id,
             MAX_OPERATION_ID_BYTES,
             "invalid_operation_id",
             "operation_id must be a bounded ASCII identifier",
         )?;
         validate_operation_kind(&self.operation_kind)?;
-        if self.owner_generation == 0 {
+        if !is_positive_safe_integer(self.owner_generation) {
             return Err(ValidationError::new(
                 "invalid_owner_generation",
-                "owner_generation must be positive",
+                "owner_generation must be a positive JavaScript safe integer",
             ));
         }
-        if !(now < self.execution_deadline_at
-            && self.execution_deadline_at <= self.owner_lease_expires_at
-            && self.execution_deadline_at <= now.saturating_add(MAX_EXECUTION_WINDOW_SECONDS))
+        if !is_positive_safe_integer(self.owner_lease_expires_at)
+            || !is_positive_safe_integer(self.execution_deadline_at)
+            || !(now < self.execution_deadline_at
+                && self.execution_deadline_at <= self.owner_lease_expires_at
+                && self.execution_deadline_at <= now.saturating_add(MAX_EXECUTION_WINDOW_SECONDS))
         {
             return Err(ValidationError::new(
                 "invalid_execution_deadline",
                 "execution deadline must be in the future and no later than the owner lease",
             ));
         }
-        validate_identifier(
+        validate_controller_identifier(
             &self.provider_operation_id,
             MAX_PROVIDER_OPERATION_ID_BYTES,
             "invalid_provider_operation_id",
@@ -917,7 +924,7 @@ impl OperationEnvelope {
         validate_sha256(&self.admission_sha256, "invalid_admission_sha256")?;
         self.input.validate()?;
         self.shard.validate()?;
-        validate_identifier(
+        validate_controller_identifier(
             &self.trace_id,
             MAX_TRACE_ID_BYTES,
             "invalid_trace_id",
@@ -926,8 +933,7 @@ impl OperationEnvelope {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub(crate) struct OperationInput {
     pub(crate) mode: String,
     pub(crate) sha256: String,
@@ -935,6 +941,42 @@ pub(crate) struct OperationInput {
     pub(crate) content_type: String,
     pub(crate) request_object_key: Option<String>,
     pub(crate) object_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OperationInputWire {
+    mode: String,
+    sha256: String,
+    size: u64,
+    content_type: String,
+    #[serde(default)]
+    request_object_key: WireField<String>,
+    #[serde(default)]
+    object_version: WireField<String>,
+}
+
+impl<'de> Deserialize<'de> for OperationInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = OperationInputWire::deserialize(deserializer)?;
+        Ok(Self {
+            mode: wire.mode,
+            sha256: wire.sha256,
+            size: wire.size,
+            content_type: wire.content_type,
+            request_object_key: match wire.request_object_key {
+                WireField::Missing => None,
+                WireField::Present(value) => Some(value),
+            },
+            object_version: match wire.object_version {
+                WireField::Missing => None,
+                WireField::Present(value) => Some(value),
+            },
+        })
+    }
 }
 
 impl OperationInput {
@@ -948,7 +990,7 @@ impl OperationInput {
         }
         validate_visible_ascii(
             &self.content_type,
-            MAX_CONTENT_TYPE_BYTES,
+            MAX_REQUEST_CONTENT_TYPE_BYTES,
             "invalid_input_content_type",
             "input content_type must be bounded visible ASCII",
             true,
@@ -975,10 +1017,10 @@ impl OperationInput {
                         "r2 input requires request_object_key and object_version",
                     )
                 })?;
-                validate_object_key(key)?;
-                validate_identifier(
+                validate_request_object_key(key)?;
+                validate_controller_identifier(
                     version,
-                    MAX_OBJECT_VERSION_BYTES,
+                    MAX_REQUEST_OBJECT_VERSION_BYTES,
                     "invalid_object_version",
                     "object_version must be a bounded ASCII identifier",
                 )?;
@@ -1019,7 +1061,7 @@ impl OperationShard {
                 "shard contract_version must be 1",
             ));
         }
-        if self.ring_generation == 0
+        if !is_positive_safe_integer(self.ring_generation)
             || self.shard_count == 0
             || self.shard_count > MAX_CONTAINER_SHARDS
         {
@@ -1074,6 +1116,27 @@ fn validate_identifier(
     Ok(())
 }
 
+fn validate_controller_identifier(
+    value: &str,
+    max_bytes: usize,
+    code: &'static str,
+    message: &'static str,
+) -> Result<(), ValidationError> {
+    if value.is_empty()
+        || value.len() > max_bytes
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(ValidationError::new(code, message));
+    }
+    Ok(())
+}
+
+const fn is_positive_safe_integer(value: u64) -> bool {
+    value > 0 && value <= MAX_SAFE_INTEGER
+}
+
 fn validate_operation_kind(value: &str) -> Result<(), ValidationError> {
     if value.is_empty()
         || value.len() > MAX_OPERATION_KIND_BYTES
@@ -1089,9 +1152,9 @@ fn validate_operation_kind(value: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-fn validate_object_key(value: &str) -> Result<(), ValidationError> {
-    if value.is_empty()
-        || value.len() > MAX_OBJECT_KEY_BYTES
+fn validate_request_object_key(value: &str) -> Result<(), ValidationError> {
+    if value.len() < MIN_REQUEST_OBJECT_KEY_BYTES
+        || value.len() > MAX_REQUEST_OBJECT_KEY_BYTES
         || !value.bytes().all(|byte| {
             byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'_' | b'.' | b':' | b'-')
         })
@@ -1251,6 +1314,35 @@ mod tests {
         }
     }
 
+    #[derive(Deserialize)]
+    struct EnvelopeConformanceSuite {
+        schema_version: u32,
+        now: u64,
+        cases: Vec<EnvelopeConformanceCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct EnvelopeConformanceCase {
+        name: String,
+        valid: bool,
+        envelope: serde_json::Value,
+    }
+
+    #[test]
+    fn matches_shared_operation_envelope_conformance_vectors() {
+        let suite: EnvelopeConformanceSuite = serde_json::from_str(include_str!(
+            "../../../contracts/container-runtime/v1/conformance/operation-envelope-cases.json"
+        ))
+        .expect("shared operation envelope conformance vectors must be valid JSON");
+        assert_eq!(suite.schema_version, 1);
+
+        for case in suite.cases {
+            let accepted = serde_json::from_value::<OperationEnvelope>(case.envelope)
+                .is_ok_and(|envelope| envelope.validate(suite.now).is_ok());
+            assert_eq!(accepted, case.valid, "conformance case {}", case.name);
+        }
+    }
+
     #[test]
     fn accepts_the_complete_v1_health_probe_envelope() {
         assert_eq!(valid_operation(1_000).validate(1_000), Ok(()));
@@ -1343,6 +1435,52 @@ mod tests {
         assert_eq!(
             operation.validate(1_000).unwrap_err().code,
             "invalid_input_size"
+        );
+    }
+
+    #[test]
+    fn enforces_controller_request_bounds() {
+        let mut operation = valid_operation(1_000);
+        operation.owner_generation = MAX_SAFE_INTEGER + 1;
+        assert_eq!(
+            operation.validate(1_000).unwrap_err().code,
+            "invalid_owner_generation"
+        );
+
+        operation = valid_operation(1_000);
+        operation.input.content_type = format!("application/{}", "a".repeat(117));
+        assert_eq!(operation.input.content_type.len(), 129);
+        assert_eq!(
+            operation.validate(1_000).unwrap_err().code,
+            "invalid_input_content_type"
+        );
+
+        operation = valid_operation(1_000);
+        operation.input.mode = "r2".to_string();
+        operation.input.request_object_key = Some("short".to_string());
+        operation.input.object_version = Some("version-1".to_string());
+        assert_eq!(
+            operation.validate(1_000).unwrap_err().code,
+            "invalid_request_object_key"
+        );
+
+        operation.input.request_object_key = Some("r".repeat(MAX_REQUEST_OBJECT_KEY_BYTES + 1));
+        assert_eq!(
+            operation.validate(1_000).unwrap_err().code,
+            "invalid_request_object_key"
+        );
+
+        operation.input.request_object_key = Some("requests/operation-1".to_string());
+        operation.input.object_version = Some("v".repeat(MAX_REQUEST_OBJECT_VERSION_BYTES + 1));
+        assert_eq!(
+            operation.validate(1_000).unwrap_err().code,
+            "invalid_object_version"
+        );
+
+        operation.input.object_version = Some("version/1".to_string());
+        assert_eq!(
+            operation.validate(1_000).unwrap_err().code,
+            "invalid_object_version"
         );
     }
 

@@ -1,0 +1,839 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "CinaToken Container Runtime API",
+    "version": "1.0.0",
+    "description": "Version 1 of the internal HTTP contract between the TypeScript container controller and the Rust Linux container runtime. The standard OpenAPI content entries describe the currently implemented JSON transport only.",
+    "license": {
+      "name": "AGPL-3.0-only",
+      "identifier": "AGPL-3.0-only"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://container",
+      "description": "Cloudflare Container loopback origin"
+    }
+  ],
+  "tags": [
+    {
+      "name": "runtime",
+      "description": "Container process health and readiness"
+    },
+    {
+      "name": "operations",
+      "description": "Bounded operation execution"
+    }
+  ],
+  "security": [],
+  "x-cinatoken-security-boundary": {
+    "applicationAuthentication": "none",
+    "networkBoundary": "controller-managed container loopback",
+    "protocolHeaderIsAuthentication": false,
+    "description": "The runtime must not be exposed as a public origin. Admission and authority checks happen in the TypeScript controller before loopback dispatch."
+  },
+  "x-cinatoken-contract": {
+    "protocolVersion": 1,
+    "shardContractVersion": 1,
+    "protocolHeader": "x-cinatoken-container-protocol",
+    "maximumRequestBodyBytes": 65536
+  },
+  "x-cinatoken-media-types": {
+    "application/json": {
+      "status": "implemented",
+      "wireContract": "JSON v1"
+    },
+    "application/x-protobuf": {
+      "status": "target-not-implemented",
+      "protoFile": "container_runtime.proto",
+      "requestMessage": "cinatoken.container.runtime.v1.OperationEnvelope",
+      "operationResponseMessage": "cinatoken.container.runtime.v1.OperationResponse",
+      "healthResponseMessage": "cinatoken.container.runtime.v1.HealthResponse",
+      "readinessResponseMessage": "cinatoken.container.runtime.v1.ReadinessResponse",
+      "errorResponseMessage": "cinatoken.container.runtime.v1.ErrorResponse",
+      "description": "Reserved target media type. The current controller and runtime do not encode, decode, negotiate, or serve protobuf payloads."
+    }
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "getContainerHealth",
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Check process liveness",
+        "responses": {
+          "200": {
+            "description": "The container process is alive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-cinatoken-protobuf-target": {
+          "status": "target-not-implemented",
+          "responseMessage": "cinatoken.container.runtime.v1.HealthResponse"
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "getContainerReadiness",
+        "tags": [
+          "runtime"
+        ],
+        "summary": "Check runtime readiness and build identity",
+        "responses": {
+          "200": {
+            "description": "The runtime build identity is available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The runtime build identity could not be computed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "code": "runtime_build_id_unavailable",
+                  "message": "runtime build identity is unavailable"
+                }
+              }
+            }
+          }
+        },
+        "x-cinatoken-protobuf-target": {
+          "status": "target-not-implemented",
+          "successResponseMessage": "cinatoken.container.runtime.v1.ReadinessResponse",
+          "errorResponseMessage": "cinatoken.container.runtime.v1.ErrorResponse"
+        }
+      }
+    },
+    "/v1/operations": {
+      "post": {
+        "operationId": "executeContainerOperation",
+        "tags": [
+          "operations"
+        ],
+        "summary": "Execute one fenced container operation",
+        "description": "The implemented transport accepts a strict JSON v1 envelope of at most 65536 bytes. Unknown object fields and explicit nulls for optional fields are rejected. Deadline and shard relationships are enforced at runtime in addition to the structural schema.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ContainerProtocolHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperationEnvelope"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation completed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompletedOperationResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Execution may have occurred and reconciliation is required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryRequiredOperationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/JsonProtocolError"
+          },
+          "413": {
+            "$ref": "#/components/responses/JsonProtocolError"
+          },
+          "415": {
+            "$ref": "#/components/responses/JsonProtocolError"
+          },
+          "422": {
+            "description": "The JSON envelope was structurally invalid, or a provider response was interpreted as a rejection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ProviderRejectedOperationResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "426": {
+            "$ref": "#/components/responses/JsonProtocolError"
+          },
+          "500": {
+            "$ref": "#/components/responses/JsonProtocolError"
+          },
+          "501": {
+            "description": "Execution is disabled or the operation kind is not implemented.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimpleRejectedOperationResponse"
+                },
+                "example": {
+                  "protocol_version": 1,
+                  "operation_id": "operation-123",
+                  "status": "rejected",
+                  "code": "execution_not_enabled",
+                  "trace_id": "trace-123"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The provider input could not be loaded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SimpleRejectedOperationResponse"
+                },
+                "example": {
+                  "protocol_version": 1,
+                  "operation_id": "operation-123",
+                  "status": "rejected",
+                  "code": "provider_input_unavailable",
+                  "trace_id": "trace-123"
+                }
+              }
+            }
+          }
+        },
+        "x-cinatoken-protobuf-target": {
+          "status": "target-not-implemented",
+          "mediaType": "application/x-protobuf",
+          "requestMessage": "cinatoken.container.runtime.v1.OperationEnvelope",
+          "successResponseMessage": "cinatoken.container.runtime.v1.OperationResponse",
+          "errorResponseMessage": "cinatoken.container.runtime.v1.ErrorResponse"
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "ContainerProtocolHeader": {
+        "name": "x-cinatoken-container-protocol",
+        "in": "header",
+        "required": true,
+        "description": "Exact container wire protocol version.",
+        "schema": {
+          "type": "string",
+          "const": "1"
+        }
+      }
+    },
+    "responses": {
+      "JsonProtocolError": {
+        "description": "The request failed before producing an operation outcome.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "HealthResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          }
+        }
+      },
+      "ReadinessResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "protocol_version",
+          "shard_contract_version",
+          "runtime_build_id",
+          "execution_enabled"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ready"
+          },
+          "protocol_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "shard_contract_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "runtime_build_id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "execution_enabled": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "OperationEnvelope": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "protocol_version",
+          "operation_id",
+          "operation_kind",
+          "owner_generation",
+          "owner_lease_expires_at",
+          "execution_deadline_at",
+          "provider_operation_id",
+          "admission_sha256",
+          "input",
+          "shard",
+          "trace_id"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          },
+          "operation_kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z0-9_:-]+$"
+          },
+          "owner_generation": {
+            "$ref": "#/components/schemas/PositiveSafeInteger"
+          },
+          "owner_lease_expires_at": {
+            "$ref": "#/components/schemas/PositiveSafeInteger"
+          },
+          "execution_deadline_at": {
+            "$ref": "#/components/schemas/PositiveSafeInteger"
+          },
+          "provider_operation_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          },
+          "admission_sha256": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "input": {
+            "$ref": "#/components/schemas/OperationInput"
+          },
+          "shard": {
+            "$ref": "#/components/schemas/OperationShard"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          }
+        },
+        "x-cinatoken-invariants": [
+          "execution_deadline_at must be greater than the current Unix time",
+          "execution_deadline_at must be less than or equal to owner_lease_expires_at",
+          "execution_deadline_at must be no more than 300 seconds after the current Unix time",
+          "shard must be admitted by the configured current or transition ring"
+        ]
+      },
+      "OperationInput": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/InlineOperationInput"
+          },
+          {
+            "$ref": "#/components/schemas/R2OperationInput"
+          }
+        ]
+      },
+      "InlineOperationInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "sha256",
+          "size",
+          "content_type"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "inline"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "size": {
+            "$ref": "#/components/schemas/OperationPayloadSize"
+          },
+          "content_type": {
+            "$ref": "#/components/schemas/ControllerContentType"
+          }
+        }
+      },
+      "R2OperationInput": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mode",
+          "sha256",
+          "size",
+          "content_type",
+          "request_object_key",
+          "object_version"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "const": "r2"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "size": {
+            "$ref": "#/components/schemas/OperationPayloadSize"
+          },
+          "content_type": {
+            "$ref": "#/components/schemas/ControllerContentType"
+          },
+          "request_object_key": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 512,
+            "pattern": "^[A-Za-z0-9/_.:-]+$"
+          },
+          "object_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          }
+        }
+      },
+      "OperationShard": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contract_version",
+          "ring_generation",
+          "shard_count",
+          "shard_index",
+          "instance_name"
+        ],
+        "properties": {
+          "contract_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "ring_generation": {
+            "$ref": "#/components/schemas/PositiveSafeInteger"
+          },
+          "shard_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1024
+          },
+          "shard_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1023
+          },
+          "instance_name": {
+            "type": "string",
+            "pattern": "^cinatoken-relay-shard-v1-[0-9]{4}$"
+          }
+        },
+        "x-cinatoken-invariants": [
+          "shard_index must be less than shard_count",
+          "the four-digit instance_name suffix must equal shard_index"
+        ]
+      },
+      "CompletedOperationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "protocol_version",
+          "operation_id",
+          "status",
+          "trace_id"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          },
+          "status": {
+            "type": "string",
+            "const": "completed"
+          },
+          "result": {
+            "$ref": "#/components/schemas/OperationResultManifest"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          }
+        }
+      },
+      "SimpleRejectedOperationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "protocol_version",
+          "operation_id",
+          "status",
+          "code",
+          "trace_id"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          },
+          "status": {
+            "type": "string",
+            "const": "rejected"
+          },
+          "code": {
+            "$ref": "#/components/schemas/OutcomeCode"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          }
+        }
+      },
+      "ProviderRejectedOperationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "protocol_version",
+          "operation_id",
+          "status",
+          "code",
+          "classification",
+          "provider_status",
+          "client_status",
+          "client_artifact",
+          "trace_id"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          },
+          "status": {
+            "type": "string",
+            "const": "rejected"
+          },
+          "code": {
+            "$ref": "#/components/schemas/OutcomeCode"
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "typed_error",
+              "http_error",
+              "invalid_body"
+            ]
+          },
+          "provider_status": {
+            "$ref": "#/components/schemas/Unsigned16"
+          },
+          "client_status": {
+            "$ref": "#/components/schemas/Unsigned16"
+          },
+          "client_artifact": {
+            "$ref": "#/components/schemas/ClientResponseArtifactManifest"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "classification": {
+                  "const": "typed_error"
+                }
+              },
+              "required": [
+                "classification"
+              ]
+            },
+            "then": {
+              "properties": {
+                "provider_status": {
+                  "const": 200
+                },
+                "client_status": {
+                  "const": 200
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "classification": {
+                  "const": "invalid_body"
+                }
+              },
+              "required": [
+                "classification"
+              ]
+            },
+            "then": {
+              "properties": {
+                "provider_status": {
+                  "const": 200
+                },
+                "client_status": {
+                  "const": 500
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "classification": {
+                  "const": "http_error"
+                }
+              },
+              "required": [
+                "classification"
+              ]
+            },
+            "then": {
+              "properties": {
+                "provider_status": {
+                  "not": {
+                    "const": 200
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "x-cinatoken-invariants": [
+          "for http_error, client_status must equal provider_status",
+          "client_artifact.object_key must bind operation_id, an owner generation, and client_response_artifact_sha256"
+        ]
+      },
+      "RecoveryRequiredOperationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "protocol_version",
+          "operation_id",
+          "status",
+          "code",
+          "trace_id"
+        ],
+        "properties": {
+          "protocol_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          },
+          "status": {
+            "type": "string",
+            "const": "recovery_required"
+          },
+          "code": {
+            "$ref": "#/components/schemas/OutcomeCode"
+          },
+          "trace_id": {
+            "$ref": "#/components/schemas/ControllerIdentifier128"
+          }
+        }
+      },
+      "OperationResultManifest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "object_key",
+          "object_version",
+          "sha256",
+          "size",
+          "content_type"
+        ],
+        "properties": {
+          "object_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^[A-Za-z0-9/_.:-]+$"
+          },
+          "object_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9._:/@-]+$"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "size": {
+            "$ref": "#/components/schemas/OperationPayloadSize"
+          },
+          "content_type": {
+            "$ref": "#/components/schemas/RuntimeContentType"
+          }
+        }
+      },
+      "ClientResponseArtifactManifest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "object_key",
+          "object_version",
+          "client_response_artifact_sha256",
+          "sha256",
+          "size",
+          "content_type"
+        ],
+        "properties": {
+          "object_key": {
+            "type": "string",
+            "minLength": 31,
+            "maxLength": 1024,
+            "pattern": "^container-client-artifacts/v1/[A-Za-z0-9/_.:-]+$"
+          },
+          "object_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:/@-]+$"
+          },
+          "client_response_artifact_sha256": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "sha256": {
+            "$ref": "#/components/schemas/Sha256Hex"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 4194304
+          },
+          "content_type": {
+            "type": "string",
+            "const": "application/json"
+          }
+        }
+      },
+      "ControllerIdentifier128": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9._:-]+$"
+      },
+      "PositiveSafeInteger": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "OperationPayloadSize": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 67108864
+      },
+      "Unsigned16": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 65535
+      },
+      "Sha256Hex": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "OutcomeCode": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z0-9_-]+$"
+      },
+      "ControllerContentType": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+(?:;[ -~]+)?$"
+      },
+      "RuntimeContentType": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 255,
+        "pattern": "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+(?:;[ -~]*)?$"
+      }
+    }
+  }
+}

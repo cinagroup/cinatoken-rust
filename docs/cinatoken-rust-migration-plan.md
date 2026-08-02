@@ -2,21 +2,26 @@
 
 生成日期：2026-06-17
 
+> 2026-08-02 架构校正：目标态的语言与运行时所有权以
+> `docs/adr/0001-typescript-control-plane-rust-container.md` 为最高优先级。
+> 本文后续按日期保留的 Rust Worker / Rust Durable Object 实施记录属于迁移兼容层证据，
+> 不再代表终态架构，也不得据此把核心会话或分片 DO 整体迁移到 Rust Wasm。
+
 ## 1. 目标与结论
 
-本方案用于将 `github:cinagroup/cinatoken` 迁移为新的 `cinatoken-rust` 项目。迁移目标不是简单翻译 Go 代码，而是把当前 Gin/GORM/Redis/Docker 架构重构为 Rust 优先、Cloudflare 云原生优先的 AI API Gateway。
+本方案用于将 `github:cinagroup/cinatoken` 迁移为新的 `cinatoken-rust` 项目。迁移目标不是简单翻译 Go 代码，而是把当前 Gin/GORM/Redis/Docker 架构重构为 TypeScript 云原生控制面 + Rust Container 算力层的 AI API Gateway。
 
 推荐目标形态：
 
-1. 前端继续沿用 `web/default` 的 React 19、Rsbuild、Base UI、Tailwind 与 Bun 构建体系，部署到 Cloudflare Pages。
-2. 核心 Relay 网关迁移为 Rust Worker/WASM，负责 OpenAI/Claude/Gemini 兼容接口、鉴权、限流、额度、路由、SSE 流式转发、AI Gateway/Workers AI 调用。
-3. 管理后台 API、支付、订阅、OAuth、Passkey、长尾 Provider、视频/音乐异步任务分阶段迁移到 Rust 模块。
-4. 数据层以 Cloudflare D1 作为主持久化数据库，KV 作为配置/短期缓存，R2 作为文件与任务产物存储，Upstash Redis 作为原子计数、分布式锁、并发控制和热数据缓存。
-5. 对 Worker 不适合承载的状态型能力使用 Durable Objects、Queues、Cron Triggers 补齐；如未来需要完全保留全部企业级长尾功能，可保留同一代码库内的 native Rust 后端部署形态作为兼容出口。
+1. 前端继续沿用 `web/default` 的 React 19、Rsbuild、Base UI、Tailwind 与 Bun 构建体系，由 Cloudflare Static Assets/同源入口交付。
+2. 公网边缘接入、路由分类、鉴权编排、限流与 admission 固定由 TypeScript Worker 承担，沿用 cinaVibeSDK 的 Workers 技术栈。
+3. 核心会话、分片路由和 Container 生命周期固定由 TypeScript Durable Objects 承担；按租户/稳定哈希与 ring generation 路由到确定性分片，DO SQLite 保存协调真相。
+4. `cinatoken-rust` 固定作为 Linux Container 算力层，承载 provider adapter、CPU 密集转换和受控出站；Container 本地内存与磁盘不作为恢复或财务真相。
+5. D1、KV、R2 与 DO storage 构成持久层；TypeScript 与 Rust 边界必须使用版本化 OpenAPI/Protobuf、共享向量和生成类型，禁止继续扩散手写重复 DTO。
 
 关键判断：
 
-纯 Worker 方案适合承载高频 Relay、鉴权、配额、模型路由、日志队列与轻量管理 API；但当前 cinatoken 的完整功能包含 Passkey、复杂支付、OpenAI Realtime WebSocket、Midjourney/Suno/视频任务、AWS/Vertex/Tencent/VolcEngine 签名、Codex 订阅凭证刷新、io.net 部署管理等长尾能力。完整迁移必须采用“核心优先、长尾分批”的策略，而不是一次性替换全部 Go 后端。
+终态采用四层职责边界：TypeScript 边缘接入 Worker → TypeScript 分片/会话 DO 集群 → Rust Linux Container 分片 → KV/D1/R2/DO storage。性能优化先通过算力下沉、批量化和减少跨层往返解决；只有经过 profiling 的纯 CPU 热点才可评估独立 Rust Wasm 模块，核心会话 DO 不得因“栈统一”整体迁移到 Rust Wasm。完整迁移继续采用“核心优先、长尾分批、单一副作用所有者”的策略，而不是一次性替换全部 Go 后端。
 
 ## 2. 当前项目能力清单
 
@@ -140,30 +145,36 @@ Client / Admin Browser
         |
 Cloudflare CDN / WAF / Turnstile / Rate Limiting binding
         |
-Rust Worker: Static Assets (web/default, 同源) + API + Relay Gateway
+TypeScript Edge Ingress Worker
+  - Static Assets / public API compatibility
+  - auth orchestration / admission / bounded streaming
         |
-+-------------------+------------------+-------------------+
-|                   |                  |                   |
-D1 (Sessions API    KV                 Durable Objects     R2
- + 读副本)          hot config         counters/locks       files/task outputs
-users/channels      token cache        concurrency/熔断     backups/uploads
-tokens/logs/billing
+TypeScript Durable Object cluster
+  - deterministic tenant/session identity
+  - versioned hash ring and shard fences
+  - SQLite operation/lease/replay/lifecycle truth
         |
-Queues / Cron / Workflows / Durable Objects
-async logs(Queue), task+payment 编排(Workflows), websocket/session(DO)
-
-注：限流改用 Workers 原生 Rate Limiting binding；native 兜底改用 Cloudflare
-Containers；前端用 Worker Static Assets。详见 §21（凡冲突以 §21 为准）。
+Rust cinatoken-rust Linux Container shards
+  - provider adapters / CPU-heavy transforms / approved egress
+  - disposable local process and disk
         |
-Cloudflare AI Gateway / Workers AI / External Providers
+KV / D1 / R2 / DO SQLite + Queues / Workflows
+  - D1: relational, quota, billing and audit truth
+  - KV: versioned non-authoritative cache/config
+  - R2: immutable large payloads and evidence
 ```
+
+TypeScript → Rust 私有边界通过 Service Binding/Container loopback 调用，并受
+OpenAPI/Protobuf、协议版本、绝对 deadline、ring/owner generation、payload digest 与
+共享 conformance vectors 约束。Container 发起 provider 副作用前，DO 必须先持久化
+operation ownership；超时按“结果未知、需要 reconciliation”处理，不跨分片静默重试。
 
 ### 4.2 Cloudflare 资源命名
 
 建议资源命名统一使用 `cinatoken-rust-*`：
 
-- Pages project：`cinatoken-rust-web`
-- Worker：`cinatoken-rust-api`
+- Static Assets / edge Worker：`cinatoken-edge-gateway`
+- Container controller Worker：`cinatoken-container-controller`
 - D1：`cinatoken-rust-db`
 - KV cache：`cinatoken-rust-cache`
 - KV config：`cinatoken-rust-config`
@@ -171,77 +182,46 @@ Cloudflare AI Gateway / Workers AI / External Providers
 - AI Gateway：`cinatoken-rust-gateway`
 - Queue logs：`cinatoken-rust-log-events`
 - Queue tasks：`cinatoken-rust-task-events`
-- Durable Object namespace：`cinatoken-rust-realtime`
-- Upstash Redis：`cinatoken-rust-redis`
+- Session Durable Object namespace：`cinatoken-realtime-sessions-v2`
+- Shard/Container Durable Object namespace：`cinatoken-relay-shards`
+- Upstash Redis（仅迁移兼容路径，可退场）：`cinatoken-rust-redis`
 
-### 4.3 Worker 绑定示例
+### 4.3 Worker 与 DO 绑定基线
 
-```toml
-name = "cinatoken-rust-api"
-main = "build/worker/shim.mjs"
-compatibility_date = "2026-06-17"
-compatibility_flags = ["nodejs_compat"]
+目标控制面统一使用 TypeScript + `wrangler.jsonc`，bindings 由 `wrangler types`
+生成，不手写重复 `Env`。边缘 Worker 只通过私有 service binding 调用 session/shard
+控制面；Container Controller 通过 `new_sqlite_classes` 管理 TypeScript DO，并绑定 Rust
+Container image、D1、KV、R2 与受控 provider egress。公网 `workers_dev`、preview URL 和
+Container 直连入口默认关闭，所有副作用能力 flag 默认 `false`。
 
-[ai]
-binding = "AI"
+当前可执行基线见：
 
-[[d1_databases]]
-binding = "DB"
-database_name = "cinatoken-rust-db"
-database_id = "<D1_DATABASE_ID>"
+- `services/container-controller/wrangler.jsonc`
+- `services/container-controller/src/index.ts`
+- `crates/container-runtime/Dockerfile`
+- `contracts/container-runtime/v1/`
 
-[[kv_namespaces]]
-binding = "CACHE_KV"
-id = "<CACHE_KV_ID>"
-
-[[kv_namespaces]]
-binding = "CONFIG_KV"
-id = "<CONFIG_KV_ID>"
-
-[[r2_buckets]]
-binding = "FILE_BUCKET"
-bucket_name = "cinatoken-rust-files"
-
-[[queues.producers]]
-queue = "cinatoken-rust-log-events"
-binding = "LOG_QUEUE"
-
-[[queues.producers]]
-queue = "cinatoken-rust-task-events"
-binding = "TASK_QUEUE"
-
-[[durable_objects.bindings]]
-name = "REALTIME"
-class_name = "RealtimeSession"
-
-[vars]
-ENVIRONMENT = "production"
-AI_GATEWAY_ID = "<AI_GATEWAY_ID>"
-FRONTEND_BASE_URL = "https://<domain>"
-
-# secrets:
-# JWT_SECRET
-# SESSION_SECRET
-# ENCRYPTION_KEY
-# UPSTASH_REDIS_REST_URL
-# UPSTASH_REDIS_REST_TOKEN
-# STRIPE_SECRET_KEY
-# STRIPE_WEBHOOK_SECRET
-# CREEM_API_KEY
-# WAFFO_SECRET
-# TURNSTILE_SECRET_KEY
-```
+生产 secrets 只通过 Cloudflare secret binding 注入，不写入 JSONC、源码、日志、证据包
+或命令参数。边缘入口、session DO 与 shard DO 后续分别使用独立 service/namespace，
+不得复用旧 Rust `REALTIME_SESSIONS` namespace 做原地类替换。
 
 ## 5. 新仓库结构
 
-建议 `cinatoken-rust` 使用 Cargo workspace：
+`cinatoken-rust` 是 TypeScript/Rust 多语言仓库：`services/` 承载目标 Cloudflare
+控制面，Cargo workspace 承载 Rust Container 算力、共享领域逻辑与迁移期兼容实现。
 
 ```text
 cinatoken-rust/
   Cargo.toml
+  contracts/
+    container-runtime/v1/ # OpenAPI, Protobuf, shared conformance vectors
+  services/
+    edge-gateway/         # target TypeScript public ingress (planned)
+    realtime-session/     # target TypeScript core session DO (planned)
+    container-controller/ # TypeScript shard DO + Rust Container lifecycle
   crates/
     api/              # HTTP router, middleware, handlers
-    worker/           # Cloudflare Worker entrypoint
+    worker/           # migration compatibility Worker; not target ingress
     core/             # config, errors, json, time, request context
     storage/          # D1/sqlx repositories, migrations
     cache/            # KV, Upstash Redis, request cache

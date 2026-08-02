@@ -1,0 +1,181 @@
+{
+  "schema_version": 1,
+  "now": 2000000000,
+  "cases": [
+    {
+      "name": "valid_inline",
+      "valid": true,
+      "envelope": {
+        "protocol_version": 1,
+        "operation_id": "operation-inline-1",
+        "operation_kind": "health_probe",
+        "owner_generation": 1,
+        "owner_lease_expires_at": 2000000120,
+        "execution_deadline_at": 2000000060,
+        "provider_operation_id": "provider-operation-inline-1",
+        "admission_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input": {
+          "mode": "inline",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "size": 0,
+          "content_type": "application/json"
+        },
+        "shard": {
+          "contract_version": 1,
+          "ring_generation": 7,
+          "shard_count": 8,
+          "shard_index": 3,
+          "instance_name": "cinatoken-relay-shard-v1-0003"
+        },
+        "trace_id": "trace-inline-1"
+      }
+    },
+    {
+      "name": "valid_r2",
+      "valid": true,
+      "envelope": {
+        "protocol_version": 1,
+        "operation_id": "operation-r2-1",
+        "operation_kind": "provider_request",
+        "owner_generation": 2,
+        "owner_lease_expires_at": 2000000120,
+        "execution_deadline_at": 2000000060,
+        "provider_operation_id": "provider-operation-r2-1",
+        "admission_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "input": {
+          "mode": "r2",
+          "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "size": 4096,
+          "content_type": "application/json",
+          "request_object_key": "container-inputs/v1/operation-r2-1/input.json",
+          "object_version": "version-r2-1"
+        },
+        "shard": {
+          "contract_version": 1,
+          "ring_generation": 7,
+          "shard_count": 8,
+          "shard_index": 3,
+          "instance_name": "cinatoken-relay-shard-v1-0003"
+        },
+        "trace_id": "trace-r2-1"
+      }
+    },
+    {
+      "name": "reject_inline_explicit_null_references",
+      "valid": false,
+      "envelope": {
+        "protocol_version": 1,
+        "operation_id": "operation-inline-null",
+        "operation_kind": "health_probe",
+        "owner_generation": 1,
+        "owner_lease_expires_at": 2000000120,
+        "execution_deadline_at": 2000000060,
+        "provider_operation_id": "provider-operation-inline-null",
+        "admission_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "input": {
+          "mode": "inline",
+          "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "size": 0,
+          "content_type": "application/json",
+          "request_object_key": null,
+          "object_version": null
+        },
+        "shard": {
+          "contract_version": 1,
+          "ring_generation": 7,
+          "shard_count": 8,
+          "shard_index": 3,
+          "instance_name": "cinatoken-relay-shard-v1-0003"
+        },
+        "trace_id": "trace-inline-null"
+      }
+    },
+    {
+      "name": "reject_unsafe_owner_generation",
+      "valid": false,
+      "envelope": {
+        "protocol_version": 1,
+        "operation_id": "operation-unsafe-owner",
+        "operation_kind": "health_probe",
+        "owner_generation": 9007199254740992,
+        "owner_lease_expires_at": 2000000120,
+        "execution_deadline_at": 2000000060,
+        "provider_operation_id": "provider-operation-unsafe-owner",
+        "admission_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+        "input": {
+          "mode": "inline",
+          "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "size": 0,
+          "content_type": "application/json"
+        },
+        "shard": {
+          "contract_version": 1,
+          "ring_generation": 7,
+          "shard_count": 8,
+          "shard_index": 3,
+          "instance_name": "cinatoken-relay-shard-v1-0003"
+        },
+        "trace_id": "trace-unsafe-owner"
+      }
+    },
+    {
+      "name": "reject_r2_object_version_outside_controller_alphabet",
+      "valid": false,
+      "envelope": {
+        "protocol_version": 1,
+        "operation_id": "operation-r2-version",
+        "operation_kind": "provider_request",
+        "owner_generation": 3,
+        "owner_lease_expires_at": 2000000120,
+        "execution_deadline_at": 2000000060,
+        "provider_operation_id": "provider-operation-r2-version",
+        "admission_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "input": {
+          "mode": "r2",
+          "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+          "size": 64,
+          "content_type": "application/json",
+          "request_object_key": "container-inputs/v1/operation-r2-version/input.json",
+          "object_version": "version/1"
+        },
+        "shard": {
+          "contract_version": 1,
+          "ring_generation": 7,
+          "shard_count": 8,
+          "shard_index": 3,
+          "instance_name": "cinatoken-relay-shard-v1-0003"
+        },
+        "trace_id": "trace-r2-version"
+      }
+    },
+    {
+      "name": "reject_unknown_top_level_field",
+      "valid": false,
+      "envelope": {
+        "protocol_version": 1,
+        "operation_id": "operation-extra-field",
+        "operation_kind": "health_probe",
+        "owner_generation": 1,
+        "owner_lease_expires_at": 2000000120,
+        "execution_deadline_at": 2000000060,
+        "provider_operation_id": "provider-operation-extra-field",
+        "admission_sha256": "5555555555555555555555555555555555555555555555555555555555555555",
+        "input": {
+          "mode": "inline",
+          "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+          "size": 0,
+          "content_type": "application/json"
+        },
+        "shard": {
+          "contract_version": 1,
+          "ring_generation": 7,
+          "shard_count": 8,
+          "shard_index": 3,
+          "instance_name": "cinatoken-relay-shard-v1-0003"
+        },
+        "trace_id": "trace-extra-field",
+        "unexpected": true
+      }
+    }
+  ]
+}

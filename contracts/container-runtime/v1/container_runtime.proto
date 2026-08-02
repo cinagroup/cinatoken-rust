@@ -1,0 +1,131 @@
+syntax = "proto3";
+
+package cinatoken.container.runtime.v1;
+
+// Target binary contract for application/x-protobuf.
+//
+// This file does not imply runtime support. The currently implemented v1 HTTP
+// transport is application/json as described by container-runtime.openapi.json.
+// A protobuf rollout requires explicit controller and runtime negotiation.
+
+enum OperationInputMode {
+  OPERATION_INPUT_MODE_UNSPECIFIED = 0;
+  OPERATION_INPUT_MODE_INLINE = 1;
+  OPERATION_INPUT_MODE_R2 = 2;
+}
+
+enum OperationOutcomeStatus {
+  OPERATION_OUTCOME_STATUS_UNSPECIFIED = 0;
+  OPERATION_OUTCOME_STATUS_COMPLETED = 1;
+  OPERATION_OUTCOME_STATUS_REJECTED = 2;
+  OPERATION_OUTCOME_STATUS_RECOVERY_REQUIRED = 3;
+}
+
+enum ProviderResponseClassification {
+  PROVIDER_RESPONSE_CLASSIFICATION_UNSPECIFIED = 0;
+  PROVIDER_RESPONSE_CLASSIFICATION_TYPED_ERROR = 1;
+  PROVIDER_RESPONSE_CLASSIFICATION_HTTP_ERROR = 2;
+  PROVIDER_RESPONSE_CLASSIFICATION_INVALID_BODY = 3;
+}
+
+message OperationEnvelope {
+  // Must equal 1.
+  uint32 protocol_version = 1 [json_name = "protocol_version"];
+  string operation_id = 2 [json_name = "operation_id"];
+  string operation_kind = 3 [json_name = "operation_kind"];
+  uint64 owner_generation = 4 [json_name = "owner_generation"];
+  // Unix seconds. Values must remain within the TypeScript safe-integer range.
+  uint64 owner_lease_expires_at = 5 [json_name = "owner_lease_expires_at"];
+  // Unix seconds, in the future, at most 300 seconds from admission, and no
+  // later than owner_lease_expires_at.
+  uint64 execution_deadline_at = 6 [json_name = "execution_deadline_at"];
+  string provider_operation_id = 7 [json_name = "provider_operation_id"];
+  // Lowercase hexadecimal SHA-256 digest.
+  string admission_sha256 = 8 [json_name = "admission_sha256"];
+  OperationInput input = 9 [json_name = "input"];
+  OperationShard shard = 10 [json_name = "shard"];
+  string trace_id = 11 [json_name = "trace_id"];
+}
+
+message OperationInput {
+  // Maps to JSON v1 strings "inline" and "r2".
+  OperationInputMode mode = 1 [json_name = "mode"];
+  string sha256 = 2 [json_name = "sha256"];
+  uint64 size = 3 [json_name = "size"];
+  string content_type = 4 [json_name = "content_type"];
+  // Both references must be absent for inline and present for r2.
+  optional string request_object_key = 5 [json_name = "request_object_key"];
+  optional string object_version = 6 [json_name = "object_version"];
+}
+
+message OperationShard {
+  // Must equal 1.
+  uint32 contract_version = 1 [json_name = "contract_version"];
+  // Must be positive and within the TypeScript safe-integer range.
+  uint64 ring_generation = 2 [json_name = "ring_generation"];
+  // Range 1 through 1024.
+  uint32 shard_count = 3 [json_name = "shard_count"];
+  // Must be less than shard_count.
+  uint32 shard_index = 4 [json_name = "shard_index"];
+  // Must equal cinatoken-relay-shard-v1-NNNN for shard_index.
+  string instance_name = 5 [json_name = "instance_name"];
+}
+
+message OperationResponse {
+  // Must equal 1.
+  uint32 protocol_version = 1 [json_name = "protocol_version"];
+  string operation_id = 2 [json_name = "operation_id"];
+  OperationOutcomeStatus status = 3 [json_name = "status"];
+  optional string code = 4 [json_name = "code"];
+  OperationResultManifest result = 5 [json_name = "result"];
+  optional ProviderResponseClassification classification = 6 [json_name = "classification"];
+  optional uint32 provider_status = 7 [json_name = "provider_status"];
+  optional uint32 client_status = 8 [json_name = "client_status"];
+  ClientResponseArtifactManifest client_artifact = 9 [json_name = "client_artifact"];
+  string trace_id = 10 [json_name = "trace_id"];
+
+  // Presence invariants mirror JSON v1:
+  // - completed: code and provider rejection fields absent; result optional.
+  // - rejected: code present and result absent. Provider rejection fields are
+  //   either all absent or all present.
+  // - recovery_required: code present; result and provider fields absent.
+}
+
+message OperationResultManifest {
+  string object_key = 1 [json_name = "object_key"];
+  string object_version = 2 [json_name = "object_version"];
+  string sha256 = 3 [json_name = "sha256"];
+  uint64 size = 4 [json_name = "size"];
+  string content_type = 5 [json_name = "content_type"];
+}
+
+message ClientResponseArtifactManifest {
+  string object_key = 1 [json_name = "object_key"];
+  string object_version = 2 [json_name = "object_version"];
+  string client_response_artifact_sha256 = 3 [json_name = "client_response_artifact_sha256"];
+  string sha256 = 4 [json_name = "sha256"];
+  uint64 size = 5 [json_name = "size"];
+  string content_type = 6 [json_name = "content_type"];
+}
+
+message HealthResponse {
+  // Must equal "ok".
+  string status = 1 [json_name = "status"];
+}
+
+message ReadinessResponse {
+  // Must equal "ready".
+  string status = 1 [json_name = "status"];
+  // Must equal 1.
+  uint32 protocol_version = 2 [json_name = "protocol_version"];
+  // Must equal 1.
+  uint32 shard_contract_version = 3 [json_name = "shard_contract_version"];
+  // Lowercase hexadecimal SHA-256 digest of the runtime executable.
+  string runtime_build_id = 4 [json_name = "runtime_build_id"];
+  bool execution_enabled = 5 [json_name = "execution_enabled"];
+}
+
+message ErrorResponse {
+  string code = 1 [json_name = "code"];
+  string message = 2 [json_name = "message"];
+}

@@ -4208,6 +4208,27 @@ zero-blocker policy result.
    historical validity separately. Freshness must not be reinterpreted as a
    current release claim.
 
+The executable candidate lane is
+`.github/workflows/container-runtime-vulnerability-db-candidate.yml`. It runs
+twice daily and on manual dispatch, has read-only repository permission, uses
+the digest-pinned release scanner, bounds every downloaded or extracted file,
+and retains only the small review packet. It never commits, pushes, changes the
+active database contract, publishes an image, or deploys a runtime. Candidate
+adoption remains a separate reviewed commit and must complete all of these
+checks:
+
+1. Match the retained source listing, archive SHA-256, raw database SHA-256 and
+   bytes, database xxh64, deterministic import metadata, schema and build time.
+2. Replace the active listing snapshot and every corresponding constant in the
+   OCI workflow, vulnerability verifier and database metadata atomically.
+3. Keep `maximumCandidateAgeSeconds` and Grype's maximum built age at 48 hours;
+   freshness failure must never be converted into a policy exception.
+4. Run the local vulnerability and provenance contract suites, then require a
+   fresh OCI run and its triggered provenance run to pass for the adopted
+   commit.
+5. Preserve the previous frozen contract by Git history for historical replay;
+   do not reinterpret its now-stale database as current release evidence.
+
 The next promotion boundary is S3: generate subject-bound provenance, verify
 signature/signer policy and transparency inclusion, and retain the packet in
 approved immutable storage. Only then may registry publication/readback and

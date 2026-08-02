@@ -59,6 +59,15 @@ import {
   parseContainerOperationHttpResponse,
   terminalAckV3Response,
 } from "./operation_outcome";
+import {
+  CONTAINER_PROTOBUF_CONTENT_TYPE,
+  encodeOperationEnvelopeProtobuf,
+} from "./container_runtime_protobuf";
+import {
+  dispatchContainerOperationWithLegacyFallback,
+  responseContentType,
+  type ContainerOperationTransport,
+} from "./container_operation_transport";
 import type { ReadinessResponse } from "./container_runtime_contract";
 import { controllerStatusV1Response } from "./controller_status";
 import {
@@ -190,6 +199,8 @@ interface ControllerRuntimeEnvironment
   CONTAINER_STORAGE_D1_READ_ENABLED: string;
   CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED: string;
   CONTAINER_PROVIDER_CLIENT_ENABLED: string;
+  CONTAINER_PROTOBUF_TRANSPORT_ENABLED: string;
+  CONTAINER_PROTOBUF_TRANSPORT_STAGING_VERIFIED: string;
   CONTAINER_PROVIDER_EGRESS_ENABLED: string;
   CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED: string;
   CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED: string;
@@ -227,6 +238,13 @@ function operationRecoveryIntentWriterEnabled(env: ControllerRuntimeEnvironment)
   return (
     env.CONTAINER_OPERATION_RECOVERY_INTENT_V1_ENABLED === "true" &&
     env.CONTAINER_OPERATION_RECOVERY_INTENT_V1_STAGING_VERIFIED === "true"
+  );
+}
+
+function containerProtobufTransportEnabled(env: ControllerRuntimeEnvironment): boolean {
+  return (
+    env.CONTAINER_PROTOBUF_TRANSPORT_ENABLED === "true" &&
+    env.CONTAINER_PROTOBUF_TRANSPORT_STAGING_VERIFIED === "true"
   );
 }
 
@@ -1250,23 +1268,60 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           ? jsonError("operation_completion_conflict", 409)
           : operationOutcomeResponse(outcome);
       }
-      const remainingMs = Math.max(
-        1,
-        (verified.envelope.execution_deadline_at - Math.floor(Date.now() / 1000)) * 1000,
-      );
-      try {
-        const upstream = await this.containerFetch("http://container/v1/operations", {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-cinatoken-container-protocol": "1" },
-          body: copyArrayBuffer(verified.body),
-          signal: AbortSignal.timeout(remainingMs),
-        });
-        const body = await readBoundedResponse(upstream, MAX_OPERATION_BODY_BYTES);
-        const parsedContainerResponse = parseContainerOperationHttpResponse(
-          upstream,
-          body,
-          verified.envelope,
+      const operationDeadlineAtMs = verified.envelope.execution_deadline_at * 1000;
+      const dispatchContainerOperation = async (
+        transport: ContainerOperationTransport,
+      ) => {
+        const contentType =
+          transport === "protobuf"
+            ? CONTAINER_PROTOBUF_CONTENT_TYPE
+            : "application/json";
+        const requestBody =
+          transport === "protobuf"
+            ? encodeOperationEnvelopeProtobuf(verified.envelope)
+            : verified.body;
+        const upstream = await this.containerFetch(
+          "http://container/v1/operations",
+          {
+            method: "POST",
+            headers: {
+              accept: contentType,
+              "content-type": contentType,
+              "x-cinatoken-container-protocol": "1",
+            },
+            body: copyArrayBuffer(requestBody),
+            signal: AbortSignal.timeout(
+              Math.max(1, operationDeadlineAtMs - Date.now()),
+            ),
+          },
         );
+        const body = await readBoundedResponse(
+          upstream,
+          MAX_OPERATION_BODY_BYTES,
+          operationDeadlineAtMs,
+        );
+        return {
+          parsed: parseContainerOperationHttpResponse(
+            upstream,
+            body,
+            verified.envelope,
+          ),
+          response: upstream,
+        };
+      };
+      try {
+        const dispatched = await dispatchContainerOperationWithLegacyFallback(
+          containerProtobufTransportEnabled(this.env),
+          dispatchContainerOperation,
+        );
+        const { response: upstream, parsed: parsedContainerResponse } = dispatched;
+        const expectedResponseContentType =
+          dispatched.transport === "protobuf"
+            ? CONTAINER_PROTOBUF_CONTENT_TYPE
+            : "application/json";
+        if (responseContentType(upstream) !== expectedResponseContentType) {
+          throw new ProtocolError("invalid_container_response", 502);
+        }
         if (parsedContainerResponse.kind === "protocol_error") {
           const outcome = finalizeOperationOutcome(
             this.ledger,

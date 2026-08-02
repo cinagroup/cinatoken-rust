@@ -5324,3 +5324,53 @@ network, rate-limit, audit, and change-ticket controls. Finish still requires
 claim-before-parse, mandatory UV, fresh issuer/commit authority, permit
 issuance, immutable 0074 execution, and same-Session alias recovery. Go/VPS
 remains authoritative and production remains **NO-GO**.
+
+## 2026-08-02 Default-Off Container Protobuf Transport Increment
+
+The private Controller-to-Rust operation boundary now implements strict JSON
+and Protobuf encodings of protocol v1. This increment does not move admission,
+scheduling, ledger, retry, terminal, or recovery authority out of the
+TypeScript Durable Object. Health and readiness remain JSON, the operation body
+limit remains 64 KiB, and the runtime still has no public route or application
+credential surface.
+
+Implemented locally:
+
+- deterministic protobufjs and prost generation from the checked-in proto and
+  3,174-byte Buf descriptor set, without runtime or build-time `protoc`;
+- 11 shared canonical/rejected wire vectors consumed by TypeScript and Rust;
+- canonical decode/re-encode rejection for unknown, duplicate, reordered,
+  nonminimal, unsafe-integer, invalid-enum, malformed, and presence-drifting
+  messages;
+- one shared Controller business parser for JSON and Protobuf outcomes;
+- a default JSON path and a double-gated Protobuf selection path; and
+- one legacy JSON fallback only after an exact valid JSON 415
+  `unsupported_media_type` response proves the old runtime rejected before
+  execution. Every ambiguous or malformed result remains no-retry and enters
+  durable recovery.
+
+Both `CONTAINER_PROTOBUF_TRANSPORT_ENABLED` and
+`CONTAINER_PROTOBUF_TRANSPORT_STAGING_VERIFIED` remain `false` in every tracked
+environment and in the deploy preflight inventory. They are transport
+compatibility gates and do not alter the sealed 22-action shard-activation D1
+contract. Controller execution, provider, storage, response, terminal, and
+recovery gates remain independently required.
+
+Next production-grade work:
+
+1. add bounded transport-selection, fallback, mismatch, byte, latency, and
+   recovery telemetry without payload or tenant labels;
+2. publish the new runtime behind a JSON-only Controller and prove exact N/N-1
+   JSON compatibility in isolated staging;
+3. run no-provider Protobuf health probes, canonical/malformed/body-limit,
+   restart, response-loss, and mixed old/new runtime campaigns;
+4. archive exact runtime build identity, request/response digests, zero
+   provider/billing mutation, load/SLO/cost, and rollback evidence;
+5. enable both staging gates only through an audited Controller version after
+   approval, then rehearse transport-disable rollback before any production
+   proposal; and
+6. keep production blocked on the wider provider/financial, WORM/S3,
+   lifecycle, security, and signed-approval requirements.
+
+No remote Cloudflare mutation or deployment was performed. Go/VPS remains
+authoritative and production remains **NO-GO**.

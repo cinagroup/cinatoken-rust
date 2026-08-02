@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 
 import type {
   OperationRow,
@@ -19,6 +20,19 @@ import {
 } from "../src/operation_outcome";
 
 const encoder = new TextEncoder();
+const protobufCases = (
+  JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../contracts/container-runtime/v1/conformance/operation-protobuf-cases.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as {
+    cases: { name: string; wire_hex: string }[];
+  }
+).cases;
 
 function containerEnvelope(operationKind = "relay") {
   return {
@@ -54,6 +68,31 @@ function parseContainerHttp(status: number, value: unknown, operationKind = "rel
     containerEnvelope(operationKind),
   );
 }
+
+function protobufCase(name: string): Uint8Array {
+  const fixture = protobufCases.find((candidate) => candidate.name === name);
+  if (fixture === undefined) throw new Error(`missing protobuf fixture ${name}`);
+  const bytes = new Uint8Array(fixture.wire_hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(fixture.wire_hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function protobufResponse(status: number): Response {
+  return new Response(null, {
+    status,
+    headers: { "content-type": "application/x-protobuf" },
+  });
+}
+
+const protobufResponseEnvelope = {
+  protocol_version: 1,
+  operation_id: "operation-response-1",
+  operation_kind: "relay",
+  owner_generation: 7,
+  trace_id: "trace-response-1",
+};
 
 function operationRow(overrides: Partial<OperationRow> = {}): OperationRow {
   return {
@@ -313,6 +352,85 @@ describe("durable container operation outcomes", () => {
         code: "invalid:operation",
         message: "noncanonical error code",
       }),
+    ).toThrowError("invalid_container_response");
+  });
+
+  it("applies the existing outcome matrix to shared Protobuf response vectors", () => {
+    expect(
+      parseContainerOperationResponse(
+        protobufResponse(200),
+        protobufCase("operation_response_completed"),
+        protobufResponseEnvelope,
+      ),
+    ).toEqual({
+      status: "completed",
+      code: null,
+      result: {
+        object_key: "container-results/v1/operation-response-1/7/result.json",
+        object_version: "result-version-1",
+        sha256: "c".repeat(64),
+        size: 42,
+        content_type: "application/json",
+      },
+      classification: null,
+      provider_status: null,
+      client_status: null,
+      client_artifact: null,
+    });
+    expect(
+      parseContainerOperationResponse(
+        protobufResponse(422),
+        protobufCase("operation_response_rejected"),
+        protobufResponseEnvelope,
+      ),
+    ).toMatchObject({
+      status: "rejected",
+      code: "provider_typed_error",
+      classification: "typed_error",
+      provider_status: 200,
+      client_status: 200,
+      client_artifact: {
+        client_response_artifact_sha256: "d".repeat(64),
+      },
+    });
+    expect(
+      parseContainerOperationResponse(
+        protobufResponse(202),
+        protobufCase("operation_response_recovery_required"),
+        protobufResponseEnvelope,
+      ),
+    ).toEqual({
+      status: "recovery_required",
+      code: "ambiguous_execution",
+      result: null,
+      classification: null,
+      provider_status: null,
+      client_status: null,
+      client_artifact: null,
+    });
+  });
+
+  it("parses Protobuf protocol errors and rejects noncanonical response enums", () => {
+    expect(
+      parseContainerOperationHttpResponse(
+        protobufResponse(422),
+        protobufCase("error_response"),
+        protobufResponseEnvelope,
+      ),
+    ).toEqual({
+      kind: "protocol_error",
+      status: 422,
+      error: {
+        code: "invalid_operation_envelope",
+        message: "request body must match the operation envelope",
+      },
+    });
+    expect(() =>
+      parseContainerOperationHttpResponse(
+        protobufResponse(200),
+        protobufCase("reject_operation_response_invalid_enum"),
+        protobufResponseEnvelope,
+      ),
     ).toThrowError("invalid_container_response");
   });
 

@@ -22,8 +22,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 mod client;
+pub mod protobuf;
 
 use client::{ExecutionError, ExecutionOutcome, InternalProviderClient, OperationExecutor};
+pub use protobuf::CONTENT_TYPE as PROTOBUF_CONTENT_TYPE;
 
 #[cfg(target_os = "linux")]
 mod attestation;
@@ -169,20 +171,24 @@ async fn operations(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
+    let request_format = operation_request_format(&headers);
+    let error_format = request_format.unwrap_or(OperationFormat::Json);
     let body = match body {
         Ok(body) => body,
         Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            return error_response(
+            return operation_error_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "request_body_too_large",
                 "request body exceeds 65536 bytes",
+                error_format,
             );
         }
         Err(_) => {
-            return error_response(
+            return operation_error_response(
                 StatusCode::BAD_REQUEST,
                 "invalid_request_body",
                 "request body could not be read",
+                error_format,
             );
         }
     };
@@ -192,28 +198,34 @@ async fn operations(
         .and_then(|value| value.to_str().ok())
         != Some("1")
     {
-        return error_response(
+        return operation_error_response(
             StatusCode::UPGRADE_REQUIRED,
             "invalid_container_protocol",
             "x-cinatoken-container-protocol must be 1",
+            error_format,
         );
     }
 
-    if !has_json_content_type(&headers) {
+    let Some(request_format) = request_format else {
         return error_response(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "unsupported_media_type",
-            "content-type must be application/json",
+            "content-type must be application/json or application/x-protobuf",
         );
-    }
+    };
 
-    let envelope = match serde_json::from_slice::<OperationEnvelope>(&body) {
-        Ok(envelope) => envelope,
-        Err(_) => {
-            return error_response(
+    let envelope = match request_format {
+        OperationFormat::Json => serde_json::from_slice::<OperationEnvelope>(&body).ok(),
+        OperationFormat::Protobuf => protobuf::decode_operation_envelope(&body).ok(),
+    };
+    let envelope = match envelope {
+        Some(envelope) => envelope,
+        None => {
+            return operation_error_response(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "invalid_operation_envelope",
                 "request body must match the operation envelope",
+                request_format,
             );
         }
     };
@@ -221,78 +233,97 @@ async fn operations(
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_secs(),
         Err(_) => {
-            return error_response(
+            return operation_error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "clock_unavailable",
                 "system clock is before the Unix epoch",
+                request_format,
             );
         }
     };
 
     if let Err(error) = envelope.validate(now) {
-        return error_response(StatusCode::BAD_REQUEST, error.code, error.message);
+        return operation_error_response(
+            StatusCode::BAD_REQUEST,
+            error.code,
+            error.message,
+            request_format,
+        );
     }
 
     if envelope.operation_kind == "health_probe" {
-        return (
+        return operation_response(
             StatusCode::OK,
-            Json(OperationResponse::completed(
-                envelope.operation_id,
-                envelope.trace_id,
-            )),
-        )
-            .into_response();
+            OperationResponse::completed(envelope.operation_id, envelope.trace_id),
+            request_format,
+        );
     }
     if !state.execution_enabled || envelope.operation_kind != client::PROVIDER_CANARY_OPERATION_KIND
     {
-        return (
+        return operation_response(
             StatusCode::NOT_IMPLEMENTED,
-            Json(OperationResponse::rejected_execution_not_enabled(
+            OperationResponse::rejected_execution_not_enabled(
                 envelope.operation_id,
                 envelope.trace_id,
-            )),
-        )
-            .into_response();
+            ),
+            request_format,
+        );
     }
 
     match state.executor.execute(&envelope).await {
-        Ok(ExecutionOutcome::Completed(result)) => (
+        Ok(ExecutionOutcome::Completed(result)) => operation_response(
             StatusCode::OK,
-            Json(OperationResponse::completed_with_result(
+            OperationResponse::completed_with_result(
                 envelope.operation_id,
                 envelope.trace_id,
                 result,
-            )),
-        )
-            .into_response(),
-        Ok(ExecutionOutcome::Rejected(rejected)) => (
+            ),
+            request_format,
+        ),
+        Ok(ExecutionOutcome::Rejected(rejected)) => operation_response(
             INTERPRETED_PROVIDER_REJECTION_STATUS,
-            Json(OperationResponse::rejected_provider_response(
+            OperationResponse::rejected_provider_response(
                 envelope.operation_id,
                 envelope.trace_id,
                 rejected,
-            )),
-        )
-            .into_response(),
-        Ok(ExecutionOutcome::RecoveryRequired) | Err(ExecutionError::Ambiguous) => (
-            StatusCode::ACCEPTED,
-            Json(
+            ),
+            request_format,
+        ),
+        Ok(ExecutionOutcome::RecoveryRequired) | Err(ExecutionError::Ambiguous) => {
+            operation_response(
+                StatusCode::ACCEPTED,
                 OperationResponse::recovery_required_for_ambiguous_execution(
                     envelope.operation_id,
                     envelope.trace_id,
                 ),
-            ),
-        )
-            .into_response(),
-        Err(ExecutionError::InputUnavailable) => (
+                request_format,
+            )
+        }
+        Err(ExecutionError::InputUnavailable) => operation_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(OperationResponse::rejected(
+            OperationResponse::rejected(
                 envelope.operation_id,
                 envelope.trace_id,
                 PROVIDER_INPUT_UNAVAILABLE_CODE,
-            )),
-        )
-            .into_response(),
+            ),
+            request_format,
+        ),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OperationFormat {
+    Json,
+    Protobuf,
+}
+
+fn operation_request_format(headers: &HeaderMap) -> Option<OperationFormat> {
+    if has_json_content_type(headers) {
+        Some(OperationFormat::Json)
+    } else if has_exact_protobuf_content_type(headers) {
+        Some(OperationFormat::Protobuf)
+    } else {
+        None
     }
 }
 
@@ -309,6 +340,47 @@ fn has_json_content_type(headers: &HeaderMap) -> bool {
     };
     kind.eq_ignore_ascii_case("application")
         && (subtype.eq_ignore_ascii_case("json") || subtype.to_ascii_lowercase().ends_with("+json"))
+}
+
+fn has_exact_protobuf_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case(PROTOBUF_CONTENT_TYPE))
+}
+
+fn operation_response(
+    status: StatusCode,
+    response: OperationResponse,
+    format: OperationFormat,
+) -> Response {
+    match format {
+        OperationFormat::Json => (status, Json(response)).into_response(),
+        OperationFormat::Protobuf => (
+            status,
+            [(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)],
+            protobuf::encode_operation_response(&response),
+        )
+            .into_response(),
+    }
+}
+
+fn operation_error_response(
+    status: StatusCode,
+    code: &'static str,
+    message: &'static str,
+    format: OperationFormat,
+) -> Response {
+    let response = ErrorResponse { code, message };
+    match format {
+        OperationFormat::Json => (status, Json(response)).into_response(),
+        OperationFormat::Protobuf => (
+            status,
+            [(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)],
+            protobuf::encode_error_response(&response),
+        )
+            .into_response(),
+    }
 }
 
 fn error_response(status: StatusCode, code: &'static str, message: &'static str) -> Response {

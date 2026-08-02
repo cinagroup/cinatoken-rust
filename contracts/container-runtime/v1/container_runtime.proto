@@ -2,11 +2,11 @@ syntax = "proto3";
 
 package cinatoken.container.runtime.v1;
 
-// Target binary contract for application/x-protobuf.
+// Implemented binary contract for the dual-stack HTTP operation transport.
 //
-// This file does not imply runtime support. The currently implemented v1 HTTP
-// transport is application/json as described by container-runtime.openapi.json.
-// A protobuf rollout requires explicit controller and runtime negotiation.
+// application/json and application/x-protobuf carry the same logical v1
+// contract. Runtime support is implemented; Controller protobuf activation and
+// protobuf-first negotiation remain disabled by default.
 
 enum OperationInputMode {
   OPERATION_INPUT_MODE_UNSPECIFIED = 0;

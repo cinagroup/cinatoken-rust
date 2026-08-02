@@ -13160,3 +13160,37 @@ No remote Cloudflare command, resource, secret, migration, deployment, route,
 traffic, DNS, D1 mutation, provider call, financial action, or Go/VPS change
 occurred. Protobuf transport and the broader remote/cutover evidence packet are
 still incomplete. Production remains **NO-GO**.
+
+## 2026-08-02 Default-Off Container Protobuf Transport Verification
+
+The operation boundary now has one canonical Protobuf representation shared by
+the TypeScript Controller and Rust Container Runtime. JSON remains the default.
+Protobuf is selected only when both tracked deployment/compatibility gates are
+exactly `true`; all local, staging, and production configurations keep both
+gates `false`. The only downgrade path is a single JSON retry after an exact
+legacy-runtime proof: HTTP 415, JSON media type, and a protocol-valid
+`unsupported_media_type` error. Ambiguous failures are never retried.
+
+Verified current-worktree evidence:
+
+| Gate | Result |
+| --- | --- |
+| `npx.cmd --yes bun run check:container-runtime:contracts` | passed; deterministic protobuf descriptor/type generation, OpenAPI/Proto parity, 11 protobuf wire cases, and 43 TypeScript tests with 81 assertions |
+| `cargo test -p cinatoken-container-runtime --locked` | passed with the local Windows GNU verification backend described below; 18 unit tests, 14 HTTP tests, and doc tests |
+| `npx.cmd --yes bun run check:container-controller` | passed; 289 Bun tests with 1,974 assertions, 184 portable Vitest tests, 54 Workerd runtime tests, TypeScript compilation, and Wrangler dry-run |
+| `cargo test -p cinatoken-worker --lib` | passed; 1,009 tests, including the cross-component Controller/Runtime contract scanner |
+| PowerShell: `$env:RUSTFLAGS = '--cfg getrandom_backend=\"windows_legacy\"'; npx.cmd --yes bun run check` | complete repository gate passed with exit 0 in 1,515.7 seconds, including workspace tests and all required wasm32 checks |
+| `cargo fmt --all -- --check` and `git diff --check` | passed after this evidence append |
+
+The host Rust target is `x86_64-pc-windows-gnu`. Its installed toolchain lacks
+`dlltool.exe`, which makes the default `getrandom` 0.4 Windows import-library
+path fail before project tests run. The full gate therefore used
+`getrandom_backend=\"windows_legacy\"` as a local test-process `RUSTFLAGS`
+override. No tracked Cargo, Worker, image, or production configuration was
+changed by that host-only workaround.
+
+No Cloudflare mutation, deployment, route, traffic, DNS, D1 mutation, secret
+write, provider call, financial action, or Go/VPS change occurred. Protobuf
+activation still requires staging compatibility evidence, mixed-version fault
+campaigns, canary metrics, and a rehearsed rollback. Production remains
+**NO-GO**.

@@ -27226,3 +27226,127 @@ parsed-value vector format. Protobuf transport, remote Container execution,
 provider and financial convergence, lifecycle faults, load/cost/SLO evidence,
 rollback, WORM/S3 completion, and signed approvals remain open. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-08-02 Default-Off Protobuf Operation Transport Checkpoint
+
+This checkpoint implements the binary encoding layer without moving lifecycle
+or recovery authority out of the TypeScript Durable Object. It supersedes only
+the earlier statements that protobuf transport was not implemented. It does
+not supersede any remote-evidence, provider, financial, WORM, rollback, or
+cutover requirement.
+
+The boundary remains aligned with the source architectures and current
+Cloudflare guidance:
+
+- the stateless Worker remains ingress and routes to a deterministic shard;
+- the TypeScript Durable Object remains the stateful coordination, fencing,
+  journal, deadline, retry, and recovery authority;
+- the Rust Linux Container remains replaceable compute and serves the private
+  `/v1/operations` execution boundary; and
+- D1, R2, KV, and Durable Object storage remain authoritative persistence.
+
+This follows the official [Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/)
+for bounded streaming, explicit errors, generated environment types, and
+runtime tests, and the official [Durable Objects rules](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/)
+for deterministic identities, per-coordination-unit sharding, and persistent
+recovery state. Protobuf is therefore a transport optimization, not a reason to
+move the session or shard Durable Object into Rust Wasm.
+
+### Implemented contract and runtime boundary
+
+`container_runtime.proto` and OpenAPI now describe two encodings of the same
+logical protocol v1: `application/json` and exact
+`application/x-protobuf`. The runtime applies the same 64 KiB request limit,
+protocol header, absolute deadline, shard fence, safe-integer bounds, operation
+validation, executor, and status matrix to both. `/healthz` and `/readyz`
+remain JSON. There is no new `Accept`/406 behavior and no public runtime route.
+
+The checked-in generation chain contains:
+
+- a protobufjs `INamespace` descriptor for the Worker bundle;
+- a 3,174-byte Buf `FileDescriptorSet` consumed by `prost-build` through
+  `compile_fds`, so container builds do not execute or download `protoc`;
+- pinned protobufjs 8.7.1, Buf 1.72.0, and prost 0.13.5 inputs; and
+- 11 shared accepted/rejected binary vectors covering canonical envelope,
+  completed/rejected/recovery responses, protocol errors, unknown fields,
+  duplicate fields, noncanonical varints, invalid enums, missing semantic
+  fields, and truncated length-delimited data.
+
+Both implementations decode then deterministically re-encode and require exact
+byte equality. Unknown fields, duplicate singular fields, reordered fields,
+nonminimal varints, unsafe `uint64`, invalid enum zero/unknown values, and
+presence drift fail closed. The Controller then sends decoded values through
+the existing JSON-era business response parser, preserving operation identity,
+trace identity, result requirements, provider classification, HTTP matrix, and
+client-artifact owner-generation binding.
+
+### Mixed-version safety matrix
+
+| Controller | Runtime | Selected request | Required behavior |
+| --- | --- | --- | --- |
+| old | new | JSON | Existing request and response bytes remain unchanged |
+| new, either protobuf gate false | old or new | JSON | Default and rollback path; no binary attempt |
+| new, both protobuf gates true | new | Protobuf | Response must use protobuf and pass canonical plus business validation |
+| new, both protobuf gates true | old | Protobuf then one JSON retry | Retry only after exact JSON HTTP 415 `unsupported_media_type` proof |
+
+The one JSON retry is deliberately narrower than ordinary HTTP retry policy.
+It requires all of the following before another operation request can be sent:
+
+1. the selected first transport was protobuf;
+2. the response status was 415;
+3. the response base media type was `application/json`;
+4. the body was a valid exact two-field protocol `ErrorResponse`; and
+5. the code was exactly `unsupported_media_type`.
+
+That signal is the old runtime's pre-execution media-type rejection. A timeout,
+connection reset, malformed body, absent or different media type, protobuf 415,
+different code, or any other status does not retry. It remains ambiguous and
+enters the existing Durable Object recovery path. The final response must use
+the media type of the effective transport; a mismatch is also ambiguous.
+
+### Feature gates and activation evidence
+
+`CONTAINER_PROTOBUF_TRANSPORT_ENABLED` and
+`CONTAINER_PROTOBUF_TRANSPORT_STAGING_VERIFIED` must both equal `true` before
+the Controller selects protobuf. They are `false` in local, staging, and
+production tracked configuration, generated Worker types, config tests, and
+the deploy preflight disabled-variable inventory.
+
+These are compatibility/transport gates, not standalone execution-enabling
+actions. They therefore do not expand the sealed 22-name shard-activation
+campaign action-gate contract or rewrite historical D1 migrations. The exact
+Controller version identity still binds the deployed configuration, and the
+deployment preflight separately requires both transport gates to remain false.
+Neither transport gate can bypass `CONTAINER_EXECUTION_ENABLED`, admission,
+provider-client, storage, response, terminal, or recovery gates.
+
+### Production activation and rollback plan
+
+1. Merge only after deterministic artifact drift, OpenAPI/Buf parity, Worker
+   bundle, Workerd, Rust, Linux/OCI, provenance, and full repository gates pass
+   for the exact commit.
+2. Publish a new runtime image while every Controller protobuf gate remains
+   false. Prove old-controller/new-runtime JSON byte compatibility and all
+   readiness/build-identity checks before any binary request.
+3. In isolated staging, run no-provider `health_probe` Protobuf probes against
+   every target runtime build, then malformed/canonical, 64 KiB, deadline,
+   restart, mixed old/new runtime, and response-loss campaigns. Archive raw
+   request/response digests and prove zero provider and billing mutation.
+4. Add bounded transport telemetry before activation: selected/effective
+   transport, exact legacy fallback count, response media mismatch, canonical
+   rejection class, request/response bytes, latency, deadline exhaustion, and
+   recovery-required rate. Labels must exclude operation payloads, credentials,
+   tenant identifiers, and unbounded error text.
+5. Enable both gates only through an audited staging Controller version after
+   the evidence packet is approved. Do not edit tracked production config or
+   bypass the standard preflight to manufacture a canary.
+6. Rehearse rollback by deploying a Controller version with the selection gate
+   false before removing any new runtime. Verify JSON traffic, in-flight
+   recovery, exact replay, and ledger convergence across N/N-1 versions.
+7. Production remains blocked until remote load/cost/SLO evidence, provider and
+   financial convergence, lifecycle faults, WORM/S3 completion, security
+   review, rollback rehearsal, and signed approval are complete.
+
+No Cloudflare resource, route, secret, D1 row, deployment, traffic, DNS,
+provider request, billing state, or Go/VPS state changed in this checkpoint.
+Go/VPS remains authoritative and production remains **NO-GO**.

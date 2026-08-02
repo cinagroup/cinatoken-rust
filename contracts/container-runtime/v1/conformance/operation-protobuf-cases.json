@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "operation_envelope_canonical",
+      "accepted": true,
+      "message_type": "cinatoken.container.runtime.v1.OperationEnvelope",
+      "wire_hex": "080112126f7065726174696f6e2d696e6c696e652d311a0c6865616c74685f70726f6265200128f8a8d6b90730bca8d6b9073a1b70726f76696465722d6f7065726174696f6e2d696e6c696e652d314240616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161614a56080112406262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626222106170706c69636174696f6e2f6a736f6e522708011007180820032a1d63696e61746f6b656e2d72656c61792d73686172642d76312d303030335a0e74726163652d696e6c696e652d31",
+      "value": {
+        "protocol_version": 1,
+        "operation_id": "operation-inline-1",
+        "operation_kind": "health_probe",
+        "owner_generation": 1,
+        "owner_lease_expires_at": 2000000120,
+        "execution_deadline_at": 2000000060,
+        "provider_operation_id": "provider-operation-inline-1",
+        "admission_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "input": {
+          "mode": "OPERATION_INPUT_MODE_INLINE",
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "size": 0,
+          "content_type": "application/json"
+        },
+        "shard": {
+          "contract_version": 1,
+          "ring_generation": 7,
+          "shard_count": 8,
+          "shard_index": 3,
+          "instance_name": "cinatoken-relay-shard-v1-0003"
+        },
+        "trace_id": "trace-inline-1"
+      }
+    },
+    {
+      "name": "operation_response_completed",
+      "accepted": true,
+      "message_type": "cinatoken.container.runtime.v1.OperationResponse",
+      "wire_hex": "080112146f7065726174696f6e2d726573706f6e73652d3118012aa1010a37636f6e7461696e65722d726573756c74732f76312f6f7065726174696f6e2d726573706f6e73652d312f372f726573756c742e6a736f6e1210726573756c742d76657273696f6e2d311a4063636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363202a2a106170706c69636174696f6e2f6a736f6e521074726163652d726573706f6e73652d31",
+      "value": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "OPERATION_OUTCOME_STATUS_COMPLETED",
+        "result": {
+          "object_key": "container-results/v1/operation-response-1/7/result.json",
+          "object_version": "result-version-1",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "size": 42,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "operation_response_rejected",
+      "accepted": true,
+      "message_type": "cinatoken.container.runtime.v1.OperationResponse",
+      "wire_hex": "080112146f7065726174696f6e2d726573706f6e73652d311802221470726f76696465725f74797065645f6572726f72300138c80140c8014aab020a75636f6e7461696e65722d636c69656e742d6172746966616374732f76312f6f7065726174696f6e2d726573706f6e73652d312f372f646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464641219636c69656e742d61727469666163742d76657273696f6e2d311a406464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646464646422406565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656565656528800132106170706c69636174696f6e2f6a736f6e521074726163652d726573706f6e73652d31",
+      "value": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "OPERATION_OUTCOME_STATUS_REJECTED",
+        "code": "provider_typed_error",
+        "classification": "PROVIDER_RESPONSE_CLASSIFICATION_TYPED_ERROR",
+        "provider_status": 200,
+        "client_status": 200,
+        "client_artifact": {
+          "object_key": "container-client-artifacts/v1/operation-response-1/7/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "object_version": "client-artifact-version-1",
+          "client_response_artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 128,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "operation_response_recovery_required",
+      "accepted": true,
+      "message_type": "cinatoken.container.runtime.v1.OperationResponse",
+      "wire_hex": "080112146f7065726174696f6e2d726573706f6e73652d3118032213616d626967756f75735f657865637574696f6e521074726163652d726573706f6e73652d31",
+      "value": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "OPERATION_OUTCOME_STATUS_RECOVERY_REQUIRED",
+        "code": "ambiguous_execution",
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "error_response",
+      "accepted": true,
+      "message_type": "cinatoken.container.runtime.v1.ErrorResponse",
+      "wire_hex": "0a1a696e76616c69645f6f7065726174696f6e5f656e76656c6f7065122e7265717565737420626f6479206d757374206d6174636820746865206f7065726174696f6e20656e76656c6f7065",
+      "value": {
+        "code": "invalid_operation_envelope",
+        "message": "request body must match the operation envelope"
+      }
+    },
+    {
+      "name": "reject_operation_envelope_unknown_field",
+      "accepted": false,
+      "message_type": "cinatoken.container.runtime.v1.OperationEnvelope",
+      "wire_hex": "080112126f7065726174696f6e2d696e6c696e652d311a0c6865616c74685f70726f6265200128f8a8d6b90730bca8d6b9073a1b70726f76696465722d6f7065726174696f6e2d696e6c696e652d314240616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161614a56080112406262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626222106170706c69636174696f6e2f6a736f6e522708011007180820032a1d63696e61746f6b656e2d72656c61792d73686172642d76312d303030335a0e74726163652d696e6c696e652d31f80701",
+      "rejection": "unknown_field"
+    },
+    {
+      "name": "reject_operation_envelope_duplicate_field",
+      "accepted": false,
+      "message_type": "cinatoken.container.runtime.v1.OperationEnvelope",
+      "wire_hex": "080112126f7065726174696f6e2d696e6c696e652d311a0c6865616c74685f70726f6265200128f8a8d6b90730bca8d6b9073a1b70726f76696465722d6f7065726174696f6e2d696e6c696e652d314240616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161614a56080112406262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626222106170706c69636174696f6e2f6a736f6e522708011007180820032a1d63696e61746f6b656e2d72656c61792d73686172642d76312d303030335a0e74726163652d696e6c696e652d310801",
+      "rejection": "duplicate_field"
+    },
+    {
+      "name": "reject_operation_envelope_noncanonical_varint",
+      "accepted": false,
+      "message_type": "cinatoken.container.runtime.v1.OperationEnvelope",
+      "wire_hex": "08810012126f7065726174696f6e2d696e6c696e652d311a0c6865616c74685f70726f6265200128f8a8d6b90730bca8d6b9073a1b70726f76696465722d6f7065726174696f6e2d696e6c696e652d314240616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161614a56080112406262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626222106170706c69636174696f6e2f6a736f6e522708011007180820032a1d63696e61746f6b656e2d72656c61792d73686172642d76312d303030335a0e74726163652d696e6c696e652d31",
+      "rejection": "noncanonical_varint"
+    },
+    {
+      "name": "reject_operation_response_invalid_enum",
+      "accepted": false,
+      "message_type": "cinatoken.container.runtime.v1.OperationResponse",
+      "wire_hex": "080112146f7065726174696f6e2d726573706f6e73652d3118632aa1010a37636f6e7461696e65722d726573756c74732f76312f6f7065726174696f6e2d726573706f6e73652d312f372f726573756c742e6a736f6e1210726573756c742d76657273696f6e2d311a4063636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363636363202a2a106170706c69636174696f6e2f6a736f6e521074726163652d726573706f6e73652d31",
+      "rejection": "invalid_enum"
+    },
+    {
+      "name": "reject_operation_envelope_missing_semantic_field",
+      "accepted": false,
+      "message_type": "cinatoken.container.runtime.v1.OperationEnvelope",
+      "wire_hex": "08011a0c6865616c74685f70726f6265200128f8a8d6b90730bca8d6b9073a1b70726f76696465722d6f7065726174696f6e2d696e6c696e652d314240616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161614a56080112406262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626222106170706c69636174696f6e2f6a736f6e522708011007180820032a1d63696e61746f6b656e2d72656c61792d73686172642d76312d303030335a0e74726163652d696e6c696e652d31",
+      "rejection": "missing_semantic_field"
+    },
+    {
+      "name": "reject_operation_envelope_truncated_length_delimited",
+      "accepted": false,
+      "message_type": "cinatoken.container.runtime.v1.OperationEnvelope",
+      "wire_hex": "120561",
+      "rejection": "malformed_wire"
+    }
+  ]
+}

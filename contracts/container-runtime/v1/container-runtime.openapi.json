@@ -45,14 +45,15 @@
       "wireContract": "JSON v1"
     },
     "application/x-protobuf": {
-      "status": "target-not-implemented",
+      "status": "implemented",
+      "controllerActivation": "default-off",
       "protoFile": "container_runtime.proto",
       "requestMessage": "cinatoken.container.runtime.v1.OperationEnvelope",
       "operationResponseMessage": "cinatoken.container.runtime.v1.OperationResponse",
       "healthResponseMessage": "cinatoken.container.runtime.v1.HealthResponse",
       "readinessResponseMessage": "cinatoken.container.runtime.v1.ReadinessResponse",
       "errorResponseMessage": "cinatoken.container.runtime.v1.ErrorResponse",
-      "description": "Reserved target media type. The current controller and runtime do not encode, decode, negotiate, or serve protobuf payloads."
+      "description": "Implemented HTTP operation transport. Controller activation and protobuf-first negotiation remain disabled by default."
     }
   },
   "paths": {
@@ -128,7 +129,7 @@
           "operations"
         ],
         "summary": "Execute one fenced container operation",
-        "description": "The implemented transport accepts a strict JSON v1 envelope of at most 65536 bytes. Unknown object fields and explicit nulls for optional fields are rejected. Deadline and shard relationships are enforced at runtime in addition to the structural schema.",
+        "description": "The implemented dual-stack transport accepts a v1 JSON or protobuf envelope of at most 65536 bytes. Unknown fields, noncanonical protobuf encodings, and explicit JSON nulls for optional fields are rejected. Deadline and shard relationships are enforced at runtime in addition to structural decoding.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ContainerProtocolHeader"
@@ -141,6 +142,13 @@
               "schema": {
                 "$ref": "#/components/schemas/OperationEnvelope"
               }
+            },
+            "application/x-protobuf": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              },
+              "x-cinatoken-protobuf-message": "cinatoken.container.runtime.v1.OperationEnvelope"
             }
           }
         },
@@ -152,6 +160,13 @@
                 "schema": {
                   "$ref": "#/components/schemas/CompletedOperationResponse"
                 }
+              },
+              "application/x-protobuf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                },
+                "x-cinatoken-protobuf-message": "cinatoken.container.runtime.v1.OperationResponse"
               }
             }
           },
@@ -162,20 +177,27 @@
                 "schema": {
                   "$ref": "#/components/schemas/RecoveryRequiredOperationResponse"
                 }
+              },
+              "application/x-protobuf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                },
+                "x-cinatoken-protobuf-message": "cinatoken.container.runtime.v1.OperationResponse"
               }
             }
           },
           "400": {
-            "$ref": "#/components/responses/JsonProtocolError"
+            "$ref": "#/components/responses/ProtocolError"
           },
           "413": {
-            "$ref": "#/components/responses/JsonProtocolError"
+            "$ref": "#/components/responses/ProtocolError"
           },
           "415": {
-            "$ref": "#/components/responses/JsonProtocolError"
+            "$ref": "#/components/responses/ProtocolError"
           },
           "422": {
-            "description": "The JSON envelope was structurally invalid, or a provider response was interpreted as a rejection.",
+            "description": "The operation envelope was structurally invalid, or a provider response was interpreted as a rejection.",
             "content": {
               "application/json": {
                 "schema": {
@@ -188,14 +210,24 @@
                     }
                   ]
                 }
+              },
+              "application/x-protobuf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                },
+                "x-cinatoken-protobuf-messages": [
+                  "cinatoken.container.runtime.v1.ErrorResponse",
+                  "cinatoken.container.runtime.v1.OperationResponse"
+                ]
               }
             }
           },
           "426": {
-            "$ref": "#/components/responses/JsonProtocolError"
+            "$ref": "#/components/responses/ProtocolError"
           },
           "500": {
-            "$ref": "#/components/responses/JsonProtocolError"
+            "$ref": "#/components/responses/ProtocolError"
           },
           "501": {
             "description": "Execution is disabled or the operation kind is not implemented.",
@@ -211,6 +243,13 @@
                   "code": "execution_not_enabled",
                   "trace_id": "trace-123"
                 }
+              },
+              "application/x-protobuf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                },
+                "x-cinatoken-protobuf-message": "cinatoken.container.runtime.v1.OperationResponse"
               }
             }
           },
@@ -228,12 +267,20 @@
                   "code": "provider_input_unavailable",
                   "trace_id": "trace-123"
                 }
+              },
+              "application/x-protobuf": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                },
+                "x-cinatoken-protobuf-message": "cinatoken.container.runtime.v1.OperationResponse"
               }
             }
           }
         },
         "x-cinatoken-protobuf-target": {
-          "status": "target-not-implemented",
+          "status": "implemented",
+          "controllerActivation": "default-off",
           "mediaType": "application/x-protobuf",
           "requestMessage": "cinatoken.container.runtime.v1.OperationEnvelope",
           "successResponseMessage": "cinatoken.container.runtime.v1.OperationResponse",
@@ -256,13 +303,20 @@
       }
     },
     "responses": {
-      "JsonProtocolError": {
+      "ProtocolError": {
         "description": "The request failed before producing an operation outcome.",
         "content": {
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/ErrorResponse"
             }
+          },
+          "application/x-protobuf": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            },
+            "x-cinatoken-protobuf-message": "cinatoken.container.runtime.v1.ErrorResponse"
           }
         }
       }

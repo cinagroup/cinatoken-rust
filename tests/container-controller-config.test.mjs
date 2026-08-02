@@ -128,6 +128,10 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_STORAGE_D1_READ_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_ATTEMPT_JOURNAL_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_CLIENT_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_PROTOBUF_TRANSPORT_ENABLED).toBe("false");
+      expect(
+        config.vars.CONTAINER_PROTOBUF_TRANSPORT_STAGING_VERIFIED,
+      ).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_EGRESS_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_RESPONSE_V3_PARSE_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_PROVIDER_RESPONSE_RAW_WRITE_ENABLED).toBe("false");

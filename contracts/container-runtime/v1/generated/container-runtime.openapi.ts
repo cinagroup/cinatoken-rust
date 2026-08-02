@@ -49,7 +49,7 @@ export type paths = {
         readonly put?: never;
         /**
          * Execute one fenced container operation
-         * @description The implemented transport accepts a strict JSON v1 envelope of at most 65536 bytes. Unknown object fields and explicit nulls for optional fields are rejected. Deadline and shard relationships are enforced at runtime in addition to the structural schema.
+         * @description The implemented dual-stack transport accepts a v1 JSON or protobuf envelope of at most 65536 bytes. Unknown fields, noncanonical protobuf encodings, and explicit JSON nulls for optional fields are rejected. Deadline and shard relationships are enforced at runtime in addition to structural decoding.
          */
         readonly post: operations["executeContainerOperation"];
         readonly delete?: never;
@@ -187,12 +187,13 @@ export type components = {
     };
     responses: {
         /** @description The request failed before producing an operation outcome. */
-        readonly JsonProtocolError: {
+        readonly ProtocolError: {
             headers: {
                 readonly [name: string]: unknown;
             };
             content: {
                 readonly "application/json": components["schemas"]["ErrorResponse"];
+                readonly "application/x-protobuf": string;
             };
         };
     };
@@ -226,7 +227,7 @@ export type RuntimeContentType = components['schemas']['RuntimeContentType'];
 export type Sha256Hex = components['schemas']['Sha256Hex'];
 export type SimpleRejectedOperationResponse = components['schemas']['SimpleRejectedOperationResponse'];
 export type Unsigned16 = components['schemas']['Unsigned16'];
-export type ResponseJsonProtocolError = components['responses']['JsonProtocolError'];
+export type ResponseProtocolError = components['responses']['ProtocolError'];
 export type ParameterContainerProtocolHeader = components['parameters']['ContainerProtocolHeader'];
 export type $defs = Record<string, never>;
 export interface operations {
@@ -298,6 +299,7 @@ export interface operations {
         readonly requestBody: {
             readonly content: {
                 readonly "application/json": components["schemas"]["OperationEnvelope"];
+                readonly "application/x-protobuf": string;
             };
         };
         readonly responses: {
@@ -308,6 +310,7 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["CompletedOperationResponse"];
+                    readonly "application/x-protobuf": string;
                 };
             };
             /** @description Execution may have occurred and reconciliation is required. */
@@ -317,22 +320,24 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["RecoveryRequiredOperationResponse"];
+                    readonly "application/x-protobuf": string;
                 };
             };
-            readonly 400: components["responses"]["JsonProtocolError"];
-            readonly 413: components["responses"]["JsonProtocolError"];
-            readonly 415: components["responses"]["JsonProtocolError"];
-            /** @description The JSON envelope was structurally invalid, or a provider response was interpreted as a rejection. */
+            readonly 400: components["responses"]["ProtocolError"];
+            readonly 413: components["responses"]["ProtocolError"];
+            readonly 415: components["responses"]["ProtocolError"];
+            /** @description The operation envelope was structurally invalid, or a provider response was interpreted as a rejection. */
             readonly 422: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
                 content: {
                     readonly "application/json": components["schemas"]["ErrorResponse"] | components["schemas"]["ProviderRejectedOperationResponse"];
+                    readonly "application/x-protobuf": string;
                 };
             };
-            readonly 426: components["responses"]["JsonProtocolError"];
-            readonly 500: components["responses"]["JsonProtocolError"];
+            readonly 426: components["responses"]["ProtocolError"];
+            readonly 500: components["responses"]["ProtocolError"];
             /** @description Execution is disabled or the operation kind is not implemented. */
             readonly 501: {
                 headers: {
@@ -349,6 +354,7 @@ export interface operations {
                      *     }
                      */
                     readonly "application/json": components["schemas"]["SimpleRejectedOperationResponse"];
+                    readonly "application/x-protobuf": string;
                 };
             };
             /** @description The provider input could not be loaded. */
@@ -367,6 +373,7 @@ export interface operations {
                      *     }
                      */
                     readonly "application/json": components["schemas"]["SimpleRejectedOperationResponse"];
+                    readonly "application/x-protobuf": string;
                 };
             };
         };

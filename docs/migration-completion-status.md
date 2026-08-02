@@ -3242,3 +3242,28 @@ repository methods; it is not route or gate activation.
 | Remote Cloudflare/D1 evidence | **NOT COLLECTED** |
 | Go/VPS authority | **RETAINED** |
 | Production eligibility | **NO-GO** |
+
+## 2026-08-02 Container Protobuf Transport Status
+
+| Item | Current status |
+|---|---|
+| Logical contract | **OPENAPI/PROTOBUF V1; JSON AND PROTOBUF SHARE ONE BUSINESS MATRIX** |
+| Rust operation transport | **IMPLEMENTED LOCALLY; EXACT APPLICATION/X-PROTOBUF PLUS JSON** |
+| TypeScript Controller codec | **IMPLEMENTED LOCALLY; CANONICAL, SAFE-UINT64, PRESENCE-PRESERVING** |
+| Generated artifacts | **PINNED PROTOBUFJS/BUF/PROST; DESCRIPTOR, FILEDESCRIPTORSET, 11 WIRE VECTORS** |
+| Mixed-version fallback | **ONE JSON RETRY ONLY FOR EXACT VALID OLD-RUNTIME JSON 415 PROOF** |
+| Ambiguous outcome policy | **NO RETRY; EXISTING DURABLE RECOVERY AUTHORITY RETAINED** |
+| Controller selection gates | **TWO GATES, FALSE IN LOCAL/STAGING/PRODUCTION AND DEPLOY PREFLIGHT** |
+| Shard activation evidence | **EXISTING SEALED 22-ACTION CONTRACT UNCHANGED** |
+| Local verification | **CONTRACT, RUST 18+14, CONTROLLER 289, PORTABLE 184, WORKERD 54 PASS** |
+| Remote staging / N-N-1 / load / rollback | **NOT COLLECTED** |
+| Provider or billing mutation | **NOT PERFORMED** |
+| Go/VPS authority | **RETAINED** |
+| Production eligibility | **NO-GO** |
+
+The next boundary is observability plus isolated remote staging, not production
+activation. Publish the dual-stack runtime behind JSON-only Controller gates,
+prove old/new runtime compatibility and zero financial effect, then collect
+canonical/malformed, body-limit, restart, response-loss, load/SLO/cost, and
+transport-disable rollback evidence. Both protobuf gates remain false until
+that packet is independently approved.

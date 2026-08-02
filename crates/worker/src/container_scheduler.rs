@@ -228,7 +228,7 @@ pub fn container_local_contracts() -> ContainerLocalContracts {
         .find("this.ledger.claimOperation(")
         .zip(operation_fetch.find("await this.armOperationRecoveryIntent(intent);"))
         .zip(operation_fetch.find("this.ledger.transitionOperation("))
-        .zip(operation_fetch.find("this.containerFetch(\"http://container/v1/operations\""))
+        .zip(operation_fetch.find("\"http://container/v1/operations\""))
         .is_some_and(|(((claim, arm), running), dispatch)| {
             claim < arm && arm < running && running < dispatch
         })

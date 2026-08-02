@@ -20,6 +20,11 @@ import type {
   ErrorResponse,
   ProviderResponseClassification as ContainerRuntimeProviderResponseClassification,
 } from "./container_runtime_contract";
+import {
+  CONTAINER_PROTOBUF_CONTENT_TYPE,
+  decodeErrorResponseProtobuf,
+  decodeOperationResponseProtobuf,
+} from "./container_runtime_protobuf";
 
 export interface ContainerOperationOutcome {
   status: ContainerOperationStatus;
@@ -137,15 +142,23 @@ export function parseContainerOperationResponse(
     "protocol_version" | "operation_id" | "operation_kind" | "owner_generation" | "trace_id"
   >,
 ): ContainerOperationOutcome {
-  const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
-  if (contentType !== "application/json") throw invalidContainerResponse();
-
   let value: unknown;
-  try {
-    value = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
-    );
-  } catch {
+  const contentType = containerResponseContentType(response);
+  if (contentType === "application/json") {
+    try {
+      value = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
+      );
+    } catch {
+      throw invalidContainerResponse();
+    }
+  } else if (contentType === CONTAINER_PROTOBUF_CONTENT_TYPE) {
+    try {
+      value = decodeOperationResponseProtobuf(body);
+    } catch {
+      throw invalidContainerResponse();
+    }
+  } else {
     throw invalidContainerResponse();
   }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -1078,15 +1091,24 @@ function parseContainerProtocolError(
   body: Uint8Array,
 ): Extract<ContainerOperationHttpResult, { kind: "protocol_error" }> | null {
   if (!isContainerProtocolErrorStatus(response.status)) return null;
-  const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
-  if (contentType !== "application/json") return null;
 
   let value: unknown;
-  try {
-    value = JSON.parse(
-      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
-    );
-  } catch {
+  const contentType = containerResponseContentType(response);
+  if (contentType === "application/json") {
+    try {
+      value = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
+      );
+    } catch {
+      return null;
+    }
+  } else if (contentType === CONTAINER_PROTOBUF_CONTENT_TYPE) {
+    try {
+      value = decodeErrorResponseProtobuf(body);
+    } catch {
+      return null;
+    }
+  } else {
     return null;
   }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -1108,6 +1130,10 @@ function parseContainerProtocolError(
     status: response.status,
     error: { code: record.code, message: record.message },
   };
+}
+
+function containerResponseContentType(response: Response): string | null {
+  return response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() ?? null;
 }
 
 function isContainerProtocolErrorStatus(

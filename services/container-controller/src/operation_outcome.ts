@@ -15,9 +15,14 @@ import {
   type OperationEnvelope,
   type TerminalAckRequestV3,
 } from "./protocol";
+import type {
+  ContainerOperationStatus,
+  ErrorResponse,
+  ProviderResponseClassification as ContainerRuntimeProviderResponseClassification,
+} from "./container_runtime_contract";
 
 export interface ContainerOperationOutcome {
-  status: "completed" | "rejected" | "recovery_required";
+  status: ContainerOperationStatus;
   code: string | null;
   result: StorageResultRecord | null;
   classification: ProviderResponseClassification | null;
@@ -26,7 +31,18 @@ export interface ContainerOperationOutcome {
   client_artifact: ClientResponseArtifactManifest | null;
 }
 
-export type ProviderResponseClassification = "typed_error" | "http_error" | "invalid_body";
+export type ProviderResponseClassification =
+  ContainerRuntimeProviderResponseClassification;
+
+export type ContainerProtocolErrorStatus = 400 | 413 | 415 | 422 | 426 | 500;
+
+export type ContainerOperationHttpResult =
+  | { kind: "outcome"; outcome: ContainerOperationOutcome }
+  | {
+      kind: "protocol_error";
+      status: ContainerProtocolErrorStatus;
+      error: ErrorResponse;
+    };
 
 export interface OperationOutcomePayload {
   protocol_version: 1;
@@ -94,6 +110,24 @@ export interface SerializedOperationOutcome {
 const IDENTIFIER = /^[A-Za-z0-9._:-]+$/;
 const OPERATION_KIND = /^[a-z0-9_:-]+$/;
 const RESPONSE_CODE = /^[a-z0-9_:-]+$/;
+const CONTAINER_OUTCOME_CODE = /^[a-z0-9_-]+$/;
+
+export function parseContainerOperationHttpResponse(
+  response: Response,
+  body: Uint8Array,
+  envelope: Pick<
+    OperationEnvelope,
+    "protocol_version" | "operation_id" | "operation_kind" | "owner_generation" | "trace_id"
+  >,
+): ContainerOperationHttpResult {
+  const protocolError = parseContainerProtocolError(response, body);
+  return protocolError === null
+    ? {
+        kind: "outcome",
+        outcome: parseContainerOperationResponse(response, body, envelope),
+      }
+    : protocolError;
+}
 
 export function parseContainerOperationResponse(
   response: Response,
@@ -149,17 +183,21 @@ export function parseContainerOperationResponse(
     record.provider_status !== undefined ||
     record.client_status !== undefined ||
     record.client_artifact !== undefined;
+  const responseStatusMatches =
+    status === "completed"
+      ? response.status === 200
+      : status === "recovery_required"
+        ? response.status === 202
+        : hasProviderRejection
+          ? response.status === 422
+          : response.status === 501 || response.status === 503;
   if (
-    (status === "completed" &&
-      (!response.ok || response.status === 202 || code !== null || hasProviderRejection)) ||
+    !responseStatusMatches ||
+    (status === "completed" && (code !== null || hasProviderRejection)) ||
     (status === "rejected" &&
-      (response.ok ||
-        !validResponseCode(code) ||
-        record.result !== undefined ||
-        (hasProviderRejection && response.status !== 422))) ||
+      (!validContainerOutcomeCode(code) || record.result !== undefined)) ||
     (status === "recovery_required" &&
-      (response.status !== 202 ||
-        !validResponseCode(code) ||
+      (!validContainerOutcomeCode(code) ||
         record.result !== undefined ||
         hasProviderRejection))
   ) {
@@ -1007,7 +1045,22 @@ function parseContainerResult(value: unknown): StorageResultRecord {
     typeof record.object_version !== "string" ||
     typeof record.sha256 !== "string" ||
     typeof record.size !== "number" ||
-    typeof record.content_type !== "string"
+    typeof record.content_type !== "string" ||
+    record.object_key.length < 1 ||
+    record.object_key.length > 1024 ||
+    !/^[A-Za-z0-9/_.:-]+$/.test(record.object_key) ||
+    record.object_version.length < 1 ||
+    record.object_version.length > 256 ||
+    !/^[A-Za-z0-9._:/@-]+$/.test(record.object_version) ||
+    !/^[0-9a-f]{64}$/.test(record.sha256) ||
+    !Number.isSafeInteger(record.size) ||
+    record.size < 0 ||
+    record.size > 64 * 1024 * 1024 ||
+    record.content_type.length < 3 ||
+    record.content_type.length > 255 ||
+    !/^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+(?:;[ -~]*)?$/.test(
+      record.content_type,
+    )
   ) {
     throw invalidContainerResponse();
   }
@@ -1018,6 +1071,61 @@ function parseContainerResult(value: unknown): StorageResultRecord {
     size: record.size,
     content_type: record.content_type,
   };
+}
+
+function parseContainerProtocolError(
+  response: Response,
+  body: Uint8Array,
+): Extract<ContainerOperationHttpResult, { kind: "protocol_error" }> | null {
+  if (!isContainerProtocolErrorStatus(response.status)) return null;
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+  if (contentType !== "application/json") return null;
+
+  let value: unknown;
+  try {
+    value = JSON.parse(
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body),
+    );
+  } catch {
+    return null;
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== 2 ||
+    !("code" in record) ||
+    !("message" in record) ||
+    !validContainerOutcomeCode(record.code) ||
+    typeof record.message !== "string" ||
+    record.message.length < 1
+  ) {
+    return null;
+  }
+  return {
+    kind: "protocol_error",
+    status: response.status,
+    error: { code: record.code, message: record.message },
+  };
+}
+
+function isContainerProtocolErrorStatus(
+  value: number,
+): value is ContainerProtocolErrorStatus {
+  return value === 400 ||
+    value === 413 ||
+    value === 415 ||
+    value === 422 ||
+    value === 426 ||
+    value === 500;
+}
+
+function validContainerOutcomeCode(value: unknown): value is string {
+  return typeof value === "string" &&
+    value.length >= 1 &&
+    value.length <= 64 &&
+    CONTAINER_OUTCOME_CODE.test(value);
 }
 
 function invalidContainerResponse(): ProtocolError {

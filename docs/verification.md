@@ -13055,3 +13055,72 @@ wire types, protobuf content negotiation, the TypeScript edge gateway, the
 TypeScript RealtimeSession V2 namespace, remote fault campaigns, canary,
 rollback, and production reconciliation remain required. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-08-02 Grype Candidate And Adoption Closure Verification
+
+The proposal-only
+`container-runtime-vulnerability-db-candidate.yml` lane passed
+[run 30730165514](https://github.com/cinagroup/cinatoken-rust/actions/runs/30730165514).
+Its review packet is
+[artifact 8827688260](https://github.com/cinagroup/cinatoken-rust/actions/runs/30730165514/artifacts/8827688260)
+at `sha256:71fe610f4440580afeaf5c1d2cc3367a5cdd14c368995dbdd7ffe89250dac779`.
+The reviewed candidate was adopted by commit
+`01d127a3aade519faac9ce0a52a84098ea9f6bc1`; the existing 48-hour candidate
+freshness policy was preserved without an exception.
+
+| Adopted evidence | Result |
+| --- | --- |
+| OCI | [run 30730530365](https://github.com/cinagroup/cinatoken-rust/actions/runs/30730530365) passed; [artifact 8827841283](https://github.com/cinagroup/cinatoken-rust/actions/runs/30730530365/artifacts/8827841283), 146,281,366 bytes, `sha256:0d7991f16284eca485aad56825ac10f97447fdcfa64adf5a4865fc3c2173c828` |
+| OCI subjects | Archive `sha256:ce8ecf11...`; platform manifest `sha256:379df8d0...`; SBOM `sha256:91c19afa...` |
+| Vulnerability policy | Zero unapproved Unknown, High, or Critical findings |
+| Provenance | [run 30730619351](https://github.com/cinagroup/cinatoken-rust/actions/runs/30730619351) passed; [artifact 8827846284](https://github.com/cinagroup/cinatoken-rust/actions/runs/30730619351/artifacts/8827846284), 23,619 bytes, `sha256:b216489fa9ab49068adbb0b9cf0a9901c3bd466a7b70d0c8efdbc03c0c679677` |
+| Cryptographic checks | Signature verified; transparency verified; signed timestamp verified |
+
+This closes the Grype candidate-to-adoption evidence chain for the exact
+adopted commit. Approved immutable/WORM retention remains false and complete
+S3 remains false, so this checkpoint does not authorize deployment or traffic.
+Production remains **NO-GO**.
+
+## 2026-08-02 Generated Container Contract And Response Boundary Verification
+
+The canonical OpenAPI v1 document now deterministically generates
+`contracts/container-runtime/v1/generated/container-runtime.openapi.ts` with
+pinned `openapi-typescript` 7.13.0. The Container Controller consumes it through
+one type-only boundary. `--check` byte drift, Redocly, Buf, structural
+OpenAPI/Proto parity, TypeScript semantic assertions, shared TS vectors, and
+Rust vectors all remain required; generated types never replace runtime input
+validation.
+
+The same increment corrected the Container SDK startup target from `/healthz`
+to the SDK's `container/healthz` host/path form. That ping remains connectivity
+only. `/readyz` is still parsed independently and cannot authorize execution
+without the exact v1 contract, a non-null 64-hex runtime build identity, all
+Controller/recovery/lifecycle gates, and available shard capacity. The legacy
+readiness shape remains rollback-readable but is execution-ineligible.
+
+Operation responses now enforce the OpenAPI HTTP matrix and complete result
+manifest bounds. Exact `ErrorResponse` bodies on 400, 413, 415, 422, 426, and
+500 terminate as deterministic pre-execution failures; only transport failures
+or non-contract responses become `container_execution_ambiguous`. When provider
+attempt journaling is enabled, that pre-execution failure atomically cancels the
+still-prepared attempt and terminates its retry state without losing the exact
+operation status and code.
+
+Verification evidence:
+
+| Gate | Result |
+| --- | --- |
+| `bun install --frozen-lockfile` | passed with 147 installs checked and no changes |
+| `bun run check:container-runtime:contracts` | passed, including generated-byte drift and TypeScript semantic assertions; 7 shared TS vector tests passed |
+| `cargo test -p cinatoken-container-runtime` | passed; 15 unit and 7 HTTP tests |
+| `bun run check:container-runtime:linux-contract` | passed; 9 tests and offline contract v8 |
+| `bun run check` | passed before the final build-identity execution guard; exit 0 in 1,166.2 seconds |
+| final `bun run check:container-controller` | passed after the build-identity guard and prepared-attempt cancellation fix; 272 Bun tests, 182 protocol Vitest tests, and 54 runtime Vitest tests |
+| `git diff --check` | passed |
+
+`openapi-typescript` 7.13.0 currently declares a TypeScript `^5.x` peer while
+this repository pins TypeScript 6.0.3. The generator is a build-only tool and
+its exact output compiles under the repository's TypeScript 6 semantic gate,
+but the upstream peer-range mismatch remains a tracked toolchain risk for the
+next generator upgrade. No Cloudflare mutation, deployment, route, traffic,
+DNS, D1 mutation, or Go/VPS change occurred. Production remains **NO-GO**.

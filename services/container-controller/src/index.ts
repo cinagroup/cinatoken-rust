@@ -56,9 +56,10 @@ import {
 } from "./protocol";
 import {
   operationOutcomeResponse,
-  parseContainerOperationResponse,
+  parseContainerOperationHttpResponse,
   terminalAckV3Response,
 } from "./operation_outcome";
+import type { ReadinessResponse } from "./container_runtime_contract";
 import { controllerStatusV1Response } from "./controller_status";
 import {
   handleOperationStatusRequest,
@@ -96,6 +97,7 @@ import {
   R2_OBJECT_VERSION_HEADER,
   R2_RESULT_HOST,
   STORAGE_GATEWAY_ACTIONS,
+  containerOperationInputFromNullableReferences,
   deriveR2ResultKey,
   handleStorageGatewayRequest,
   requireD1OperationAdmission,
@@ -358,7 +360,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     PROVIDER_ATTEMPT_HOST,
     PROVIDER_EGRESS_HOST,
   ];
-  override pingEndpoint = "/healthz";
+  override pingEndpoint = "container/healthz";
 
   static override outbound = (): Response => jsonError("container_egress_denied", 403);
 
@@ -1087,6 +1089,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       const recoveryIntentWriterReady = operationRecoveryIntentWriterEnabled(this.env);
       const executionReady =
         processReady &&
+        readiness.runtime_build_id !== null &&
         readiness.execution_enabled &&
         this.env.CONTAINER_EXECUTION_ENABLED === "true" &&
         recoveryIntentWriterReady &&
@@ -1102,17 +1105,19 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       };
       resultCode = !processReady
         ? "container_not_healthy"
-        : !readiness.execution_enabled
-          ? "process_ready_execution_disabled"
-          : this.env.CONTAINER_EXECUTION_ENABLED !== "true"
-            ? "controller_execution_disabled"
-            : !recoveryIntentWriterReady
-              ? "operation_recovery_intent_v1_disabled"
-              : !lifecycleAccepting
-                ? "shard_not_accepting"
-                : !capacityAvailable
-                  ? "shard_capacity_exhausted"
-                  : "execution_ready";
+        : readiness.runtime_build_id === null
+          ? "container_runtime_build_id_unavailable"
+          : !readiness.execution_enabled
+            ? "process_ready_execution_disabled"
+            : this.env.CONTAINER_EXECUTION_ENABLED !== "true"
+              ? "controller_execution_disabled"
+              : !recoveryIntentWriterReady
+                ? "operation_recovery_intent_v1_disabled"
+                : !lifecycleAccepting
+                  ? "shard_not_accepting"
+                  : !capacityAvailable
+                    ? "shard_capacity_exhausted"
+                    : "execution_ready";
     } catch (error) {
       resultCode = error instanceof ProtocolError ? error.code : "container_readiness_unavailable";
       try {
@@ -1257,11 +1262,26 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           signal: AbortSignal.timeout(remainingMs),
         });
         const body = await readBoundedResponse(upstream, MAX_OPERATION_BODY_BYTES);
-        const containerOutcome = parseContainerOperationResponse(
+        const parsedContainerResponse = parseContainerOperationHttpResponse(
           upstream,
           body,
           verified.envelope,
         );
+        if (parsedContainerResponse.kind === "protocol_error") {
+          const outcome = finalizeOperationOutcome(
+            this.ledger,
+            verified.envelope.operation_id,
+            verified.envelope.owner_generation,
+            "running",
+            "failed",
+            parsedContainerResponse.status,
+            parsedContainerResponse.error.code,
+            Math.floor(Date.now() / 1000),
+            true,
+          );
+          return operationOutcomeResponse(outcome);
+        }
+        const containerOutcome = parsedContainerResponse.outcome;
         validatePersistedContainerResult(this.ledger, verified.envelope, containerOutcome.result);
         const outcome = finalizeOperationOutcome(
           this.ledger,
@@ -2606,6 +2626,8 @@ function gatewayStorageGrant(
     case STORAGE_GATEWAY_ACTIONS.KV_CONFIG_GET:
       return { action, operation_kind: grant.operation_kind };
     case STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET:
+      const input = containerOperationInputFromNullableReferences(grant.input);
+      if (input === null) return null;
       return {
         action,
         protocol_version: grant.protocol_version,
@@ -2616,18 +2638,7 @@ function gatewayStorageGrant(
         execution_deadline_at: grant.deadline_at,
         provider_operation_id: grant.provider_operation_id,
         admission_sha256: grant.admission_sha256,
-        input: {
-          mode: grant.input.mode,
-          sha256: grant.input.sha256,
-          size: grant.input.size,
-          content_type: grant.input.content_type,
-          ...(grant.input.request_object_key === null
-            ? {}
-            : { request_object_key: grant.input.request_object_key }),
-          ...(grant.input.object_version === null
-            ? {}
-            : { object_version: grant.input.object_version }),
-        },
+        input,
         shard: grant.shard,
         trace_id: grant.trace_id,
       };
@@ -2913,11 +2924,11 @@ function containerStateSnapshot(state: Awaited<ReturnType<RelayShardContainer["g
 function validateRuntimeReadinessResponse(
   response: Response,
   body: Uint8Array,
-): {
-  protocol_version: number;
-  shard_contract_version: number;
-  runtime_build_id: string | null;
-  execution_enabled: boolean;
+): Pick<
+  ReadinessResponse,
+  "protocol_version" | "shard_contract_version" | "execution_enabled"
+> & {
+  runtime_build_id: ReadinessResponse["runtime_build_id"] | null;
 } {
   const contentType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
   if (contentType !== "application/json") {
@@ -2958,8 +2969,8 @@ function validateRuntimeReadinessResponse(
     throw new ProtocolError("invalid_container_readiness", 502);
   }
   return {
-    protocol_version: record.protocol_version,
-    shard_contract_version: record.shard_contract_version,
+    protocol_version: 1,
+    shard_contract_version: 1,
     runtime_build_id: exactCandidate ? (record.runtime_build_id as string) : null,
     execution_enabled: record.execution_enabled,
   };

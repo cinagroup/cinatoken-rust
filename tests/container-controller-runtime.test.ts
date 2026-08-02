@@ -1847,6 +1847,87 @@ describe("RelayShardLedger in Workerd", () => {
     });
   });
 
+  it("preserves a deterministic container protocol failure while cancelling its prepared attempt", async () => {
+    const stub = ledgerStub("provider-attempt-container-protocol-failure");
+    const operation = operationEnvelope("provider-attempt-container-protocol-failure", {
+      operation_kind: "chat_completion",
+      execution_deadline_at: BASE_NOW + 10,
+    });
+    await stub.claim(
+      operation,
+      sha256("container-protocol-failure"),
+      "dispatch-provider-container-protocol-failure",
+      ledgerPolicy(),
+      BASE_NOW,
+    );
+    await expect(
+      stub.startOperationWithProviderAttemptOutcome(
+        operation.operation_id,
+        operation.owner_generation,
+        { maxAttempts: 1, retryEnabled: false },
+        BASE_NOW + 1,
+      ),
+    ).resolves.toMatchObject({ ok: true, result: { kind: "prepared" } });
+
+    await expect(
+      stub.finalizeOutcome(
+        operation.operation_id,
+        operation.owner_generation,
+        "running",
+        "failed",
+        422,
+        "invalid_operation_envelope",
+        BASE_NOW + 2,
+        true,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      result: {
+        status: "failed",
+        response_status: 422,
+        response_code: "invalid_operation_envelope",
+      },
+    });
+
+    const persisted = await runInDurableObject(stub, (_instance, state) => {
+      const attempt = state.storage.sql
+        .exec<{
+          status: string;
+          response_status: number;
+          response_code: string;
+          dispatched_at: number | null;
+          terminal_at: number;
+        }>(
+          `SELECT status, response_status, response_code, dispatched_at, terminal_at
+             FROM cinatoken_shard_provider_attempts
+            WHERE operation_id = ?1 AND owner_generation = ?2 AND attempt_generation = 1`,
+          operation.operation_id,
+          operation.owner_generation,
+        )
+        .one();
+      const retry = state.storage.sql
+        .exec<{ state: string; active_attempt_generation: number | null }>(
+          `SELECT state, active_attempt_generation
+             FROM cinatoken_shard_provider_retry_state
+            WHERE operation_id = ?1 AND owner_generation = ?2`,
+          operation.operation_id,
+          operation.owner_generation,
+        )
+        .one();
+      return { attempt, retry };
+    });
+    expect(persisted).toEqual({
+      attempt: {
+        status: "cancelled",
+        response_status: 503,
+        response_code: "provider_attempt_not_dispatched",
+        dispatched_at: null,
+        terminal_at: BASE_NOW + 2,
+      },
+      retry: { state: "terminal", active_attempt_generation: null },
+    });
+  });
+
   it("allows a bounded retry only after a definite rejection", async () => {
     const stub = ledgerStub("provider-attempt-bounded-retry");
     const operation = operationEnvelope("provider-attempt-bounded-retry", {

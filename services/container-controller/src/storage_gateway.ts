@@ -177,6 +177,29 @@ export interface ProviderEgressAdmission {
   trace_id: string;
 }
 
+export function containerOperationInputFromNullableReferences(
+  input: ProviderEgressAdmission["input"],
+): OperationInput | null {
+  const common = {
+    sha256: input.sha256,
+    size: input.size,
+    content_type: input.content_type,
+  };
+  if (input.mode === "inline") {
+    return input.request_object_key === null && input.object_version === null
+      ? { mode: input.mode, ...common }
+      : null;
+  }
+  return input.request_object_key !== null && input.object_version !== null
+    ? {
+        mode: input.mode,
+        ...common,
+        request_object_key: input.request_object_key,
+        object_version: input.object_version,
+      }
+    : null;
+}
+
 export interface ProviderEgressGrantIdentity {
   attempt_generation: number;
   request_sha256: string;
@@ -1112,6 +1135,10 @@ export async function requireD1ProviderEgressAdmission(
   admission: ProviderEgressAdmission,
   now = Math.floor(Date.now() / 1000),
 ): Promise<D1AdmissionSnapshot> {
+  const input = containerOperationInputFromNullableReferences(admission.input);
+  if (input === null) {
+    throw new ProtocolError("provider_egress_admission_mismatch", 409);
+  }
   const grant: D1AdmissionGetGrant = {
     action: STORAGE_GATEWAY_ACTIONS.D1_ADMISSION_GET,
     protocol_version: admission.protocol_version,
@@ -1122,18 +1149,7 @@ export async function requireD1ProviderEgressAdmission(
     execution_deadline_at: admission.deadline_at,
     provider_operation_id: admission.provider_operation_id,
     admission_sha256: admission.admission_sha256,
-    input: {
-      mode: admission.input.mode,
-      sha256: admission.input.sha256,
-      size: admission.input.size,
-      content_type: admission.input.content_type,
-      ...(admission.input.request_object_key === null
-        ? {}
-        : { request_object_key: admission.input.request_object_key }),
-      ...(admission.input.object_version === null
-        ? {}
-        : { object_version: admission.input.object_version }),
-    },
+    input,
     shard: admission.shard,
     trace_id: admission.trace_id,
   };
@@ -1662,6 +1678,10 @@ function admissionAuthorityMatches(
   row: D1AdmissionSnapshot,
   grant: D1AdmissionGetGrant,
 ): boolean {
+  const requestObjectKey =
+    grant.input.mode === "r2" ? grant.input.request_object_key : null;
+  const objectVersion =
+    grant.input.mode === "r2" ? grant.input.object_version : null;
   return (
     row.reservation_key === row.operation_reservation_key &&
     row.reservation_owner_generation === row.owner_generation &&
@@ -1684,8 +1704,8 @@ function admissionAuthorityMatches(
     row.instance_name === grant.shard.instance_name &&
     row.execution_deadline_at === grant.execution_deadline_at &&
     row.input_mode === grant.input.mode &&
-    row.input_object_key === grant.input.request_object_key &&
-    row.input_object_version === grant.input.object_version &&
+    row.input_object_key === requestObjectKey &&
+    row.input_object_version === objectVersion &&
     row.input_sha256 === grant.input.sha256 &&
     row.input_size === grant.input.size &&
     row.input_content_type === grant.input.content_type &&

@@ -5,6 +5,7 @@ import {
 } from "./shard_activation";
 import {
   ProtocolError,
+  requireOperationShardContractVersion,
   type OperationShard,
   type ShardActivationCampaignCredential,
 } from "./protocol";
@@ -1157,7 +1158,11 @@ function claimResult(row: ClaimStoredRow, recovered: boolean): ShardActivationCa
     foundationManifestSha256: row.foundation_manifest_sha256,
     runtimeBuildId: row.runtime_build_id,
     shard: {
-      contract_version: row.shard_contract_version,
+      contract_version: requireOperationShardContractVersion(
+        row.shard_contract_version,
+        "shard_activation_campaign_claim_corrupt",
+        500,
+      ),
       ring_generation: row.ring_generation,
       shard_count: row.shard_count,
       shard_index: row.shard_index,

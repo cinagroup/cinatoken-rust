@@ -2,6 +2,7 @@ import {
   MAX_PREVIOUS_RING_ADMISSION_WINDOW_SECONDS,
   MAX_STORAGE_OBJECT_VERSION_BYTES,
   ProtocolError,
+  requireOperationShardContractVersion,
   validateTerminalAckRequest,
   validateTerminalAckV3Request,
   validateOperationStatusQuery,
@@ -2898,14 +2899,19 @@ export class RelayShardLedger {
       if (
         providerAttempt !== null &&
         ((status === "completed" && providerAttempt.status !== "succeeded") ||
-          (status === "failed" && providerAttempt.status !== "definite_reject"))
+          (status === "failed" &&
+            providerAttempt.status !== "definite_reject" &&
+            providerAttempt.status !== "prepared"))
       ) {
         throw new ProtocolError("provider_attempt_outcome_required", 409);
       }
       let effectiveStatus = status;
       let effectiveResponseStatus = responseStatus;
       let effectiveResponseCode = responseCode;
-      if (status === "recovery_required" && providerAttempt?.status === "prepared") {
+      if (
+        (status === "failed" || status === "recovery_required") &&
+        providerAttempt?.status === "prepared"
+      ) {
         this.storage.sql.exec(
           `UPDATE cinatoken_shard_provider_attempts
               SET status = 'cancelled', response_status = 503,
@@ -2921,6 +2927,8 @@ export class RelayShardLedger {
         if (changedRowCount(this.storage) !== 1) {
           throw new ProtocolError("provider_attempt_outcome_conflict", 409);
         }
+      }
+      if (status === "recovery_required" && providerAttempt?.status === "prepared") {
         effectiveStatus = "failed";
         effectiveResponseStatus = 503;
         effectiveResponseCode = "provider_attempt_not_dispatched";
@@ -2950,9 +2958,10 @@ export class RelayShardLedger {
         }
       }
       if (
-        status === "recovery_required" &&
+        (status === "recovery_required" || status === "failed") &&
         providerAttempt !== null &&
-        (providerAttempt.status === "prepared" || providerAttempt.status === "dispatched")
+        (providerAttempt.status === "prepared" ||
+          (status === "recovery_required" && providerAttempt.status === "dispatched"))
       ) {
         this.storage.sql.exec(
           `UPDATE cinatoken_shard_provider_retry_state
@@ -5893,8 +5902,8 @@ export class RelayShardLedger {
       envelope.input.sha256,
       envelope.input.size,
       envelope.input.content_type,
-      envelope.input.request_object_key ?? null,
-      envelope.input.object_version ?? null,
+      envelope.input.mode === "r2" ? envelope.input.request_object_key : null,
+      envelope.input.mode === "r2" ? envelope.input.object_version : null,
       envelope.shard.contract_version,
       envelope.shard.ring_generation,
       envelope.shard.shard_count,
@@ -5932,7 +5941,11 @@ export function operationRecoveryIntentPayload(
     intent.deadline_at,
     intent.delivery_generation,
     {
-      contract_version: intent.shard_contract_version,
+      contract_version: requireOperationShardContractVersion(
+        intent.shard_contract_version,
+        "operation_recovery_intent_corrupt",
+        500,
+      ),
       ring_generation: intent.ring_generation,
       shard_count: intent.shard_count,
       shard_index: intent.shard_index,
@@ -5991,7 +6004,11 @@ function operationRecoveryIntentPayloadFields(
       row.deadline_at,
       row.delivery_generation,
       {
-        contract_version: row.shard_contract_version,
+        contract_version: requireOperationShardContractVersion(
+          row.shard_contract_version,
+          "operation_recovery_intent_corrupt",
+          500,
+        ),
         ring_generation: row.ring_generation,
         shard_count: row.shard_count,
         shard_index: row.shard_index,
@@ -6031,7 +6048,11 @@ function operationRecoveryIntentMatchesOperation(
     intent.deadline_at === operation.deadline_at &&
     operationShardsEqual(
       {
-        contract_version: intent.shard_contract_version,
+        contract_version: requireOperationShardContractVersion(
+          intent.shard_contract_version,
+          "operation_recovery_intent_corrupt",
+          500,
+        ),
         ring_generation: intent.ring_generation,
         shard_count: intent.shard_count,
         shard_index: intent.shard_index,
@@ -6044,7 +6065,11 @@ function operationRecoveryIntentMatchesOperation(
 
 function storageOperationShard(operation: StorageOperationRow): OperationShard {
   return {
-    contract_version: operation.shard_contract_version,
+    contract_version: requireOperationShardContractVersion(
+      operation.shard_contract_version,
+      "operation_shard_corrupt",
+      500,
+    ),
     ring_generation: operation.ring_generation,
     shard_count: operation.shard_count,
     shard_index: operation.shard_index,
@@ -6901,7 +6926,11 @@ function storageGrant(
       object_version: row.object_version,
     },
     shard: {
-      contract_version: row.shard_contract_version,
+      contract_version: requireOperationShardContractVersion(
+        row.shard_contract_version,
+        "storage_access_denied",
+        403,
+      ),
       ring_generation: row.ring_generation,
       shard_count: row.shard_count,
       shard_index: row.shard_index,

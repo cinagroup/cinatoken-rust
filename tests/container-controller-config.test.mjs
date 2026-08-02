@@ -551,6 +551,16 @@ describe("isolated container controller configuration", () => {
     expect(durableStateSource).not.toMatch(/D1Database|R2Bucket|fetch\(/);
   });
 
+  test("container startup probes the health route using the library host/path form", () => {
+    expect(controllerSource).toContain('override pingEndpoint = "container/healthz"');
+    expect(controllerSource).not.toContain('override pingEndpoint = "/healthz"');
+  });
+
+  test("legacy readiness remains readable but cannot authorize execution", () => {
+    expect(controllerSource).toContain("readiness.runtime_build_id !== null");
+    expect(controllerSource).toContain('"container_runtime_build_id_unavailable"');
+  });
+
   test("container storage uses named outbound handlers and never exposes generic binding CRUD", () => {
     expect(controllerSource).toContain("RelayShardContainer.outboundByHost");
     for (const host of [

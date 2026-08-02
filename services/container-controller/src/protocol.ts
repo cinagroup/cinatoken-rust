@@ -1,3 +1,9 @@
+import type {
+  OperationEnvelope as ContainerRuntimeOperationEnvelope,
+  OperationInput as ContainerRuntimeOperationInput,
+  OperationShard as ContainerRuntimeOperationShard,
+} from "./container_runtime_contract";
+
 const AUTHORITY_DOMAIN = "cinatoken-container-authority:v1\0";
 export const OPERATION_STATUS_V3_AUTHORITY_DOMAIN =
   "cinatoken-container-operation-status:v3\0";
@@ -73,36 +79,9 @@ export interface AuthorityClaims {
   expires_at: number;
 }
 
-export interface OperationInput {
-  mode: "inline" | "r2";
-  sha256: string;
-  size: number;
-  content_type: string;
-  request_object_key?: string;
-  object_version?: string;
-}
-
-export interface OperationShard {
-  contract_version: number;
-  ring_generation: number;
-  shard_count: number;
-  shard_index: number;
-  instance_name: string;
-}
-
-export interface OperationEnvelope {
-  protocol_version: number;
-  operation_id: string;
-  operation_kind: string;
-  owner_generation: number;
-  owner_lease_expires_at: number;
-  execution_deadline_at: number;
-  provider_operation_id: string;
-  admission_sha256: string;
-  input: OperationInput;
-  shard: OperationShard;
-  trace_id: string;
-}
+export type OperationInput = ContainerRuntimeOperationInput;
+export type OperationShard = ContainerRuntimeOperationShard;
+export type OperationEnvelope = ContainerRuntimeOperationEnvelope;
 
 export interface VerifiedOperation {
   envelope: OperationEnvelope;
@@ -262,6 +241,15 @@ export class ProtocolError extends Error {
   ) {
     super(code);
   }
+}
+
+export function requireOperationShardContractVersion(
+  value: number,
+  code: string,
+  status: number,
+): OperationShard["contract_version"] {
+  if (value !== 1) throw new ProtocolError(code, status);
+  return value;
 }
 
 export async function verifyOperationRequest(
@@ -669,29 +657,47 @@ export function parseOperationEnvelope(
     true,
   );
   const mode = readString(inputValue, "mode", 2, 6, /^(inline|r2)$/) as "inline" | "r2";
-  const input: OperationInput = {
-    mode,
+  const inputCommon = {
     sha256: readString(inputValue, "sha256", 64, 64, LOWER_HEX_64),
     size: readInteger(inputValue, "size", 0, 64 * 1024 * 1024),
     content_type: readString(inputValue, "content_type", 3, 128, CONTENT_TYPE),
   };
-  if (inputValue.request_object_key !== undefined) {
-    input.request_object_key = readString(inputValue, "request_object_key", 8, 512, /^[A-Za-z0-9/_.:-]+$/);
-  }
-  if (inputValue.object_version !== undefined) {
-    input.object_version = readString(
-      inputValue,
-      "object_version",
-      1,
-      MAX_STORAGE_OBJECT_VERSION_BYTES,
-      ID,
-    );
-  }
-  if (
-    (mode === "inline" && (input.request_object_key !== undefined || input.object_version !== undefined)) ||
-    (mode === "r2" && (input.request_object_key === undefined || input.object_version === undefined))
-  ) {
-    throw new ProtocolError("invalid_input_reference", 400);
+  const requestObjectKey =
+    inputValue.request_object_key === undefined
+      ? undefined
+      : readString(
+          inputValue,
+          "request_object_key",
+          8,
+          512,
+          /^[A-Za-z0-9/_.:-]+$/,
+        );
+  const objectVersion =
+    inputValue.object_version === undefined
+      ? undefined
+      : readString(
+          inputValue,
+          "object_version",
+          1,
+          MAX_STORAGE_OBJECT_VERSION_BYTES,
+          ID,
+        );
+  let input: OperationInput;
+  if (mode === "inline") {
+    if (requestObjectKey !== undefined || objectVersion !== undefined) {
+      throw new ProtocolError("invalid_input_reference", 400);
+    }
+    input = { mode, ...inputCommon };
+  } else {
+    if (requestObjectKey === undefined || objectVersion === undefined) {
+      throw new ProtocolError("invalid_input_reference", 400);
+    }
+    input = {
+      mode,
+      ...inputCommon,
+      request_object_key: requestObjectKey,
+      object_version: objectVersion,
+    };
   }
 
   const shardValue = readObject(value, "shard");
@@ -701,13 +707,21 @@ export function parseOperationEnvelope(
     "invalid_operation",
   );
   const shard: OperationShard = {
-    contract_version: readInteger(shardValue, "contract_version", 1, 1),
+    contract_version: requireOperationShardContractVersion(
+      readInteger(shardValue, "contract_version", 1, 1),
+      "invalid_operation",
+      400,
+    ),
     ring_generation: readInteger(shardValue, "ring_generation", 1, MAX_SAFE_INTEGER),
     shard_count: readInteger(shardValue, "shard_count", 1, 1024),
     shard_index: readInteger(shardValue, "shard_index", 0, 1023),
     instance_name: readString(shardValue, "instance_name", 29, 64, /^[a-z0-9-]+$/),
   };
   const protocolVersion = readInteger(value, "protocol_version", 1, 255);
+  const expectedProtocol = parseConfiguredInteger(env.CONTAINER_PROTOCOL_VERSION, 1, 255);
+  if (protocolVersion !== expectedProtocol || protocolVersion !== 1) {
+    throw new ProtocolError("unsupported_protocol", 426);
+  }
   const ownerLeaseExpiresAt = readInteger(value, "owner_lease_expires_at", 1, MAX_SAFE_INTEGER);
   const executionDeadlineAt = readInteger(value, "execution_deadline_at", 1, MAX_SAFE_INTEGER);
   const envelope: OperationEnvelope = {
@@ -723,10 +737,6 @@ export function parseOperationEnvelope(
     shard,
     trace_id: readString(value, "trace_id", 1, 128, ID),
   };
-  const expectedProtocol = parseConfiguredInteger(env.CONTAINER_PROTOCOL_VERSION, 1, 255);
-  if (protocolVersion !== expectedProtocol) {
-    throw new ProtocolError("unsupported_protocol", 426);
-  }
   operationRingAdmission(shard, env, now);
   if (
     executionDeadlineAt <= now ||
@@ -1289,7 +1299,11 @@ function validateTerminalAckRequestForContract(
     code,
   );
   const shard: OperationShard = {
-    contract_version: readInteger(shardValue, "contract_version", 1, 1, code),
+    contract_version: requireOperationShardContractVersion(
+      readInteger(shardValue, "contract_version", 1, 1, code),
+      code,
+      400,
+    ),
     ring_generation: readInteger(shardValue, "ring_generation", 1, MAX_SAFE_INTEGER, code),
     shard_count: readInteger(shardValue, "shard_count", 1, 1024, code),
     shard_index: readInteger(shardValue, "shard_index", 0, 1023, code),
@@ -1400,7 +1414,11 @@ export function validateOperationStatusQuery(value: unknown): OperationStatusQue
     code,
   );
   const shard: OperationShard = {
-    contract_version: readInteger(shardValue, "contract_version", 1, 1, code),
+    contract_version: requireOperationShardContractVersion(
+      readInteger(shardValue, "contract_version", 1, 1, code),
+      code,
+      400,
+    ),
     ring_generation: readInteger(shardValue, "ring_generation", 1, MAX_SAFE_INTEGER, code),
     shard_count: readInteger(shardValue, "shard_count", 1, 1024, code),
     shard_index: readInteger(shardValue, "shard_index", 0, 1023, code),
@@ -1449,7 +1467,11 @@ export function parseReadinessProbe(
   );
   const protocolVersion = readInteger(value, "protocol_version", 1, 255, code);
   const shard: OperationShard = {
-    contract_version: readInteger(shardValue, "contract_version", 1, 1, code),
+    contract_version: requireOperationShardContractVersion(
+      readInteger(shardValue, "contract_version", 1, 1, code),
+      code,
+      400,
+    ),
     ring_generation: readInteger(shardValue, "ring_generation", 1, MAX_SAFE_INTEGER, code),
     shard_count: readInteger(shardValue, "shard_count", 1, 1024, code),
     shard_index: readInteger(shardValue, "shard_index", 0, 1023, code),

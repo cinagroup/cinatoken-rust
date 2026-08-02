@@ -12,6 +12,7 @@ import {
   operationStatusResponse,
   operationStatusResponseV3,
   operationStatusResponseV4,
+  parseContainerOperationHttpResponse,
   parseContainerOperationResponse,
   serializeOperationOutcome,
   terminalAckV3Response,
@@ -39,6 +40,15 @@ function containerResponse(status: number, value: unknown): Response {
 function parseContainer(status: number, value: unknown, operationKind = "relay") {
   const response = containerResponse(status, value);
   return parseContainerOperationResponse(
+    response,
+    encoder.encode(JSON.stringify(value)),
+    containerEnvelope(operationKind),
+  );
+}
+
+function parseContainerHttp(status: number, value: unknown, operationKind = "relay") {
+  const response = containerResponse(status, value);
+  return parseContainerOperationHttpResponse(
     response,
     encoder.encode(JSON.stringify(value)),
     containerEnvelope(operationKind),
@@ -280,6 +290,85 @@ describe("durable container operation outcomes", () => {
       client_status: null,
       client_artifact: null,
     });
+  });
+
+  it("classifies exact pre-execution protocol errors without inventing ambiguity", () => {
+    for (const status of [400, 413, 415, 422, 426, 500] as const) {
+      expect(
+        parseContainerHttp(status, {
+          code: "invalid_operation_envelope",
+          message: "request body must match the operation envelope",
+        }),
+      ).toEqual({
+        kind: "protocol_error",
+        status,
+        error: {
+          code: "invalid_operation_envelope",
+          message: "request body must match the operation envelope",
+        },
+      });
+    }
+    expect(() =>
+      parseContainerHttp(422, {
+        code: "invalid:operation",
+        message: "noncanonical error code",
+      }),
+    ).toThrowError("invalid_container_response");
+  });
+
+  it("enforces the OpenAPI operation response status matrix", () => {
+    const completed = {
+      protocol_version: 1,
+      operation_id: "relayreserve-v2-operation",
+      status: "completed",
+      result: {
+        object_key: storedResult.result_object_key,
+        object_version: storedResult.result_object_version,
+        sha256: storedResult.result_sha256,
+        size: storedResult.result_size,
+        content_type: storedResult.result_content_type,
+      },
+      trace_id: "trace-operation",
+    };
+    const rejected = {
+      protocol_version: 1,
+      operation_id: "relayreserve-v2-operation",
+      status: "rejected",
+      code: "execution_not_enabled",
+      trace_id: "trace-operation",
+    };
+    expect(() => parseContainer(201, completed)).toThrowError("invalid_container_response");
+    expect(() => parseContainer(500, rejected)).toThrowError("invalid_container_response");
+    expect(() => parseContainer(422, rejected)).toThrowError("invalid_container_response");
+  });
+
+  it("enforces every OpenAPI result manifest boundary", () => {
+    const result = {
+      object_key: storedResult.result_object_key,
+      object_version: storedResult.result_object_version,
+      sha256: storedResult.result_sha256,
+      size: storedResult.result_size,
+      content_type: storedResult.result_content_type,
+    };
+    const response = (overrides: Record<string, unknown>) => ({
+      protocol_version: 1,
+      operation_id: "relayreserve-v2-operation",
+      status: "completed",
+      result: { ...result, ...overrides },
+      trace_id: "trace-operation",
+    });
+    for (const overrides of [
+      { object_key: "" },
+      { object_version: "version with spaces" },
+      { sha256: "A".repeat(64) },
+      { size: -1 },
+      { size: Number.MAX_SAFE_INTEGER + 1 },
+      { content_type: "not-a-media-type" },
+    ]) {
+      expect(() => parseContainer(200, response(overrides))).toThrowError(
+        "invalid_container_response",
+      );
+    }
   });
 
   it("allows a result-free completed health probe only", () => {

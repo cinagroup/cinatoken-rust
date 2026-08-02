@@ -6,12 +6,25 @@ container controller and the Rust Linux container runtime.
 The checked-in sources and gates are:
 
 - `container-runtime.openapi.json`: implemented private HTTP/JSON v1 contract.
+- `generated/container-runtime.openapi.ts`: deterministic immutable TypeScript
+  types generated from the implemented OpenAPI contract and consumed through
+  the Container Controller contract boundary.
 - `container_runtime.proto`: reserved protobuf message model; transport is off.
 - `conformance/operation-envelope-cases.json`: shared TS/Rust acceptance vectors.
 - `redocly.yaml` and the repository `buf.yaml`: lint and compatibility policy.
 - `bun run check:container-runtime:contracts`: OpenAPI, Buf, structural parity,
   fixed field-number, and TypeScript conformance gate. Rust consumes the same
   vectors in `cinatoken-container-runtime` unit tests.
+
+`bun run generate:container-runtime:types` regenerates the checked-in TypeScript
+artifact with pinned `openapi-typescript` 7.13.0. Never edit the generated file
+directly. `bun run check:container-runtime:types` fails when the artifact differs
+from the canonical OpenAPI document; it is part of the aggregate contract gate.
+Generated types provide compile-time coupling only. Both TypeScript and Rust
+must retain their bounded, fail-closed runtime validation for untrusted bytes.
+The aggregate gate also compiles `tests/types/container-runtime-contract-types.ts`
+to pin the v1 literal, input discriminants, response statuses, and error enums
+as TypeScript semantics rather than source-text conventions.
 
 ## Contract status
 
@@ -31,6 +44,13 @@ The checked-in sources and gates are:
   controller-managed container loopback boundary, and the protocol-version
   header is not an authentication credential. The runtime must not be exposed
   as a public origin.
+- The Container SDK startup ping uses `container/healthz` in the SDK's required
+  host/path form and proves port connectivity only. Operation readiness is
+  authorized separately by the bounded `/readyz` parser, build identity,
+  Controller gates, recovery writer, lifecycle, and capacity checks.
+- Exact `ErrorResponse` bodies on HTTP 400, 413, 415, 422, 426, and 500 are
+  deterministic pre-execution failures. Malformed, unknown, or transport-level
+  responses remain ambiguous and enter reconciliation instead of being guessed.
 
 ## Audited sources
 

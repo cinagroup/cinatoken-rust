@@ -9,9 +9,12 @@ on:
       - "package.json"
       - "contracts/container-runtime/**"
       - "crates/container-runtime/**"
+      - "services/container-controller/src/container_runtime_contract.ts"
       - "services/container-controller/src/operation_outcome.ts"
       - "services/container-controller/src/protocol.ts"
       - "tests/container-runtime-contract-parity.test.mjs"
+      - "tests/types/container-runtime-contract-types.ts"
+      - "tests/types/tsconfig.container-runtime-contract.json"
       - "tools/verify_container_runtime_contracts.mjs"
   push:
     branches:
@@ -23,9 +26,12 @@ on:
       - "package.json"
       - "contracts/container-runtime/**"
       - "crates/container-runtime/**"
+      - "services/container-controller/src/container_runtime_contract.ts"
       - "services/container-controller/src/operation_outcome.ts"
       - "services/container-controller/src/protocol.ts"
       - "tests/container-runtime-contract-parity.test.mjs"
+      - "tests/types/container-runtime-contract-types.ts"
+      - "tests/types/tsconfig.container-runtime-contract.json"
       - "tools/verify_container_runtime_contracts.mjs"
   workflow_dispatch:
 

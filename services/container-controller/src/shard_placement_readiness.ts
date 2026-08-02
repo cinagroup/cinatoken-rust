@@ -5,6 +5,7 @@ import {
 } from "./shard_activation_campaign";
 import {
   ProtocolError,
+  requireOperationShardContractVersion,
   type OperationShard,
   type ShardActivationCampaignCredential,
 } from "./protocol";
@@ -209,7 +210,11 @@ export async function parseShardPlacementReadinessRequest(
     "instance_name",
   ], code);
   const shard: OperationShard = {
-    contract_version: readInteger(shardValue, "contract_version", 1, 1, code),
+    contract_version: requireOperationShardContractVersion(
+      readInteger(shardValue, "contract_version", 1, 1, code),
+      code,
+      400,
+    ),
     ring_generation: readInteger(
       shardValue,
       "ring_generation",

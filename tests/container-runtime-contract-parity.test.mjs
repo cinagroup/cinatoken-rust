@@ -7,6 +7,7 @@ import {
   parseOperationEnvelope,
   ProtocolError,
 } from "../services/container-controller/src/protocol.ts";
+import { parseContainerOperationHttpResponse } from "../services/container-controller/src/operation_outcome.ts";
 
 const repositoryRoot = path.resolve(import.meta.dir, "..");
 const vectors = JSON.parse(
@@ -18,6 +19,19 @@ const vectors = JSON.parse(
       "v1",
       "conformance",
       "operation-envelope-cases.json",
+    ),
+    "utf8",
+  ),
+);
+const responseVectors = JSON.parse(
+  fs.readFileSync(
+    path.join(
+      repositoryRoot,
+      "contracts",
+      "container-runtime",
+      "v1",
+      "conformance",
+      "operation-response-cases.json",
     ),
     "utf8",
   ),
@@ -55,6 +69,44 @@ describe("container runtime v1 shared operation envelope vectors", () => {
         expect(parse().protocol_version).toBe(1);
       } else {
         expect(parse).toThrow(ProtocolError);
+      }
+    });
+  }
+});
+
+describe("container runtime v1 shared operation response vectors", () => {
+  test("the vector suite is versioned and has unique names", () => {
+    expect(responseVectors.schema_version).toBe(1);
+    expect(new Set(responseVectors.cases.map((entry) => entry.name)).size).toBe(
+      responseVectors.cases.length,
+    );
+  });
+
+  for (const conformanceCase of responseVectors.cases) {
+    test(conformanceCase.name, () => {
+      const body = encoder.encode(JSON.stringify(conformanceCase.body));
+      const response = new Response(null, {
+        status: conformanceCase.http_status,
+        headers: { "content-type": conformanceCase.content_type },
+      });
+      const envelope = {
+        ...responseVectors.envelope,
+        operation_kind: conformanceCase.operation_kind,
+      };
+
+      let result;
+      let error;
+      try {
+        result = parseContainerOperationHttpResponse(response, body, envelope);
+      } catch (caught) {
+        error = caught;
+      }
+
+      expect(error === undefined).toBe(conformanceCase.accepted);
+      if (conformanceCase.accepted) {
+        expect(result?.kind).toBe(conformanceCase.expected_kind);
+      } else {
+        expect(error).toBeInstanceOf(ProtocolError);
       }
     });
   }

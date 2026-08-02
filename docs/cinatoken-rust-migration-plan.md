@@ -27174,3 +27174,55 @@ under pinned TypeScript 6.0.3. This checkpoint does not implement protobuf
 transport, remote container activation, WORM completion, S3 completion,
 traffic, or cutover. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-08-02 Shared Container Response Conformance Checkpoint
+
+The TypeScript Controller and Rust Linux runtime now consume one checked-in
+response conformance suite in addition to the existing request-envelope
+suite. This closes a cross-language ambiguity at the exact boundary where a
+Durable Object decides whether a container result is terminal, definitively
+rejected before execution, or must enter reconciliation.
+
+This follows the two audited source architectures rather than flattening them:
+
+- cinaVibeSDK keeps deterministic session placement, lifecycle, and recovery
+  in Durable Objects while treating Containers as replaceable compute;
+- the Go relay preserves explicit provider error, retry/no-retry, and stream
+  termination meanings instead of inferring success from transport alone; and
+- cinatoken-rust therefore keeps TypeScript as the state authority and makes
+  Rust responses prove a versioned, request-bound terminal interpretation.
+
+The 35 response cases lock these semantics across both languages:
+
+- completed health probes omit a result; completed relay work requires a
+  bounded R2 result manifest and HTTP 200;
+- recovery-required uses HTTP 202, provider-interpreted rejection uses 422,
+  and simple rejection uses only 501 or 503;
+- exact two-field `ErrorResponse` bodies on 400, 413, 415, 422, 426, and 500
+  are deterministic pre-execution failures;
+- response protocol, operation ID, trace ID, result presence, provider status
+  relationships, and client artifact owner generation are request-bound;
+- malformed manifests, unknown fields, explicit null optionals, wrong media
+  types, invalid codes, empty error messages, and status/body mismatches fail
+  closed; and
+- parameterized JSON media types remain accepted without widening the
+  canonical transport beyond JSON v1.
+
+The structural verifier freezes the vector schema and required coverage. The
+TypeScript gate calls the production Controller parser for every case. The
+Rust gate first uses the production `OperationResponse` deserializer, then
+applies the same HTTP and request-correlation rules that belong to the
+Controller boundary. This test-only Rust classifier does not move scheduling,
+retry, ledger, or recovery authority into the container.
+
+Focused local evidence passed: the aggregate schema/type/Buf/Redocly contract
+gate ran 43 TypeScript tests, and the Rust runtime ran 16 unit plus seven HTTP
+tests. The complete repository `bun run check` then passed in 1,142 seconds,
+covering the Worker/DO builds, container supply-chain contracts, WFP, Realtime,
+billing, D1, frontend, and Rust workspace gates. Raw-byte JSON hazards such as
+invalid UTF-8, duplicate keys, and
+transport truncation remain covered by parser/HTTP tests rather than this
+parsed-value vector format. Protobuf transport, remote Container execution,
+provider and financial convergence, lifecycle faults, load/cost/SLO evidence,
+rollback, WORM/S3 completion, and signed approvals remain open. Go/VPS remains
+authoritative and production remains **NO-GO**.

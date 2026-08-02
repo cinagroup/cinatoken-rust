@@ -13124,3 +13124,39 @@ its exact output compiles under the repository's TypeScript 6 semantic gate,
 but the upstream peer-range mismatch remains a tracked toolchain risk for the
 next generator upgrade. No Cloudflare mutation, deployment, route, traffic,
 DNS, D1 mutation, or Go/VPS change occurred. Production remains **NO-GO**.
+
+## 2026-08-02 Shared Container Response Conformance Verification
+
+The checked-in response suite contains 35 accepted and rejected cases. It is
+consumed by the real TypeScript Controller response parser and by a Rust
+test-level classifier built on the production response deserializer. Both
+consumers enforce the same HTTP matrix, exact protocol errors, result presence,
+request identity, and client-artifact owner-generation binding.
+
+Verified current-worktree evidence:
+
+```text
+npx.cmd --yes bun run check:container-runtime:contracts
+  OpenAPI generation drift, Redocly, Buf format/lint, OpenAPI/Proto structure,
+  TypeScript type semantics, and vector structure passed
+  response_conformance_cases=35
+  43 TypeScript tests passed with 81 assertions
+
+cargo test -p cinatoken-container-runtime
+  16 unit tests, 7 HTTP tests, and doc tests passed
+
+npx.cmd --yes bun run check
+  complete repository gate passed in 1,142 seconds
+```
+
+The suite explicitly includes parameterized JSON, all six deterministic
+`ErrorResponse` statuses, completed/rejected/recovery outcomes, malformed
+result metadata, status/classification mismatches, exact response identity,
+and artifact generation mismatch. It intentionally models parsed JSON values;
+raw-byte corruption and duplicate-key behavior remain separate parser/HTTP
+test responsibilities.
+
+No remote Cloudflare command, resource, secret, migration, deployment, route,
+traffic, DNS, D1 mutation, provider call, financial action, or Go/VPS change
+occurred. Protobuf transport and the broader remote/cutover evidence packet are
+still incomplete. Production remains **NO-GO**.

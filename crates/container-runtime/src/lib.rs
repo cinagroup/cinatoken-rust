@@ -1328,6 +1328,116 @@ mod tests {
         envelope: serde_json::Value,
     }
 
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ResponseConformanceSuite {
+        schema_version: u32,
+        envelope: ResponseConformanceEnvelope,
+        cases: Vec<ResponseConformanceCase>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ResponseConformanceEnvelope {
+        protocol_version: u32,
+        operation_id: String,
+        owner_generation: u64,
+        trace_id: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ResponseConformanceCase {
+        name: String,
+        operation_kind: String,
+        http_status: u16,
+        content_type: String,
+        accepted: bool,
+        #[serde(default)]
+        expected_kind: Option<ResponseConformanceKind>,
+        body: serde_json::Value,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    enum ResponseConformanceKind {
+        Outcome,
+        ProtocolError,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ResponseConformanceError {
+        code: String,
+        message: String,
+    }
+
+    fn response_conformance_content_type_is_json(content_type: &str) -> bool {
+        content_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .eq_ignore_ascii_case("application/json")
+    }
+
+    fn response_conformance_protocol_error_status(status: u16) -> bool {
+        matches!(status, 400 | 413 | 415 | 422 | 426 | 500)
+    }
+
+    fn classify_response_conformance_case(
+        case: &ResponseConformanceCase,
+        envelope: &ResponseConformanceEnvelope,
+    ) -> Option<ResponseConformanceKind> {
+        if !response_conformance_content_type_is_json(&case.content_type) {
+            return None;
+        }
+
+        if response_conformance_protocol_error_status(case.http_status) {
+            let protocol_error =
+                serde_json::from_value::<ResponseConformanceError>(case.body.clone()).ok();
+            if protocol_error
+                .is_some_and(|error| valid_outcome_code(&error.code) && !error.message.is_empty())
+            {
+                return Some(ResponseConformanceKind::ProtocolError);
+            }
+        }
+
+        let response = serde_json::from_value::<OperationResponse>(case.body.clone()).ok()?;
+        if response.protocol_version != envelope.protocol_version
+            || response.operation_id != envelope.operation_id
+            || response.trace_id != envelope.trace_id
+        {
+            return None;
+        }
+
+        let status_matches = match response.status {
+            OperationOutcomeStatus::Completed => {
+                case.http_status == 200
+                    && if case.operation_kind == "health_probe" {
+                        response.result.is_none()
+                    } else {
+                        response.result.is_some()
+                    }
+            }
+            OperationOutcomeStatus::RecoveryRequired => case.http_status == 202,
+            OperationOutcomeStatus::Rejected => {
+                if response.classification.is_some() {
+                    case.http_status == 422
+                        && response.client_artifact.as_ref().is_some_and(|artifact| {
+                            artifact.matches_operation(
+                                &envelope.operation_id,
+                                envelope.owner_generation,
+                            )
+                        })
+                } else {
+                    matches!(case.http_status, 501 | 503)
+                }
+            }
+        };
+        status_matches.then_some(ResponseConformanceKind::Outcome)
+    }
+
     #[test]
     fn matches_shared_operation_envelope_conformance_vectors() {
         let suite: EnvelopeConformanceSuite = serde_json::from_str(include_str!(
@@ -1340,6 +1450,45 @@ mod tests {
             let accepted = serde_json::from_value::<OperationEnvelope>(case.envelope)
                 .is_ok_and(|envelope| envelope.validate(suite.now).is_ok());
             assert_eq!(accepted, case.valid, "conformance case {}", case.name);
+        }
+    }
+
+    #[test]
+    fn matches_shared_operation_response_conformance_vectors() {
+        let suite: ResponseConformanceSuite = serde_json::from_str(include_str!(
+            "../../../contracts/container-runtime/v1/conformance/operation-response-cases.json"
+        ))
+        .expect("shared operation response conformance vectors must be valid JSON");
+        assert_eq!(suite.schema_version, 1);
+
+        for case in suite.cases {
+            let actual_kind = classify_response_conformance_case(&case, &suite.envelope);
+            assert_eq!(
+                actual_kind.is_some(),
+                case.accepted,
+                "conformance case {} acceptance",
+                case.name
+            );
+            if case.accepted {
+                let expected_kind = case.expected_kind.unwrap_or_else(|| {
+                    panic!(
+                        "accepted conformance case {} must declare expected_kind",
+                        case.name
+                    )
+                });
+                assert_eq!(
+                    actual_kind,
+                    Some(expected_kind),
+                    "conformance case {} kind",
+                    case.name
+                );
+            } else {
+                assert!(
+                    case.expected_kind.is_none(),
+                    "rejected conformance case {} must omit expected_kind",
+                    case.name
+                );
+            }
         }
     }
 

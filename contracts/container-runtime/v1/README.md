@@ -10,11 +10,16 @@ The checked-in sources and gates are:
   types generated from the implemented OpenAPI contract and consumed through
   the Container Controller contract boundary.
 - `container_runtime.proto`: reserved protobuf message model; transport is off.
-- `conformance/operation-envelope-cases.json`: shared TS/Rust acceptance vectors.
+- `conformance/operation-envelope-cases.json`: shared TS/Rust request-envelope
+  acceptance vectors.
+- `conformance/operation-response-cases.json`: shared TS/Rust HTTP response,
+  outcome, protocol-error, identity-binding, and presence-matrix vectors using
+  a four-field response correlation envelope.
 - `redocly.yaml` and the repository `buf.yaml`: lint and compatibility policy.
 - `bun run check:container-runtime:contracts`: OpenAPI, Buf, structural parity,
-  fixed field-number, and TypeScript conformance gate. Rust consumes the same
-  vectors in `cinatoken-container-runtime` unit tests.
+  fixed field-number, and TypeScript conformance gate. Rust consumes both the
+  request and response vector suites in `cinatoken-container-runtime` unit
+  tests.
 
 `bun run generate:container-runtime:types` regenerates the checked-in TypeScript
 artifact with pinned `openapi-typescript` 7.13.0. Never edit the generated file
@@ -51,6 +56,12 @@ as TypeScript semantics rather than source-text conventions.
 - Exact `ErrorResponse` bodies on HTTP 400, 413, 415, 422, 426, and 500 are
   deterministic pre-execution failures. Malformed, unknown, or transport-level
   responses remain ambiguous and enter reconciliation instead of being guessed.
+- The response correlation envelope contains only `protocol_version`,
+  `operation_id`, `owner_generation`, and `trace_id`; `operation_kind` is set by
+  each case. Shared response vectors bind response identity and client artifact
+  owner generation to that context. Structural deserialization is insufficient
+  on its own: consumers must enforce this request/response correlation before
+  accepting a terminal outcome.
 
 ## Audited sources
 

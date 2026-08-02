@@ -1,0 +1,588 @@
+{
+  "schema_version": 1,
+  "envelope": {
+    "protocol_version": 1,
+    "operation_id": "operation-response-1",
+    "owner_generation": 7,
+    "trace_id": "trace-response-1"
+  },
+  "cases": [
+    {
+      "name": "accept_completed_health_probe_without_result",
+      "operation_kind": "health_probe",
+      "http_status": 200,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "trace_id": "trace-response-1"
+      },
+      "expected_kind": "outcome"
+    },
+    {
+      "name": "accept_completed_relay_with_result",
+      "operation_kind": "relay",
+      "http_status": 200,
+      "content_type": "application/json; charset=utf-8",
+      "accepted": true,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "result": {
+          "object_key": "container-results/v1/operation-response-1/7/result.json",
+          "object_version": "result-version-1",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "size": 42,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      },
+      "expected_kind": "outcome"
+    },
+    {
+      "name": "accept_simple_rejected_not_implemented",
+      "operation_kind": "relay",
+      "http_status": 501,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "execution_not_enabled",
+        "trace_id": "trace-response-1"
+      },
+      "expected_kind": "outcome"
+    },
+    {
+      "name": "accept_simple_rejected_service_unavailable",
+      "operation_kind": "relay",
+      "http_status": 503,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "provider_input_unavailable",
+        "trace_id": "trace-response-1"
+      },
+      "expected_kind": "outcome"
+    },
+    {
+      "name": "accept_provider_typed_error",
+      "operation_kind": "relay",
+      "http_status": 422,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "provider_typed_error",
+        "classification": "typed_error",
+        "provider_status": 200,
+        "client_status": 200,
+        "client_artifact": {
+          "object_key": "container-client-artifacts/v1/operation-response-1/7/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "object_version": "client-artifact-version-1",
+          "client_response_artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 128,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      },
+      "expected_kind": "outcome"
+    },
+    {
+      "name": "accept_provider_http_error",
+      "operation_kind": "relay",
+      "http_status": 422,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "provider_http_error",
+        "classification": "http_error",
+        "provider_status": 429,
+        "client_status": 429,
+        "client_artifact": {
+          "object_key": "container-client-artifacts/v1/operation-response-1/7/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "object_version": "client-artifact-version-1",
+          "client_response_artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 128,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      },
+      "expected_kind": "outcome"
+    },
+    {
+      "name": "accept_provider_invalid_body",
+      "operation_kind": "relay",
+      "http_status": 422,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "provider_invalid_body",
+        "classification": "invalid_body",
+        "provider_status": 200,
+        "client_status": 500,
+        "client_artifact": {
+          "object_key": "container-client-artifacts/v1/operation-response-1/7/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "object_version": "client-artifact-version-1",
+          "client_response_artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 128,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      },
+      "expected_kind": "outcome"
+    },
+    {
+      "name": "accept_recovery_required",
+      "operation_kind": "relay",
+      "http_status": 202,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "recovery_required",
+        "code": "ambiguous_execution",
+        "trace_id": "trace-response-1"
+      },
+      "expected_kind": "outcome"
+    },
+    {
+      "name": "accept_protocol_error_bad_request",
+      "operation_kind": "relay",
+      "http_status": 400,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "code": "invalid_request_body",
+        "message": "request body could not be read"
+      },
+      "expected_kind": "protocol_error"
+    },
+    {
+      "name": "accept_protocol_error_payload_too_large",
+      "operation_kind": "relay",
+      "http_status": 413,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "code": "request_body_too_large",
+        "message": "request body exceeds 65536 bytes"
+      },
+      "expected_kind": "protocol_error"
+    },
+    {
+      "name": "accept_protocol_error_unsupported_media_type",
+      "operation_kind": "relay",
+      "http_status": 415,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "code": "unsupported_media_type",
+        "message": "content-type must be application/json"
+      },
+      "expected_kind": "protocol_error"
+    },
+    {
+      "name": "accept_protocol_error_unprocessable_entity",
+      "operation_kind": "relay",
+      "http_status": 422,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "code": "invalid_operation_envelope",
+        "message": "request body must match the operation envelope"
+      },
+      "expected_kind": "protocol_error"
+    },
+    {
+      "name": "accept_protocol_error_upgrade_required",
+      "operation_kind": "relay",
+      "http_status": 426,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "code": "invalid_container_protocol",
+        "message": "x-cinatoken-container-protocol must be 1"
+      },
+      "expected_kind": "protocol_error"
+    },
+    {
+      "name": "accept_protocol_error_internal_server_error",
+      "operation_kind": "relay",
+      "http_status": 500,
+      "content_type": "application/json",
+      "accepted": true,
+      "body": {
+        "code": "clock_unavailable",
+        "message": "system clock is before the Unix epoch"
+      },
+      "expected_kind": "protocol_error"
+    },
+    {
+      "name": "reject_completed_on_status_201",
+      "operation_kind": "health_probe",
+      "http_status": 201,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_completed_relay_without_result",
+      "operation_kind": "relay",
+      "http_status": 200,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_completed_relay_with_invalid_result_manifest",
+      "operation_kind": "relay",
+      "http_status": 200,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "result": {
+          "object_key": "container-results/v1/operation-response-1/7/result.json",
+          "object_version": "result-version-1",
+          "sha256": "not-a-sha256-digest",
+          "size": 42,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_completed_health_probe_with_result",
+      "operation_kind": "health_probe",
+      "http_status": 200,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "result": {
+          "object_key": "container-results/v1/operation-response-1/7/result.json",
+          "object_version": "result-version-1",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "size": 42,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_simple_rejected_on_status_422",
+      "operation_kind": "relay",
+      "http_status": 422,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "execution_not_enabled",
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_provider_rejected_on_status_503",
+      "operation_kind": "relay",
+      "http_status": 503,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "provider_http_error",
+        "classification": "http_error",
+        "provider_status": 429,
+        "client_status": 429,
+        "client_artifact": {
+          "object_key": "container-client-artifacts/v1/operation-response-1/7/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "object_version": "client-artifact-version-1",
+          "client_response_artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 128,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_recovery_required_on_status_500",
+      "operation_kind": "relay",
+      "http_status": 500,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "recovery_required",
+        "code": "ambiguous_execution",
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_error_response_on_status_503",
+      "operation_kind": "relay",
+      "http_status": 503,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "code": "provider_input_unavailable",
+        "message": "provider input could not be loaded"
+      }
+    },
+    {
+      "name": "reject_error_response_with_extra_field",
+      "operation_kind": "relay",
+      "http_status": 400,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "code": "invalid_request_body",
+        "message": "request body could not be read",
+        "detail": "not allowed"
+      }
+    },
+    {
+      "name": "reject_protocol_error_with_empty_message",
+      "operation_kind": "relay",
+      "http_status": 400,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "code": "invalid_request_body",
+        "message": ""
+      }
+    },
+    {
+      "name": "reject_invalid_outcome_code",
+      "operation_kind": "relay",
+      "http_status": 501,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "Invalid.Code",
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_typed_error_status_mismatch",
+      "operation_kind": "relay",
+      "http_status": 422,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "provider_typed_error",
+        "classification": "typed_error",
+        "provider_status": 200,
+        "client_status": 500,
+        "client_artifact": {
+          "object_key": "container-client-artifacts/v1/operation-response-1/7/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "object_version": "client-artifact-version-1",
+          "client_response_artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 128,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_http_error_provider_status_200",
+      "operation_kind": "relay",
+      "http_status": 422,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "provider_http_error",
+        "classification": "http_error",
+        "provider_status": 200,
+        "client_status": 200,
+        "client_artifact": {
+          "object_key": "container-client-artifacts/v1/operation-response-1/7/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "object_version": "client-artifact-version-1",
+          "client_response_artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 128,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_client_artifact_key_for_other_operation",
+      "operation_kind": "relay",
+      "http_status": 422,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "provider_http_error",
+        "classification": "http_error",
+        "provider_status": 429,
+        "client_status": 429,
+        "client_artifact": {
+          "object_key": "container-client-artifacts/v1/operation-response-other/7/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "object_version": "client-artifact-version-1",
+          "client_response_artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 128,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_unknown_response_field",
+      "operation_kind": "health_probe",
+      "http_status": 200,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "trace_id": "trace-response-1",
+        "unexpected": true
+      }
+    },
+    {
+      "name": "reject_explicit_null_optional_result",
+      "operation_kind": "health_probe",
+      "http_status": 200,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "result": null,
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_text_plain_response",
+      "operation_kind": "health_probe",
+      "http_status": 200,
+      "content_type": "text/plain",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_response_operation_id_mismatch",
+      "operation_kind": "health_probe",
+      "http_status": 200,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-other",
+        "status": "completed",
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_response_protocol_version_mismatch",
+      "operation_kind": "health_probe",
+      "http_status": 200,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 2,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "trace_id": "trace-response-1"
+      }
+    },
+    {
+      "name": "reject_response_trace_id_mismatch",
+      "operation_kind": "health_probe",
+      "http_status": 200,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "completed",
+        "trace_id": "trace-response-other"
+      }
+    },
+    {
+      "name": "reject_client_artifact_owner_generation_mismatch",
+      "operation_kind": "relay",
+      "http_status": 422,
+      "content_type": "application/json",
+      "accepted": false,
+      "body": {
+        "protocol_version": 1,
+        "operation_id": "operation-response-1",
+        "status": "rejected",
+        "code": "provider_http_error",
+        "classification": "http_error",
+        "provider_status": 429,
+        "client_status": 429,
+        "client_artifact": {
+          "object_key": "container-client-artifacts/v1/operation-response-1/8/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "object_version": "client-artifact-version-1",
+          "client_response_artifact_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "size": 128,
+          "content_type": "application/json"
+        },
+        "trace_id": "trace-response-1"
+      }
+    }
+  ]
+}

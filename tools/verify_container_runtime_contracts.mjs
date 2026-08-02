@@ -32,6 +32,11 @@ const vectorsPath = path.join(
   "conformance",
   "operation-envelope-cases.json",
 );
+const responseVectorsPath = path.join(
+  contractRoot,
+  "conformance",
+  "operation-response-cases.json",
+);
 const packageName = "cinatoken.container.runtime.v1";
 
 const openApi = JSON.parse(fs.readFileSync(openApiPath, "utf8"));
@@ -40,6 +45,7 @@ const generatedTypesSource = fs.readFileSync(generatedTypesPath, "utf8");
 const controllerContractSource = fs.readFileSync(controllerContractPath, "utf8");
 const controllerProtocolSource = fs.readFileSync(controllerProtocolPath, "utf8");
 const vectors = JSON.parse(fs.readFileSync(vectorsPath, "utf8"));
+const responseVectors = JSON.parse(fs.readFileSync(responseVectorsPath, "utf8"));
 const { root: protoRoot } = protobuf.parse(protoSource, { keepCase: true });
 
 function invariant(condition, message) {
@@ -365,6 +371,139 @@ invariant(
   "explicit-null rejection vector is required",
 );
 
+assertExactSet(
+  Object.keys(responseVectors),
+  ["schema_version", "envelope", "cases"],
+  "response conformance vector fields",
+);
+invariant(
+  responseVectors.schema_version === 1,
+  "response conformance vector schema must be version 1",
+);
+invariant(
+  responseVectors.envelope !== null &&
+    typeof responseVectors.envelope === "object" &&
+    !Array.isArray(responseVectors.envelope),
+  "response conformance envelope must be an object",
+);
+assertExactSet(
+  Object.keys(responseVectors.envelope),
+  ["protocol_version", "operation_id", "owner_generation", "trace_id"],
+  "response conformance envelope fields",
+);
+invariant(
+  responseVectors.envelope.protocol_version === 1,
+  "response conformance envelope protocol_version must be 1",
+);
+for (const field of ["operation_id", "trace_id"]) {
+  invariant(
+    typeof responseVectors.envelope[field] === "string" &&
+      responseVectors.envelope[field].length > 0,
+    `response conformance envelope ${field} must be non-empty`,
+  );
+}
+invariant(
+  Number.isSafeInteger(responseVectors.envelope.owner_generation) &&
+    responseVectors.envelope.owner_generation > 0,
+  "response conformance envelope owner_generation must be a positive safe integer",
+);
+invariant(
+  Array.isArray(responseVectors.cases) && responseVectors.cases.length > 0,
+  "missing response conformance cases",
+);
+
+const responseCaseFields = [
+  "name",
+  "operation_kind",
+  "http_status",
+  "content_type",
+  "accepted",
+  "body",
+];
+for (const [index, entry] of responseVectors.cases.entries()) {
+  invariant(
+    entry !== null && typeof entry === "object" && !Array.isArray(entry),
+    `response conformance case ${index} must be an object`,
+  );
+  invariant(
+    typeof entry.accepted === "boolean",
+    `response conformance case ${index} accepted must be boolean`,
+  );
+  assertExactSet(
+    Object.keys(entry),
+    entry.accepted ? [...responseCaseFields, "expected_kind"] : responseCaseFields,
+    `response conformance case ${index} fields`,
+  );
+  invariant(
+    typeof entry.name === "string" && entry.name.length > 0,
+    `response conformance case ${index} name must be non-empty`,
+  );
+  invariant(
+    typeof entry.operation_kind === "string" && entry.operation_kind.length > 0,
+    `response conformance case ${entry.name} operation_kind must be non-empty`,
+  );
+  invariant(
+    Number.isSafeInteger(entry.http_status) &&
+      entry.http_status >= 100 &&
+      entry.http_status <= 599,
+    `response conformance case ${entry.name} HTTP status is out of range`,
+  );
+  invariant(
+    typeof entry.content_type === "string" && entry.content_type.length > 0,
+    `response conformance case ${entry.name} content_type must be non-empty`,
+  );
+  if (entry.accepted) {
+    invariant(
+      entry.expected_kind === "outcome" || entry.expected_kind === "protocol_error",
+      `response conformance case ${entry.name} expected_kind is invalid`,
+    );
+  }
+}
+
+invariant(
+  new Set(responseVectors.cases.map((entry) => entry.name)).size ===
+    responseVectors.cases.length,
+  "response conformance case names must be unique",
+);
+invariant(
+  responseVectors.cases.some(
+    (entry) => entry.accepted && entry.expected_kind === "outcome",
+  ),
+  "an accepted outcome response vector is required",
+);
+invariant(
+  responseVectors.cases.some(
+    (entry) => entry.accepted && entry.expected_kind === "protocol_error",
+  ),
+  "an accepted protocol-error response vector is required",
+);
+invariant(
+  responseVectors.cases.some((entry) => !entry.accepted),
+  "an invalid response vector is required",
+);
+assertExactSet(
+  [
+    ...new Set(
+      responseVectors.cases
+        .filter((entry) => entry.accepted && entry.expected_kind === "protocol_error")
+        .map((entry) => String(entry.http_status)),
+    ),
+  ],
+  ["400", "413", "415", "422", "426", "500"],
+  "protocol ErrorResponse HTTP statuses",
+);
+const outcomeStatuses = new Set(
+  responseVectors.cases
+    .filter((entry) => entry.accepted && entry.expected_kind === "outcome")
+    .map((entry) => entry.body?.status),
+);
+for (const status of ["completed", "rejected", "recovery_required"]) {
+  invariant(
+    outcomeStatuses.has(status),
+    `an accepted ${status} response vector is required`,
+  );
+}
+
 console.log(
   JSON.stringify({
     status: "ok",
@@ -372,6 +511,7 @@ console.log(
     protobuf_package: packageName,
     messages_checked: Object.keys(openApiFields).length,
     conformance_cases: vectors.cases.length,
+    response_conformance_cases: responseVectors.cases.length,
     protobuf_transport: "target-not-implemented",
   }),
 );

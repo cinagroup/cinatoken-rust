@@ -13,18 +13,18 @@ export const GRYPE_IMAGE_INDEX_DIGEST =
 export const GRYPE_IMAGE_AMD64_MANIFEST_DIGEST =
   "sha256:3d08845e24eba657b8ea9bd28344a5a4e9dcd772818062a6522bf30137928616";
 export const GRYPE_DB_ARCHIVE_URL =
-  "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-07-26T00:41:33Z_1785049634.tar.zst";
+  "https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-08-01T00:38:20Z_1785567576.tar.zst";
 export const GRYPE_DB_ARCHIVE_SHA256 =
-  "766bec0ec8f8f0a475b1cd2dfd8f2f6a2883346963600816ce89f323c96c70bc";
+  "b7e00d48b3c511334b89f25afe49363b01081f8c8812f881ed4b1b6ec557c434";
 export const GRYPE_DB_FILE_SHA256 =
-  "5e1fd5545a3c4188cb9542003fd3717753c60730c17dcecde14f45e7ee691b50";
-export const GRYPE_DB_FILE_BYTES = 1_475_883_008;
-export const GRYPE_DB_FILE_XXH64 = "d8a8cef5bc65efe7";
+  "159bfc86e58941e236991f2239d4c8dda19c2788ad549e870b64b97aa91d1c42";
+export const GRYPE_DB_FILE_BYTES = 1_489_354_752;
+export const GRYPE_DB_FILE_XXH64 = "d6e81302106b785c";
 export const GRYPE_DB_IMPORT_SHA256 =
-  "303e1b7f0192f60b76198859b1896504a2f857e56aa89deca93b43562d6c119c";
+  "b0ea5fc6315aa4bf5d6576dc58092b91fd9c3f49a88e38c981d2497c91f3a88e";
 export const GRYPE_DB_IMPORT_BYTES = 109;
 export const GRYPE_DB_SCHEMA_VERSION = "v6.1.9";
-export const GRYPE_DB_BUILT = "2026-07-26T07:07:14Z";
+export const GRYPE_DB_BUILT = "2026-08-01T06:59:36Z";
 export const GRYPE_SOURCE_REFERENCE =
   "sbom:/input/container-runtime.sbom.syft.json";
 export const GRYPE_SOURCE_TARGET =

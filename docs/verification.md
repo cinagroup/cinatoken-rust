@@ -13194,3 +13194,51 @@ write, provider call, financial action, or Go/VPS change occurred. Protobuf
 activation still requires staging compatibility evidence, mixed-version fault
 campaigns, canary metrics, and a rehearsed rollback. Production remains
 **NO-GO**.
+
+## 2026-08-02 Protobuf Runtime Image And CI Closure
+
+The first protobuf transport push exposed two release-image-only defects that
+the Windows host tests could not prove. The Rust build script's canonical
+descriptor was outside the minimal Docker context, and `prost-build`'s broad
+transitive ranges resolved to `indexmap` and `getrandom` releases whose MSRV was
+higher than the digest-pinned Rust 1.78 image. Neither defect changed runtime
+protocol behavior, but both correctly blocked the Linux and OCI release gates.
+
+The release input is now closed explicitly:
+
+- `.dockerignore` admits only the exact parent path to
+  `contracts/container-runtime/v1/generated/container-runtime.pb`; sibling
+  contract files remain outside the image context.
+- The runtime Dockerfile copies that descriptor to the path consumed by
+  `build.rs` before the locked release build.
+- Linux and OCI offline contract gates reject descriptor-context drift, and
+  provenance fingerprints both `.dockerignore` and the exact descriptor bytes.
+- Build-only resolver pins keep `indexmap` at 2.11.4 and `tempfile` at 3.24.0;
+  the resulting lock uses `hashbrown` 0.16.1 and `getrandom` 0.3.4. A Bun TOML
+  test validates both manifests and the structured Cargo lock instead of
+  relying on source-text matching.
+
+Final local evidence for the code at
+`7c08da0fcc481daf195158bed6dc428b4794123e`:
+
+| Gate | Result |
+| --- | --- |
+| `cargo test -p cinatoken-container-runtime --locked` with the local Windows GNU verification backend | passed; 18 unit tests, 14 HTTP tests, and doc tests |
+| Linux, OCI, and provenance focused Bun suites | passed; 27 tests and 204 assertions, including descriptor context, resolver pins, and provenance material coverage |
+| PowerShell: `$env:RUSTFLAGS = '--cfg getrandom_backend=\"windows_legacy\"'; npx.cmd --yes bun run check` | complete repository gate passed with exit 0 in 1,406 seconds after the locked target-only Cargo cache was available |
+
+GitHub Actions evidence for that exact code SHA:
+
+| Workflow | Result |
+| --- | --- |
+| Container contracts | [run 30752202398](https://github.com/cinagroup/cinatoken-rust/actions/runs/30752202398) passed |
+| Linux dual-image gate | [run 30752202361](https://github.com/cinagroup/cinatoken-rust/actions/runs/30752202361) passed; [artifact 8834814273](https://github.com/cinagroup/cinatoken-rust/actions/runs/30752202361/artifacts/8834814273), 6,675 bytes, `sha256:89c8f84966d0b0aea86e14aa9d9e16c406d862c6cf4366babc7118763f5dbb3f` |
+| Reproducible OCI, SBOM, and vulnerability gate | [run 30752202369](https://github.com/cinagroup/cinatoken-rust/actions/runs/30752202369) passed; [artifact 8834827079](https://github.com/cinagroup/cinatoken-rust/actions/runs/30752202369/artifacts/8834827079), 146,317,175 bytes, `sha256:e3e5064609e2de0e204b1084f6ff89b94109f10da3497c5f404b67798dac5c5e` |
+| Ring transition Linux | [run 30752202384](https://github.com/cinagroup/cinatoken-rust/actions/runs/30752202384) passed |
+| Signed provenance | [run 30752320971](https://github.com/cinagroup/cinatoken-rust/actions/runs/30752320971) passed; [artifact 8834833448](https://github.com/cinagroup/cinatoken-rust/actions/runs/30752320971/artifacts/8834833448), 24,010 bytes, `sha256:84fb909cee675d2f615c979c5c0d667f3de535208c1c71ee6392698415201665` |
+
+No deployment, registry publication, Cloudflare mutation, route, traffic, DNS,
+D1 mutation, secret write, provider call, financial action, or Go/VPS change
+occurred. The protobuf transport remains default-off in every tracked
+environment. Remote mixed-version staging evidence and explicit activation
+approval are still required, so production remains **NO-GO**.

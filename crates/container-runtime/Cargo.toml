@@ -22,9 +22,11 @@ sha2.workspace = true
 tokio.workspace = true
 
 [build-dependencies]
+indexmap-msrv-pin.workspace = true
 prost.workspace = true
 prost-build.workspace = true
 prost-types.workspace = true
+tempfile-msrv-pin.workspace = true
 
 [dev-dependencies]
 tower.workspace = true

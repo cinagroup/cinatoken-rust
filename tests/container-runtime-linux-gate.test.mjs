@@ -31,6 +31,17 @@ const dockerfile = await Bun.file(
 const dockerignore = await Bun.file(
   new URL("../.dockerignore", import.meta.url),
 ).text();
+const cargoLock = Bun.TOML.parse(
+  await Bun.file(new URL("../Cargo.lock", import.meta.url)).text(),
+);
+const workspaceManifest = Bun.TOML.parse(
+  await Bun.file(new URL("../Cargo.toml", import.meta.url)).text(),
+);
+const runtimeManifest = Bun.TOML.parse(
+  await Bun.file(
+    new URL("../crates/container-runtime/Cargo.toml", import.meta.url),
+  ).text(),
+);
 const workflow = await Bun.file(
   new URL("../.github/workflows/container-runtime-linux.yml", import.meta.url),
 ).text();
@@ -147,6 +158,27 @@ describe("linux container release gate", () => {
       "--reproducible-image",
     );
     expect(packageJson.scripts.check).not.toContain("check:container-runtime:linux &&");
+  });
+
+  test("pins prost-build transitive dependencies to the Rust 1.78 image MSRV", () => {
+    expect(workspaceManifest.workspace.dependencies["indexmap-msrv-pin"]).toEqual({
+      package: "indexmap",
+      version: "=2.11.4",
+    });
+    expect(workspaceManifest.workspace.dependencies["tempfile-msrv-pin"]).toEqual({
+      package: "tempfile",
+      version: "=3.24.0",
+    });
+    expect(runtimeManifest["build-dependencies"]["indexmap-msrv-pin"]).toEqual({
+      workspace: true,
+    });
+    expect(runtimeManifest["build-dependencies"]["tempfile-msrv-pin"]).toEqual({
+      workspace: true,
+    });
+    expect(lockedVersions("indexmap")).toEqual(["2.11.4"]);
+    expect(lockedVersions("tempfile")).toEqual(["3.24.0"]);
+    expect(lockedVersions("getrandom")).toEqual(["0.2.17", "0.3.4"]);
+    expect(lockedVersions("hashbrown")).toEqual(["0.16.1"]);
   });
 
   test("builds owner-fenced operation envelopes without remote authority", () => {
@@ -350,6 +382,13 @@ describe("linux container release gate", () => {
     expect(classifyRuntimeFileDescriptorTarget("/host/secret")).toBe("unexpected");
   });
 });
+
+function lockedVersions(name) {
+  return cargoLock.package
+    .filter((entry) => entry.name === name)
+    .map((entry) => entry.version)
+    .sort();
+}
 
 function imageInspection(identity) {
   return {

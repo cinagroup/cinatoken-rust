@@ -13339,3 +13339,26 @@ collected, and no Cloudflare credential or API was used. No deployment, route,
 DNS, provider request, billing action, traffic change, D1 mutation, or Go/VPS
 change occurred. All execution and Protobuf gates remain false; production
 remains **NO-GO**.
+
+### GitHub code-SHA evidence
+
+GitHub Actions completed for the exact code SHA
+`9aa701bd08c2b578d7dbcbbfc277b4ec106f486a`:
+
+| Workflow | Result |
+| --- | --- |
+| Container contracts | [run 30791667401](https://github.com/cinagroup/cinatoken-rust/actions/runs/30791667401) passed |
+| Linux dual-image gate | [run 30791667417](https://github.com/cinagroup/cinatoken-rust/actions/runs/30791667417) passed |
+| Reproducible OCI, SBOM, and vulnerability gate | [run 30791667400](https://github.com/cinagroup/cinatoken-rust/actions/runs/30791667400) passed |
+| Signed provenance | [run 30791828938](https://github.com/cinagroup/cinatoken-rust/actions/runs/30791828938) failed at `Keyless-sign exact provenance statement` |
+
+The failed provenance job had already checked out the exact source, downloaded
+and revalidated the source artifact, generated the canonical SLSA statement,
+installed Cosign, and verified the Cosign binary identity. Signing failed before
+signer-policy, DSSE, transparency, and timestamp verification could run. The
+failure artifact is 7,526 bytes with
+`sha256:89f5f6f63c4f789248ac7408dc80c7ea11785bd78e3fd15f580bf8a706a1fb0c`.
+Unauthenticated GitHub API access does not expose the job log, so no external
+service or root cause is inferred. This run is retained as failed evidence and
+must never be counted as provenance acceptance; a later exact source subject
+must complete the entire provenance workflow successfully.

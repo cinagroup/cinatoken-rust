@@ -13289,3 +13289,53 @@ false. No remote Cloudflare command, mutation, deployment, provider call,
 billing action, traffic switch, or Go/VPS change occurred. Isolated staging
 compatibility and fault campaigns remain open, and production remains
 **NO-GO**.
+
+## 2026-08-03 JSON-Only Runtime Compatibility Campaign Contract
+
+Added a default-off, credential-free staging campaign planner and offline
+evidence verifier:
+
+- `tools/container_runtime_json_compatibility_campaign.mjs` owns the canonical
+  plan/evidence contracts, strict field validation, four N/N-1 topologies,
+  digest binding, and health-probe compatibility projection;
+- `tools/plan_container_runtime_json_compatibility_campaign.mjs` validates the
+  tracked staging Controller and emits a dry-run-only plan;
+- `tools/verify_container_runtime_json_compatibility_evidence.mjs` rejects
+  synthetic evidence in normal mode and verifies the ordered remote packet;
+  and
+- `tests/container-runtime-json-compatibility-campaign.test.mjs` covers the
+  projection and fail-closed plan/evidence matrix.
+
+The projection test proves that fresh operation/trace/lease/deadline identities
+produce different raw wire SHA-256 values but the same normalized compatibility
+digest. A changed inline input digest changes the compatibility digest, and a
+response operation mismatch is rejected. The wider evidence tests cover private
+Controller exposure, exact sampling, disabled Protobuf gates, distinct runtime
+identities, canonical plan tamper detection, four ordered topologies, every
+shard/build identity, synthetic-source rejection, missing/reordered shards,
+raw replay-digest rejection, Protobuf/fallback/recovery/telemetry failures,
+compatibility drift, all protected mutation classes, Controller deployment
+drift, phase overlap, rollback non-convergence, and aggregate mismatch.
+
+Current focused evidence:
+
+| Gate | Result |
+| --- | --- |
+| `npx.cmd --yes bun test --path-ignore-patterns="target/**" tests/container-runtime-json-compatibility-campaign.test.mjs` | passed; 15 tests, 51 assertions |
+| `npx.cmd --yes bun run check:container-runtime:json-compatibility-campaign` | passed; focused tests plus planner and verifier self-tests |
+| planner self-test | passed; 4 phases, 8 shards, private Service Binding, both Protobuf gates false, `fixtureOnly: true` |
+| verifier self-test | passed; 32 synthetic observations, zero Protobuf/fallback/provider/billing/production/public-probe counts, `fixtureOnly: true` |
+| PowerShell: `$env:RUSTFLAGS = '--cfg getrandom_backend="windows_legacy"'`; `npx.cmd --yes bun run check` | passed with exit 0 in 1,211.9 seconds; complete Worker/DO, Container supply-chain, WFP, Realtime, D1, frontend, Rust workspace, and wasm32 gate |
+
+An intervening root-gate attempt exited during the existing Container contract
+chain with a Windows libuv `UV_HANDLE_CLOSING` assertion before tests ran. The
+same contract immediately passed in isolation with 43 tests and 81 assertions,
+and the subsequent complete 1,211.9-second root run passed. The interrupted run
+is not counted as successful evidence.
+
+These are local contract results only. No private remote probe executor or
+signed source-manifest collector exists yet, no `remote-staging` packet was
+collected, and no Cloudflare credential or API was used. No deployment, route,
+DNS, provider request, billing action, traffic change, D1 mutation, or Go/VPS
+change occurred. All execution and Protobuf gates remain false; production
+remains **NO-GO**.

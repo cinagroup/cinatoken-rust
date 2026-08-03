@@ -27428,3 +27428,101 @@ No Cloudflare API, secret, resource, deployment, route, DNS, D1 row, provider,
 billing, traffic, or Go/VPS state was mutated. All transport and execution
 gates remain false, Go/VPS remains authoritative, and production remains
 **NO-GO**.
+
+## 2026-08-03 JSON-Only Runtime N/N-1 Campaign Contract
+
+The first remote activation prerequisite after transport telemetry is now
+represented by executable offline tooling. This checkpoint does not publish an
+image or call Cloudflare. It defines the exact staging plan and evidence packet
+that a later authorized private executor must satisfy before any Protobuf gate
+can be considered.
+
+### Architecture and access boundary
+
+The four-layer architecture is unchanged: the Rust edge Worker remains
+stateless ingress, TypeScript Durable Objects retain shard/lease/journal/retry
+and recovery authority, Rust Linux Containers remain replaceable compute, and
+KV/D1/R2 retain durable data. The staging Controller has `workers_dev: false`,
+`preview_urls: false`, and no public route. A campaign executor must therefore
+reach it through an authenticated private Service Binding. Creating a public
+URL for convenience is a release blocker, not a workaround.
+
+`buildJsonCompatibilityCampaignPlan` reuses the Controller deployment preflight
+and fails unless:
+
+- environment and service identity are exactly staging;
+- private exposure controls remain false and sampling is exactly 1;
+- every action, execution, provider, storage, terminal, recovery, and Protobuf
+  gate remains false;
+- N and N-1 each have distinct runtime build SHA-256 and OCI image digest;
+- ring generation/shard count are valid and at least two shards exist; and
+- the mixed-phase candidate shard is inside that exact ring.
+
+The canonical plan is digest-bound and explicitly records zero credentials,
+network requests, writes, deployment authorization/mutation, activation-gate
+authorization, remote evidence, and public URL permission.
+
+### Four-phase compatibility matrix
+
+| Phase | Runtime topology | Required result |
+| --- | --- | --- |
+| baseline N-1 | all shards N-1 | readiness build ID and one completed JSON health probe per shard |
+| mixed N/N-1 | approved shard N; all others N-1 | exact topology, no fallback or recovery |
+| candidate N | all shards N | same normalized JSON contract as baseline |
+| rollback N-1 | all shards N-1 | same contract plus converged operation ledger |
+
+Each remote probe needs a new operation and trace identity; otherwise the
+Durable Object ledger could return an earlier terminal result without reaching
+the newly selected runtime. Consequently the packet stores raw request/response
+SHA-256 for artifact binding but does not demand raw equality. The checked-in
+projection function parses the exact health-probe envelope and completed
+response, validates their closed field sets, then replaces only:
+
+- request operation ID, trace ID, owner generation, owner lease expiry,
+  execution deadline, provider-operation ID, and admission digest; and
+- response operation ID and trace ID.
+
+Inline input SHA/media/size, protocol, operation kind, shard contract, ring,
+shard index/name, response protocol/status, and unexpected fields remain part
+of the projection. Any semantic change therefore changes the compatibility
+digest or fails parsing. Every phase/shard projection must equal its N-1
+baseline counterpart.
+
+### Closed evidence and fail-closed verification
+
+The version-1 evidence contract requires exact fields and ordered phases. It
+binds the plan/campaign/source-manifest digests, Controller config/version and
+deployment set, N/N-1 build/image identities, phase deployment readback,
+per-shard readiness, raw and normalized probe digests, transport telemetry,
+zero-mutation snapshots, timestamps, and aggregate totals. It rejects:
+
+- a missing, duplicate, reordered, or wrong-build shard;
+- a reused raw request or response digest that could hide ledger replay;
+- Controller deployment drift or overlapping phases;
+- non-JSON media, Protobuf selection, fallback, recovery, or telemetry gaps;
+- normalized request/response drift;
+- any provider request, billing mutation, production request, public probe, or
+  before/after snapshot drift; and
+- rollback without ledger convergence.
+
+The normal verifier accepts only `evidenceSource: remote-staging`. Synthetic
+self-test packets require an explicit in-process override and every CLI self
+test prints `fixtureOnly: true`, preventing local contract tests from being
+reported as live proof.
+
+### Current readiness and remaining work
+
+The focused gate currently passes 15 tests with 51 assertions plus planner and
+verifier self-tests. Both CLIs report zero network, credentials, writes, and
+deployment mutation. The contract is in the root `bun run check` chain, whose
+complete Worker/DO, Container supply-chain, WFP, Realtime, D1, frontend, Rust
+workspace, and wasm32 gate passes with exit 0 in 1,211.9 seconds.
+
+This checkpoint still lacks the authenticated private probe executor, bounded
+remote source-manifest collector, source authenticity/signature verification,
+authorized Cloudflare image/version publication, and actual staging packet.
+Those are the next implementation slices. The subsequent no-provider Protobuf,
+malformed/body-limit/deadline/restart/response-loss and gate/rollback campaigns
+remain separate. No Cloudflare resource, API token, route, DNS, D1 row,
+provider, billing, traffic, or Go/VPS state changed. Production remains
+**NO-GO**.

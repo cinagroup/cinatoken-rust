@@ -5422,3 +5422,51 @@ assembly, and an audited staging-only gate/rollback rehearsal. No remote
 Cloudflare mutation, deployment, provider request, billing mutation, or
 traffic change occurred. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## JSON-Only Runtime N/N-1 Campaign Contract
+
+The next activation prerequisite is now executable as a credential-free,
+offline contract instead of remaining only prose. The new planner validates the
+tracked staging Controller through the existing deploy preflight, requires
+private Service Binding access, exact observability sampling 1, every action
+gate false, both Protobuf gates false, distinct N/N-1 build and OCI identities,
+and a bounded candidate shard. It emits a canonical SHA-256-bound four-phase
+plan: all N-1, one N mixed with N-1, all N, then rollback to all N-1.
+
+The evidence verifier requires one readiness/build-identity and no-provider
+JSON `health_probe` observation for every configured shard in every phase. Raw
+wire SHA-256 values bind the retained artifacts and must be unique per shard
+across phases. A checked-in projection
+algorithm removes only volatile operation, trace, owner lease/deadline,
+provider-operation, and admission identities; all protocol, input, shard/ring,
+and response semantics remain covered. These projection digests, rather than
+the raw per-operation bytes, must match the N-1 baseline because unique
+operation identities are required to avoid Durable Object replay masking the
+runtime under test.
+
+The closed evidence packet also requires one stable Controller deployment,
+phase-specific Container deployment readback, exact JSON-only telemetry counts,
+zero Protobuf attempt/fallback/recovery, unchanged provider/billing/production
+snapshot digests, zero protected mutation counters, all shards observed, and
+rollback ledger convergence. Normal verification rejects synthetic evidence;
+the self-test path is visibly `fixtureOnly`.
+
+Repository commands are:
+
+```text
+bun run check:container-runtime:json-compatibility-campaign
+bun run plan:container-runtime:json-compatibility-campaign -- <exact identities>
+bun run verify:container-runtime:json-compatibility-campaign -- \
+  --plan <approved-plan.json> --evidence <remote-evidence.json> --json
+```
+
+The tooling performs no network request, credential read, file write, remote
+mutation, deployment, provider call, billing action, or traffic change. The
+complete repository gate passes with exit 0 in 1,211.9 seconds, including the
+Worker/DO, Container supply-chain, WFP, Realtime, D1, frontend, Rust workspace,
+and wasm32 checks. The authenticated private staging probe executor and signed
+source-manifest
+collector remain unimplemented; until those exist and produce approved remote
+evidence, the JSON compatibility campaign remains open. Protobuf and all
+execution gates remain false, Go/VPS remains authoritative, and production
+remains **NO-GO**.

@@ -2514,3 +2514,103 @@ Abort on a missing signal, duplicate call/effect, automatic refund/resend,
 terminal overwrite, mutable evidence, body/secret persistence, unknown owner,
 unbounded backlog, or failed rollback. Local Workerd is prerequisite evidence,
 not a waiver for this remote matrix. Production remains **NO-GO**.
+
+## Container Runtime JSON-Only N/N-1 Compatibility Campaign
+
+This campaign is the mandatory staging step between publishing a candidate
+runtime image and attempting any Protobuf transport activation. It does not
+authorize a deployment by itself. The Controller remains private, all action
+and Protobuf gates remain false, Go/VPS remains authoritative, and no public
+Controller or Container URL may be introduced for probing.
+
+### Offline plan
+
+Generate the immutable plan only after the candidate and baseline OCI digests,
+runtime build IDs, exact Controller version ID, and campaign authorization
+digest are known:
+
+```text
+bun tools/plan_container_runtime_json_compatibility_campaign.mjs \
+  --campaign-id-sha256 <authorization-sha256> \
+  --controller-version-id <staging-controller-version-id> \
+  --runtime-n-build-id <candidate-runtime-build-sha256> \
+  --runtime-n-image-digest <sha256:candidate-image-digest> \
+  --runtime-n-minus-one-build-id <baseline-runtime-build-sha256> \
+  --runtime-n-minus-one-image-digest <sha256:baseline-image-digest> \
+  --candidate-shard-index <0..shard-count-minus-one> \
+  --json
+```
+
+The planner reads only the staging Controller config and reuses the deployment
+preflight validator. It fails unless `workers_dev` and preview URLs are false,
+observability sampling is exactly 1, every action gate is false, both Protobuf
+gates are false, runtime identities are distinct, and the candidate shard is
+in the configured ring. It performs no credential read, network request, file
+write, deployment, gate change, provider call, or traffic mutation. Redirecting
+stdout into an approved plan file is an operator-controlled action outside the
+planner.
+
+### Ordered remote phases
+
+Run exactly these four non-overlapping phases under one Controller version and
+one stable Controller deployment set:
+
+1. `baseline-n-minus-one`: every shard resolves to the N-1 build.
+2. `mixed-n-n-minus-one`: the approved candidate shard resolves to N and every
+   other shard remains N-1.
+3. `candidate-n`: every shard resolves to N.
+4. `rollback-n-minus-one`: every shard resolves to N-1 again and the operation
+   ledger converges.
+
+For every shard in every phase, archive a bounded deployment readback, JSON
+`/readyz` result with exact runtime build identity, and one no-provider
+`health_probe` operation through an authenticated private Service Binding
+executor. The operation must have a unique operation/trace identity so the
+Durable Object cannot satisfy a later phase from an earlier ledger result.
+Public URLs, provider credentials, customer traffic, and billing mutations are
+forbidden.
+
+The evidence record retains SHA-256 of the raw request and response bytes. For
+cross-version comparison it also computes the checked-in normalized projection
+from `createJsonHealthProbeDigestRecord`: only operation ID, trace ID, owner
+generation, lease/deadline timestamps, provider-operation ID, and admission
+digest are replaced. Protocol, operation kind, inline input digest and media,
+shard/ring identity, response status, and all other fields remain covered. Raw
+digests may differ because each phase must execute a fresh operation; normalized
+request and response digests must equal the N-1 baseline for the same shard.
+Raw request and response digests must each remain unique for that shard across
+all four phases, so replay cannot masquerade as a fresh runtime observation.
+
+Each phase must additionally prove:
+
+- exactly one telemetry event per shard, selected/effective transport JSON,
+  one attempt, zero Protobuf attempts, zero legacy fallback, and zero recovery;
+- stable Controller and Container deployment readback over the observation
+  window;
+- equal before/after provider, billing, and production-traffic snapshot
+  digests, with zero provider requests, billing mutations, production requests,
+  and public probes; and
+- ledger convergence before advancing, including after rollback.
+
+Verify the completed packet offline:
+
+```text
+bun tools/verify_container_runtime_json_compatibility_evidence.mjs \
+  --plan <approved-plan.json> \
+  --evidence <remote-staging-evidence.json> \
+  --json
+```
+
+Normal verification accepts only `remote-staging` evidence. Synthetic
+`--self-test` evidence is explicitly marked and rejected by normal mode. The
+current repository provides the planner, projection, closed evidence contract,
+and offline verifier, but not yet the authenticated private remote probe
+executor or signed source-manifest collector. Therefore local success is not
+remote staging evidence and does not authorize image publication, rollout,
+Protobuf gates, production traffic, or DNS changes.
+
+Abort immediately on Controller version drift, public reachability, a missing
+or duplicate shard, wrong build identity, projection drift, any Protobuf
+attempt/fallback, telemetry undercount, recovery, provider/billing/production
+mutation, phase overlap, unstable deployment readback, or rollback ledger
+non-convergence. Production remains **NO-GO**.

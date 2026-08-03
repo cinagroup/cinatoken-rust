@@ -27417,11 +27417,12 @@ deadline/oversize/network/result recovery, absence of sensitive labels, the
 two-attempt ceiling, and logging failure isolation.
 
 This closes activation-plan item 4 for local and isolated-staging
-instrumentation. It does not provide remote evidence. Items 2, 3, 5, 6, and 7
-remain: publish the new runtime behind a JSON-only Controller, prove N/N-1 JSON
-compatibility, run no-provider and fault campaigns, archive build/digest/
-zero-mutation/SLO/cost evidence, rehearse staging rollback, and satisfy the
-wider provider, financial, WORM/S3, lifecycle, security, and approval gates.
+instrumentation. It does not provide remote Cloudflare staging or runtime
+campaign evidence. Items 2, 3, 5, 6, and 7 remain: publish the new runtime
+behind a JSON-only Controller, prove N/N-1 JSON compatibility, run no-provider
+and fault campaigns, archive build/digest/zero-mutation/SLO/cost evidence,
+rehearse staging rollback, and satisfy the wider provider, financial,
+WORM/S3, lifecycle, security, and approval gates.
 
 No Cloudflare API, secret, resource, deployment, route, DNS, D1 row, provider,
 billing, traffic, or Go/VPS state was mutated. All transport and execution

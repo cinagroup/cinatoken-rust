@@ -13272,6 +13272,16 @@ ceiling, and a throwing console sink. Existing transport tests continue to
 prove that only the exact valid JSON HTTP 415 `unsupported_media_type` result
 permits one retry and that every ambiguous failure remains no-retry.
 
+GitHub Actions also passed for the exact pushed code SHA
+`b24fd676ed42330c95b8494fac0be99b6ab4a74f`:
+
+| Workflow | Result |
+| --- | --- |
+| Container contracts | [run 30779104678](https://github.com/cinagroup/cinatoken-rust/actions/runs/30779104678) passed |
+| Linux dual-image gate | [run 30779104663](https://github.com/cinagroup/cinatoken-rust/actions/runs/30779104663) passed; [artifact 8843060288](https://github.com/cinagroup/cinatoken-rust/actions/runs/30779104663/artifacts/8843060288), 6,671 bytes, `sha256:30c4b47a862d0c51da02306a08a19f702b3d7f2206f890c75b6b63d6e0208b99` |
+| Reproducible OCI, SBOM, and vulnerability gate | [run 30779104655](https://github.com/cinagroup/cinatoken-rust/actions/runs/30779104655) passed; [artifact 8843068891](https://github.com/cinagroup/cinatoken-rust/actions/runs/30779104655/artifacts/8843068891), 146,317,175 bytes, `sha256:c2dbd0e272f28943c829aeff40af06c34b8088294154156fa6eb81dee1118247` |
+| Signed provenance | [run 30779217912](https://github.com/cinagroup/cinatoken-rust/actions/runs/30779217912) passed; [artifact 8843076374](https://github.com/cinagroup/cinatoken-rust/actions/runs/30779217912/artifacts/8843076374), 23,975 bytes, `sha256:694f4ebdfd7afcbab3a49afabae0282530fb03b6ac4b35678fd2e700eb7962c9` |
+
 Local and staging observability sampling remains 1. Production sampling
 remains 0.1, so production logs are not claimed as exact aggregate evidence.
 Both Protobuf gates and every execution/provider/storage/terminal gate remain

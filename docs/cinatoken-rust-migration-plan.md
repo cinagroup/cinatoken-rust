@@ -27350,3 +27350,80 @@ provider-client, storage, response, terminal, or recovery gates.
 No Cloudflare resource, route, secret, D1 row, deployment, traffic, DNS,
 provider request, billing state, or Go/VPS state changed in this checkpoint.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-08-03 Bounded Protobuf Transport Telemetry Checkpoint
+
+The activation-plan telemetry prerequisite is now implemented locally at the
+TypeScript Durable Object boundary. This preserves the source architecture:
+cinaVibeSDK's structured Worker logging model is retained, while the container
+transport event uses a stricter closed schema instead of a general
+`Record<string, unknown>` context. The Rust Linux Container remains unaware of
+Cloudflare log policy and remains replaceable compute.
+
+### Closed event contract
+
+Each attempted operation emits at most one
+`relay_container_operation_transport_v1` summary. Its cardinality is bounded
+by construction:
+
+| Field group | Allowed evidence |
+| --- | --- |
+| Selection | selected/effective `json`, `protobuf`, or `none`; attempt count `0..2`; exact fallback count `0..1` |
+| Attempt bytes | `unknown`, `0`, `1..1024`, `1025..4096`, `4097..16384`, `16385..65536`, or over-limit |
+| Attempt latency | ten fixed buckets from `<10 ms` through `>=10 s` |
+| Response | JSON, Protobuf, missing, or other media; no exact media string; HTTP status class only |
+| Result | fixed outcome/protocol/rejection/oversize/deadline/transport classes |
+| Recovery | one boolean plus a fixed terminal outcome class |
+
+The type does not accept operation payloads, operation or trace identifiers,
+tenant/channel/model/provider values, credentials, URLs, error messages, raw
+status bodies, arbitrary tags, or caller-provided maps. Failure classifiers
+consume an error only to return an allowlisted class; they never serialize its
+name, message, stack, or properties. The emitter catches its own failures, so
+logging cannot add a retry, suppress recovery, or alter ledger state.
+
+### Transport and recovery invariants
+
+- JSON remains selected unless both existing Protobuf gates are exactly true.
+- The transport helper remains the sole owner of the one JSON fallback and
+  still requires the exact old-runtime JSON 415 `unsupported_media_type`
+  proof. Telemetry only observes the resulting two-attempt sequence.
+- A Protobuf response rejection, media mismatch, timeout, oversized response,
+  connection failure, or result-manifest mismatch remains no-retry and enters
+  the existing `container_execution_ambiguous` recovery path.
+- Deterministic protocol errors and completed/rejected runtime outcomes retain
+  their existing ledger finalization paths.
+- Byte and latency values are reduced to buckets before entering the event;
+  no request-scoped mutable state is stored at module scope.
+
+Local and staging Controller configs retain observability sampling rate 1,
+which permits exact per-campaign aggregation of the event's `0 | 1` fallback
+count. Production currently retains sampling rate 0.1. That sampled stream is
+useful for trend detection but cannot prove an exact production count; a
+future production proposal must include an audited unsampled counter/evidence
+mechanism or an explicitly approved full-sampling window before relying on
+exact aggregate fallback or recovery rates.
+
+### Verification and remaining activation work
+
+The complete Controller gate passes with generated Worker types, TypeScript,
+Wrangler dry-run, 297 Bun tests and 1,994 assertions, 192 portable Vitest tests,
+and 54 Workerd runtime tests. The complete repository gate passes with exit 0
+in 1,250.6 seconds, covering the wider Worker/DO, container supply-chain, WFP,
+Realtime, D1, frontend, Rust workspace, and wasm32 checks. The new tests lock
+field inventory, byte/latency buckets, exact fallback eligibility,
+response-media mismatch, malformed and canonical Protobuf rejection class,
+deadline/oversize/network/result recovery, absence of sensitive labels, the
+two-attempt ceiling, and logging failure isolation.
+
+This closes activation-plan item 4 for local and isolated-staging
+instrumentation. It does not provide remote evidence. Items 2, 3, 5, 6, and 7
+remain: publish the new runtime behind a JSON-only Controller, prove N/N-1 JSON
+compatibility, run no-provider and fault campaigns, archive build/digest/
+zero-mutation/SLO/cost evidence, rehearse staging rollback, and satisfy the
+wider provider, financial, WORM/S3, lifecycle, security, and approval gates.
+
+No Cloudflare API, secret, resource, deployment, route, DNS, D1 row, provider,
+billing, traffic, or Go/VPS state was mutated. All transport and execution
+gates remain false, Go/VPS remains authoritative, and production remains
+**NO-GO**.

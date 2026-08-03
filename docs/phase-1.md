@@ -5374,3 +5374,51 @@ Next production-grade work:
 
 No remote Cloudflare mutation or deployment was performed. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-08-03 Bounded Container Transport Telemetry Increment
+
+The Controller now emits one structured, versioned transport summary after an
+operation reaches a deterministic container result or the existing durable
+recovery boundary. The event is generated inside the TypeScript Durable Object;
+it does not move scheduling, fallback, ledger, deadline, or recovery authority
+into the Rust runtime.
+
+The `relay_container_operation_transport_v1` schema is deliberately closed:
+
+- selected and effective transport are `json`, `protobuf`, or the bounded
+  no-attempt value;
+- at most two sanitized attempt records carry only ordinal, transport,
+  request/response byte buckets, latency bucket, response-media class,
+  HTTP status class, and result class;
+- exact old-runtime fallback is a per-operation `0 | 1` count and can only be
+  set for the selected Protobuf -> valid protocol error -> JSON sequence;
+- terminal classes distinguish completed, rejected, runtime recovery,
+  protocol error, response-media mismatch, response rejection, body limit,
+  deadline exhaustion, result mismatch, transport failure, and internal
+  failure; and
+- payloads, operation/trace IDs, tenant/channel/model/provider identifiers,
+  credentials, URLs, raw status bodies, error messages, and arbitrary labels
+  are absent from both the event type and serializer input.
+
+Logging is synchronous and best-effort. Serialization or console failure is
+swallowed so observability cannot change dispatch, the exact legacy fallback,
+or recovery semantics. JSON remains the default transport and both Protobuf
+gates remain false in local, staging, production, generated types, config
+tests, and deployment preflight.
+
+Current local evidence passes 297 Controller Bun tests with 1,994 assertions,
+192 portable Vitest tests, 54 Workerd runtime tests, generated Worker type
+drift, TypeScript compilation, and Wrangler dry-run. The complete repository
+gate also passes with exit 0 in 1,250.6 seconds. Local and staging
+Controller logs use sampling rate 1, so an isolated staging campaign can count
+each emitted fallback event. Production remains at sampling rate 0.1; sampled
+production logs must not be represented as an exact aggregate count or used as
+activation evidence without a separately approved unsampled mechanism.
+
+Next production-grade work is the JSON-only N/N-1 isolated staging publication
+and compatibility campaign, followed by no-provider Protobuf probes,
+malformed/body-limit/deadline/restart/response-loss campaigns, evidence packet
+assembly, and an audited staging-only gate/rollback rehearsal. No remote
+Cloudflare mutation, deployment, provider request, billing mutation, or
+traffic change occurred. Go/VPS remains authoritative and production remains
+**NO-GO**.

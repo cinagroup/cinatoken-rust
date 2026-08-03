@@ -13242,3 +13242,40 @@ D1 mutation, secret write, provider call, financial action, or Go/VPS change
 occurred. The protobuf transport remains default-off in every tracked
 environment. Remote mixed-version staging evidence and explicit activation
 approval are still required, so production remains **NO-GO**.
+
+## 2026-08-03 Bounded Container Transport Telemetry Verification
+
+The TypeScript Durable Object now emits one closed-schema structured event for
+the Container operation transport boundary. Every request/response byte count
+and latency is bucketed before serialization. The event includes no payload,
+credential, tenant, operation, trace, model, provider, URL, raw body, error
+message, stack, or arbitrary label surface. Its attempt array is capped at two,
+and logging failure is isolated from dispatch and recovery.
+
+Verified current-worktree evidence:
+
+| Gate | Result |
+| --- | --- |
+| focused Bun transport suites | passed; 15 tests and 34 assertions across telemetry and unchanged fallback semantics |
+| focused portable Vitest telemetry suite | passed; 8 tests |
+| `npx.cmd --yes bun x tsc -p services/container-controller/tsconfig.json --noEmit` | passed |
+| `npx.cmd --yes bun run check:container-controller` | passed in 41.4 seconds; generated types current, TypeScript and Wrangler dry-run passed, 297 Bun tests with 1,994 assertions, 192 portable Vitest tests, and 54 Workerd runtime tests |
+| PowerShell: `$env:RUSTFLAGS = '--cfg getrandom_backend="windows_legacy"'`; `npx.cmd --yes bun run check` | complete repository gate passed with exit 0 in 1,250.6 seconds, including Worker/DO, container supply-chain, WFP, Realtime, D1, frontend, Rust workspace, and wasm32 gates |
+| `git diff --check` | passed before this documentation append |
+
+The tests cover fixed summary/attempt inventories, exact Protobuf-to-JSON
+legacy fallback eligibility, bounded byte/latency/status/media values,
+malformed or noncanonical Protobuf rejection, deadline exhaustion, oversized
+responses, network failure, result mismatch, response-media mismatch,
+recovery-required classification, sensitive-text exclusion, the two-attempt
+ceiling, and a throwing console sink. Existing transport tests continue to
+prove that only the exact valid JSON HTTP 415 `unsupported_media_type` result
+permits one retry and that every ambiguous failure remains no-retry.
+
+Local and staging observability sampling remains 1. Production sampling
+remains 0.1, so production logs are not claimed as exact aggregate evidence.
+Both Protobuf gates and every execution/provider/storage/terminal gate remain
+false. No remote Cloudflare command, mutation, deployment, provider call,
+billing action, traffic switch, or Go/VPS change occurred. Isolated staging
+compatibility and fault campaigns remain open, and production remains
+**NO-GO**.

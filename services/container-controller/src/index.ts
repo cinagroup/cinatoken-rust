@@ -68,6 +68,14 @@ import {
   responseContentType,
   type ContainerOperationTransport,
 } from "./container_operation_transport";
+import {
+  classifyContainerOperationRecoveryOutcome,
+  classifyContainerOperationTransportFailure,
+  createContainerOperationTransportAttempt,
+  emitContainerOperationTransportTelemetry,
+  type ContainerOperationTransportAttempt,
+  type ContainerOperationTransportOutcome,
+} from "./container_operation_telemetry";
 import type { ReadinessResponse } from "./container_runtime_contract";
 import { controllerStatusV1Response } from "./controller_status";
 import {
@@ -1269,49 +1277,112 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           : operationOutcomeResponse(outcome);
       }
       const operationDeadlineAtMs = verified.envelope.execution_deadline_at * 1000;
+      const protobufTransportEnabled = containerProtobufTransportEnabled(this.env);
+      const selectedTransport: ContainerOperationTransport = protobufTransportEnabled
+        ? "protobuf"
+        : "json";
+      const transportStartedAtMs = Date.now();
+      const transportAttempts: ContainerOperationTransportAttempt[] = [];
+      const emitTransportTelemetry = (
+        outcome: ContainerOperationTransportOutcome,
+        recoveryRequired: boolean,
+      ) => {
+        emitContainerOperationTransportTelemetry({
+          selectedTransport,
+          attempts: transportAttempts,
+          outcome,
+          recoveryRequired,
+          totalLatencyMs: Date.now() - transportStartedAtMs,
+        });
+      };
       const dispatchContainerOperation = async (
         transport: ContainerOperationTransport,
       ) => {
-        const contentType =
-          transport === "protobuf"
-            ? CONTAINER_PROTOBUF_CONTENT_TYPE
-            : "application/json";
-        const requestBody =
-          transport === "protobuf"
-            ? encodeOperationEnvelopeProtobuf(verified.envelope)
-            : verified.body;
-        const upstream = await this.containerFetch(
-          "http://container/v1/operations",
-          {
-            method: "POST",
-            headers: {
-              accept: contentType,
-              "content-type": contentType,
-              "x-cinatoken-container-protocol": "1",
+        const attemptStartedAtMs = Date.now();
+        let requestBytes: number | null = null;
+        let responseBytes: number | null = null;
+        let upstream: Response | null = null;
+        try {
+          const contentType =
+            transport === "protobuf"
+              ? CONTAINER_PROTOBUF_CONTENT_TYPE
+              : "application/json";
+          const requestBody =
+            transport === "protobuf"
+              ? encodeOperationEnvelopeProtobuf(verified.envelope)
+              : verified.body;
+          requestBytes = requestBody.byteLength;
+          upstream = await this.containerFetch(
+            "http://container/v1/operations",
+            {
+              method: "POST",
+              headers: {
+                accept: contentType,
+                "content-type": contentType,
+                "x-cinatoken-container-protocol": "1",
+              },
+              body: copyArrayBuffer(requestBody),
+              signal: AbortSignal.timeout(
+                Math.max(1, operationDeadlineAtMs - Date.now()),
+              ),
             },
-            body: copyArrayBuffer(requestBody),
-            signal: AbortSignal.timeout(
-              Math.max(1, operationDeadlineAtMs - Date.now()),
-            ),
-          },
-        );
-        const body = await readBoundedResponse(
-          upstream,
-          MAX_OPERATION_BODY_BYTES,
-          operationDeadlineAtMs,
-        );
-        return {
-          parsed: parseContainerOperationHttpResponse(
+          );
+          const body = await readBoundedResponse(
+            upstream,
+            MAX_OPERATION_BODY_BYTES,
+            operationDeadlineAtMs,
+          );
+          responseBytes = body.byteLength;
+          const parsed = parseContainerOperationHttpResponse(
             upstream,
             body,
             verified.envelope,
-          ),
-          response: upstream,
-        };
+          );
+          transportAttempts.push(createContainerOperationTransportAttempt({
+            ordinal: transportAttempts.length === 0 ? 1 : 2,
+            transport,
+            requestBytes,
+            responseBytes,
+            latencyMs: Date.now() - attemptStartedAtMs,
+            responseStatus: upstream.status,
+            responseContentType: responseContentType(upstream),
+            resultClass: parsed.kind,
+          }));
+          return { parsed, response: upstream };
+        } catch (error) {
+          if (
+            upstream !== null &&
+            error instanceof ProtocolError &&
+            error.code === "container_response_too_large"
+          ) {
+            const contentLength = upstream.headers.get("content-length");
+            responseBytes =
+              contentLength === null || /^\d+$/.test(contentLength)
+                ? MAX_OPERATION_BODY_BYTES + 1
+                : null;
+          }
+          transportAttempts.push(createContainerOperationTransportAttempt({
+            ordinal: transportAttempts.length === 0 ? 1 : 2,
+            transport,
+            requestBytes,
+            responseBytes,
+            latencyMs: Date.now() - attemptStartedAtMs,
+            responseStatus: upstream?.status ?? null,
+            responseContentType:
+              upstream === null ? null : responseContentType(upstream),
+            resultClass: classifyContainerOperationTransportFailure(
+              error,
+              transport,
+              operationDeadlineAtMs,
+            ),
+          }));
+          throw error;
+        }
       };
+      let telemetryOutcomeOverride: ContainerOperationTransportOutcome | null = null;
       try {
         const dispatched = await dispatchContainerOperationWithLegacyFallback(
-          containerProtobufTransportEnabled(this.env),
+          protobufTransportEnabled,
           dispatchContainerOperation,
         );
         const { response: upstream, parsed: parsedContainerResponse } = dispatched;
@@ -1320,6 +1391,7 @@ export class RelayShardContainer extends Container<ControllerEnv> {
             ? CONTAINER_PROTOBUF_CONTENT_TYPE
             : "application/json";
         if (responseContentType(upstream) !== expectedResponseContentType) {
+          telemetryOutcomeOverride = "response_media_mismatch";
           throw new ProtocolError("invalid_container_response", 502);
         }
         if (parsedContainerResponse.kind === "protocol_error") {
@@ -1334,7 +1406,9 @@ export class RelayShardContainer extends Container<ControllerEnv> {
             Math.floor(Date.now() / 1000),
             true,
           );
-          return operationOutcomeResponse(outcome);
+          const response = operationOutcomeResponse(outcome);
+          emitTransportTelemetry("protocol_error", false);
+          return response;
         }
         const containerOutcome = parsedContainerResponse.outcome;
         validatePersistedContainerResult(this.ledger, verified.envelope, containerOutcome.result);
@@ -1353,8 +1427,22 @@ export class RelayShardContainer extends Container<ControllerEnv> {
           Math.floor(Date.now() / 1000),
           containerOutcome.status !== "recovery_required",
         );
-        return operationOutcomeResponse(outcome);
-      } catch {
+        const response = operationOutcomeResponse(outcome);
+        emitTransportTelemetry(
+          containerOutcome.status === "completed"
+            ? "completed"
+            : containerOutcome.status === "rejected"
+              ? "rejected"
+              : "runtime_recovery_required",
+          containerOutcome.status === "recovery_required",
+        );
+        return response;
+      } catch (error) {
+        emitTransportTelemetry(
+          telemetryOutcomeOverride ??
+            classifyContainerOperationRecoveryOutcome(error, transportAttempts),
+          true,
+        );
         const outcome = finalizeOperationOutcome(
           this.ledger,
           verified.envelope.operation_id,

@@ -27526,3 +27526,41 @@ malformed/body-limit/deadline/restart/response-loss and gate/rollback campaigns
 remain separate. No Cloudflare resource, API token, route, DNS, D1 row,
 provider, billing, traffic, or Go/VPS state changed. Production remains
 **NO-GO**.
+
+## 2026-08-03 Vulnerability Database Freshness Recovery Checkpoint
+
+The release-supply-chain lane exposed a designed fail-closed condition: the
+previous Grype database crossed its preserved 48-hour candidate window, so a
+docs-only OCI run could no longer generate an accepted vulnerability decision.
+This was corrected by refreshing evidence, not by increasing the age limit or
+adding an approval.
+
+Commit `e8f35cf588481533b6838f4d6cef7f315c4d45dd` first made the complete
+non-secret candidate report available as a bounded GitHub Check annotation.
+That keeps the proposal lane read-only while allowing credential-free,
+machine-readable review of listing, archive, extracted database, import,
+scanner, age, and decision identities. Candidate
+[run 30806064140](https://github.com/cinagroup/cinatoken-rust/actions/runs/30806064140)
+passed with scanner validation, a database built at `2026-08-03T07:21:25Z`,
+an observed age of 11,560 seconds, and
+[artifact 8852809876](https://github.com/cinagroup/cinatoken-rust/actions/runs/30806064140/artifacts/8852809876)
+at `sha256:d408cfe62daad03035237efc79515b1e884af1ac6901b52becb380a64b11f44a`.
+
+Commit `ecc07f54272f12397e4d4dcd5b93d95ca06c33c7` then atomically replaced the
+active listing snapshot and every corresponding OCI/verifier identity. It kept
+the digest-pinned Grype image, 48-hour age, blocked Unknown/High/Critical
+policy, and empty approval set unchanged. The exact adopted source passed OCI
+[run 30808859271](https://github.com/cinagroup/cinatoken-rust/actions/runs/30808859271)
+and its triggered signed-provenance
+[run 30809105647](https://github.com/cinagroup/cinatoken-rust/actions/runs/30809105647).
+The local focused contracts and complete 1,222.5-second repository gate also
+passed.
+
+This restores current-main S2/S3 supply-chain evidence freshness; it does not
+advance runtime action gates or authorize staging publication. The next active
+implementation boundary remains the authenticated private JSON campaign
+executor and bounded signed source-manifest collector, followed by an actual
+N/N-1 remote packet and separate no-provider Protobuf/fault campaigns. No
+Cloudflare deployment, route, DNS, D1 mutation, provider request, billing
+action, traffic change, or Go/VPS change occurred. Production remains
+**NO-GO**.

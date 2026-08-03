@@ -5470,3 +5470,25 @@ collector remain unimplemented; until those exist and produce approved remote
 evidence, the JSON compatibility campaign remains open. Protobuf and all
 execution gates remain false, Go/VPS remains authoritative, and production
 remains **NO-GO**.
+
+## Current-Main Supply-Chain Freshness
+
+The pinned Grype database refresh is complete without weakening the 48-hour
+freshness policy. A new bounded GitHub notice makes the proposal-only candidate
+report machine-readable without repository write permission or credentials.
+Candidate
+[run 30806064140](https://github.com/cinagroup/cinatoken-rust/actions/runs/30806064140)
+passed scanner validation, and commit
+`ecc07f54272f12397e4d4dcd5b93d95ca06c33c7` atomically adopted its listing,
+archive, extracted database, xxh64, import, schema, and build identities.
+
+The exact adopted SHA passed reproducible OCI/SBOM/vulnerability
+[run 30808859271](https://github.com/cinagroup/cinatoken-rust/actions/runs/30808859271)
+and signed provenance
+[run 30809105647](https://github.com/cinagroup/cinatoken-rust/actions/runs/30809105647).
+Focused candidate, vulnerability, OCI, SBOM, and provenance contracts passed,
+and the complete repository gate passed in 1,222.5 seconds. This is current
+supply-chain evidence only. The private remote JSON campaign executor and
+source-manifest collector remain next; no Cloudflare staging deployment or
+runtime proof was produced, all execution/Protobuf gates remain false, and
+production remains **NO-GO**.

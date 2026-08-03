@@ -13362,3 +13362,51 @@ Unauthenticated GitHub API access does not expose the job log, so no external
 service or root cause is inferred. This run is retained as failed evidence and
 must never be counted as provenance acceptance; a later exact source subject
 must complete the entire provenance workflow successfully.
+
+## 2026-08-03 Grype Freshness Recovery And Current-Main Provenance
+
+The subsequent docs-only OCI
+[run 30795683355](https://github.com/cinagroup/cinatoken-rust/actions/runs/30795683355)
+failed while generating the vulnerability decision. Its public annotation only
+reports exit code 1, so it is not treated as a private-log quotation. The
+checked-in verifier and timestamps deterministically explain the failure: the
+frozen database was built at `2026-08-01T06:59:36Z`, the run reached the gate
+after the preserved 48-hour limit, and the same source rejects that age as
+`outside the candidate freshness window`. The limit was not weakened.
+
+Commit `e8f35cf588481533b6838f4d6cef7f315c4d45dd` added a bounded,
+machine-readable GitHub notice for the complete non-secret candidate report.
+The proposal-only candidate
+[run 30806064140](https://github.com/cinagroup/cinatoken-rust/actions/runs/30806064140)
+then passed its real pinned-scanner validation and retained
+[artifact 8852809876](https://github.com/cinagroup/cinatoken-rust/actions/runs/30806064140/artifacts/8852809876),
+3,175 bytes at
+`sha256:d408cfe62daad03035237efc79515b1e884af1ac6901b52becb380a64b11f44a`.
+The public report binds listing SHA-256
+`f7eb84854c8a0936f3c7d74a4516fd9433491a62307f93c4af9e5d10d808cb2a`,
+archive SHA-256
+`f262605b2343e2e6dd336f8def08eb60fc6f89932a14d3831c40e7b9ed7e9396`,
+raw database SHA-256
+`2903e4080a1538edf7cb7d8e21948277b7b3a89a8f669b812492370281ddfaca`,
+database xxh64 `e036d1b6120ddb3d`, and candidate age 11,560 seconds.
+
+Commit `ecc07f54272f12397e4d4dcd5b93d95ca06c33c7` atomically adopted those
+identities while preserving the pinned scanner, zero-approval policy, and
+`maximumCandidateAgeSeconds: 172800`. Verification for that exact current-main
+source is:
+
+| Gate | Result |
+| --- | --- |
+| Candidate contract | 5 tests passed |
+| Vulnerability contract | 14 tests and 99 assertions passed |
+| OCI / SBOM / provenance contracts | 8/61, 9/131, and 9/39 passed |
+| Complete repository gate | exit 0 in 1,222.5 seconds; Worker/DO, Container, WFP, Realtime, D1, frontend, Rust workspace, and wasm32 passed |
+| Reproducible OCI, SBOM, vulnerability scan | [run 30808859271](https://github.com/cinagroup/cinatoken-rust/actions/runs/30808859271) passed; [artifact 8853994038](https://github.com/cinagroup/cinatoken-rust/actions/runs/30808859271/artifacts/8853994038), 146,319,013 bytes, `sha256:1e253f331d683084a2b007e6b738d048158e960061c65d140f0de181efbdd777` |
+| Signed provenance | [run 30809105647](https://github.com/cinagroup/cinatoken-rust/actions/runs/30809105647) passed; [artifact 8854011574](https://github.com/cinagroup/cinatoken-rust/actions/runs/30809105647/artifacts/8854011574), 23,920 bytes, `sha256:392b31c53b88151a765bb1b165c9b218ce1b91d15e3cffcb77169efa9bee7774` |
+
+This supersedes the failed provenance attempt for the current source: the
+accepted SHA contains the JSON campaign code plus the reviewed database
+refresh and completed the full provenance workflow. It does not provide
+Cloudflare staging or production evidence. No Cloudflare credential, resource,
+route, DNS, D1 row, deployment, provider request, billing action, traffic
+change, or Go/VPS mutation occurred. Production remains **NO-GO**.

@@ -13426,7 +13426,8 @@ The executor is independently protected by
 `JSON_COMPATIBILITY_EXECUTOR_ENABLED=false` in tracked configs. It probes all
 eight shards with maximum concurrency four, awaits every launched RPC, and
 emits a strict phase receipt. That receipt records the RPC observations and the
-executor's code-enforced boundary; it does not authenticate the campaign or
+executor's code-enforced boundary plus the verified signed permit and durable
+campaign lease. It does not authenticate the private invoker identity or
 assert independently observed
 Controller/Container deployment state, ledger convergence, or external
 provider, billing, storage-gateway, and production-traffic snapshots.
@@ -13459,8 +13460,9 @@ action or Protobuf gate. `prepare_container_runtime_json_compatibility_controlle
 creates that config without replacing an existing file or changing any other
 value.
 
-The executor campaign config has a separate create-only preparer that changes
-only `JSON_COMPATIBILITY_EXECUTOR_ENABLED`. The plan and evidence projector are
+The executor campaign config has a separate create-only preparer that enables
+`JSON_COMPATIBILITY_EXECUTOR_ENABLED` and pins the reviewed non-secret permit
+key ID and SPKI SHA-256. The plan and evidence projector are
 also create-only. All top-level readers reject symlinks, non-regular or changing
 files, BOM/non-UTF-8 input, and files over their type-specific limits: plan
 256 KiB; config/context 512 KiB; receipt 1 MiB; phase source 2 MiB; manifest and
@@ -13472,7 +13474,7 @@ Focused local evidence for this implementation:
 | Gate | Result |
 | --- | --- |
 | `bun run check:container-runtime:json-compatibility-campaign` | passed; 41 tests, 110 assertions, planner and verifier self-tests visibly fixture-only |
-| `bun run check:container-runtime:json-compatibility-executor` | passed; generated types, local/staging Wrangler dry-runs, 9 Vitest tests |
+| `bun run check:container-runtime:json-compatibility-executor` | passed; generated types, local/staging Wrangler dry-runs, 12 Node tests and 4 Workerd/SQLite tests |
 | `bun run check:container-controller` | passed; generated types, TypeScript, Wrangler dry-run, 310 Bun tests/2,050 assertions, 192 portable tests, 54 Workerd tests |
 | `bun run check:container-controller:deploy-preflight` | passed; 24 tests, 105 assertions, offline preflight self-test |
 | root `bun run check` | passed with exit 0 in 1,304.3 seconds; complete Worker/DO, Container supply-chain, WFP, Realtime, D1, frontend, Rust workspace, and wasm32 chain |
@@ -13495,3 +13497,48 @@ readback also remain open. No Cloudflare
 deployment or private remote RPC was performed by these checks, no provider,
 billing, production traffic, D1, DNS, route, or Go/VPS state changed, and
 production remains **NO-GO**.
+
+## Signed JSON Campaign Authorization Verification
+
+The executor now has two required authorization layers before a probe reaches
+the Controller: private Service Binding transport and an Ed25519 phase permit
+consumed by a campaign-scoped SQLite Durable Object. The execute request and
+receipt are v2; the permit envelope remains v1 and is retained in the receipt
+and downstream source manifest.
+
+Run the focused gates with:
+
+```text
+bun run check:container-runtime:json-compatibility-campaign
+bun run check:container-runtime:json-compatibility-executor
+```
+
+Current focused evidence:
+
+| Gate | Result |
+| --- | --- |
+| Campaign/source chain | 41 tests, 110 assertions; full permit envelope and lease digests retained and tamper checked |
+| Executor Node suite | 12 tests; exact v2 parsing, valid/invalid Ed25519, missing verifier material, replay-before-probe, bounded eight-shard execution, success/failure terminalization |
+| Executor Workerd suite | 4 tests; SQLite concurrency serialization, eviction persistence, permanent replay denial, exact four-phase order, binding pin, success and terminal failure |
+| Wrangler/type/build | generated types current; local and staging dry-run bundles include one SQLite DO migration, private Controller entrypoint binding, default-off gate, fixed issuer/audience, and empty tracked key ID/SPKI digest |
+
+The executor verifier checks subject/envelope canonical SHA-256, Ed25519,
+issuer/audience/key ID, executor version, pinned SPKI SHA-256, five-second skew,
+600-second maximum lifetime, and 180-second minimum remaining lifetime before
+calling the Durable Object. The Durable Object consumes the permit and lease in
+one SQLite transaction before the first probe. Accepted permits are never
+reusable, including after object eviction or ambiguous RPC outcomes. There is
+no automatic takeover or expiry unlock.
+
+The create-only executor config preparer now requires
+`--permit-key-id` and `--permit-spki-sha256` in addition to `--out`. The public
+SPKI bytes are separately required at runtime as the
+`JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL` Worker secret and are never emitted
+by the preparer. Remote verification must prove secret presence without
+printing its value.
+
+These checks do not establish a deployed issuer, authenticated invoker,
+Cloudflare secret state, remote DO migration, exact shard topology, Container
+runtime behavior, independent context, source signature, archive, or staging
+campaign. No deployment or private remote RPC is performed. Production remains
+**NO-GO**.

@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts",
+    "check": "tsc -p tsconfig.json --noEmit && vitest run --config vitest.config.ts && vitest run --config vitest.runtime.config.ts",
     "test": "vitest run --config vitest.config.ts",
+    "test:runtime": "vitest run --config vitest.runtime.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }

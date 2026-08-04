@@ -26,9 +26,25 @@ describe("private executor Worker configuration", () => {
         entrypoint: "JsonCompatibilityProbeEntrypoint",
       },
     ]);
+    expect(config.durable_objects).toEqual({
+      bindings: [{
+        name: "JSON_COMPATIBILITY_CAMPAIGN_AUTHORITY",
+        class_name: "JsonCompatibilityCampaignAuthority",
+      }],
+    });
+    expect(config.migrations).toEqual([{
+      tag: "v1",
+      new_sqlite_classes: ["JsonCompatibilityCampaignAuthority"],
+    }]);
     expect(config.vars).toEqual({
       ENVIRONMENT: environment,
       JSON_COMPATIBILITY_EXECUTOR_ENABLED: "false",
+      JSON_COMPATIBILITY_PERMIT_ISSUER:
+        "cinatoken-json-compatibility-permit-issuer-staging",
+      JSON_COMPATIBILITY_PERMIT_AUDIENCE:
+        "cinatoken-container-runtime-json-compatibility-executor-staging",
+      JSON_COMPATIBILITY_PERMIT_KEY_ID: "",
+      JSON_COMPATIBILITY_PERMIT_SPKI_SHA256: "",
     });
   });
 
@@ -36,6 +52,7 @@ describe("private executor Worker configuration", () => {
     const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
     expect(source).toMatch(/extends WorkerEntrypoint/);
     expect(source).toMatch(/async executePhase\(/);
+    expect(source).toMatch(/JsonCompatibilityCampaignAuthority/);
     expect(source).not.toMatch(/\bfetch\s*\(/);
   });
 });

@@ -1,7 +1,11 @@
 export const JSON_COMPATIBILITY_EXECUTE_PHASE_REQUEST_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-execute-phase-request-v1" as const;
+  "cinatoken-container-runtime-json-compatibility-execute-phase-request-v2" as const;
 export const JSON_COMPATIBILITY_PHASE_PROBE_RECEIPT_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v1" as const;
+  "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v2" as const;
+export const JSON_COMPATIBILITY_PHASE_PERMIT_SUBJECT_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-phase-permit-subject-v1" as const;
+export const JSON_COMPATIBILITY_PHASE_PERMIT_ENVELOPE_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-phase-permit-envelope-v1" as const;
 
 export const JSON_COMPATIBILITY_PHASE_IDS = Object.freeze([
   "baseline-n-minus-one",
@@ -27,6 +31,8 @@ export const JSON_COMPATIBILITY_EXECUTOR_SERVICE_NAME =
 const LOWER_SHA256 = /^[0-9a-f]{64}$/;
 const OCI_SHA256 = /^sha256:[0-9a-f]{64}$/;
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const BASE64URL_ED25519_SIGNATURE = /^[A-Za-z0-9_-]{86}$/;
 
 export type JsonCompatibilityPhaseId =
   (typeof JSON_COMPATIBILITY_PHASE_IDS)[number];
@@ -49,8 +55,55 @@ export interface JsonCompatibilityTopologyV1 {
   readonly overrides: readonly JsonCompatibilityTopologyOverrideV1[];
 }
 
-export interface JsonCompatibilityExecutePhaseRequestV1 {
+export interface JsonCompatibilityPhasePermitSubjectV1 {
   readonly schemaVersion: 1;
+  readonly contract: typeof JSON_COMPATIBILITY_PHASE_PERMIT_SUBJECT_CONTRACT;
+  readonly issuer: string;
+  readonly audience: string;
+  readonly keyId: string;
+  readonly permitIdSha256: string;
+  readonly campaignIdSha256: string;
+  readonly planDigestSha256: string;
+  readonly phaseExecutionId: string;
+  readonly controller: {
+    readonly serviceName: typeof JSON_COMPATIBILITY_CONTROLLER_SERVICE_NAME;
+    readonly versionId: string;
+    readonly configSha256: string;
+  };
+  readonly executor: {
+    readonly serviceName: typeof JSON_COMPATIBILITY_EXECUTOR_SERVICE_NAME;
+    readonly versionId: string;
+  };
+  readonly runtimes: {
+    readonly n: JsonCompatibilityRuntimeIdentityV1;
+    readonly nMinusOne: JsonCompatibilityRuntimeIdentityV1;
+  };
+  readonly ring: {
+    readonly generation: number;
+    readonly shardCount: 8;
+    readonly candidateShardIndex: number;
+  };
+  readonly phase: {
+    readonly ordinal: JsonCompatibilityPhaseOrdinal;
+    readonly id: JsonCompatibilityPhaseId;
+    readonly topology: JsonCompatibilityTopologyV1;
+  };
+  readonly issuedAt: number;
+  readonly notBefore: number;
+  readonly expiresAt: number;
+}
+
+export interface JsonCompatibilityPhasePermitEnvelopeV1 {
+  readonly schemaVersion: 1;
+  readonly contract: typeof JSON_COMPATIBILITY_PHASE_PERMIT_ENVELOPE_CONTRACT;
+  readonly algorithm: "Ed25519";
+  readonly subject: JsonCompatibilityPhasePermitSubjectV1;
+  readonly subjectSha256: string;
+  readonly signatureBase64url: string;
+}
+
+export interface JsonCompatibilityExecutePhaseRequestV2 {
+  readonly schemaVersion: 2;
   readonly contract: typeof JSON_COMPATIBILITY_EXECUTE_PHASE_REQUEST_CONTRACT;
   readonly kind: "container-runtime-json-compatibility-phase-execution";
   readonly environment: "staging";
@@ -76,6 +129,7 @@ export interface JsonCompatibilityExecutePhaseRequestV1 {
     readonly id: JsonCompatibilityPhaseId;
     readonly topology: JsonCompatibilityTopologyV1;
   };
+  readonly authorization: JsonCompatibilityPhasePermitEnvelopeV1;
 }
 
 export class JsonCompatibilityExecutorProtocolError extends Error {
@@ -85,7 +139,15 @@ export class JsonCompatibilityExecutorProtocolError extends Error {
       | "executor_disabled"
       | "executor_staging_only"
       | "executor_configuration_error"
-      | "invalid_probe_result",
+      | "invalid_probe_result"
+      | "invalid_phase_permit"
+      | "phase_permit_time_window"
+      | "phase_permit_verifier_unavailable"
+      | "campaign_authority_unavailable"
+      | "campaign_authority_conflict"
+      | "campaign_permit_replayed"
+      | "campaign_phase_order_conflict"
+      | "campaign_terminal",
     message: string,
   ) {
     super(message);
@@ -93,9 +155,9 @@ export class JsonCompatibilityExecutorProtocolError extends Error {
   }
 }
 
-export function parseJsonCompatibilityExecutePhaseRequestV1(
+export function parseJsonCompatibilityExecutePhaseRequestV2(
   input: unknown,
-): JsonCompatibilityExecutePhaseRequestV1 {
+): JsonCompatibilityExecutePhaseRequestV2 {
   const value = requireRecord(input, "executePhase request");
   requireExactKeys(value, [
     "schemaVersion",
@@ -109,8 +171,9 @@ export function parseJsonCompatibilityExecutePhaseRequestV1(
     "runtimes",
     "ring",
     "phase",
+    "authorization",
   ], "executePhase request");
-  requireEqual(value.schemaVersion, 1, "executePhase schema version");
+  requireEqual(value.schemaVersion, 2, "executePhase schema version");
   requireEqual(
     value.contract,
     JSON_COMPATIBILITY_EXECUTE_PHASE_REQUEST_CONTRACT,
@@ -138,12 +201,13 @@ export function parseJsonCompatibilityExecutePhaseRequestV1(
   const runtimes = parseRuntimes(value.runtimes);
   const ring = parseRing(value.ring);
   const phase = parsePhase(value.phase, ring.candidateShardIndex);
+  const authorization = parsePermitEnvelope(value.authorization);
 
-  return {
-    schemaVersion: 1,
+  const request = {
+    schemaVersion: 2 as const,
     contract: JSON_COMPATIBILITY_EXECUTE_PHASE_REQUEST_CONTRACT,
-    kind: "container-runtime-json-compatibility-phase-execution",
-    environment: "staging",
+    kind: "container-runtime-json-compatibility-phase-execution" as const,
+    environment: "staging" as const,
     campaignIdSha256,
     planDigestSha256,
     phaseExecutionId,
@@ -151,7 +215,10 @@ export function parseJsonCompatibilityExecutePhaseRequestV1(
     runtimes,
     ring,
     phase,
+    authorization,
   };
+  requirePermitSubjectBinding(request);
+  return request;
 }
 
 export function expectedRuntimeGeneration(
@@ -195,7 +262,7 @@ export function jsonCompatibilityShardInstanceName(shardIndex: number): string {
 
 function parseController(
   input: unknown,
-): JsonCompatibilityExecutePhaseRequestV1["controller"] {
+): JsonCompatibilityExecutePhaseRequestV2["controller"] {
   const value = requireRecord(input, "executePhase Controller");
   requireExactKeys(
     value,
@@ -222,7 +289,7 @@ function parseController(
 
 function parseRuntimes(
   input: unknown,
-): JsonCompatibilityExecutePhaseRequestV1["runtimes"] {
+): JsonCompatibilityExecutePhaseRequestV2["runtimes"] {
   const value = requireRecord(input, "executePhase runtimes");
   requireExactKeys(value, ["n", "nMinusOne"], "executePhase runtimes");
   const n = parseRuntimeIdentity(value.n, "executePhase runtime N");
@@ -257,7 +324,7 @@ function parseRuntimeIdentity(
 
 function parseRing(
   input: unknown,
-): JsonCompatibilityExecutePhaseRequestV1["ring"] {
+): JsonCompatibilityExecutePhaseRequestV2["ring"] {
   const value = requireRecord(input, "executePhase ring");
   requireExactKeys(
     value,
@@ -290,7 +357,7 @@ function parseRing(
 function parsePhase(
   input: unknown,
   candidateShardIndex: number,
-): JsonCompatibilityExecutePhaseRequestV1["phase"] {
+): JsonCompatibilityExecutePhaseRequestV2["phase"] {
   const value = requireRecord(input, "executePhase phase");
   requireExactKeys(value, ["ordinal", "id", "topology"], "executePhase phase");
   const id = requirePhaseId(value.id, "executePhase phase ID");
@@ -311,6 +378,161 @@ function parsePhase(
     );
   }
   return { ordinal, id, topology };
+}
+
+function parsePermitEnvelope(
+  input: unknown,
+): JsonCompatibilityPhasePermitEnvelopeV1 {
+  const value = requireRecord(input, "executePhase authorization");
+  requireExactKeys(value, [
+    "schemaVersion",
+    "contract",
+    "algorithm",
+    "subject",
+    "subjectSha256",
+    "signatureBase64url",
+  ], "executePhase authorization");
+  requireEqual(value.schemaVersion, 1, "authorization schema version");
+  requireEqual(
+    value.contract,
+    JSON_COMPATIBILITY_PHASE_PERMIT_ENVELOPE_CONTRACT,
+    "authorization contract",
+  );
+  requireEqual(value.algorithm, "Ed25519", "authorization algorithm");
+  const signatureBase64url = value.signatureBase64url;
+  if (
+    typeof signatureBase64url !== "string"
+    || !BASE64URL_ED25519_SIGNATURE.test(signatureBase64url)
+  ) {
+    throw invalidRequest(
+      "authorization signature must be a 64-byte base64url Ed25519 signature",
+    );
+  }
+  return {
+    schemaVersion: 1,
+    contract: JSON_COMPATIBILITY_PHASE_PERMIT_ENVELOPE_CONTRACT,
+    algorithm: "Ed25519",
+    subject: parsePermitSubject(value.subject),
+    subjectSha256: requireSha256(
+      value.subjectSha256,
+      "authorization subject digest",
+    ),
+    signatureBase64url,
+  };
+}
+
+function parsePermitSubject(
+  input: unknown,
+): JsonCompatibilityPhasePermitSubjectV1 {
+  const value = requireRecord(input, "executePhase permit subject");
+  requireExactKeys(value, [
+    "schemaVersion",
+    "contract",
+    "issuer",
+    "audience",
+    "keyId",
+    "permitIdSha256",
+    "campaignIdSha256",
+    "planDigestSha256",
+    "phaseExecutionId",
+    "controller",
+    "executor",
+    "runtimes",
+    "ring",
+    "phase",
+    "issuedAt",
+    "notBefore",
+    "expiresAt",
+  ], "executePhase permit subject");
+  requireEqual(value.schemaVersion, 1, "permit subject schema version");
+  requireEqual(
+    value.contract,
+    JSON_COMPATIBILITY_PHASE_PERMIT_SUBJECT_CONTRACT,
+    "permit subject contract",
+  );
+  const executor = requireRecord(value.executor, "permit subject executor");
+  requireExactKeys(
+    executor,
+    ["serviceName", "versionId"],
+    "permit subject executor",
+  );
+  requireEqual(
+    executor.serviceName,
+    JSON_COMPATIBILITY_EXECUTOR_SERVICE_NAME,
+    "permit subject executor service name",
+  );
+  const ring = parseRing(value.ring);
+  return {
+    schemaVersion: 1,
+    contract: JSON_COMPATIBILITY_PHASE_PERMIT_SUBJECT_CONTRACT,
+    issuer: requireSafeToken(value.issuer, "permit subject issuer"),
+    audience: requireSafeToken(value.audience, "permit subject audience"),
+    keyId: requireKeyId(value.keyId, "permit subject key ID"),
+    permitIdSha256: requireSha256(
+      value.permitIdSha256,
+      "permit subject permit ID",
+    ),
+    campaignIdSha256: requireSha256(
+      value.campaignIdSha256,
+      "permit subject campaign ID",
+    ),
+    planDigestSha256: requireSha256(
+      value.planDigestSha256,
+      "permit subject plan digest",
+    ),
+    phaseExecutionId: requireSafeToken(
+      value.phaseExecutionId,
+      "permit subject phase execution ID",
+    ),
+    controller: parseController(value.controller),
+    executor: {
+      serviceName: JSON_COMPATIBILITY_EXECUTOR_SERVICE_NAME,
+      versionId: requireSafeToken(
+        executor.versionId,
+        "permit subject executor version ID",
+      ),
+    },
+    runtimes: parseRuntimes(value.runtimes),
+    ring,
+    phase: parsePhase(value.phase, ring.candidateShardIndex),
+    issuedAt: requireInteger(
+      value.issuedAt,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      "permit subject issued time",
+    ),
+    notBefore: requireInteger(
+      value.notBefore,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      "permit subject not-before time",
+    ),
+    expiresAt: requireInteger(
+      value.expiresAt,
+      1,
+      Number.MAX_SAFE_INTEGER,
+      "permit subject expiry time",
+    ),
+  };
+}
+
+function requirePermitSubjectBinding(
+  request: JsonCompatibilityExecutePhaseRequestV2,
+): void {
+  const subject = request.authorization.subject;
+  if (
+    subject.campaignIdSha256 !== request.campaignIdSha256
+    || subject.planDigestSha256 !== request.planDigestSha256
+    || subject.phaseExecutionId !== request.phaseExecutionId
+    || JSON.stringify(subject.controller) !== JSON.stringify(request.controller)
+    || JSON.stringify(subject.runtimes) !== JSON.stringify(request.runtimes)
+    || JSON.stringify(subject.ring) !== JSON.stringify(request.ring)
+    || JSON.stringify(subject.phase) !== JSON.stringify(request.phase)
+  ) {
+    throw invalidRequest(
+      "authorization subject must bind the exact executePhase request",
+    );
+  }
 }
 
 function parseTopology(input: unknown): JsonCompatibilityTopologyV1 {
@@ -416,6 +638,13 @@ function requireSha256(value: unknown, label: string): string {
 function requireSafeToken(value: unknown, label: string): string {
   if (typeof value !== "string" || !SAFE_TOKEN.test(value)) {
     throw invalidRequest(`${label} must be a safe opaque token`);
+  }
+  return value;
+}
+
+function requireKeyId(value: unknown, label: string): string {
+  if (typeof value !== "string" || !KEY_ID.test(value)) {
+    throw invalidRequest(`${label} must be a safe key ID`);
   }
   return value;
 }

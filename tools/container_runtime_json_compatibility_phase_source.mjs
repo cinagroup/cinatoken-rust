@@ -16,7 +16,7 @@ import {
 export const JSON_COMPATIBILITY_PHASE_SOURCE_CONTEXT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-phase-source-context-v1";
 export const JSON_COMPATIBILITY_PHASE_PROBE_RECEIPT_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v1";
+  "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v2";
 
 const EXECUTOR_SERVICE =
   "cinatoken-container-runtime-json-compatibility-executor-staging";
@@ -143,6 +143,7 @@ export async function buildJsonCompatibilityPhaseSourcePacket(
       executionBoundarySha256: sha256Canonical(
         verifiedReceipt.executionBoundary,
       ),
+      authorization: clone(verifiedReceipt.authorization),
     },
     sourceContext: {
       contract: verifiedContext.contract,
@@ -181,6 +182,7 @@ async function validateProbeReceipt(plan, input) {
     "runtimes",
     "ring",
     "phase",
+    "authorization",
     "executor",
     "transport",
     "startedAt",
@@ -190,7 +192,7 @@ async function validateProbeReceipt(plan, input) {
     "executionBoundary",
     "receiptSha256",
   ], "[phase-assembly] probe receipt");
-  equal(value.schemaVersion, 1, "[phase-assembly] receipt schema version");
+  equal(value.schemaVersion, 2, "[phase-assembly] receipt schema version");
   equal(
     value.contract,
     JSON_COMPATIBILITY_PHASE_PROBE_RECEIPT_CONTRACT,
@@ -217,6 +219,7 @@ async function validateProbeReceipt(plan, input) {
   canonicalEqual(value.runtimes, plan.runtimes, "[phase-assembly] runtimes");
   canonicalEqual(value.ring, plan.ring, "[phase-assembly] ring");
   const phase = validateReceiptPhase(value.phase, plan);
+  validateReceiptAuthorization(value.authorization, value, phase);
   validateReceiptExecutor(value.executor);
   validateReceiptTransport(value.transport);
   const startedAtMs = wholeSecond(value.startedAt, "[phase-assembly] receipt start");
@@ -450,6 +453,213 @@ function validateReceiptExecutor(value) {
     "[phase-assembly] executor gate",
   );
   equal(executor.maxConcurrency, 4, "[phase-assembly] executor concurrency");
+}
+
+function validateReceiptAuthorization(value, receipt, phase) {
+  const authorization = record(
+    value,
+    "[phase-assembly] receipt authorization",
+  );
+  exactKeys(authorization, [
+    "kind",
+    "algorithm",
+    "permitIdSha256",
+    "permitSubjectSha256",
+    "permitEnvelopeSha256",
+    "permitEnvelope",
+    "issuer",
+    "audience",
+    "keyId",
+    "signerSpkiSha256",
+    "issuedAt",
+    "notBefore",
+    "expiresAt",
+    "campaignAuthority",
+  ], "[phase-assembly] receipt authorization");
+  equal(
+    authorization.kind,
+    "ed25519-signed-single-use-phase-permit",
+    "[phase-assembly] authorization kind",
+  );
+  equal(
+    authorization.algorithm,
+    "Ed25519",
+    "[phase-assembly] authorization algorithm",
+  );
+  for (const name of [
+    "permitIdSha256",
+    "permitSubjectSha256",
+    "permitEnvelopeSha256",
+    "signerSpkiSha256",
+  ]) {
+    sha256(
+      authorization[name],
+      `[phase-assembly] authorization ${name}`,
+    );
+  }
+  safeToken(authorization.issuer, "[phase-assembly] authorization issuer");
+  safeToken(authorization.audience, "[phase-assembly] authorization audience");
+  safeToken(authorization.keyId, "[phase-assembly] authorization key ID");
+  for (const name of ["issuedAt", "notBefore", "expiresAt"]) {
+    if (!Number.isSafeInteger(authorization[name]) || authorization[name] < 1) {
+      throw failure(`[phase-assembly] authorization ${name} is invalid`);
+    }
+  }
+  if (
+    authorization.notBefore < authorization.issuedAt - 5
+    || authorization.expiresAt <= authorization.notBefore
+    || authorization.expiresAt - authorization.issuedAt > 600
+  ) {
+    throw failure("[phase-assembly] authorization time window is invalid");
+  }
+  const envelope = record(
+    authorization.permitEnvelope,
+    "[phase-assembly] permit envelope",
+  );
+  exactKeys(envelope, [
+    "schemaVersion",
+    "contract",
+    "algorithm",
+    "subject",
+    "subjectSha256",
+    "signatureBase64url",
+  ], "[phase-assembly] permit envelope");
+  equal(envelope.schemaVersion, 1, "[phase-assembly] permit envelope schema");
+  equal(
+    envelope.contract,
+    "cinatoken-container-runtime-json-compatibility-phase-permit-envelope-v1",
+    "[phase-assembly] permit envelope contract",
+  );
+  equal(envelope.algorithm, "Ed25519", "[phase-assembly] permit envelope algorithm");
+  equal(
+    envelope.subjectSha256,
+    authorization.permitSubjectSha256,
+    "[phase-assembly] permit subject digest reference",
+  );
+  equal(
+    sha256Canonical(envelope),
+    authorization.permitEnvelopeSha256,
+    "[phase-assembly] permit envelope digest",
+  );
+  if (
+    typeof envelope.signatureBase64url !== "string"
+    || !/^[A-Za-z0-9_-]{86}$/.test(envelope.signatureBase64url)
+  ) {
+    throw failure("[phase-assembly] permit signature is invalid");
+  }
+  const subject = record(envelope.subject, "[phase-assembly] permit subject");
+  exactKeys(subject, [
+    "schemaVersion",
+    "contract",
+    "issuer",
+    "audience",
+    "keyId",
+    "permitIdSha256",
+    "campaignIdSha256",
+    "planDigestSha256",
+    "phaseExecutionId",
+    "controller",
+    "executor",
+    "runtimes",
+    "ring",
+    "phase",
+    "issuedAt",
+    "notBefore",
+    "expiresAt",
+  ], "[phase-assembly] permit subject");
+  equal(subject.schemaVersion, 1, "[phase-assembly] permit subject schema");
+  equal(
+    subject.contract,
+    "cinatoken-container-runtime-json-compatibility-phase-permit-subject-v1",
+    "[phase-assembly] permit subject contract",
+  );
+  equal(
+    sha256Canonical(subject),
+    authorization.permitSubjectSha256,
+    "[phase-assembly] permit subject canonical digest",
+  );
+  equal(subject.issuer, authorization.issuer, "[phase-assembly] permit issuer");
+  equal(subject.audience, authorization.audience, "[phase-assembly] permit audience");
+  equal(subject.keyId, authorization.keyId, "[phase-assembly] permit key ID");
+  equal(
+    subject.permitIdSha256,
+    authorization.permitIdSha256,
+    "[phase-assembly] permit ID",
+  );
+  equal(subject.campaignIdSha256, receipt.campaignIdSha256, "[phase-assembly] permit campaign");
+  equal(subject.planDigestSha256, receipt.planDigestSha256, "[phase-assembly] permit plan");
+  equal(subject.phaseExecutionId, receipt.phaseExecutionId, "[phase-assembly] permit execution");
+  canonicalEqual(subject.controller, receipt.controller, "[phase-assembly] permit Controller");
+  canonicalEqual(subject.runtimes, receipt.runtimes, "[phase-assembly] permit runtimes");
+  canonicalEqual(subject.ring, receipt.ring, "[phase-assembly] permit ring");
+  canonicalEqual(subject.phase, phase, "[phase-assembly] permit phase");
+  const permitExecutor = record(
+    subject.executor,
+    "[phase-assembly] permit executor",
+  );
+  exactKeys(
+    permitExecutor,
+    ["serviceName", "versionId"],
+    "[phase-assembly] permit executor",
+  );
+  equal(
+    permitExecutor.serviceName,
+    receipt.executor.serviceName,
+    "[phase-assembly] permit executor service",
+  );
+  equal(
+    permitExecutor.versionId,
+    receipt.executor.versionId,
+    "[phase-assembly] permit executor version",
+  );
+  equal(subject.issuedAt, authorization.issuedAt, "[phase-assembly] permit issued time");
+  equal(subject.notBefore, authorization.notBefore, "[phase-assembly] permit not-before time");
+  equal(subject.expiresAt, authorization.expiresAt, "[phase-assembly] permit expiry time");
+
+  const authority = record(
+    authorization.campaignAuthority,
+    "[phase-assembly] campaign authority",
+  );
+  exactKeys(authority, [
+    "kind",
+    "binding",
+    "objectNameSha256",
+    "campaignBindingSha256",
+    "leaseIdSha256",
+    "leaseReceiptSha256",
+    "singleUsePermitPersisted",
+    "phaseOrderEnforced",
+    "concurrentPhaseRejected",
+  ], "[phase-assembly] campaign authority");
+  equal(
+    authority.kind,
+    "campaign-scoped-sqlite-durable-object",
+    "[phase-assembly] campaign authority kind",
+  );
+  equal(
+    authority.binding,
+    "JSON_COMPATIBILITY_CAMPAIGN_AUTHORITY",
+    "[phase-assembly] campaign authority binding",
+  );
+  equal(
+    authority.objectNameSha256,
+    receipt.campaignIdSha256,
+    "[phase-assembly] campaign authority object name",
+  );
+  for (const name of [
+    "campaignBindingSha256",
+    "leaseIdSha256",
+    "leaseReceiptSha256",
+  ]) {
+    sha256(authority[name], `[phase-assembly] campaign authority ${name}`);
+  }
+  for (const name of [
+    "singleUsePermitPersisted",
+    "phaseOrderEnforced",
+    "concurrentPhaseRejected",
+  ]) {
+    equal(authority[name], true, `[phase-assembly] campaign authority ${name}`);
+  }
 }
 
 function validateReceiptTransport(value) {

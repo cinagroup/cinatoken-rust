@@ -5433,8 +5433,10 @@ isolated JSON probe gate true, every other action gate false, both Protobuf
 gates false, distinct N/N-1 build and OCI identities, and a bounded candidate
 shard in the fixed eight-shard ring. It emits a canonical SHA-256-bound
 four-phase plan: all N-1, one N mixed with N-1, all N, then rollback to all N-1.
-Service Binding privacy is not campaign authentication; a signed, expiring,
-single-use phase permit and replay registry remain required.
+Service Binding privacy is not campaign authentication. The executor now
+requires a signed, expiring, single-use phase permit and consumes it through a
+per-campaign replay registry; the independent issuer and authenticated invoker
+remain required.
 
 The evidence verifier requires one readiness/build-identity and no-provider
 JSON `health_probe` observation for every configured shard in every phase. Raw
@@ -5466,7 +5468,9 @@ bun run check:container-runtime:json-compatibility-executor
 bun run prepare:container-runtime:json-compatibility-controller-config -- \
   --out <create-only-campaign-wrangler.jsonc>
 bun run prepare:container-runtime:json-compatibility-executor-config -- \
-  --out <create-only-executor-campaign-wrangler.jsonc>
+  --out <create-only-executor-campaign-wrangler.jsonc> \
+  --permit-key-id <reviewed-non-secret-key-id> \
+  --permit-spki-sha256 <reviewed-public-key-sha256>
 bun tools/preflight_container_controller_deploy.mjs \
   --environment staging \
   --config <create-only-campaign-wrangler.jsonc> \
@@ -5503,16 +5507,18 @@ All preparation, assembly, collection, and verification CLIs are offline and
 create-only or read-only, use no-follow regular-file stable reads, strict UTF-8,
 and type-specific size limits. Actual deployment and private RPC invocation are
 not performed by these commands and still require separate authorization. The
-signed single-use permit and replay registry, authenticated private invoker,
-exact per-shard topology runner/readback, independent remote context collector,
-cryptographic source signature, immutable archive, authorized publication, and
-real four-phase staging packet remain open. Canonical SHA-256 binding is
+local signed-permit consumer and campaign replay registry are now implemented;
+the independent issuer, authenticated private invoker, exact per-shard topology
+runner/readback, independent remote context collector, cryptographic source
+signature, immutable archive, authorized publication, and real four-phase
+staging packet remain open. Canonical SHA-256 binding is
 integrity, not signer authentication. Until those gaps close, Protobuf and all
 production execution gates remain false, Go/VPS remains authoritative, and
 production remains **NO-GO**.
 
-Focused local checks pass 41 campaign/source-chain tests with 110 assertions, 9
-executor tests, and 24 deployment-preflight tests with 105 assertions. The
+Focused local checks pass 41 campaign/source-chain tests with 110 assertions,
+12 executor Node tests, four executor Workerd tests, and 24
+deployment-preflight tests with 105 assertions. The
 Controller suite passes 310 Bun tests with 2,050 assertions, 192 portable tests,
 and 54 Workerd tests. Executor
 and Controller Wrangler type checks and dry-runs pass with the named Service
@@ -5543,3 +5549,44 @@ executor and digest-bound source-manifest implementation gap, but no Cloudflare
 staging deployment, authenticated source signature, or runtime proof was
 produced. All execution/Protobuf gates remain false and production remains
 **NO-GO**.
+
+## Signed JSON Phase Permit And Campaign Lease
+
+The private executor request/receipt contract is now v2. Before any shard RPC,
+the executor requires a v1 Ed25519 permit that binds campaign, plan, phase,
+Controller/executor versions, N/N-1 build and image identities, ring, candidate
+shard, topology, and a bounded time window. It verifies the canonical subject,
+signature, pinned SPKI SHA-256, issuer, audience, key ID, and current executor
+version. Malformed, expired, under-lived, drifted, or unsigned input fails
+before the campaign ledger or Controller is touched.
+
+A campaign-named SQLite Durable Object then consumes the permit and acquires a
+single phase lease atomically. It persists across eviction, rejects duplicate
+permits and concurrent phases, requires exact `1 -> 2 -> 3 -> 4` order, stores
+the successful receipt digest, and makes any execution failure terminal for the
+campaign. Ambiguous outcomes are intentionally not retried or unlocked.
+
+Tracked executor configs remain private and default-off. They contain fixed
+issuer/audience identities but empty permit key ID and SPKI digest. Prepare a
+reviewed campaign config with:
+
+```text
+bun run prepare:container-runtime:json-compatibility-executor-config -- \
+  --out <create-only-executor-campaign-wrangler.jsonc> \
+  --permit-key-id <reviewed-non-secret-key-id> \
+  --permit-spki-sha256 <reviewed-public-key-sha256>
+```
+
+Provision `JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL` separately as a Worker
+secret through stdin. Do not put its bytes, or any Cloudflare credential, in a
+tracked file or command argument. The full permit envelope and Durable Object
+lease evidence now flow through the executor receipt, phase packet, and source
+manifest.
+
+Local verification passes 12 Node tests, four real Workerd/SQLite Durable
+Object tests, and the 41-test/110-assertion campaign source chain. This closes
+the local permit consumer, replay registry, and per-campaign lease items. It
+does not close the independent permit issuer, authenticated private invoker,
+named-shard deployment/readback runner, remote context collector, source
+signature, immutable archive, or real staging campaign. Go/VPS remains
+authoritative and production remains **NO-GO**.

@@ -11,6 +11,8 @@ const trackedConfigPath = path.resolve(
   "services/container-runtime-json-compatibility-executor/wrangler.staging.jsonc",
 );
 const temporaryDirectories = [];
+const PERMIT_KEY_ID = "json-compatibility-campaign-2026-08";
+const PERMIT_SPKI_SHA256 = "ab".repeat(32);
 
 afterEach(async () => {
   await Promise.all(
@@ -35,6 +37,8 @@ describe("JSON compatibility executor campaign config", () => {
     const result = await prepareJsonCompatibilityExecutorConfig({
       basePath: trackedConfigPath,
       outPath: output,
+      permitKeyId: PERMIT_KEY_ID,
+      permitSpkiSha256: PERMIT_SPKI_SHA256,
     });
     const base = JSON.parse(await readFile(trackedConfigPath, "utf8"));
     const campaign = JSON.parse(await readFile(output, "utf8"));
@@ -44,18 +48,30 @@ describe("JSON compatibility executor campaign config", () => {
       vars: {
         ...base.vars,
         JSON_COMPATIBILITY_EXECUTOR_ENABLED: "true",
+        JSON_COMPATIBILITY_PERMIT_KEY_ID: PERMIT_KEY_ID,
+        JSON_COMPATIBILITY_PERMIT_SPKI_SHA256: PERMIT_SPKI_SHA256,
       },
     });
-    expect(
-      validateJsonCompatibilityExecutorConfig(campaign, { campaign: true }),
-    ).toMatchObject({
+    expect(validateJsonCompatibilityExecutorConfig(campaign, {
+      campaign: true,
+      permitKeyId: PERMIT_KEY_ID,
+      permitSpkiSha256: PERMIT_SPKI_SHA256,
+    })).toMatchObject({
       environment: "staging",
       executorEnabled: true,
       privateServiceBinding: true,
+      campaignScopedDurableObject: true,
+      permitTrustPinned: true,
     });
     expect(result).toMatchObject({
       ok: true,
-      changedVars: ["JSON_COMPATIBILITY_EXECUTOR_ENABLED"],
+      changedVars: [
+        "JSON_COMPATIBILITY_EXECUTOR_ENABLED",
+        "JSON_COMPATIBILITY_PERMIT_KEY_ID",
+        "JSON_COMPATIBILITY_PERMIT_SPKI_SHA256",
+      ],
+      permitPublicKeySecretRequired:
+        "JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL",
       credentialsRead: false,
       networkRequestsPerformed: false,
       deploymentMutationPerformed: false,
@@ -71,7 +87,12 @@ describe("JSON compatibility executor campaign config", () => {
     await writeFile(basePath, JSON.stringify(base), "utf8");
 
     await expect(
-      prepareJsonCompatibilityExecutorConfig({ basePath, outPath: output }),
+      prepareJsonCompatibilityExecutorConfig({
+        basePath,
+        outPath: output,
+        permitKeyId: PERMIT_KEY_ID,
+        permitSpkiSha256: PERMIT_SPKI_SHA256,
+      }),
     ).rejects.toThrow(/workers_dev/);
     expect(await Bun.file(output).exists()).toBe(false);
   });
@@ -84,6 +105,8 @@ describe("JSON compatibility executor campaign config", () => {
       prepareJsonCompatibilityExecutorConfig({
         basePath: trackedConfigPath,
         outPath: output,
+        permitKeyId: PERMIT_KEY_ID,
+        permitSpkiSha256: PERMIT_SPKI_SHA256,
       }),
     ).rejects.toThrow();
     expect(await readFile(output, "utf8")).toBe("preserve");

@@ -2,11 +2,13 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import {
   executeJsonCompatibilityPhase,
   type JsonCompatibilityExecutorEnv,
-  type JsonCompatibilityPhaseProbeReceiptV1,
+  type JsonCompatibilityPhaseProbeReceiptV2,
 } from "./executor";
 
+export { JsonCompatibilityCampaignAuthority } from "./campaign_authority";
+
 export default class JsonCompatibilityCampaignExecutorEntrypoint extends WorkerEntrypoint<JsonCompatibilityExecutorEnv> {
-  async executePhase(input: unknown): Promise<JsonCompatibilityPhaseProbeReceiptV1> {
+  async executePhase(input: unknown): Promise<JsonCompatibilityPhaseProbeReceiptV2> {
     return await executeJsonCompatibilityPhase(this.env, input);
   }
 }

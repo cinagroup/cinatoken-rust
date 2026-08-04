@@ -23,7 +23,11 @@ const defaultBasePath = path.join(
 
 export function validateJsonCompatibilityExecutorConfig(
   input,
-  { campaign = false } = {},
+  {
+    campaign = false,
+    permitKeyId = "",
+    permitSpkiSha256 = "",
+  } = {},
 ) {
   const config = record(input, "executor config");
   exactKeys(config, [
@@ -36,6 +40,8 @@ export function validateJsonCompatibilityExecutorConfig(
     "observability",
     "version_metadata",
     "services",
+    "durable_objects",
+    "migrations",
     "vars",
   ], "executor config");
   equal(
@@ -72,10 +78,41 @@ export function validateJsonCompatibilityExecutorConfig(
     "executor Service Binding",
   );
   canonicalEqual(
+    config.durable_objects,
+    {
+      bindings: [{
+        name: "JSON_COMPATIBILITY_CAMPAIGN_AUTHORITY",
+        class_name: "JsonCompatibilityCampaignAuthority",
+      }],
+    },
+    "executor campaign authority Durable Object",
+  );
+  canonicalEqual(
+    config.migrations,
+    [{
+      tag: "v1",
+      new_sqlite_classes: ["JsonCompatibilityCampaignAuthority"],
+    }],
+    "executor Durable Object migration",
+  );
+  if (campaign) {
+    keyId(permitKeyId, "campaign permit key ID");
+    sha256(permitSpkiSha256, "campaign permit SPKI digest");
+  } else if (permitKeyId !== "" || permitSpkiSha256 !== "") {
+    throw new Error("tracked executor config must not pin campaign permit trust");
+  }
+  canonicalEqual(
     config.vars,
     {
       ENVIRONMENT: "staging",
       JSON_COMPATIBILITY_EXECUTOR_ENABLED: campaign ? "true" : "false",
+      JSON_COMPATIBILITY_PERMIT_ISSUER:
+        "cinatoken-json-compatibility-permit-issuer-staging",
+      JSON_COMPATIBILITY_PERMIT_AUDIENCE:
+        "cinatoken-container-runtime-json-compatibility-executor-staging",
+      JSON_COMPATIBILITY_PERMIT_KEY_ID: campaign ? permitKeyId : "",
+      JSON_COMPATIBILITY_PERMIT_SPKI_SHA256:
+        campaign ? permitSpkiSha256 : "",
     },
     "executor vars",
   );
@@ -84,6 +121,8 @@ export function validateJsonCompatibilityExecutorConfig(
     serviceName: config.name,
     executorEnabled: campaign,
     privateServiceBinding: true,
+    campaignScopedDurableObject: true,
+    permitTrustPinned: campaign,
   };
 }
 
@@ -102,8 +141,13 @@ export async function prepareJsonCompatibilityExecutorConfig(options) {
   validateJsonCompatibilityExecutorConfig(base);
   const campaign = structuredClone(base);
   campaign.vars.JSON_COMPATIBILITY_EXECUTOR_ENABLED = "true";
+  campaign.vars.JSON_COMPATIBILITY_PERMIT_KEY_ID = options.permitKeyId;
+  campaign.vars.JSON_COMPATIBILITY_PERMIT_SPKI_SHA256 =
+    options.permitSpkiSha256;
   const validation = validateJsonCompatibilityExecutorConfig(campaign, {
     campaign: true,
+    permitKeyId: options.permitKeyId,
+    permitSpkiSha256: options.permitSpkiSha256,
   });
   await writeFile(outPath, canonicalJson(campaign), {
     encoding: "utf8",
@@ -116,8 +160,16 @@ export async function prepareJsonCompatibilityExecutorConfig(options) {
     environment: validation.environment,
     serviceName: validation.serviceName,
     configSha256: sha256Canonical(campaign),
-    changedVars: ["JSON_COMPATIBILITY_EXECUTOR_ENABLED"],
+    changedVars: [
+      "JSON_COMPATIBILITY_EXECUTOR_ENABLED",
+      "JSON_COMPATIBILITY_PERMIT_KEY_ID",
+      "JSON_COMPATIBILITY_PERMIT_SPKI_SHA256",
+    ],
     executorEnabled: true,
+    campaignScopedDurableObject: validation.campaignScopedDurableObject,
+    permitTrustPinned: validation.permitTrustPinned,
+    permitPublicKeySecretRequired:
+      "JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL",
     credentialsRead: false,
     networkRequestsPerformed: false,
     deploymentMutationPerformed: false,
@@ -133,7 +185,12 @@ export function parseJsonCompatibilityExecutorConfigArgs(argv) {
     else if (argument === "--help" || argument === "--json") {
       if (flags.has(argument)) throw new Error(`${argument} must not be repeated`);
       flags.add(argument);
-    } else if (argument === "--base" || argument === "--out") {
+    } else if (
+      argument === "--base"
+      || argument === "--out"
+      || argument === "--permit-key-id"
+      || argument === "--permit-spki-sha256"
+    ) {
       if (values.has(argument)) throw new Error(`${argument} must not be repeated`);
       const value = argv[++index];
       if (!value || value.startsWith("--")) {
@@ -149,19 +206,29 @@ export function parseJsonCompatibilityExecutorConfigArgs(argv) {
     return { help: true };
   }
   if (!values.has("--out")) throw new Error("--out is required");
+  if (!values.has("--permit-key-id")) {
+    throw new Error("--permit-key-id is required");
+  }
+  if (!values.has("--permit-spki-sha256")) {
+    throw new Error("--permit-spki-sha256 is required");
+  }
+  keyId(values.get("--permit-key-id"), "--permit-key-id");
+  sha256(values.get("--permit-spki-sha256"), "--permit-spki-sha256");
   return {
     json: flags.has("--json"),
     basePath: values.get("--base"),
     outPath: values.get("--out"),
+    permitKeyId: values.get("--permit-key-id"),
+    permitSpkiSha256: values.get("--permit-spki-sha256"),
   };
 }
 
 function usage() {
   return [
     "Usage:",
-    "  bun tools/prepare_container_runtime_json_compatibility_executor_config.mjs --out <campaign-wrangler.jsonc> [--base <tracked-staging.jsonc>] [--json]",
+    "  bun tools/prepare_container_runtime_json_compatibility_executor_config.mjs --out <campaign-wrangler.jsonc> --permit-key-id <kid> --permit-spki-sha256 <sha256> [--base <tracked-staging.jsonc>] [--json]",
     "",
-    "The output is create-only and differs from the validated private staging executor config only by enabling JSON_COMPATIBILITY_EXECUTOR_ENABLED.",
+    "The create-only output enables the executor and pins the campaign Ed25519 key ID and SPKI digest. Provision JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL separately as a Worker secret.",
   ].join("\n");
 }
 
@@ -195,6 +262,23 @@ function canonicalEqual(actual, expected, label) {
   if (canonicalJson(actual) !== canonicalJson(expected)) {
     throw new Error(`${label} does not match`);
   }
+}
+
+function keyId(value, label) {
+  if (
+    typeof value !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)
+  ) {
+    throw new Error(`${label} must be a safe key ID`);
+  }
+  return value;
+}
+
+function sha256(value, label) {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${label} must be lowercase SHA-256 hex`);
+  }
+  return value;
 }
 
 async function cliMain(argv = process.argv.slice(2)) {

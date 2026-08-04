@@ -4568,3 +4568,37 @@ sign B6, then repeat B7 on a clean host. Until a real bundle passes, complete
 S3, R3/C1, P5, customer traffic, financial authority, Go/VPS drain, and
 cutover remain blocked. Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+### JSON compatibility campaign authorization ceremony
+
+The JSON-only N/N-1 executor now has a local permit-consumer and campaign
+authority foundation. Production execution must preserve this exact order:
+
+1. release and security approve the campaign plan, N/N-1 OCI identities,
+   Controller/executor version IDs, ring/candidate shard, four exact topologies,
+   permit issuer/audience, Ed25519 key ID, and public SPKI SHA-256;
+2. an independent key ceremony creates the campaign signing key; private key
+   material never enters the executor, repository, command arguments, logs, or
+   evidence bundle;
+3. prepare a create-only executor config with only key ID and SPKI digest,
+   provision `JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL` through Worker-secret
+   stdin, deploy with both campaign gates false, and independently read back the
+   version, Service Binding, SQLite DO migration, vars, and secret presence;
+4. for each phase, deploy and read back the exact named-shard topology, collect
+   independent before-state, then have the independent issuer mint one permit
+   bound to that exact phase and executor version;
+5. the authenticated private invoker submits once. An unknown result is an
+   incident: do not retry the permit or bypass/take over the campaign lease;
+6. collect after-state, assemble the phase packet, and continue only after the
+   persisted receipt and independent context both pass offline validation;
+7. after rollback, disable/read back executor then Controller gates, verify and
+   sign the source manifest, and publish immutable evidence before any
+   Protobuf or production proposal.
+
+The local SQLite Durable Object provides one coordination atom per campaign,
+permanent permit consumption, one active phase, exact four-phase order, and
+terminal failure. It does not supply the independent issuer, invoker, topology
+runner, remote readback collector, source signer, or archive. Until those
+components and one real staging ceremony pass, all Protobuf/production gates,
+traffic, billing, drain, and cutover authority remain false; Go/VPS remains
+authoritative and production remains **NO-GO**.

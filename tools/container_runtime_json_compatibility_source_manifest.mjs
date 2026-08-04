@@ -378,6 +378,84 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
       domain: "synthetic-executor-receipt",
       phaseIndex,
     });
+    const permitSubject = {
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-phase-permit-subject-v1",
+      issuer: "cinatoken-json-compatibility-permit-issuer-staging",
+      audience:
+        "cinatoken-container-runtime-json-compatibility-executor-staging",
+      keyId: "synthetic-json-compatibility-key",
+      permitIdSha256: sha256Canonical({ domain: "synthetic-permit", phaseIndex }),
+      campaignIdSha256: validatedPlan.campaignIdSha256,
+      planDigestSha256: validatedPlan.planDigestSha256,
+      phaseExecutionId: `synthetic-phase-execution-${phaseIndex + 1}`,
+      controller: {
+        serviceName: validatedPlan.controller.serviceName,
+        versionId: validatedPlan.controller.versionId,
+        configSha256: validatedPlan.controller.configSha256,
+      },
+      executor: {
+        serviceName:
+          "cinatoken-container-runtime-json-compatibility-executor-staging",
+        versionId: "executor-version-self-test",
+      },
+      runtimes: cloneJson(validatedPlan.runtimes),
+      ring: cloneJson(validatedPlan.ring),
+      phase: {
+        ordinal: phase.ordinal,
+        id: phase.id,
+        topology: cloneJson(phase.topology),
+      },
+      issuedAt: Math.floor(startedAt.getTime() / 1000) - 10,
+      notBefore: Math.floor(startedAt.getTime() / 1000) - 5,
+      expiresAt: Math.floor(startedAt.getTime() / 1000) + 300,
+    };
+    const permitEnvelope = {
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-phase-permit-envelope-v1",
+      algorithm: "Ed25519",
+      subject: permitSubject,
+      subjectSha256: sha256Canonical(permitSubject),
+      signatureBase64url: "A".repeat(86),
+    };
+    const authorization = {
+      kind: "ed25519-signed-single-use-phase-permit",
+      algorithm: "Ed25519",
+      permitIdSha256: permitSubject.permitIdSha256,
+      permitSubjectSha256: permitEnvelope.subjectSha256,
+      permitEnvelopeSha256: sha256Canonical(permitEnvelope),
+      permitEnvelope,
+      issuer: permitSubject.issuer,
+      audience: permitSubject.audience,
+      keyId: permitSubject.keyId,
+      signerSpkiSha256: sha256Canonical({
+        domain: "synthetic-permit-spki",
+      }),
+      issuedAt: permitSubject.issuedAt,
+      notBefore: permitSubject.notBefore,
+      expiresAt: permitSubject.expiresAt,
+      campaignAuthority: {
+        kind: "campaign-scoped-sqlite-durable-object",
+        binding: "JSON_COMPATIBILITY_CAMPAIGN_AUTHORITY",
+        objectNameSha256: validatedPlan.campaignIdSha256,
+        campaignBindingSha256: sha256Canonical({
+          domain: "synthetic-campaign-binding",
+        }),
+        leaseIdSha256: sha256Canonical({
+          domain: "synthetic-campaign-lease",
+          phaseIndex,
+        }),
+        leaseReceiptSha256: sha256Canonical({
+          domain: "synthetic-campaign-lease-receipt",
+          phaseIndex,
+        }),
+        singleUsePermitPersisted: true,
+        phaseOrderEnforced: true,
+        concurrentPhaseRejected: true,
+      },
+    };
     const packetSubject = {
       schemaVersion: 1,
       contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
@@ -407,7 +485,7 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
       }),
       executorReceipt: {
         contract:
-          "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v1",
+          "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v2",
         receiptSha256,
         campaignIdSha256: validatedPlan.campaignIdSha256,
         planDigestSha256: validatedPlan.planDigestSha256,
@@ -425,6 +503,7 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
         publicUrlUsed: false,
         cloudflareRestUsed: false,
         executionBoundarySha256: sha256Canonical(executorBoundary),
+        authorization,
       },
       sourceContext: {
         contract:
@@ -580,6 +659,7 @@ function validatePhasePacket(plan, packet, expectedOrdinal, crossPhase) {
   validateExecutorReceiptReference(
     value.executorReceipt,
     expectedPlanPhase,
+    plan,
     value.campaignIdSha256,
     value.planDigestSha256,
     label,
@@ -678,6 +758,7 @@ function validatePacketController(value, expected, label) {
 function validateExecutorReceiptReference(
   value,
   expectedPhase,
+  plan,
   campaignIdSha256,
   planDigestSha256,
   label,
@@ -701,10 +782,11 @@ function validateExecutorReceiptReference(
     "publicUrlUsed",
     "cloudflareRestUsed",
     "executionBoundarySha256",
+    "authorization",
   ], `${label} executor receipt`);
   requireEqual(
     receipt.contract,
-    "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v1",
+    "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v2",
     `${label} executor receipt contract`,
   );
   requireSha256(receipt.receiptSha256, `${label} executor receipt digest`);
@@ -779,6 +861,234 @@ function validateExecutorReceiptReference(
     receipt.executionBoundarySha256,
     `${label} executor boundary digest`,
   );
+  validateExecutorAuthorizationReference(
+    receipt.authorization,
+    expectedPhase,
+    plan,
+    campaignIdSha256,
+    planDigestSha256,
+    receipt.executorVersionId,
+    label,
+  );
+}
+
+function validateExecutorAuthorizationReference(
+  value,
+  expectedPhase,
+  plan,
+  campaignIdSha256,
+  planDigestSha256,
+  executorVersionId,
+  label,
+) {
+  const authorization = requireRecord(
+    value,
+    `${label} executor authorization`,
+  );
+  requireExactKeys(authorization, [
+    "kind",
+    "algorithm",
+    "permitIdSha256",
+    "permitSubjectSha256",
+    "permitEnvelopeSha256",
+    "permitEnvelope",
+    "issuer",
+    "audience",
+    "keyId",
+    "signerSpkiSha256",
+    "issuedAt",
+    "notBefore",
+    "expiresAt",
+    "campaignAuthority",
+  ], `${label} executor authorization`);
+  requireEqual(
+    authorization.kind,
+    "ed25519-signed-single-use-phase-permit",
+    `${label} authorization kind`,
+  );
+  requireEqual(
+    authorization.algorithm,
+    "Ed25519",
+    `${label} authorization algorithm`,
+  );
+  for (const name of [
+    "permitIdSha256",
+    "permitSubjectSha256",
+    "permitEnvelopeSha256",
+    "signerSpkiSha256",
+  ]) {
+    requireSha256(authorization[name], `${label} authorization ${name}`);
+  }
+  requireSafeToken(authorization.issuer, `${label} authorization issuer`);
+  requireSafeToken(authorization.audience, `${label} authorization audience`);
+  requireSafeToken(authorization.keyId, `${label} authorization key ID`);
+  for (const name of ["issuedAt", "notBefore", "expiresAt"]) {
+    requireInteger(
+      authorization[name],
+      1,
+      Number.MAX_SAFE_INTEGER,
+      `${label} authorization ${name}`,
+    );
+  }
+  if (
+    authorization.notBefore < authorization.issuedAt - 5
+    || authorization.expiresAt <= authorization.notBefore
+    || authorization.expiresAt - authorization.issuedAt > 600
+  ) {
+    throw new JsonCompatibilityCampaignError(
+      `${label} authorization time window is invalid`,
+    );
+  }
+
+  const envelope = requireRecord(
+    authorization.permitEnvelope,
+    `${label} permit envelope`,
+  );
+  requireExactKeys(envelope, [
+    "schemaVersion",
+    "contract",
+    "algorithm",
+    "subject",
+    "subjectSha256",
+    "signatureBase64url",
+  ], `${label} permit envelope`);
+  requireEqual(envelope.schemaVersion, 1, `${label} permit envelope schema`);
+  requireEqual(
+    envelope.contract,
+    "cinatoken-container-runtime-json-compatibility-phase-permit-envelope-v1",
+    `${label} permit envelope contract`,
+  );
+  requireEqual(envelope.algorithm, "Ed25519", `${label} permit envelope algorithm`);
+  requireEqual(
+    envelope.subjectSha256,
+    authorization.permitSubjectSha256,
+    `${label} permit subject reference`,
+  );
+  requireEqual(
+    sha256Canonical(envelope),
+    authorization.permitEnvelopeSha256,
+    `${label} permit envelope digest`,
+  );
+  if (
+    typeof envelope.signatureBase64url !== "string"
+    || !/^[A-Za-z0-9_-]{86}$/.test(envelope.signatureBase64url)
+  ) {
+    throw new JsonCompatibilityCampaignError(
+      `${label} permit signature is invalid`,
+    );
+  }
+  const subject = requireRecord(envelope.subject, `${label} permit subject`);
+  requireExactKeys(subject, [
+    "schemaVersion",
+    "contract",
+    "issuer",
+    "audience",
+    "keyId",
+    "permitIdSha256",
+    "campaignIdSha256",
+    "planDigestSha256",
+    "phaseExecutionId",
+    "controller",
+    "executor",
+    "runtimes",
+    "ring",
+    "phase",
+    "issuedAt",
+    "notBefore",
+    "expiresAt",
+  ], `${label} permit subject`);
+  requireEqual(subject.schemaVersion, 1, `${label} permit subject schema`);
+  requireEqual(
+    subject.contract,
+    "cinatoken-container-runtime-json-compatibility-phase-permit-subject-v1",
+    `${label} permit subject contract`,
+  );
+  requireEqual(
+    sha256Canonical(subject),
+    authorization.permitSubjectSha256,
+    `${label} permit subject digest`,
+  );
+  for (const name of ["issuer", "audience", "keyId", "permitIdSha256"]) {
+    requireEqual(
+      subject[name],
+      authorization[name],
+      `${label} permit ${name}`,
+    );
+  }
+  requireEqual(subject.campaignIdSha256, campaignIdSha256, `${label} permit campaign`);
+  requireEqual(subject.planDigestSha256, planDigestSha256, `${label} permit plan`);
+  requireCanonicalEqual(subject.controller, {
+    serviceName: plan.controller.serviceName,
+    versionId: plan.controller.versionId,
+    configSha256: plan.controller.configSha256,
+  }, `${label} permit Controller`);
+  requireCanonicalEqual(subject.runtimes, plan.runtimes, `${label} permit runtimes`);
+  requireCanonicalEqual(subject.ring, plan.ring, `${label} permit ring`);
+  requireCanonicalEqual(subject.phase, {
+    ordinal: expectedPhase.ordinal,
+    id: expectedPhase.id,
+    topology: expectedPhase.topology,
+  }, `${label} permit phase`);
+  const executor = requireRecord(subject.executor, `${label} permit executor`);
+  requireExactKeys(
+    executor,
+    ["serviceName", "versionId"],
+    `${label} permit executor`,
+  );
+  requireEqual(
+    executor.serviceName,
+    "cinatoken-container-runtime-json-compatibility-executor-staging",
+    `${label} permit executor service`,
+  );
+  requireEqual(executor.versionId, executorVersionId, `${label} permit executor version`);
+  for (const name of ["issuedAt", "notBefore", "expiresAt"]) {
+    requireEqual(subject[name], authorization[name], `${label} permit ${name}`);
+  }
+
+  const authority = requireRecord(
+    authorization.campaignAuthority,
+    `${label} campaign authority`,
+  );
+  requireExactKeys(authority, [
+    "kind",
+    "binding",
+    "objectNameSha256",
+    "campaignBindingSha256",
+    "leaseIdSha256",
+    "leaseReceiptSha256",
+    "singleUsePermitPersisted",
+    "phaseOrderEnforced",
+    "concurrentPhaseRejected",
+  ], `${label} campaign authority`);
+  requireEqual(
+    authority.kind,
+    "campaign-scoped-sqlite-durable-object",
+    `${label} campaign authority kind`,
+  );
+  requireEqual(
+    authority.binding,
+    "JSON_COMPATIBILITY_CAMPAIGN_AUTHORITY",
+    `${label} campaign authority binding`,
+  );
+  requireEqual(
+    authority.objectNameSha256,
+    campaignIdSha256,
+    `${label} campaign authority object name`,
+  );
+  for (const name of [
+    "campaignBindingSha256",
+    "leaseIdSha256",
+    "leaseReceiptSha256",
+  ]) {
+    requireSha256(authority[name], `${label} campaign authority ${name}`);
+  }
+  for (const name of [
+    "singleUsePermitPersisted",
+    "phaseOrderEnforced",
+    "concurrentPhaseRejected",
+  ]) {
+    requireEqual(authority[name], true, `${label} campaign authority ${name}`);
+  }
 }
 
 function validateShardRecord({

@@ -27445,10 +27445,12 @@ and recovery authority, Rust Linux Containers remain replaceable compute, and
 KV/D1/R2 retain durable data. The staging Controller has `workers_dev: false`,
 `preview_urls: false`, and no public route. A campaign executor must therefore
 reach it through a private Service Binding. A Service Binding is capability
-transport, not campaign authentication: a signed, expiring, single-use permit
-bound to campaign, plan, phase, Controller/executor versions, runtime/ring,
-nonce, and replay consumption remains a release blocker. Creating a public URL
-for convenience is a release blocker, not a workaround.
+transport, not campaign authentication. The executor now verifies a signed,
+expiring, single-use permit bound to campaign, plan, phase,
+Controller/executor versions, runtime/ring, and topology, then consumes it in
+a per-campaign replay ledger. The independent issuer and authenticated invoker
+remain release blockers. Creating a public URL for convenience is a release
+blocker, not a workaround.
 
 `buildJsonCompatibilityCampaignPlan` reuses the Controller deployment preflight
 and fails unless:
@@ -27625,8 +27627,9 @@ the isolated JSON probe gate. It continues to reject Protobuf, provider,
 storage, terminal, recovery, production-action, public exposure, or any other
 enabled action gate. The create-only config preparer copies the reviewed
 staging config and changes exactly the JSON probe value; it cannot overwrite an
-existing file. A separate create-only executor config preparer changes exactly
-its executor gate in the reviewed staging config.
+existing file. A separate create-only executor config preparer enables its
+executor gate and pins the reviewed non-secret permit key ID and SPKI SHA-256;
+the tracked staging config retains an empty key ID/digest and a false gate.
 
 ### Receipt, context, packet, manifest, evidence
 
@@ -27637,9 +27640,9 @@ readback facts:
    maximum concurrency of four and awaits every launched RPC with
    `Promise.allSettled`. It emits a closed phase probe receipt containing raw
    bytes, digests, topology, runtime identity, transport totals, zero-mutation
-   counters, and a digest of its code-enforced execution boundary. The receipt
-   records claims made by the private path; it does not authenticate who invoked
-   the campaign.
+   counters, a digest of its code-enforced execution boundary, the verified
+   signed permit envelope, and the durable campaign lease evidence. The receipt
+   does not authenticate the private invoker identity.
 2. An independently collected phase context supplies Controller deployment
    readback, phase-specific Container deployment set, ledger convergence, and
    before/after provider, billing, storage-gateway, and production-traffic
@@ -27666,8 +27669,9 @@ and 4 KiB wire response.
 
 The canonical SHA-256 chain provides deterministic integrity and tamper
 detection. It is not a source-authenticity signature. An Ed25519 or equivalent
-authorization/signature envelope, signer policy, and keyless or managed-key
-verification remain mandatory before this evidence can become an activation
+phase-authorization envelope is now verified by the executor, but a separate
+source-evidence signature, signer policy, and keyless or managed-key
+verification remain mandatory before the manifest can become an activation
 artifact.
 
 ### Operational sequence and production boundary
@@ -27692,10 +27696,10 @@ The required order is:
    evidence projection, verify it offline, authenticate its source, and archive
    immutable signed evidence.
 
-The remaining implementation and operational gaps are a signed single-use
-invocation permit plus replay registry and global campaign lease, an
-authenticated private invoker, an exact per-shard topology deployment/readback
-runner, an automated independent remote context collector, cryptographic source
+The local signed-permit consumer, replay registry, and per-campaign lease are
+now implemented. Remaining gaps are an independent permit issuer,
+authenticated private invoker, exact per-shard topology deployment/readback
+runner, automated independent remote context collector, cryptographic source
 signatures, immutable archive publication, and a real staging packet with
 remote Workerd/Container proof. No remote Cloudflare mutation or
 customer-impacting action occurred in this checkpoint. Both Protobuf gates and
@@ -27711,3 +27715,97 @@ named Controller entrypoint and reports both tracked gates false. These are
 local and dry-run results, not Cloudflare staging observations. The complete
 root `bun run check` gate also passes with exit 0 in 1,304.3 seconds, including
 the Rust workspace and all configured wasm32 checks.
+
+## 2026-08-04 Signed Phase Permit And Campaign Authority Checkpoint
+
+The private JSON compatibility executor now consumes a cryptographically
+verified phase authorization before it can call the Controller. This closes
+the local implementation gap previously described as "Service Binding is
+private transport, not campaign authentication". It does not create the
+independent issuer or invoker and does not authorize a remote campaign.
+
+### Authorization contract
+
+The execute-phase request and phase receipt are now version 2. Every request
+must carry a version-1 Ed25519 envelope whose closed subject binds all of:
+
+- issuer, audience, key ID, permit ID, campaign ID, plan digest, and phase
+  execution ID;
+- Controller service, exact version, and config digest;
+- executor service and exact Worker version;
+- N and N-1 build SHA-256 plus OCI image digest;
+- ring generation, exact eight-shard count, candidate shard, phase ordinal,
+  phase ID, and exact topology; and
+- issued-at, not-before, and expiry timestamps.
+
+The executor recomputes the canonical subject digest, verifies the Ed25519
+signature with WebCrypto, verifies the provisioned SPKI bytes against the
+pinned SHA-256, and rejects trust/config/version/time drift before any Durable
+Object or Controller RPC. Clock skew is bounded to five seconds, permit
+lifetime to 600 seconds, and at least 180 seconds must remain at admission.
+Tracked configs retain an empty key ID and SPKI digest and keep the executor
+gate false. The campaign config preparer is create-only and requires non-secret
+`--permit-key-id` and `--permit-spki-sha256` values. Public SPKI bytes are
+provisioned separately as the
+`JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL` Worker secret through stdin; they
+must not enter a tracked config, command argument, artifact, or log.
+
+### Persistent single-use and phase lease
+
+`JsonCompatibilityCampaignAuthority` is a SQLite Durable Object exported by
+the executor Worker. The namespace is keyed with the campaign SHA-256, so each
+campaign has one coordination atom without introducing one cross-campaign
+global bottleneck. Its first accepted command permanently binds the campaign,
+plan, Controller/executor/runtime/ring identity digest. In one synchronous
+SQLite transaction it persists permit consumption and acquires the phase
+lease before the first shard probe.
+
+The authority enforces exactly baseline, mixed, candidate, and rollback order;
+only one phase may be active per campaign. An accepted permit remains consumed
+after success, failure, object eviction, or an ambiguous RPC response. Success
+stores the final executor receipt digest. Any probe or receipt failure marks
+the whole campaign terminal-failed. There is deliberately no automatic permit
+retry, lease takeover, expiry unlock, or skip-forward path: an ambiguous
+authority outcome is an operator incident and remains fail-closed.
+
+The version-2 executor receipt retains the complete permit envelope, canonical
+subject/envelope digests, signer SPKI digest, and campaign binding, lease, and
+lease-receipt digests. Phase assembly and source-manifest validation retain and
+revalidate that authorization chain, including exact request binding and the
+three durable facts: single-use consumption persisted, phase order enforced,
+and concurrent phase rejected.
+
+### Production execution order and remaining blockers
+
+For an eventual reviewed staging ceremony, the order is now:
+
+1. publish/read back exact N, N-1, Controller, and executor identities;
+2. generate a dedicated Ed25519 campaign key outside the executor, approve its
+   issuer/audience policy, and prepare the executor config with only key ID and
+   SPKI SHA-256;
+3. provision the SPKI bytes through Worker-secret stdin, deploy with both JSON
+   gates still false, and independently read back version, bindings, migration,
+   vars, and secret presence without revealing secret bytes;
+4. have an independent authenticated issuer mint one short-lived permit per
+   exact phase only after exact topology deployment/readback and before-state
+   collection;
+5. invoke through the private authenticated invoker; never replay after an
+   ambiguous result; collect after-state and assemble the retained phase source;
+6. after rollback, close/read back executor then Controller gates, verify the
+   four-phase manifest offline, sign its source, and publish to the immutable
+   archive only after independent review.
+
+Still open are the independent permit issuer and authenticated private invoker,
+exact named-shard topology deployment/readback runner, remote context collector,
+remote secret/binding/migration readback, source signature verifier, immutable
+archive publication, and the actual four-phase staging campaign. Permit
+authorization does not authorize topology mutation, deployment, provider,
+billing, storage-gateway, production traffic, or cutover. No Cloudflare token
+or secret was read, no remote mutation occurred, Go/VPS remains authoritative,
+and production remains **NO-GO**.
+
+Focused local evidence passes 12 Node executor/config tests, four Workerd
+SQLite Durable Object tests, and 41 campaign/source-chain tests with 110
+assertions. Generated Wrangler types, TypeScript, local/staging dry-run bundles,
+the default-off Durable Object binding/migration inventory, and complete
+authorization retention all pass. These are local and dry-run facts only.

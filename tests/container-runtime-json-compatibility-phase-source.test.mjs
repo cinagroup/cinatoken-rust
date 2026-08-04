@@ -22,10 +22,15 @@ import {
   runJsonCompatibilityPhaseSourceAssembler,
 } from "../tools/assemble_container_runtime_json_compatibility_phase_source.mjs";
 import {
+  jsonCompatibilityPermitSigningPayload,
+} from "../services/container-runtime-json-compatibility-executor/src/authorization.ts";
+import {
   executeJsonCompatibilityPhase,
 } from "../services/container-runtime-json-compatibility-executor/src/executor.ts";
 import {
   JSON_COMPATIBILITY_EXECUTE_PHASE_REQUEST_CONTRACT,
+  JSON_COMPATIBILITY_PHASE_PERMIT_ENVELOPE_CONTRACT,
+  JSON_COMPATIBILITY_PHASE_PERMIT_SUBJECT_CONTRACT,
 } from "../services/container-runtime-json-compatibility-executor/src/protocol.ts";
 import {
   createJsonHealthProbeDigestRecord,
@@ -43,6 +48,20 @@ const config = JSON.parse(
 );
 config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED = "true";
 const temporaryDirectories = [];
+const permitKeyPair = await crypto.subtle.generateKey(
+  { name: "Ed25519" },
+  true,
+  ["sign", "verify"],
+);
+const permitSpki = new Uint8Array(
+  await crypto.subtle.exportKey("spki", permitKeyPair.publicKey),
+);
+const permitSpkiBase64url = Buffer.from(permitSpki).toString("base64url");
+const permitSpkiSha256 = await sha256Hex(permitSpki);
+const permitIssuer = "cinatoken-json-compatibility-permit-issuer-staging";
+const permitAudience =
+  "cinatoken-container-runtime-json-compatibility-executor-staging";
+const permitKeyId = "phase-source-test-key";
 
 afterEach(async () => {
   await Promise.all(
@@ -139,37 +158,133 @@ function deterministicRuntime(nowMs) {
   };
 }
 
+class CampaignAuthorityBinding {
+  getByName() {
+    return {
+      async beginPhase(input) {
+        const receiptSubject = {
+          schemaVersion: 1,
+          contract:
+            "cinatoken-container-runtime-json-compatibility-campaign-lease-receipt-v1",
+          status: "phase_lease_acquired",
+          campaignIdSha256: input.campaignIdSha256,
+          campaignBindingSha256: input.campaignBindingSha256,
+          planDigestSha256: input.planDigestSha256,
+          permitIdSha256: input.permitIdSha256,
+          permitSubjectSha256: input.permitSubjectSha256,
+          permitEnvelopeSha256: input.permitEnvelopeSha256,
+          phaseOrdinal: input.phaseOrdinal,
+          phaseId: input.phaseId,
+          phaseExecutionId: input.phaseExecutionId,
+          leaseIdSha256: input.leaseIdSha256,
+          executorVersionId: input.executorVersionId,
+          acquiredAt: input.acquiredAt,
+          permitExpiresAt: input.permitExpiresAt,
+          singleUsePermitPersisted: true,
+          phaseOrderEnforced: true,
+          concurrentPhaseRejected: true,
+        };
+        return {
+          ok: true,
+          receipt: {
+            ...receiptSubject,
+            leaseReceiptSha256: sha256Canonical(receiptSubject),
+          },
+        };
+      },
+      async completePhase(input) {
+        return {
+          ok: true,
+          status: input.phaseOrdinal === 4
+            ? "campaign_completed"
+            : "phase_completed",
+        };
+      },
+      async failPhase() {
+        return { ok: true, status: "campaign_failed" };
+      },
+    };
+  }
+}
+
 async function buildReceipt(plan, phaseIndex) {
   const phase = plan.phases[phaseIndex];
+  const nowMs = Date.parse(`2026-08-04T00:0${phaseIndex * 2}:00Z`);
+  const request = {
+    schemaVersion: 2,
+    contract: JSON_COMPATIBILITY_EXECUTE_PHASE_REQUEST_CONTRACT,
+    kind: "container-runtime-json-compatibility-phase-execution",
+    environment: "staging",
+    campaignIdSha256: plan.campaignIdSha256,
+    planDigestSha256: plan.planDigestSha256,
+    phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
+    controller: {
+      serviceName: plan.controller.serviceName,
+      versionId: plan.controller.versionId,
+      configSha256: plan.controller.configSha256,
+    },
+    runtimes: structuredClone(plan.runtimes),
+    ring: structuredClone(plan.ring),
+    phase: {
+      ordinal: phase.ordinal,
+      id: phase.id,
+      topology: structuredClone(phase.topology),
+    },
+  };
+  const nowSeconds = Math.floor(nowMs / 1000);
+  const permitSubject = {
+    schemaVersion: 1,
+    contract: JSON_COMPATIBILITY_PHASE_PERMIT_SUBJECT_CONTRACT,
+    issuer: permitIssuer,
+    audience: permitAudience,
+    keyId: permitKeyId,
+    permitIdSha256: sha256Canonical({ phaseIndex, kind: "phase-permit" }),
+    campaignIdSha256: request.campaignIdSha256,
+    planDigestSha256: request.planDigestSha256,
+    phaseExecutionId: request.phaseExecutionId,
+    controller: request.controller,
+    executor: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-executor-staging",
+      versionId: "executor-version-001",
+    },
+    runtimes: request.runtimes,
+    ring: request.ring,
+    phase: request.phase,
+    issuedAt: nowSeconds - 10,
+    notBefore: nowSeconds - 5,
+    expiresAt: nowSeconds + 300,
+  };
+  const authorization = {
+    schemaVersion: 1,
+    contract: JSON_COMPATIBILITY_PHASE_PERMIT_ENVELOPE_CONTRACT,
+    algorithm: "Ed25519",
+    subject: permitSubject,
+    subjectSha256: sha256Canonical(permitSubject),
+    signatureBase64url: "",
+  };
+  authorization.signatureBase64url = Buffer.from(
+    await crypto.subtle.sign(
+      "Ed25519",
+      permitKeyPair.privateKey,
+      jsonCompatibilityPermitSigningPayload(authorization),
+    ),
+  ).toString("base64url");
   return executeJsonCompatibilityPhase(
     {
       ENVIRONMENT: "staging",
       JSON_COMPATIBILITY_EXECUTOR_ENABLED: "true",
       CF_VERSION_METADATA: { id: "executor-version-001" },
       CONTAINER_CONTROLLER_JSON_PROBE: new ProbeBinding(),
+      JSON_COMPATIBILITY_CAMPAIGN_AUTHORITY: new CampaignAuthorityBinding(),
+      JSON_COMPATIBILITY_PERMIT_ISSUER: permitIssuer,
+      JSON_COMPATIBILITY_PERMIT_AUDIENCE: permitAudience,
+      JSON_COMPATIBILITY_PERMIT_KEY_ID: permitKeyId,
+      JSON_COMPATIBILITY_PERMIT_SPKI_SHA256: permitSpkiSha256,
+      JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL: permitSpkiBase64url,
     },
-    {
-      schemaVersion: 1,
-      contract: JSON_COMPATIBILITY_EXECUTE_PHASE_REQUEST_CONTRACT,
-      kind: "container-runtime-json-compatibility-phase-execution",
-      environment: "staging",
-      campaignIdSha256: plan.campaignIdSha256,
-      planDigestSha256: plan.planDigestSha256,
-      phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
-      controller: {
-        serviceName: plan.controller.serviceName,
-        versionId: plan.controller.versionId,
-        configSha256: plan.controller.configSha256,
-      },
-      runtimes: structuredClone(plan.runtimes),
-      ring: structuredClone(plan.ring),
-      phase: {
-        ordinal: phase.ordinal,
-        id: phase.id,
-        topology: structuredClone(phase.topology),
-      },
-    },
-    deterministicRuntime(Date.parse(`2026-08-04T00:0${phaseIndex * 2}:00Z`)),
+    { ...request, authorization },
+    deterministicRuntime(nowMs),
   );
 }
 

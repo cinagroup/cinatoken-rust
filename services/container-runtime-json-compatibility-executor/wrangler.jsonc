@@ -19,8 +19,28 @@
       "entrypoint": "JsonCompatibilityProbeEntrypoint"
     }
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "JSON_COMPATIBILITY_CAMPAIGN_AUTHORITY",
+        "class_name": "JsonCompatibilityCampaignAuthority"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "JsonCompatibilityCampaignAuthority"
+      ]
+    }
+  ],
   "vars": {
     "ENVIRONMENT": "local",
-    "JSON_COMPATIBILITY_EXECUTOR_ENABLED": "false"
+    "JSON_COMPATIBILITY_EXECUTOR_ENABLED": "false",
+    "JSON_COMPATIBILITY_PERMIT_ISSUER": "cinatoken-json-compatibility-permit-issuer-staging",
+    "JSON_COMPATIBILITY_PERMIT_AUDIENCE": "cinatoken-container-runtime-json-compatibility-executor-staging",
+    "JSON_COMPATIBILITY_PERMIT_KEY_ID": "",
+    "JSON_COMPATIBILITY_PERMIT_SPKI_SHA256": ""
   }
 }

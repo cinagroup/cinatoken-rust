@@ -2535,7 +2535,9 @@ bun tools/prepare_container_runtime_json_compatibility_controller_config.mjs \
   --out <create-only-campaign-wrangler.jsonc> --json
 
 bun tools/prepare_container_runtime_json_compatibility_executor_config.mjs \
-  --out <create-only-executor-campaign-wrangler.jsonc> --json
+  --out <create-only-executor-campaign-wrangler.jsonc> \
+  --permit-key-id <reviewed-non-secret-key-id> \
+  --permit-spki-sha256 <reviewed-public-key-sha256> --json
 
 bun tools/preflight_container_controller_deploy.mjs \
   --environment staging \
@@ -2547,15 +2549,21 @@ Both preparers refuse to overwrite output. Standard deployment preflight
 must continue to reject this gate when true; the campaign mode is staging-only
 and permits no other action, provider, storage, terminal, recovery, or Protobuf
 gate. The executor has the separate `JSON_COMPATIBILITY_EXECUTOR_ENABLED` gate,
-also false in tracked configs. In the authorized change window, repeat the
+also false in tracked configs. The preparer additionally pins the reviewed
+non-secret key ID and SPKI SHA-256. Provision the public SPKI bytes separately
+as the `JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL` Worker secret through stdin;
+never put those bytes or a Cloudflare credential in a tracked file or command
+argument. In the authorized change window, repeat the
 Controller campaign preflight without `--offline`; the offline pass cannot
 establish Cloudflare account, service, binding, or deployed-version state.
 
 Separately authorize and upload the reviewed Controller and executor campaign
 versions without activating them, read back their exact version IDs, Service
-Binding target, and route-free exposure, and pin those identities in the
-campaign record. Keep the active deployed versions on their default-off configs
-while the plan is created. Service Binding privacy is capability transport, not
+Binding target, route-free exposure, campaign-authority SQLite Durable Object
+migration, fixed issuer/audience, pinned key ID/SPKI digest, and secret
+presence without revealing secret bytes. Pin those identities in the campaign
+record. Keep the active deployed versions on their default-off configs while
+the plan is created. Service Binding privacy is capability transport, not
 campaign authorization.
 
 ### Offline plan
@@ -2589,10 +2597,13 @@ planner performs no credential read, network request, deployment, gate change,
 provider call, or traffic mutation.
 
 After the plan is approved, activate and read back the Controller campaign
-version first, then the executor campaign version. Do not invoke the executor
-until a signed, expiring, single-use permit bound to the campaign, plan, phase,
-versions, runtime/ring, nonce, and replay registry has been verified and
-consumed. That permit path is not yet implemented.
+version first, then the executor campaign version. The executor now verifies a
+signed, expiring, single-use permit bound to campaign, plan, phase, exact
+Controller/executor versions, N/N-1 identities, ring, and topology. It consumes
+that permit and acquires the ordered phase lease in the campaign-named SQLite
+Durable Object before the first probe. The independent permit issuer and
+authenticated private invoker are not yet implemented; do not substitute a
+local signer or public route.
 
 ### Ordered remote phases
 
@@ -2620,15 +2631,19 @@ Controller selects the Durable Object by name, then archives a bounded JSON
 `health_probe` operation. The executor uses a unique operation/trace identity
 for every shard so raw artifacts are unique, cross-phase replay is visible, and
 runtime/cache identity cannot be reused. The direct private probe bypasses the
-production operation ledger, so this is not a ledger anti-replay guarantee.
-Public URLs, provider credentials, customer traffic, and billing mutations are
-forbidden.
+production operation ledger, so it is not protected by that ledger. Campaign
+invocation replay is instead fenced by the separate campaign Durable Object,
+which persists accepted permit IDs, one active phase, and exact four-phase
+order across eviction. Public URLs, provider credentials, customer traffic,
+and billing mutations are forbidden.
 
 There is intentionally no public or credential-taking CLI for remote executor
 invocation in this repository. An approved private Cloudflare RPC invoker and
 explicit deployment authorization are prerequisites. The repository also lacks
-the signed permit/replay consumer and global campaign lease. Local dry-run
-success is not permission to deploy or execute the campaign.
+the independent issuer, remote trust/readback ceremony, and approved invoker;
+the local permit consumer and per-campaign replay/lease authority are present.
+Never retry a permit after an ambiguous authority or executor result. Local
+dry-run success is not permission to deploy or execute the campaign.
 
 The evidence record retains SHA-256 of the raw request and response bytes. For
 cross-version comparison it also computes the checked-in normalized projection
@@ -2655,10 +2670,11 @@ phase must additionally collect an independent context that proves:
   storage-gateway mutations, production requests, and public probes; and
 - ledger convergence before advancing, including after rollback.
 
-The independent remote context collector is not implemented yet. The receipt
-only records digest-bound private-path claims; it does not independently prove
-deployment topology, zero external mutation, campaign authorization, or source
-identity. Top-level artifact readers are no-follow, regular-file-only,
+The independent remote context collector is not implemented yet. The v2
+receipt retains the verified permit envelope and campaign lease digests, but it
+does not independently prove deployment topology, zero external mutation,
+issuer operation, or source identity. Top-level artifact readers are no-follow,
+regular-file-only,
 stable-read, strict UTF-8, and bounded: plan 256 KiB; config/context 512 KiB;
 receipt 1 MiB; phase source 2 MiB; manifest/evidence 8 MiB.
 
@@ -2718,10 +2734,11 @@ mode. The
 current repository provides the named private Controller entrypoint, bounded
 executor, two create-only campaign config preparers, create-only plan and
 evidence projector, receipt/context phase assembler, source-manifest collector,
-and offline verifier. It does not yet provide the signed single-use permit and
-replay registry, authenticated remote invoker, exact per-shard topology runner,
-automated independent context collector, cryptographic source signature,
-immutable archive, deployed versions, or real staging packet.
+offline verifier, signed-permit consumer, and per-campaign SQLite replay/lease
+authority. It does not yet provide the independent permit issuer,
+authenticated remote invoker, exact per-shard topology runner, automated
+independent context collector, cryptographic source signature, immutable
+archive, deployed versions, or real staging packet.
 Canonical digests detect mutation but do not authenticate the source.
 Therefore local success is not remote staging evidence and does not authorize
 image publication, rollout, Protobuf gates, production traffic, or DNS changes.

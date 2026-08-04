@@ -199,6 +199,77 @@ function buildPhasePackets(plan) {
       phaseIndex,
       type: "executor-receipt",
     });
+    const permitSubject = {
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-phase-permit-subject-v1",
+      issuer: "cinatoken-json-compatibility-permit-issuer-staging",
+      audience:
+        "cinatoken-container-runtime-json-compatibility-executor-staging",
+      keyId: "source-manifest-test-key",
+      permitIdSha256: sha256Canonical({ phaseIndex, type: "permit" }),
+      campaignIdSha256: plan.campaignIdSha256,
+      planDigestSha256: plan.planDigestSha256,
+      phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
+      controller: {
+        serviceName: plan.controller.serviceName,
+        versionId: plan.controller.versionId,
+        configSha256: plan.controller.configSha256,
+      },
+      executor: {
+        serviceName:
+          "cinatoken-container-runtime-json-compatibility-executor-staging",
+        versionId: "executor-version-001",
+      },
+      runtimes: structuredClone(plan.runtimes),
+      ring: structuredClone(plan.ring),
+      phase: {
+        ordinal: phase.ordinal,
+        id: phase.id,
+        topology: structuredClone(phase.topology),
+      },
+      issuedAt: 1_800_000_000 + phaseIndex * 120,
+      notBefore: 1_800_000_005 + phaseIndex * 120,
+      expiresAt: 1_800_000_300 + phaseIndex * 120,
+    };
+    const permitEnvelope = {
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-phase-permit-envelope-v1",
+      algorithm: "Ed25519",
+      subject: permitSubject,
+      subjectSha256: sha256Canonical(permitSubject),
+      signatureBase64url: "A".repeat(86),
+    };
+    const authorization = {
+      kind: "ed25519-signed-single-use-phase-permit",
+      algorithm: "Ed25519",
+      permitIdSha256: permitSubject.permitIdSha256,
+      permitSubjectSha256: permitEnvelope.subjectSha256,
+      permitEnvelopeSha256: sha256Canonical(permitEnvelope),
+      permitEnvelope,
+      issuer: permitSubject.issuer,
+      audience: permitSubject.audience,
+      keyId: permitSubject.keyId,
+      signerSpkiSha256: sha256Canonical({ type: "permit-spki" }),
+      issuedAt: permitSubject.issuedAt,
+      notBefore: permitSubject.notBefore,
+      expiresAt: permitSubject.expiresAt,
+      campaignAuthority: {
+        kind: "campaign-scoped-sqlite-durable-object",
+        binding: "JSON_COMPATIBILITY_CAMPAIGN_AUTHORITY",
+        objectNameSha256: plan.campaignIdSha256,
+        campaignBindingSha256: sha256Canonical({ type: "campaign-binding" }),
+        leaseIdSha256: sha256Canonical({ phaseIndex, type: "lease" }),
+        leaseReceiptSha256: sha256Canonical({
+          phaseIndex,
+          type: "lease-receipt",
+        }),
+        singleUsePermitPersisted: true,
+        phaseOrderEnforced: true,
+        concurrentPhaseRejected: true,
+      },
+    };
     const packetSubject = {
       schemaVersion: 1,
       contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
@@ -228,7 +299,7 @@ function buildPhasePackets(plan) {
       }),
       executorReceipt: {
         contract:
-          "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v1",
+          "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v2",
         receiptSha256,
         campaignIdSha256: plan.campaignIdSha256,
         planDigestSha256: plan.planDigestSha256,
@@ -246,6 +317,7 @@ function buildPhasePackets(plan) {
         publicUrlUsed: false,
         cloudflareRestUsed: false,
         executionBoundarySha256: sha256Canonical(executorBoundary),
+        authorization,
       },
       sourceContext: {
         contract:

@@ -13623,3 +13623,52 @@ campaign are still absent. Until those, the remote version, config, binding,
 and Durable Object migration readbacks, and wider provider, billing, storage,
 SLO, security, approval, Go/VPS drain and cutover gates pass, Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## Operator Approved-Plan And Caller Authorization Verification
+
+This checkpoint supersedes the earlier table row that marked independent
+approved-plan/caller authorization unimplemented. The local Operator now
+requires a v1 authorized request with an Ed25519 envelope before constructing
+or sending the existing HMAC command. Campaign plan v2 pins the exact Runner
+identity and approval trust policy; Operator invocation receipt v2 retains the
+complete approval and phase-source validation cryptographically rechecks it.
+
+Focused acceptance:
+
+| Gate | Result |
+| --- | --- |
+| `bun run check:container-runtime:json-compatibility-campaign` | PASS: 66 tests, 239 expectations; plan v2, config rotation, offline signer, receipt/source/manifest validation, and fixture-only self-tests |
+| `bun run check:container-runtime:json-compatibility-operator` | PASS: generated types, TypeScript, local/staging dry-runs, and 13 tests |
+| Approval negatives | PASS: direct request, request/caller/signature tamper, unknown key, expired/under-lived window, partial rotation, plan/config/SPKI drift all fail before invoker RPC |
+| Secret handling | PASS locally: signer private key is non-TTY stdin only, bounded and cleared; output is create-only/no-follow/mode 0600; argv/environment/config private-key options do not exist |
+| Evidence retention | PASS locally: v2 receipt contains envelope/digests/caller/time; offline validation checks signature and plan trust anchor; phase source/manifest retain the approval projection |
+| Complete repository gate | PASS: root `bun run check` exited 0 in 1,270.4 seconds, including the Rust workspace and configured wasm32 checks |
+
+The Operator supports all-or-none current/previous public trust slots. The plan
+pins exactly one KID/SPKI digest for the campaign. Approval signatures do not
+change the deterministic command ID, and the Invoker DO continues to reject a
+second command attempt. No additional approval Durable Object or distributed
+consume transaction exists.
+
+Cloudflare official documentation was rechecked for this design: Service
+Binding RPC avoids a public URL but methods are callable by account Workers
+that declare a binding; generated Wrangler types should track bindings;
+secrets must not be stored in source/config; and Workers Web Crypto supports
+standard Ed25519 verification. The implementation uses generated types,
+contains no approval private key or Cloudflare credential, and awaits the
+verification before the RPC.
+
+Remaining remote acceptance is strict: deploy the exact named Runner with all
+gates false; read back Runner/Operator versions, config digests, entrypoints,
+routes and binding target; prove no unauthorized binding reachability; execute
+unauthorized-first-call/replay/rotation/eviction/response-loss drills; archive
+multi-party approval and revocation evidence; then produce source signatures
+and immutable four-phase artifacts. Local/dry-run success is not remote
+identity or execution evidence. No deployment occurred and production remains
+**NO-GO**.
+
+One earlier root invocation terminated in the contract chain with a Windows
+Bun/libuv `UV_HANDLE_CLOSING` assertion and exit code 9 after OpenAPI validation.
+That invocation is not acceptance evidence. The exact contract subgate then
+passed independently with 43 tests and 81 expectations, and a clean complete
+root rerun passed with exit code 0 as recorded above.

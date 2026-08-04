@@ -5590,3 +5590,38 @@ does not close the independent permit issuer, authenticated private invoker,
 named-shard deployment/readback runner, remote context collector, source
 signature, immutable archive, or real staging campaign. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## Independently Approved JSON Operator Request
+
+The JSON compatibility plan is now v2 and freezes the private Runner in
+addition to Operator, Invoker, PermitIssuer, and Executor. It also freezes the
+offline Ed25519 approval issuer/audience, KID, SPKI SHA-256, 600-second maximum
+lifetime, and 180-second minimum remaining lifetime. The Operator no longer
+accepts a direct phase request. It verifies an outer approval that binds the
+final plan, exact Runner and Operator identities, exact phase request and
+command digest, phase execution ID, topology readback, before-context digest,
+and time window before any invoker RPC.
+
+Use the create-only config preparer and stdin-only signer shown in
+`docs/cinatoken-rust-migration-plan.md`. The signer accepts no private-key argv
+or environment option. The approval public SPKI is carried in the envelope and
+must hash to the trust anchor pinned by both Operator config and plan. The v2
+Operator receipt retains the full envelope; offline phase assembly verifies
+its signature and projects the approved caller/key/digests into the source
+manifest.
+
+The command ID deliberately remains a function of only the inner request and
+Operator version. Re-signing cannot mint a second command; the existing
+Invoker DO remains the campaign attempt/order authority, so this change adds
+no cross-DO transaction. Focused acceptance passes 66 campaign/source/config
+tests with 239 expectations, 13 Operator tests, generated types, TypeScript,
+and both Wrangler dry-runs. The complete root `bun run check` gate passes with
+exit code 0 in 1,270.4 seconds on the integrated tree.
+
+This is local and dry-run evidence. The named Runner Worker, exact remote
+Service Binding reachability/readback, multi-party approval/revocation policy,
+fresh topology/context collectors, ambiguous-result status recovery, source
+signature, immutable archive, and real four-phase staging campaign remain
+blocking. No Cloudflare or application state changed. Every implemented gate
+remains false, while the planned Runner and its gate are not implemented.
+Go/VPS remains authoritative, and production remains **NO-GO**.

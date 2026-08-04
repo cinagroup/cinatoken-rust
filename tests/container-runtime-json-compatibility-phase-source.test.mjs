@@ -77,8 +77,12 @@ function buildPlan() {
     config: structuredClone(config),
     campaignIdSha256: "11".repeat(32),
     controllerVersionId: "controller-version-phase-source-001",
+    runnerVersionId: "runner-version-phase-source-001",
+    runnerConfigSha256: "a1".repeat(32),
     operatorVersionId: "operator-version-001",
     operatorConfigSha256: "b1".repeat(32),
+    operatorApprovalKeyId: "operator-approval-phase-source-001",
+    operatorApprovalSpkiSha256: permitSpkiSha256,
     invokerVersionId: "invoker-version-001",
     invokerConfigSha256: "b2".repeat(32),
     permitIssuerVersionId: "permit-issuer-version-001",
@@ -341,6 +345,52 @@ async function buildOperatorInvocationReceipt(plan, executorReceipt, phaseIndex)
       "utf8",
     )
     .digest("hex");
+  const approvalSubject = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v1",
+    environment: "staging",
+    issuer:
+      "cinatoken-json-compatibility-campaign-approval-authority-staging",
+    audience:
+      "cinatoken-container-runtime-json-compatibility-operator-staging",
+    keyId: plan.operatorApproval.keyId,
+    operator: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-operator-staging",
+      versionId: operatorVersionId,
+    },
+    caller: structuredClone(plan.privateServices.runner),
+    campaignIdSha256: operatorRequest.execution.campaignIdSha256,
+    planDigestSha256: operatorRequest.execution.planDigestSha256,
+    phaseExecutionId: operatorRequest.execution.phaseExecutionId,
+    phaseOrdinal: operatorRequest.execution.phase.ordinal,
+    phaseId: operatorRequest.execution.phase.id,
+    requestSha256: sha256Canonical(operatorRequest),
+    commandIdSha256,
+    topologyReadbackSha256: operatorRequest.topologyReadbackSha256,
+    beforeContextSha256: operatorRequest.beforeContextSha256,
+    issuedAt: startedAtSeconds - 1,
+    notBefore: startedAtSeconds - 1,
+    expiresAt: startedAtSeconds + 599,
+  };
+  const approvalSignature = new Uint8Array(await crypto.subtle.sign(
+    "Ed25519",
+    permitKeyPair.privateKey,
+    new TextEncoder().encode(
+      `cinatoken-container-runtime-json-compatibility-operator-phase-approval-v1\n${canonicalJson(approvalSubject)}`,
+    ),
+  ));
+  const approvalEnvelope = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v1",
+    algorithm: "Ed25519",
+    subject: approvalSubject,
+    subjectSha256: sha256Canonical(approvalSubject),
+    signerSpkiBase64url: permitSpkiBase64url,
+    signatureBase64url: Buffer.from(approvalSignature).toString("base64url"),
+  };
   const issueIntent = {
     schemaVersion: 1,
     contract:
@@ -591,7 +641,7 @@ async function buildOperatorInvocationReceipt(plan, executorReceipt, phaseIndex)
   const operatorBody = {
     schemaVersion: 1,
     contract:
-      "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v1",
+      "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v2",
     status: "operator_phase_invocation_completed",
     environment: "staging",
     campaignIdSha256: executorReceipt.campaignIdSha256,
@@ -604,6 +654,21 @@ async function buildOperatorInvocationReceipt(plan, executorReceipt, phaseIndex)
         "cinatoken-container-runtime-json-compatibility-operator-staging",
       versionId: operatorVersionId,
       gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+    },
+    authorization: {
+      contract:
+        "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1",
+      approvalEnvelope,
+      approvalEnvelopeSha256: sha256Canonical(approvalEnvelope),
+      approvalSubjectSha256: approvalEnvelope.subjectSha256,
+      issuer: approvalSubject.issuer,
+      audience: approvalSubject.audience,
+      keyId: approvalSubject.keyId,
+      signerSpkiSha256: permitSpkiSha256,
+      caller: structuredClone(approvalSubject.caller),
+      issuedAt: approvalSubject.issuedAt,
+      notBefore: approvalSubject.notBefore,
+      expiresAt: approvalSubject.expiresAt,
     },
     request: operatorRequest,
     requestSha256: sha256Canonical(operatorRequest),

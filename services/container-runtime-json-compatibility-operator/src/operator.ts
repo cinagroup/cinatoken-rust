@@ -24,9 +24,17 @@ import {
   type JsonCompatibilityInvokeCommandV1,
 } from "../../container-runtime-json-compatibility-invoker/src/authorization";
 import {
+  JsonCompatibilityOperatorApprovalError,
+  verifyJsonCompatibilityOperatorApproval,
+} from "./authorization";
+import {
+  JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
   JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_CONTRACT,
   JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
-  parseJsonCompatibilityOperatorPhaseRequestV1,
+  parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1,
+  type JsonCompatibilityOperatorAuthorizedPhaseRequestV1,
+  type JsonCompatibilityOperatorPhaseApprovalEnvelopeV1,
+  type JsonCompatibilityOperatorCallerV1,
   type JsonCompatibilityOperatorPhaseRequestV1,
 } from "./protocol";
 
@@ -82,7 +90,7 @@ export interface JsonCompatibilityOperatorRuntime {
   now(): number;
 }
 
-export interface JsonCompatibilityOperatorInvocationReceiptV1 {
+export interface JsonCompatibilityOperatorInvocationReceiptV2 {
   readonly schemaVersion: 1;
   readonly contract:
     typeof JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_CONTRACT;
@@ -97,6 +105,21 @@ export interface JsonCompatibilityOperatorInvocationReceiptV1 {
     readonly serviceName: typeof JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME;
     readonly versionId: string;
     readonly gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED";
+  };
+  readonly authorization: {
+    readonly contract:
+      typeof JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT;
+    readonly approvalEnvelope: JsonCompatibilityOperatorPhaseApprovalEnvelopeV1;
+    readonly approvalEnvelopeSha256: string;
+    readonly approvalSubjectSha256: string;
+    readonly issuer: string;
+    readonly audience: typeof JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME;
+    readonly keyId: string;
+    readonly signerSpkiSha256: string;
+    readonly caller: JsonCompatibilityOperatorCallerV1;
+    readonly issuedAt: number;
+    readonly notBefore: number;
+    readonly expiresAt: number;
   };
   readonly request: JsonCompatibilityOperatorPhaseRequestV1;
   readonly requestSha256: string;
@@ -121,6 +144,9 @@ export class JsonCompatibilityOperatorError extends Error {
       | "operator_disabled"
       | "operator_configuration_error"
       | "invalid_operator_phase_request"
+      | "invalid_operator_phase_approval"
+      | "operator_phase_approval_time_window"
+      | "operator_approval_verifier_unavailable"
       | "invoker_rejected"
       | "invoker_unavailable"
       | "invalid_private_invocation_receipt"
@@ -153,15 +179,16 @@ export async function invokeJsonCompatibilityOperatorPhase(
   env: JsonCompatibilityOperatorEnv,
   input: unknown,
   runtime: JsonCompatibilityOperatorRuntime = { now: () => Date.now() },
-): Promise<JsonCompatibilityOperatorInvocationReceiptV1> {
+): Promise<JsonCompatibilityOperatorInvocationReceiptV2> {
   const configuration = requireOperatorEnvironment(env);
   const startedAtMs = runtimeNow(runtime);
-  let request: JsonCompatibilityOperatorPhaseRequestV1;
+  let authorized: JsonCompatibilityOperatorAuthorizedPhaseRequestV1;
   try {
-    request = parseJsonCompatibilityOperatorPhaseRequestV1(input);
+    authorized = parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1(input);
   } catch {
     throw operatorError("invalid_operator_phase_request");
   }
+  const request = authorized.request;
   if (request.invoker.versionId !== configuration.invokerVersionId) {
     throw operatorError("invalid_operator_phase_request");
   }
@@ -171,6 +198,22 @@ export async function invokeJsonCompatibilityOperatorPhase(
     request,
     configuration.operatorVersionId,
   );
+  let approval;
+  try {
+    approval = await verifyJsonCompatibilityOperatorApproval(
+      env,
+      authorized,
+      configuration.operatorVersionId,
+      requestSha256,
+      commandIdSha256,
+      startedAtMs,
+    );
+  } catch (error) {
+    if (error instanceof JsonCompatibilityOperatorApprovalError) {
+      throw operatorError(error.code);
+    }
+    throw operatorError("operator_approval_verifier_unavailable");
+  }
   const issuedAt = Math.floor(startedAtMs / 1000);
   const command = await createInvokeCommand(
     request,
@@ -223,6 +266,20 @@ export async function invokeJsonCompatibilityOperatorPhase(
       serviceName: JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
       versionId: configuration.operatorVersionId,
       gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED" as const,
+    },
+    authorization: {
+      contract: JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
+      approvalEnvelope: approval.envelope,
+      approvalEnvelopeSha256: approval.envelopeSha256,
+      approvalSubjectSha256: approval.subjectSha256,
+      issuer: approval.issuer,
+      audience: approval.audience,
+      keyId: approval.keyId,
+      signerSpkiSha256: approval.signerSpkiSha256,
+      caller: approval.caller,
+      issuedAt: approval.issuedAt,
+      notBefore: approval.notBefore,
+      expiresAt: approval.expiresAt,
     },
     request,
     requestSha256,

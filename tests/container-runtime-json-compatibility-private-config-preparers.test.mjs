@@ -105,6 +105,10 @@ describe("JSON compatibility private service config preparers", () => {
       outPath,
       currentKid: "operator-2026-08",
       currentCredentialIdSha256: digest("5"),
+      approvalCurrentKid: "operator-approval-2026-08",
+      approvalCurrentSpkiSha256: digest("6"),
+      approvalPreviousKid: "",
+      approvalPreviousSpkiSha256: "",
       invokerVersionId: "invoker-version-001",
     };
     const result = await prepareJsonCompatibilityOperatorConfig(options);
@@ -120,6 +124,12 @@ describe("JSON compatibility private service config preparers", () => {
       JSON_COMPATIBILITY_OPERATOR_CURRENT_KID: options.currentKid,
       JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
         options.currentCredentialIdSha256,
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID:
+        options.approvalCurrentKid,
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_SPKI_SHA256:
+        options.approvalCurrentSpkiSha256,
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID: "",
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256: "",
       JSON_COMPATIBILITY_OPERATOR_INVOKER_VERSION_ID:
         options.invokerVersionId,
     });
@@ -127,6 +137,45 @@ describe("JSON compatibility private service config preparers", () => {
     expect(result.secretsRequired).toEqual([
       "JSON_COMPATIBILITY_OPERATOR_CURRENT_SECRET",
     ]);
+  });
+
+  test("supports one distinct previous approval key and rejects unsafe rotation", async () => {
+    const options = {
+      currentKid: "operator-2026-08",
+      currentCredentialIdSha256: digest("5"),
+      approvalCurrentKid: "operator-approval-2026-08",
+      approvalCurrentSpkiSha256: digest("6"),
+      approvalPreviousKid: "operator-approval-2026-07",
+      approvalPreviousSpkiSha256: digest("7"),
+      invokerVersionId: "invoker-version-001",
+    };
+    const outPath = await temporaryFile("operator-rotation.jsonc");
+    await prepareJsonCompatibilityOperatorConfig({ ...options, outPath });
+    const config = parseStrictJsonObject(
+      await readFile(outPath, "utf8"),
+      "prepared rotating operator config",
+    );
+    expect(validateJsonCompatibilityOperatorConfig(config, options)).toMatchObject({
+      enabled: true,
+      privateServiceBinding: true,
+    });
+    expect(config.vars).toMatchObject({
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID:
+        options.approvalPreviousKid,
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256:
+        options.approvalPreviousSpkiSha256,
+    });
+
+    await expect(prepareJsonCompatibilityOperatorConfig({
+      ...options,
+      outPath: await temporaryFile("operator-partial-rotation.jsonc"),
+      approvalPreviousSpkiSha256: "",
+    })).rejects.toThrow(/must be paired/u);
+    await expect(prepareJsonCompatibilityOperatorConfig({
+      ...options,
+      outPath: await temporaryFile("operator-duplicate-rotation.jsonc"),
+      approvalPreviousKid: options.approvalCurrentKid,
+    })).rejects.toThrow(/must differ/u);
   });
 
   test("is create-only and rejects secret-shaped CLI options", async () => {

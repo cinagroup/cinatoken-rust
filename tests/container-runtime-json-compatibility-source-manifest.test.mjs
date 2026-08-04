@@ -51,8 +51,12 @@ function buildPlan() {
     config: structuredClone(config),
     campaignIdSha256: "11".repeat(32),
     controllerVersionId: "controller-version-source-manifest-001",
+    runnerVersionId: "runner-version-source-manifest-001",
+    runnerConfigSha256: "a1".repeat(32),
     operatorVersionId: "operator-version-source-manifest-001",
     operatorConfigSha256: "b1".repeat(32),
+    operatorApprovalKeyId: "operator-approval-source-manifest-001",
+    operatorApprovalSpkiSha256: "a2".repeat(32),
     invokerVersionId: "invoker-version-001",
     invokerConfigSha256: "b2".repeat(32),
     permitIssuerVersionId: "permit-issuer-version-001",
@@ -310,6 +314,20 @@ function buildPhasePackets(plan) {
       operatorInvocation: {
         ...structuredClone(syntheticPhases[phaseIndex].operatorInvocation),
         phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
+        authorization: {
+          ...structuredClone(
+            syntheticPhases[phaseIndex].operatorInvocation.authorization,
+          ),
+          issuedAt: Date.parse(
+            `2026-08-04T00:0${phaseIndex * 2}:00Z`,
+          ) / 1000 - 1,
+          notBefore: Date.parse(
+            `2026-08-04T00:0${phaseIndex * 2}:00Z`,
+          ) / 1000 - 1,
+          expiresAt: Date.parse(
+            `2026-08-04T00:0${phaseIndex * 2}:00Z`,
+          ) / 1000 + 599,
+        },
         startedAt: `2026-08-04T00:0${phaseIndex * 2}:00Z`,
         completedAt: `2026-08-04T00:0${phaseIndex * 2 + 1}:00Z`,
       },

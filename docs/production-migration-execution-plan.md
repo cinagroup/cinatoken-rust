@@ -4602,3 +4602,84 @@ runner, remote readback collector, source signer, or archive. Until those
 components and one real staging ceremony pass, all Protobuf/production gates,
 traffic, billing, drain, and cutover authority remain false; Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-08-04 Signed Runner-To-Operator Authorization Addendum
+
+This addendum supersedes the preceding ceremony's statement that the private
+Operator lacks independently approved pre-execution authority. Campaign plan
+v2 now freezes the exact Runner, Operator, Invoker, PermitIssuer, and Executor
+identities plus one offline Ed25519 Operator-approval trust policy. The
+Controller remains the separately pinned shard and Container authority. The
+only reviewed active call chain is therefore:
+
+```text
+Runner -> Operator -> Invoker -> PermitIssuer -> Executor -> Controller
+```
+
+The implemented Operator rejects a direct phase request. Before its first
+Invoker RPC it verifies an approval over the final plan and campaign digests,
+exact planned Runner and Operator identities, complete canonical phase request,
+deterministic command ID, topology-readback and before-context digests, key
+identity, and bounded time window. The offline signer accepts the Ed25519
+private key only through non-TTY stdin. The Operator receipt and offline source
+validator retain and cryptographically recheck that approval. Re-signing does
+not alter the command ID, so current/previous key rotation cannot create a new
+phase attempt.
+
+### Current execution ledger
+
+| Unit | Local state | Staging authority |
+| --- | --- | --- |
+| Plan v2 and approval policy | Implemented and strictly validated | None until owner/security approval is retained and all deployed identities are read back |
+| Stdin-only Ed25519 signer | Implemented, network-free, create-only | None until the real signing ceremony, custody, revocation, and multi-party review evidence exist |
+| Operator verification and receipt v2 | Implemented; TypeScript, Workerd tests, generated types, and Wrangler dry-runs pass | Gate remains false until exact remote version/config/binding/secret-presence readback |
+| Invoker/issuer/executor/Controller chain | Implemented locally with campaign-scoped Durable Object ledgers | No remote migration, invocation, or Container evidence |
+| Named Runner | Identity is frozen in plan v2 | **Not implemented**; no Worker, binding, config preparer, gate, or remote caller proof exists |
+| Unknown-result recovery | Fail-closed and no-retry policy is implemented | **Not implemented**; no authenticated status/readback path can recover a committed response lost between private services |
+
+### Required staging order
+
+1. Finish the named Runner and authenticated readback/status surfaces. Generate
+   final create-only configs and the final plan only after exact Version
+   Metadata IDs and configuration digests are known.
+2. Deploy in callee-to-caller order with every gate false: Controller,
+   Executor, PermitIssuer, Invoker, Operator, then Runner. Read back every
+   version, entrypoint, configuration digest, Service Binding target, route
+   absence, secret presence without values, and all SQLite DO migrations.
+3. Retain independent owner and security approval of the final plan and
+   approval trust anchor. Run the private-key ceremony outside the deployment
+   process; no private key may enter argv, environment, tracked config, Worker
+   secret, logs, or retained phase evidence.
+4. Enable in the same callee-to-caller order. Before each of the four phases,
+   independently collect exact topology and before-context artifacts, build
+   the canonical request, sign one bounded approval, and let the exact Runner
+   submit it once.
+5. Treat a lost or ambiguous result as a terminal incident until the reviewed
+   status/readback contract proves the persisted command outcome. Never retry,
+   re-sign to derive a different request, issue a replacement permit, take over
+   a lease, or skip phase order.
+6. Collect independent after-context and remote state, assemble and validate
+   the complete Operator-to-Controller receipt chain, and require an immutable
+   phase packet before advancing.
+7. After the mandatory rollback phase, close in caller-to-callee order: Runner,
+   Operator, Invoker, PermitIssuer, Executor, then Controller. Read back every
+   gate false and publish independently signed, revocation-aware, immutable
+   evidence before considering Protobuf enablement.
+
+Service Binding RPC removes public HTTP reachability but does not expose an
+application caller identity to `WorkerEntrypoint`. The signed subject proves
+what the approval authority authorized; it does not prove which deployed
+Worker made the call. Staging therefore remains blocked until the exact Runner
+is implemented and remote evidence shows its binding targets the exact
+Operator entrypoint, alongside an account-level binding inventory showing no
+unreviewed caller has equivalent reachability.
+
+Focused local acceptance is 66 campaign/config/source tests with 239
+expectations plus 13 Operator tests, TypeScript, generated type drift checks,
+and both Wrangler dry-runs. The complete root `bun run check` gate passes with
+exit code 0 in 1,270.4 seconds. These are implementation and
+configuration-shape checks only. No Worker deployment, secret
+provisioning/read, remote binding call, DO migration, Container execution,
+provider/billing/storage mutation, traffic shift, or Go/VPS drain occurred.
+Every implemented gate remains false; the Runner gate does not exist yet.
+Go/VPS remains authoritative and production remains **NO-GO**.

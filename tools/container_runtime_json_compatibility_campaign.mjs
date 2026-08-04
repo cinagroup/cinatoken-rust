@@ -4,9 +4,17 @@ import {
 } from "./preflight_container_controller_deploy.mjs";
 
 export const JSON_COMPATIBILITY_PLAN_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-plan-v1";
+  "cinatoken-container-runtime-json-compatibility-plan-v2";
 export const JSON_COMPATIBILITY_EVIDENCE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-evidence-v1";
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_POLICY_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-operator-approval-policy-v1";
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER =
+  "cinatoken-json-compatibility-campaign-approval-authority-staging";
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_AUDIENCE =
+  "cinatoken-container-runtime-json-compatibility-operator-staging";
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_MAX_LIFETIME_SECONDS = 600;
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_MIN_REMAINING_SECONDS = 180;
 export const JSON_COMPATIBILITY_SHARD_COUNT = 8;
 export const JSON_COMPATIBILITY_PHASE_IDS = Object.freeze([
   "baseline-n-minus-one",
@@ -20,6 +28,7 @@ const RUNTIME_N_MINUS_ONE = "n-minus-one";
 const JSON_CONTENT_TYPE = "application/json";
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const OCI_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SAFE_TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const WHOLE_SECOND_UTC_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 const REQUIRED_CHECKS = Object.freeze([
@@ -34,6 +43,12 @@ const REQUIRED_CHECKS = Object.freeze([
   "ledger-convergence",
 ]);
 const PRIVATE_SERVICE_DEFINITIONS = Object.freeze({
+  runner: Object.freeze({
+    serviceName:
+      "cinatoken-container-runtime-json-compatibility-runner-staging",
+    entrypoint: "JsonCompatibilityCampaignRunnerEntrypoint",
+    gateName: "JSON_COMPATIBILITY_RUNNER_ENABLED",
+  }),
   operator: Object.freeze({
     serviceName:
       "cinatoken-container-runtime-json-compatibility-operator-staging",
@@ -194,8 +209,12 @@ export function buildJsonCompatibilityCampaignPlan({
   config,
   campaignIdSha256,
   controllerVersionId,
+  runnerVersionId,
+  runnerConfigSha256,
   operatorVersionId,
   operatorConfigSha256,
+  operatorApprovalKeyId,
+  operatorApprovalSpkiSha256,
   invokerVersionId,
   invokerConfigSha256,
   permitIssuerVersionId,
@@ -224,6 +243,12 @@ export function buildJsonCompatibilityCampaignPlan({
   requireSha256(campaignIdSha256, "[plan] campaign ID");
   requireToken(controllerVersionId, "[plan] Controller version ID");
   const privateServices = {
+    runner: normalizePrivateServiceIdentity(
+      PRIVATE_SERVICE_DEFINITIONS.runner,
+      runnerVersionId,
+      runnerConfigSha256,
+      "[plan] runner",
+    ),
     operator: normalizePrivateServiceIdentity(
       PRIVATE_SERVICE_DEFINITIONS.operator,
       operatorVersionId,
@@ -248,6 +273,24 @@ export function buildJsonCompatibilityCampaignPlan({
       executorConfigSha256,
       "[plan] executor",
     ),
+  };
+  requireKeyId(operatorApprovalKeyId, "[plan] operator approval key ID");
+  requireSha256(
+    operatorApprovalSpkiSha256,
+    "[plan] operator approval SPKI digest",
+  );
+  const operatorApproval = {
+    schemaVersion: 1,
+    contract: JSON_COMPATIBILITY_OPERATOR_APPROVAL_POLICY_CONTRACT,
+    algorithm: "Ed25519",
+    issuer: JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER,
+    audience: JSON_COMPATIBILITY_OPERATOR_APPROVAL_AUDIENCE,
+    keyId: operatorApprovalKeyId,
+    signerSpkiSha256: operatorApprovalSpkiSha256,
+    maxLifetimeSeconds:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_MAX_LIFETIME_SECONDS,
+    minimumRemainingLifetimeSeconds:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_MIN_REMAINING_SECONDS,
   };
   const runtimeN = normalizeRuntimeIdentity(
     runtimeNBuildIdSha256,
@@ -324,6 +367,7 @@ export function buildJsonCompatibilityCampaignPlan({
       allActionGatesDisabled: true,
     },
     privateServices,
+    operatorApproval,
     runtimes: {
       n: runtimeN,
       nMinusOne: runtimeNMinusOne,
@@ -376,6 +420,7 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
     "campaignIdSha256",
     "controller",
     "privateServices",
+    "operatorApproval",
     "runtimes",
     "ring",
     "constraints",
@@ -403,6 +448,7 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
 
   validateControllerIdentity(value.controller, "[plan] Controller");
   validatePrivateServices(value.privateServices, "[plan] private services");
+  validateOperatorApprovalPolicy(value.operatorApproval);
   const runtimes = validateRuntimeSet(value.runtimes, "[plan] runtimes");
   if (runtimes.n.buildIdSha256 === runtimes.nMinusOne.buildIdSha256) {
     throw new JsonCompatibilityCampaignError(
@@ -1152,7 +1198,7 @@ function validatePrivateServices(value, label) {
   const services = requireRecord(value, label);
   requireExactKeys(
     services,
-    ["operator", "invoker", "permitIssuer", "executor"],
+    ["runner", "operator", "invoker", "permitIssuer", "executor"],
     label,
   );
   for (const [role, definition] of Object.entries(
@@ -1165,6 +1211,54 @@ function validatePrivateServices(value, label) {
     );
   }
   return services;
+}
+
+function validateOperatorApprovalPolicy(value) {
+  const policy = requireRecord(value, "[plan] operator approval policy");
+  requireExactKeys(policy, [
+    "schemaVersion",
+    "contract",
+    "algorithm",
+    "issuer",
+    "audience",
+    "keyId",
+    "signerSpkiSha256",
+    "maxLifetimeSeconds",
+    "minimumRemainingLifetimeSeconds",
+  ], "[plan] operator approval policy");
+  requireEqual(policy.schemaVersion, 1, "[plan] operator approval schema");
+  requireEqual(
+    policy.contract,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_POLICY_CONTRACT,
+    "[plan] operator approval contract",
+  );
+  requireEqual(policy.algorithm, "Ed25519", "[plan] operator approval algorithm");
+  requireEqual(
+    policy.issuer,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER,
+    "[plan] operator approval issuer",
+  );
+  requireEqual(
+    policy.audience,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_AUDIENCE,
+    "[plan] operator approval audience",
+  );
+  requireKeyId(policy.keyId, "[plan] operator approval key ID");
+  requireSha256(
+    policy.signerSpkiSha256,
+    "[plan] operator approval SPKI digest",
+  );
+  requireEqual(
+    policy.maxLifetimeSeconds,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_MAX_LIFETIME_SECONDS,
+    "[plan] operator approval maximum lifetime",
+  );
+  requireEqual(
+    policy.minimumRemainingLifetimeSeconds,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_MIN_REMAINING_SECONDS,
+    "[plan] operator approval minimum remaining lifetime",
+  );
+  return policy;
 }
 
 function validatePrivateServiceIdentity(value, definition, label) {
@@ -1386,6 +1480,13 @@ function requireCanonicalEqual(actual, expected, label) {
 function requireSha256(value, label) {
   if (typeof value !== "string" || !SHA256_PATTERN.test(value)) {
     throw new JsonCompatibilityCampaignError(`${label} must be lowercase SHA-256`);
+  }
+  return value;
+}
+
+function requireKeyId(value, label) {
+  if (typeof value !== "string" || !KEY_ID_PATTERN.test(value)) {
+    throw new JsonCompatibilityCampaignError(`${label} must be a key ID`);
   }
   return value;
 }

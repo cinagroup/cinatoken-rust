@@ -26,6 +26,8 @@ const INVOKER_SERVICE =
   "cinatoken-container-runtime-json-compatibility-invoker-staging";
 const OPERATOR_ISSUER =
   "cinatoken-json-compatibility-campaign-operator-staging";
+const OPERATOR_APPROVAL_ISSUER =
+  "cinatoken-json-compatibility-campaign-approval-authority-staging";
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -62,6 +64,12 @@ export function validateJsonCompatibilityOperatorConfig(input, campaign = null) 
   if (enabled) {
     keyId(campaign.currentKid, "operator current KID");
     sha256(campaign.currentCredentialIdSha256, "operator credential digest");
+    keyId(campaign.approvalCurrentKid, "operator approval current KID");
+    sha256(
+      campaign.approvalCurrentSpkiSha256,
+      "operator approval current SPKI digest",
+    );
+    validatePreviousApproval(campaign);
     safeToken(campaign.invokerVersionId, "invoker version ID");
   }
   canonicalEqual(config.vars, {
@@ -69,6 +77,16 @@ export function validateJsonCompatibilityOperatorConfig(input, campaign = null) 
     JSON_COMPATIBILITY_OPERATOR_ENABLED: enabled ? "true" : "false",
     JSON_COMPATIBILITY_OPERATOR_ISSUER: OPERATOR_ISSUER,
     JSON_COMPATIBILITY_OPERATOR_AUDIENCE: INVOKER_SERVICE,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER: OPERATOR_APPROVAL_ISSUER,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_AUDIENCE: OPERATOR_SERVICE,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID:
+      enabled ? campaign.approvalCurrentKid : "",
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_SPKI_SHA256:
+      enabled ? campaign.approvalCurrentSpkiSha256 : "",
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID:
+      enabled ? (campaign.approvalPreviousKid ?? "") : "",
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256:
+      enabled ? (campaign.approvalPreviousSpkiSha256 ?? "") : "",
     JSON_COMPATIBILITY_OPERATOR_CURRENT_KID: enabled ? campaign.currentKid : "",
     JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
       enabled ? campaign.currentCredentialIdSha256 : "",
@@ -94,6 +112,10 @@ export async function prepareJsonCompatibilityOperatorConfig(options) {
   const values = {
     currentKid: options.currentKid,
     currentCredentialIdSha256: options.currentCredentialIdSha256,
+    approvalCurrentKid: options.approvalCurrentKid,
+    approvalCurrentSpkiSha256: options.approvalCurrentSpkiSha256,
+    approvalPreviousKid: options.approvalPreviousKid ?? "",
+    approvalPreviousSpkiSha256: options.approvalPreviousSpkiSha256 ?? "",
     invokerVersionId: options.invokerVersionId,
   };
   const campaign = structuredClone(base);
@@ -101,6 +123,14 @@ export async function prepareJsonCompatibilityOperatorConfig(options) {
   campaign.vars.JSON_COMPATIBILITY_OPERATOR_CURRENT_KID = values.currentKid;
   campaign.vars.JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256 =
     values.currentCredentialIdSha256;
+  campaign.vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID =
+    values.approvalCurrentKid;
+  campaign.vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_SPKI_SHA256 =
+    values.approvalCurrentSpkiSha256;
+  campaign.vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID =
+    values.approvalPreviousKid;
+  campaign.vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256 =
+    values.approvalPreviousSpkiSha256;
   campaign.vars.JSON_COMPATIBILITY_OPERATOR_INVOKER_VERSION_ID =
     values.invokerVersionId;
   const validation = validateJsonCompatibilityOperatorConfig(campaign, values);
@@ -119,6 +149,10 @@ export async function prepareJsonCompatibilityOperatorConfig(options) {
       "JSON_COMPATIBILITY_OPERATOR_ENABLED",
       "JSON_COMPATIBILITY_OPERATOR_CURRENT_KID",
       "JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256",
+      "JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID",
+      "JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_SPKI_SHA256",
+      "JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID",
+      "JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256",
       "JSON_COMPATIBILITY_OPERATOR_INVOKER_VERSION_ID",
     ],
     secretsRequired: ["JSON_COMPATIBILITY_OPERATOR_CURRENT_SECRET"],
@@ -131,16 +165,40 @@ export async function prepareJsonCompatibilityOperatorConfig(options) {
 export function parseJsonCompatibilityOperatorConfigArgs(argv) {
   const names = [
     "--base", "--out", "--hmac-kid", "--hmac-credential-id-sha256",
+    "--approval-current-kid", "--approval-current-spki-sha256",
+    "--approval-previous-kid", "--approval-previous-spki-sha256",
     "--invoker-version-id",
   ];
   const values = parseArgs(argv, names);
   if (values.help) return values;
-  for (const name of names.slice(1)) requiredValue(values.map, name);
+  for (const name of [
+    "--out",
+    "--hmac-kid",
+    "--hmac-credential-id-sha256",
+    "--approval-current-kid",
+    "--approval-current-spki-sha256",
+    "--invoker-version-id",
+  ]) requiredValue(values.map, name);
   keyId(values.map.get("--hmac-kid"), "--hmac-kid");
   sha256(
     values.map.get("--hmac-credential-id-sha256"),
     "--hmac-credential-id-sha256",
   );
+  keyId(values.map.get("--approval-current-kid"), "--approval-current-kid");
+  sha256(
+    values.map.get("--approval-current-spki-sha256"),
+    "--approval-current-spki-sha256",
+  );
+  const previousKid = values.map.get("--approval-previous-kid") ?? "";
+  const previousSpki =
+    values.map.get("--approval-previous-spki-sha256") ?? "";
+  validatePreviousApproval({
+    approvalCurrentKid: values.map.get("--approval-current-kid"),
+    approvalCurrentSpkiSha256:
+      values.map.get("--approval-current-spki-sha256"),
+    approvalPreviousKid: previousKid,
+    approvalPreviousSpkiSha256: previousSpki,
+  });
   safeToken(values.map.get("--invoker-version-id"), "--invoker-version-id");
   return {
     json: values.json,
@@ -149,6 +207,11 @@ export function parseJsonCompatibilityOperatorConfigArgs(argv) {
     currentKid: values.map.get("--hmac-kid"),
     currentCredentialIdSha256:
       values.map.get("--hmac-credential-id-sha256"),
+    approvalCurrentKid: values.map.get("--approval-current-kid"),
+    approvalCurrentSpkiSha256:
+      values.map.get("--approval-current-spki-sha256"),
+    approvalPreviousKid: previousKid,
+    approvalPreviousSpkiSha256: previousSpki,
     invokerVersionId: values.map.get("--invoker-version-id"),
   };
 }
@@ -156,7 +219,7 @@ export function parseJsonCompatibilityOperatorConfigArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  bun tools/prepare_container_runtime_json_compatibility_operator_config.mjs --out <campaign-wrangler.jsonc> --hmac-kid <kid> --hmac-credential-id-sha256 <sha256> --invoker-version-id <id> [--base <tracked-staging.jsonc>] [--json]",
+    "  bun tools/prepare_container_runtime_json_compatibility_operator_config.mjs --out <campaign-wrangler.jsonc> --hmac-kid <kid> --hmac-credential-id-sha256 <sha256> --approval-current-kid <kid> --approval-current-spki-sha256 <sha256> [--approval-previous-kid <kid> --approval-previous-spki-sha256 <sha256>] --invoker-version-id <id> [--base <tracked-staging.jsonc>] [--json]",
     "",
     "The output is create-only and contains no secret material. Provision JSON_COMPATIBILITY_OPERATOR_CURRENT_SECRET separately as a Worker secret.",
   ].join("\n");
@@ -232,6 +295,23 @@ function sha256(value, label) {
 function safeToken(value, label) {
   if (typeof value !== "string" || !SAFE_TOKEN.test(value)) {
     throw new Error(`${label} must be a safe token`);
+  }
+}
+
+function validatePreviousApproval(values) {
+  const previousKid = values.approvalPreviousKid ?? "";
+  const previousSpki = values.approvalPreviousSpkiSha256 ?? "";
+  if ((previousKid === "") !== (previousSpki === "")) {
+    throw new Error("operator approval previous KID and SPKI digest must be paired");
+  }
+  if (previousKid === "") return;
+  keyId(previousKid, "operator approval previous KID");
+  sha256(previousSpki, "operator approval previous SPKI digest");
+  if (
+    previousKid === values.approvalCurrentKid
+    || previousSpki === values.approvalCurrentSpkiSha256
+  ) {
+    throw new Error("operator approval current and previous keys must differ");
   }
 }
 

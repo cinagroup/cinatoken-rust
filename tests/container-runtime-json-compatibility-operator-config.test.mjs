@@ -14,6 +14,8 @@ const INVOKER_SERVICE =
   "cinatoken-container-runtime-json-compatibility-invoker-staging";
 const OPERATOR_ISSUER =
   "cinatoken-json-compatibility-campaign-operator-staging";
+const OPERATOR_APPROVAL_ISSUER =
+  "cinatoken-json-compatibility-campaign-approval-authority-staging";
 
 describe("JSON compatibility private operator Wrangler config", () => {
   test("keeps exactly local and staging configs and omits production", async () => {
@@ -61,6 +63,16 @@ describe("JSON compatibility private operator Wrangler config", () => {
         JSON_COMPATIBILITY_OPERATOR_ENABLED: "false",
         JSON_COMPATIBILITY_OPERATOR_ISSUER: OPERATOR_ISSUER,
         JSON_COMPATIBILITY_OPERATOR_AUDIENCE: INVOKER_SERVICE,
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER:
+          OPERATOR_APPROVAL_ISSUER,
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_AUDIENCE: workerName.replace(
+          /-(?:local|staging)$/u,
+          "-staging",
+        ),
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID: "",
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_SPKI_SHA256: "",
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID: "",
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256: "",
         JSON_COMPATIBILITY_OPERATOR_CURRENT_KID: "",
         JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256: "",
         JSON_COMPATIBILITY_OPERATOR_INVOKER_VERSION_ID: "",

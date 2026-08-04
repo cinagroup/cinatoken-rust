@@ -14,6 +14,7 @@ import {
 import {
   JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_CONTRACT,
   JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
+  parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1,
   parseJsonCompatibilityOperatorPhaseRequestV1,
 } from "../src/protocol";
 import {
@@ -26,6 +27,8 @@ import {
   INVOKER_VERSION_ID,
   NOW_MS,
   OPERATOR_CREDENTIAL_ID_SHA256,
+  OPERATOR_APPROVAL_KEY_ID,
+  OPERATOR_APPROVAL_SPKI_SHA256,
   OPERATOR_KEY_ID,
   OPERATOR_SECRET,
   OPERATOR_VERSION_ID,
@@ -33,6 +36,7 @@ import {
   operatorEnv,
   record,
   runtimeSequence,
+  validAuthorizedOperatorRequest,
   validOperatorRequest,
   validPrivateInvocationReceipt,
 } from "./fixtures";
@@ -48,6 +52,7 @@ const RECEIPT_KEYS = [
   "phaseOrdinal",
   "phaseId",
   "operator",
+  "authorization",
   "request",
   "requestSha256",
   "commandIdSha256",
@@ -61,7 +66,7 @@ const RECEIPT_KEYS = [
 ] as const;
 
 describe("JSON compatibility private operator", () => {
-  test("rejects caller-provided authorization and time fields", () => {
+  test("requires an outer approval and rejects inner authorization fields", async () => {
     const request = validOperatorRequest();
     expect(() => parseJsonCompatibilityOperatorPhaseRequestV1({
       ...request,
@@ -75,10 +80,16 @@ describe("JSON compatibility private operator", () => {
       ...request,
       execution: { ...request.execution, authorization: {} },
     })).toThrow();
+    expect(() => parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1(request))
+      .toThrowError(/invalid_operator_phase_request/u);
+    const authorized = await validAuthorizedOperatorRequest(request);
+    expect(parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1(authorized))
+      .toEqual(authorized);
   });
 
   test("derives a deterministic command and signs it for the existing verifier", async () => {
     const request = validOperatorRequest();
+    const authorized = await validAuthorizedOperatorRequest(request);
     const captured: JsonCompatibilityInvokeCommandV1[] = [];
     const invokePhase = async (input: unknown): Promise<unknown> => {
       const command = record(input) as JsonCompatibilityInvokeCommandV1;
@@ -87,12 +98,12 @@ describe("JSON compatibility private operator", () => {
     };
     await invokeJsonCompatibilityOperatorPhase(
       operatorEnv(invokePhase),
-      request,
+      authorized,
       runtimeSequence(NOW_MS, NOW_MS + 2_000),
     );
     await invokeJsonCompatibilityOperatorPhase(
       operatorEnv(invokePhase),
-      request,
+      authorized,
       runtimeSequence(NOW_MS, NOW_MS + 2_000),
     );
 
@@ -134,13 +145,14 @@ describe("JSON compatibility private operator", () => {
 
   test("calls the invoker once and returns the exact bounded digest chain", async () => {
     const request = validOperatorRequest();
+    const authorized = await validAuthorizedOperatorRequest(request);
     let calls = 0;
     const receipt = await invokeJsonCompatibilityOperatorPhase(
       operatorEnv(async (command) => {
         calls += 1;
         return await validPrivateInvocationReceipt(command);
       }),
-      request,
+      authorized,
       runtimeSequence(NOW_MS, NOW_MS + 2_000),
     );
     expect(calls).toBe(1);
@@ -152,6 +164,17 @@ describe("JSON compatibility private operator", () => {
         serviceName: JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
         versionId: OPERATOR_VERSION_ID,
         gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+      },
+      authorization: {
+        issuer:
+          "cinatoken-json-compatibility-campaign-approval-authority-staging",
+        audience: JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
+        keyId: "json-campaign-approval-2026-08",
+        caller: {
+          serviceName:
+            "cinatoken-container-runtime-json-compatibility-runner-staging",
+          versionId: "runner-version-001",
+        },
       },
       privateTransport: {
         kind: "service-binding-rpc",
@@ -180,12 +203,89 @@ describe("JSON compatibility private operator", () => {
       .toBeLessThanOrEqual(1792 * 1024);
   });
 
+  test("rejects tampered, unknown-key, and expired approvals before RPC", async () => {
+    const candidates = [];
+    const tamperedRequest = await validAuthorizedOperatorRequest();
+    (tamperedRequest.request as { beforeContextSha256: string })
+      .beforeContextSha256 = "aa".repeat(32);
+    candidates.push({ input: tamperedRequest, code: "invalid_operator_phase_approval" });
+
+    const tamperedSignature = await validAuthorizedOperatorRequest();
+    (tamperedSignature.approval as { signatureBase64url: string })
+      .signatureBase64url =
+      `${tamperedSignature.approval.signatureBase64url.slice(0, -1)}B`;
+    candidates.push({ input: tamperedSignature, code: "invalid_operator_phase_approval" });
+
+    candidates.push({
+      input: await validAuthorizedOperatorRequest(validOperatorRequest(), {
+        keyId: "untrusted-approval-key",
+      }),
+      code: "invalid_operator_phase_approval",
+    });
+    candidates.push({
+      input: await validAuthorizedOperatorRequest(validOperatorRequest(), {
+        issuedAt: NOW_MS / 1000 - 1_000,
+      }),
+      code: "operator_phase_approval_time_window",
+    });
+
+    for (const candidate of candidates) {
+      let calls = 0;
+      await expect(invokeJsonCompatibilityOperatorPhase(
+        operatorEnv(async () => {
+          calls += 1;
+          throw new Error("must not be called");
+        }),
+        candidate.input,
+        runtimeSequence(NOW_MS),
+      )).rejects.toMatchObject({ code: candidate.code });
+      expect(calls).toBe(0);
+    }
+  });
+
+  test("accepts an exact previous approval key and rejects partial rotation", async () => {
+    const authorized = await validAuthorizedOperatorRequest();
+    const rotating = operatorEnv(async (command) =>
+      await validPrivateInvocationReceipt(command));
+    Object.assign(rotating, {
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID:
+        "json-campaign-approval-next",
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_SPKI_SHA256:
+        "ab".repeat(32),
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID:
+        OPERATOR_APPROVAL_KEY_ID,
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256:
+        OPERATOR_APPROVAL_SPKI_SHA256,
+    });
+    await expect(invokeJsonCompatibilityOperatorPhase(
+      rotating,
+      authorized,
+      runtimeSequence(NOW_MS, NOW_MS + 2_000),
+    )).resolves.toMatchObject({ status: "operator_phase_invocation_completed" });
+
+    let calls = 0;
+    const partial = operatorEnv(async () => {
+      calls += 1;
+      throw new Error("must not be called");
+    });
+    Object.assign(partial, {
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID:
+        OPERATOR_APPROVAL_KEY_ID,
+    });
+    await expect(invokeJsonCompatibilityOperatorPhase(
+      partial,
+      authorized,
+      runtimeSequence(NOW_MS),
+    )).rejects.toMatchObject({ code: "operator_approval_verifier_unavailable" });
+    expect(calls).toBe(0);
+  });
+
   test("accepts the invoker verifier's five-second clock skew and rejects more", async () => {
     for (const offsetSeconds of [-5, 5]) {
       await expect(invokeJsonCompatibilityOperatorPhase(
         operatorEnv(async (command) =>
           await validPrivateInvocationReceipt(command, offsetSeconds)),
-        validOperatorRequest(),
+        await validAuthorizedOperatorRequest(),
         runtimeSequence(NOW_MS, NOW_MS + 2_000),
       )).resolves.toMatchObject({
         status: "operator_phase_invocation_completed",
@@ -194,7 +294,7 @@ describe("JSON compatibility private operator", () => {
     await expect(invokeJsonCompatibilityOperatorPhase(
       operatorEnv(async (command) =>
         await validPrivateInvocationReceipt(command, -6)),
-      validOperatorRequest(),
+      await validAuthorizedOperatorRequest(),
       runtimeSequence(NOW_MS, NOW_MS + 2_000),
     )).rejects.toMatchObject({ code: "invalid_private_invocation_receipt" });
   });
@@ -207,13 +307,13 @@ describe("JSON compatibility private operator", () => {
     };
     await expect(invokeJsonCompatibilityOperatorPhase(
       operatorEnv(invokePhase, false),
-      validOperatorRequest(),
+      await validAuthorizedOperatorRequest(),
     )).rejects.toMatchObject({ code: "operator_disabled" });
     const missingSecret = operatorEnv(invokePhase);
     delete missingSecret.JSON_COMPATIBILITY_OPERATOR_CURRENT_SECRET;
     await expect(invokeJsonCompatibilityOperatorPhase(
       missingSecret,
-      validOperatorRequest(),
+      await validAuthorizedOperatorRequest(),
     )).rejects.toMatchObject({ code: "operator_configuration_error" });
     expect(calls).toBe(0);
   });
@@ -228,7 +328,7 @@ describe("JSON compatibility private operator", () => {
           if (mode === "extra-key") return { ...valid, unexpected: true };
           return await detachedPrivateInvocationReceipt(valid);
         }),
-        validOperatorRequest(),
+        await validAuthorizedOperatorRequest(),
         runtimeSequence(NOW_MS, NOW_MS + 2_000),
       )).rejects.toBeInstanceOf(JsonCompatibilityOperatorError);
       expect(calls).toBe(1);
@@ -250,7 +350,7 @@ describe("JSON compatibility private operator", () => {
           },
         };
       }),
-      validOperatorRequest(),
+      await validAuthorizedOperatorRequest(),
       runtimeSequence(NOW_MS, NOW_MS + 2_000),
     )).rejects.toMatchObject({
       code: "invalid_private_invocation_receipt",
@@ -272,7 +372,7 @@ describe("JSON compatibility private operator", () => {
           },
         };
       }),
-      validOperatorRequest(),
+      await validAuthorizedOperatorRequest(),
       runtimeSequence(NOW_MS, NOW_MS + 2_000),
     )).rejects.toMatchObject({
       code: "invalid_private_invocation_receipt",
@@ -285,7 +385,7 @@ describe("JSON compatibility private operator", () => {
         failureCalls += 1;
         throw new Error("binding unavailable");
       }),
-      validOperatorRequest(),
+      await validAuthorizedOperatorRequest(),
       runtimeSequence(NOW_MS),
     )).rejects.toMatchObject({ code: "invoker_unavailable" });
     expect(failureCalls).toBe(1);
@@ -296,7 +396,7 @@ describe("JSON compatibility private operator", () => {
       operatorEnv(async () => {
         throw { code: "invalid_executor_receipt" };
       }),
-      validOperatorRequest(),
+      await validAuthorizedOperatorRequest(),
       runtimeSequence(NOW_MS),
     )).rejects.toMatchObject({ code: "invoker_rejected" });
 
@@ -304,7 +404,7 @@ describe("JSON compatibility private operator", () => {
       operatorEnv(async () => {
         throw { code: "ECONNRESET" };
       }),
-      validOperatorRequest(),
+      await validAuthorizedOperatorRequest(),
       runtimeSequence(NOW_MS),
     )).rejects.toMatchObject({ code: "invoker_unavailable" });
   });

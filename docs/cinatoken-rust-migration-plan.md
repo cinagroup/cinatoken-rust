@@ -28068,3 +28068,134 @@ Object migration, Container probe, provider request, billing/storage mutation,
 traffic change, or cutover occurred in this checkpoint. Local and dry-run
 evidence cannot authorize staging or production. Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## 2026-08-04 Independently Signed Operator Phase Approval
+
+This checkpoint supersedes the preceding statement that the operator accepts a
+structurally valid but independently unapproved first request. The local
+operator now accepts only
+`cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1`.
+The outer request contains the unchanged canonical phase request plus one
+Ed25519 approval envelope. Direct phase requests, malformed envelopes,
+unknown keys, changed request/caller fields, invalid signatures, expired or
+under-lived windows, partial key rotation, and verifier failures are rejected
+before the invoker Service Binding is called.
+
+The campaign plan contract is now v2. It freezes five private Worker
+identities: Runner, Operator, Invoker, PermitIssuer, and Executor. The
+Controller remains the separately pinned sixth active service because it owns
+shard Durable Object and Container access. The reviewed call chain is:
+
+```text
+Runner -> Operator -> Invoker -> PermitIssuer -> Executor -> Controller
+```
+
+Every private identity still contains exact service name, named entrypoint,
+Version Metadata ID, configuration SHA-256, gate name, and
+`privateRpcOnly=true`. The plan additionally freezes one operator approval
+policy: issuer, operator audience, Ed25519 key ID, signer SPKI SHA-256,
+600-second maximum lifetime, and 180-second minimum remaining lifetime. The
+Runner identity is therefore part of the owner-reviewed plan even though the
+Runner Worker and its remote binding/readback implementation remain a separate
+delivery item.
+
+The approval subject binds all execution-changing input available before the
+first RPC:
+
+- final campaign and plan digests;
+- exact Operator service and Version Metadata ID;
+- exact planned Runner service, entrypoint, version, config digest, gate, and
+  private-RPC requirement;
+- phase ordinal, ID, execution ID, and the complete inner request digest;
+- deterministic command ID, which is still derived only from the canonical
+  inner request and exact Operator version;
+- topology-readback and before-context artifact digests; and
+- issued, not-before, and expiry timestamps.
+
+The signer is offline, create-only, and network-free. It reads the final plan,
+prepared Operator config, and phase request through bounded no-follow stable
+file reads, recomputes their bindings, checks the selected current/previous
+KID and SPKI digest, accepts the Ed25519 PKCS8 private key only from non-TTY
+stdin, self-verifies the signature, clears private-key buffers, and writes a
+new mode-0600 artifact with exclusive/no-follow semantics. Private keys are
+not accepted through argv, environment variables, config, or tracked files.
+The public SPKI bytes travel in the approval envelope; the Worker and offline
+validator hash them and require the digest frozen in config/plan, so no public
+key byte secret is needed.
+
+Prepare and sign with:
+
+```text
+bun run prepare:container-runtime:json-compatibility-operator-config -- \
+  --out <operator-campaign-wrangler.jsonc> \
+  --hmac-kid <operator-to-invoker-kid> \
+  --hmac-credential-id-sha256 <credential-sha256> \
+  --approval-current-kid <offline-approval-kid> \
+  --approval-current-spki-sha256 <public-spki-sha256> \
+  --invoker-version-id <exact-invoker-version>
+
+<secret-manager-command> | \
+  bun run sign:container-runtime:json-compatibility-operator-approval -- \
+  --plan <final-approved-plan.json> \
+  --operator-config <operator-campaign-wrangler.jsonc> \
+  --request <exact-phase-request.json> \
+  --key-slot current --private-key-stdin \
+  --out <new-authorized-phase-request.json>
+```
+
+The Operator verifies canonical subject/envelope SHA-256, issuer, audience,
+KID, selected current/previous trust slot, SPKI digest, Ed25519 signature,
+Operator version, all request bindings, five-second clock skew, maximum
+lifetime, and minimum remaining lifetime before constructing the existing HMAC
+command. Approval bytes do not enter the command ID. Re-signing or key rotation
+therefore cannot create a second command for the same phase request; the
+existing campaign-named Invoker DO remains the single command-attempt and phase
+ordering authority. No extra approval DO or cross-DO consume transaction was
+introduced.
+
+The operator invocation receipt is v2 and retains the full approval envelope,
+its canonical digest, subject digest, selected signer digest, exact caller, and
+time window. Offline phase assembly re-verifies the Ed25519 signature, matches
+the trust anchor and Runner to plan v2, checks that the approval remained valid
+at invocation start, and projects the authorization identity/digests into each
+phase source and ordered source manifest. This is executable pre-execution
+authorization plus post-execution evidence, not a mere source label.
+
+Cloudflare's current documentation confirms that Service Bindings avoid a
+public URL and expose `WorkerEntrypoint` methods to other account Workers that
+declare a binding. That platform reachability is why application-level owner
+approval remains required. Workers Web Crypto supports standard Ed25519
+import/signature verification. See the official
+[Service Binding RPC](https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/rpc/),
+[Workers best practices](https://developers.cloudflare.com/workers/best-practices/workers-best-practices/),
+and [Web Crypto](https://developers.cloudflare.com/workers/runtime-apis/web-crypto/)
+documentation.
+
+Focused local acceptance currently passes 66 campaign/config/source tests with
+239 expectations, 13 Operator tests, generated Worker type drift, TypeScript,
+and local/staging Wrangler dry-runs. These checks include unauthorized-first-
+call, request/signature/key/time tampering, exact previous-key rotation,
+create-only signer output, plan/config/SPKI drift, receipt signature
+verification, and phase/source retention. The complete root `bun run check`
+gate also passes with exit code 0 in 1,270.4 seconds on the integrated tree.
+One earlier invocation hit a Windows Bun/libuv `UV_HANDLE_CLOSING` process
+assertion in the contract chain; the affected contract gate immediately passed
+independently with 43 tests and 81 expectations, and the subsequent complete
+root rerun passed. The crashed invocation is not counted as acceptance.
+
+This closes the local arbitrary-first-request and plan-substitution code gap.
+It does not prove the actual Cloudflare caller. `WorkerEntrypoint` does not
+provide an application caller identity to this method, so staging still
+requires the exact Runner implementation plus authenticated remote readback
+showing its version/config, that its Service Binding targets this exact
+Operator entrypoint, and that no unauthorized Worker has equivalent binding
+reachability. Multi-party owner approval, signer revocation/ceremony evidence,
+fresh retrievable topology/before-context collectors, full-result recovery
+after a committed-but-lost RPC response, source signature, immutable archive,
+real four-phase staging, and the wider production gates also remain open.
+
+No Worker was deployed, no secret was provisioned or read, no remote RPC or DO
+was invoked, and no Container/provider/billing/storage/traffic/Go-VPS state was
+changed. Every implemented campaign gate remains default false; the planned
+Runner Worker and its gate do not exist yet. Go/VPS remains authoritative and
+production remains **NO-GO**.

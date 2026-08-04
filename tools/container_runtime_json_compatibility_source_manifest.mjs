@@ -800,7 +800,7 @@ function createSyntheticOperatorInvocationReference({
   const digest = (domain) => sha256Canonical({ domain, phaseIndex });
   return {
     contract:
-      "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v1",
+      "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v2",
     receiptSha256: digest("synthetic-operator-invocation-receipt"),
     operatorBodySha256: digest("synthetic-operator-invocation-body"),
     privateInvocationReceiptSha256:
@@ -815,6 +815,20 @@ function createSyntheticOperatorInvocationReference({
         "cinatoken-container-runtime-json-compatibility-operator-staging",
       versionId: plan.privateServices.operator.versionId,
       gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+    },
+    authorization: {
+      contract:
+        "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1",
+      approvalEnvelopeSha256: digest("synthetic-operator-approval-envelope"),
+      approvalSubjectSha256: digest("synthetic-operator-approval-subject"),
+      issuer: plan.operatorApproval.issuer,
+      audience: plan.operatorApproval.audience,
+      keyId: plan.operatorApproval.keyId,
+      signerSpkiSha256: plan.operatorApproval.signerSpkiSha256,
+      caller: cloneJson(plan.privateServices.runner),
+      issuedAt: Math.floor(Date.parse(startedAt) / 1000) - 1,
+      notBefore: Math.floor(Date.parse(startedAt) / 1000) - 1,
+      expiresAt: Math.floor(Date.parse(startedAt) / 1000) + 599,
     },
     privateTransport: {
       kind: "service-binding-rpc",
@@ -932,11 +946,11 @@ function validateOperatorInvocationReference(
     "contract", "receiptSha256", "operatorBodySha256",
     "privateInvocationReceiptSha256", "requestSha256", "commandIdSha256",
     "phaseExecutionId", "phaseOrdinal", "phaseId", "operator",
-    "privateTransport", "startedAt", "completedAt",
+    "authorization", "privateTransport", "startedAt", "completedAt",
   ], `${label} operator invocation`);
   requireEqual(
     invocation.contract,
-    "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v1",
+    "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v2",
     `${label} operator invocation contract`,
   );
   for (const name of [
@@ -1019,6 +1033,71 @@ function validateOperatorInvocationReference(
     plan.privateServices.operator.gateName,
     `${label} operator gate`,
   );
+
+  const authorization = requireRecord(
+    invocation.authorization,
+    `${label} operator authorization`,
+  );
+  requireExactKeys(authorization, [
+    "contract", "approvalEnvelopeSha256", "approvalSubjectSha256",
+    "issuer", "audience", "keyId", "signerSpkiSha256", "caller",
+    "issuedAt", "notBefore", "expiresAt",
+  ], `${label} operator authorization`);
+  requireEqual(
+    authorization.contract,
+    "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1",
+    `${label} operator authorization contract`,
+  );
+  for (const name of [
+    "approvalEnvelopeSha256",
+    "approvalSubjectSha256",
+    "signerSpkiSha256",
+  ]) requireSha256(authorization[name], `${label} operator authorization ${name}`);
+  requireEqual(
+    authorization.issuer,
+    plan.operatorApproval.issuer,
+    `${label} operator approval issuer`,
+  );
+  requireEqual(
+    authorization.audience,
+    plan.operatorApproval.audience,
+    `${label} operator approval audience`,
+  );
+  requireEqual(
+    authorization.keyId,
+    plan.operatorApproval.keyId,
+    `${label} operator approval key ID`,
+  );
+  requireEqual(
+    authorization.signerSpkiSha256,
+    plan.operatorApproval.signerSpkiSha256,
+    `${label} operator approval SPKI`,
+  );
+  requireCanonicalEqual(
+    authorization.caller,
+    plan.privateServices.runner,
+    `${label} operator approval caller`,
+  );
+  for (const name of ["issuedAt", "notBefore", "expiresAt"]) {
+    requireInteger(
+      authorization[name],
+      0,
+      Number.MAX_SAFE_INTEGER,
+      `${label} operator authorization ${name}`,
+    );
+  }
+  if (
+    authorization.issuedAt * 1000 > startedAtMs + 5_000
+    || authorization.notBefore * 1000 > startedAtMs + 5_000
+    || authorization.expiresAt * 1000 - startedAtMs
+      < plan.operatorApproval.minimumRemainingLifetimeSeconds * 1000
+    || authorization.expiresAt - authorization.issuedAt
+      > plan.operatorApproval.maxLifetimeSeconds
+  ) {
+    throw new JsonCompatibilityCampaignError(
+      `${label} operator approval time window is invalid`,
+    );
+  }
 
   const transport = requireRecord(
     invocation.privateTransport,

@@ -35,6 +35,20 @@ describe("private operator Worker configuration", () => {
     expect(vars.JSON_COMPATIBILITY_OPERATOR_AUDIENCE).toBe(
       "cinatoken-container-runtime-json-compatibility-invoker-staging",
     );
+    expect(vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER).toBe(
+      "cinatoken-json-compatibility-campaign-approval-authority-staging",
+    );
+    expect(vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_AUDIENCE).toBe(
+      "cinatoken-container-runtime-json-compatibility-operator-staging",
+    );
+    expect(vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID).toBe("");
+    expect(
+      vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_SPKI_SHA256,
+    ).toBe("");
+    expect(vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID).toBe("");
+    expect(
+      vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256,
+    ).toBe("");
     expect(vars.JSON_COMPATIBILITY_OPERATOR_CURRENT_KID).toBe("");
     expect(
       vars.JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256,

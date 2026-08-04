@@ -22,8 +22,12 @@ config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED = "true";
 const validInputs = Object.freeze({
   campaignIdSha256: "11".repeat(32),
   controllerVersionId: "controller-version-001",
+  runnerVersionId: "runner-version-001",
+  runnerConfigSha256: "aa".repeat(32),
   operatorVersionId: "operator-version-001",
   operatorConfigSha256: "66".repeat(32),
+  operatorApprovalKeyId: "operator-approval-001",
+  operatorApprovalSpkiSha256: "bb".repeat(32),
   invokerVersionId: "invoker-version-001",
   invokerConfigSha256: "77".repeat(32),
   permitIssuerVersionId: "permit-issuer-version-001",
@@ -152,6 +156,15 @@ describe("container runtime JSON compatibility campaign plan", () => {
       allActionGatesDisabled: true,
     });
     expect(plan.privateServices).toEqual({
+      runner: {
+        serviceName:
+          "cinatoken-container-runtime-json-compatibility-runner-staging",
+        entrypoint: "JsonCompatibilityCampaignRunnerEntrypoint",
+        versionId: "runner-version-001",
+        configSha256: "aa".repeat(32),
+        gateName: "JSON_COMPATIBILITY_RUNNER_ENABLED",
+        privateRpcOnly: true,
+      },
       operator: {
         serviceName:
           "cinatoken-container-runtime-json-compatibility-operator-staging",
@@ -188,6 +201,20 @@ describe("container runtime JSON compatibility campaign plan", () => {
         gateName: "JSON_COMPATIBILITY_EXECUTOR_ENABLED",
         privateRpcOnly: true,
       },
+    });
+    expect(plan.operatorApproval).toEqual({
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-operator-approval-policy-v1",
+      algorithm: "Ed25519",
+      issuer:
+        "cinatoken-json-compatibility-campaign-approval-authority-staging",
+      audience:
+        "cinatoken-container-runtime-json-compatibility-operator-staging",
+      keyId: "operator-approval-001",
+      signerSpkiSha256: "bb".repeat(32),
+      maxLifetimeSeconds: 600,
+      minimumRemainingLifetimeSeconds: 180,
     });
     expect(plan.ring).toEqual({
       generation: 1,
@@ -263,8 +290,12 @@ describe("container runtime JSON compatibility campaign plan", () => {
 
   test("requires strict version and config identities for every private service", () => {
     const missingInputs = [
+      ["runnerVersionId", /runner version ID/],
+      ["runnerConfigSha256", /runner config digest/],
       ["operatorVersionId", /operator version ID/],
       ["operatorConfigSha256", /operator config digest/],
+      ["operatorApprovalKeyId", /operator approval key ID/],
+      ["operatorApprovalSpkiSha256", /operator approval SPKI digest/],
       ["invokerVersionId", /invoker version ID/],
       ["invokerConfigSha256", /invoker config digest/],
       ["permitIssuerVersionId", /permit issuer version ID/],
@@ -286,6 +317,12 @@ describe("container runtime JSON compatibility campaign plan", () => {
 
   test("rejects private service name, entrypoint, gate, or public RPC drift", () => {
     const drifts = [
+      [
+        "runner",
+        "entrypoint",
+        "JsonCompatibilityCampaignRunnerOtherEntrypoint",
+        /runner entrypoint/,
+      ],
       [
         "operator",
         "serviceName",

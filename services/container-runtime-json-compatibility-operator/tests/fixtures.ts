@@ -18,14 +18,26 @@ import {
   parseJsonCompatibilityInvokeCommandV1,
 } from "../../container-runtime-json-compatibility-invoker/src/authorization";
 import {
+  JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
   JSON_COMPATIBILITY_OPERATOR_PHASE_REQUEST_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
+  JSON_COMPATIBILITY_RUNNER_ENTRYPOINT,
+  JSON_COMPATIBILITY_RUNNER_SERVICE_NAME,
+  type JsonCompatibilityOperatorAuthorizedPhaseRequestV1,
   type JsonCompatibilityOperatorPhaseRequestV1,
 } from "../src/protocol";
 import {
+  COMMAND_ID_DOMAIN,
   JSON_COMPATIBILITY_OPERATOR_ISSUER,
   type JsonCompatibilityOperatorEnv,
   type JsonCompatibilityOperatorRuntime,
 } from "../src/operator";
+import {
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER,
+  operatorApprovalSigningPayload,
+} from "../src/authorization";
 
 export const NOW_MS = Date.parse("2026-08-04T08:00:00Z");
 export const NOW_SECONDS = Math.floor(NOW_MS / 1000);
@@ -36,6 +48,13 @@ export const OPERATOR_KEY_ID = "json-campaign-operator-current-2026-08";
 export const OPERATOR_CREDENTIAL_ID_SHA256 = "b1".repeat(32);
 export const OPERATOR_SECRET =
   "json-compatibility-operator-secret-32-byte-minimum";
+export const OPERATOR_APPROVAL_KEY_ID = "json-campaign-approval-2026-08";
+export const OPERATOR_APPROVAL_SPKI_BASE64URL =
+  "MCowBQYDK2VwAyEA9v8JyOln6PrPndR6_8lAUrEWIsD7_CP777cXWBor8C8";
+export const OPERATOR_APPROVAL_SPKI_SHA256 =
+  "471850d2dcfe546734941e2d44fde594cb3e4445900da72536ac9683f6be5d10";
+const OPERATOR_APPROVAL_PKCS8_BASE64URL =
+  "MC4CAQAwBQYDK2VwBCIEIM79XI3U3zwizihw3d_2C1BkrjVK11rROOfxqGj5nW5v";
 
 const ATTEMPT_ID_DOMAIN =
   "cinatoken-container-runtime-json-compatibility-invocation-attempt-id-v1\n";
@@ -95,6 +114,83 @@ export function validOperatorRequest(
   };
 }
 
+export async function validAuthorizedOperatorRequest(
+  request: JsonCompatibilityOperatorPhaseRequestV1 = validOperatorRequest(),
+  overrides: {
+    readonly issuedAt?: number;
+    readonly keyId?: string;
+    readonly callerVersionId?: string;
+    readonly callerConfigSha256?: string;
+  } = {},
+): Promise<JsonCompatibilityOperatorAuthorizedPhaseRequestV1> {
+  const issuedAt = overrides.issuedAt ?? NOW_SECONDS;
+  const requestSha256 = await sha256Hex(canonicalJson(request));
+  const commandIdSha256 = await sha256Hex(
+    `${COMMAND_ID_DOMAIN}${canonicalJson(request)}\n${OPERATOR_VERSION_ID}`,
+  );
+  const subject = {
+    schemaVersion: 1 as const,
+    contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+    environment: "staging" as const,
+    issuer: JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER,
+    audience: JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
+    keyId: overrides.keyId ?? OPERATOR_APPROVAL_KEY_ID,
+    operator: {
+      serviceName: JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
+      versionId: OPERATOR_VERSION_ID,
+    },
+    caller: {
+      serviceName: JSON_COMPATIBILITY_RUNNER_SERVICE_NAME,
+      entrypoint: JSON_COMPATIBILITY_RUNNER_ENTRYPOINT,
+      versionId: overrides.callerVersionId ?? "runner-version-001",
+      configSha256: overrides.callerConfigSha256 ?? "c1".repeat(32),
+      gateName: "JSON_COMPATIBILITY_RUNNER_ENABLED" as const,
+      privateRpcOnly: true as const,
+    },
+    campaignIdSha256: request.execution.campaignIdSha256,
+    planDigestSha256: request.execution.planDigestSha256,
+    phaseExecutionId: request.execution.phaseExecutionId,
+    phaseOrdinal: request.execution.phase.ordinal,
+    phaseId: request.execution.phase.id,
+    requestSha256,
+    commandIdSha256,
+    topologyReadbackSha256: request.topologyReadbackSha256,
+    beforeContextSha256: request.beforeContextSha256,
+    issuedAt,
+    notBefore: issuedAt,
+    expiresAt: issuedAt + 600,
+  };
+  const unsignedEnvelope = {
+    schemaVersion: 1 as const,
+    contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+    algorithm: "Ed25519" as const,
+    subject,
+    subjectSha256: await sha256Hex(canonicalJson(subject)),
+    signerSpkiBase64url: OPERATOR_APPROVAL_SPKI_BASE64URL,
+  };
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    decodeBase64url(OPERATOR_APPROVAL_PKCS8_BASE64URL),
+    { name: "Ed25519" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "Ed25519",
+    privateKey,
+    operatorApprovalSigningPayload({ subject }),
+  );
+  return {
+    schemaVersion: 1,
+    contract: JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
+    request,
+    approval: {
+      ...unsignedEnvelope,
+      signatureBase64url: encodeBase64url(new Uint8Array(signature)),
+    },
+  };
+}
+
 export function operatorEnv(
   invokePhase: (input: unknown) => Promise<unknown>,
   enabled = true,
@@ -105,6 +201,16 @@ export function operatorEnv(
     JSON_COMPATIBILITY_OPERATOR_ISSUER: JSON_COMPATIBILITY_OPERATOR_ISSUER,
     JSON_COMPATIBILITY_OPERATOR_AUDIENCE:
       JSON_COMPATIBILITY_INVOKER_SERVICE_NAME,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_AUDIENCE:
+      JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID:
+      OPERATOR_APPROVAL_KEY_ID,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_SPKI_SHA256:
+      OPERATOR_APPROVAL_SPKI_SHA256,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_KID: "",
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256: "",
     JSON_COMPATIBILITY_OPERATOR_CURRENT_KID: OPERATOR_KEY_ID,
     JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
       OPERATOR_CREDENTIAL_ID_SHA256,
@@ -113,6 +219,18 @@ export function operatorEnv(
     CF_VERSION_METADATA: { id: OPERATOR_VERSION_ID },
     JSON_COMPATIBILITY_INVOKER_SERVICE: { invokePhase },
   };
+}
+
+function decodeBase64url(value: string): ArrayBuffer {
+  const padding = "=".repeat((4 - (value.length % 4)) % 4);
+  const binary = atob(value.replace(/-/g, "+").replace(/_/g, "/") + padding);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0)).buffer;
+}
+
+function encodeBase64url(value: Uint8Array): string {
+  let binary = "";
+  for (const byte of value) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/u, "");
 }
 
 export function runtimeSequence(

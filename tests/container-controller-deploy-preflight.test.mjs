@@ -37,6 +37,7 @@ function validConfig(environment) {
       ...Object.fromEntries(
         REQUIRED_DISABLED_RING_TRANSITION_VARS.map((name) => [name, "0"]),
       ),
+      CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED: "false",
       CONTAINER_DURABLE_OBJECT_JURISDICTION: "default",
       CONTAINER_SHARD_ACTIVATION_EXPECTED_RUNTIME_BUILD_ID: "",
     },
@@ -146,6 +147,46 @@ describe("Container Controller deploy config validation", () => {
     expect(() => validateControllerConfig(futureGate, "staging")).toThrow(
       /action gate.*must remain false/,
     );
+  });
+
+  test("allows only the isolated JSON probe gate in explicit staging campaign mode", () => {
+    const campaign = validConfig("staging");
+    campaign.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED = "true";
+    expect(
+      validateControllerConfig(campaign, "staging", {
+        jsonCompatibilityCampaign: true,
+      }),
+    ).toMatchObject({
+      environment: "staging",
+      jsonCompatibilityCampaign: true,
+      jsonCompatibilityProbeEnabled: true,
+    });
+    expect(() => validateControllerConfig(campaign, "staging")).toThrow(
+      /CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED/,
+    );
+
+    const unarmed = validConfig("staging");
+    expect(() =>
+      validateControllerConfig(unarmed, "staging", {
+        jsonCompatibilityCampaign: true,
+      }),
+    ).toThrow(/CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED/);
+
+    const unsafe = structuredClone(campaign);
+    unsafe.vars.CONTAINER_EXECUTION_ENABLED = "true";
+    expect(() =>
+      validateControllerConfig(unsafe, "staging", {
+        jsonCompatibilityCampaign: true,
+      }),
+    ).toThrow(/CONTAINER_EXECUTION_ENABLED/);
+
+    const production = validConfig("production");
+    production.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED = "true";
+    expect(() =>
+      validateControllerConfig(production, "production", {
+        jsonCompatibilityCampaign: true,
+      }),
+    ).toThrow(/staging-only/);
   });
 
   test("pins deployment preflight to the default Durable Object jurisdiction", () => {
@@ -483,7 +524,17 @@ describe("Container Controller deploy preflight orchestration", () => {
       controllerConfigPath:
         "services/container-controller/wrangler.staging.jsonc",
       offline: true,
+      jsonCompatibilityCampaign: false,
     });
+    expect(
+      parseCliArguments([
+        "--environment",
+        "staging",
+        "--config",
+        "campaign.jsonc",
+        "--json-compatibility-campaign",
+      ]),
+    ).toMatchObject({ jsonCompatibilityCampaign: true });
     expect(() => parseCliArguments(["--environment", "staging"])).toThrow(
       /--config/,
     );

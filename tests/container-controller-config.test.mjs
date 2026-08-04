@@ -120,6 +120,7 @@ describe("isolated container controller configuration", () => {
       expect(config.vars.CONTAINER_CONTROLLER_SERVICE_NAME).toBe(config.name);
       expect(config.vars.CONTAINER_CONTROLLER_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_EXECUTION_ENABLED).toBe("false");
+      expect(config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_READINESS_PROBE_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_READINESS_WAKE_ENABLED).toBe("false");
       expect(config.vars.CONTAINER_STORAGE_R2_READ_ENABLED).toBe("false");

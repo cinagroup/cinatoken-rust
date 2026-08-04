@@ -13333,12 +13333,12 @@ same contract immediately passed in isolation with 43 tests and 81 assertions,
 and the subsequent complete 1,211.9-second root run passed. The interrupted run
 is not counted as successful evidence.
 
-These are local contract results only. No private remote probe executor or
-signed source-manifest collector exists yet, no `remote-staging` packet was
-collected, and no Cloudflare credential or API was used. No deployment, route,
-DNS, provider request, billing action, traffic change, D1 mutation, or Go/VPS
-change occurred. All execution and Protobuf gates remain false; production
-remains **NO-GO**.
+These are local contract results only. The 2026-08-04 checkpoint below adds the
+private executor and digest-bound source chain, but no `remote-staging` packet
+was collected and no Cloudflare credential or API was used in this earlier
+result. No deployment, route, DNS, provider request, billing action, traffic
+change, D1 mutation, or Go/VPS change occurred. All execution and Protobuf
+gates remain false; production remains **NO-GO**.
 
 ### GitHub code-SHA evidence
 
@@ -13410,3 +13410,88 @@ refresh and completed the full provenance workflow. It does not provide
 Cloudflare staging or production evidence. No Cloudflare credential, resource,
 route, DNS, D1 row, deployment, provider request, billing action, traffic
 change, or Go/VPS mutation occurred. Production remains **NO-GO**.
+
+## 2026-08-04 Private JSON Probe And Evidence Source Chain
+
+The JSON-only campaign now has a private code path from an executor Service
+Binding to a named Controller `WorkerEntrypoint`, then to the selected shard
+Durable Object and its bound Container. There is still no public Controller or
+Container probe route. The probe requires staging identity, the exact ring and
+shard count, a fresh bounded request, both Protobuf gates false, every
+production action gate false, and
+`CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED=true` in a separately prepared
+campaign config.
+
+The executor is independently protected by
+`JSON_COMPATIBILITY_EXECUTOR_ENABLED=false` in tracked configs. It probes all
+eight shards with maximum concurrency four, awaits every launched RPC, and
+emits a strict phase receipt. That receipt records the RPC observations and the
+executor's code-enforced boundary; it does not authenticate the campaign or
+assert independently observed
+Controller/Container deployment state, ledger convergence, or external
+provider, billing, storage-gateway, and production-traffic snapshots.
+
+Those independent facts enter through a separate context artifact. The
+create-only assembler binds plan, receipt, and context into one phase source
+packet and retains both `sourceContext.contextSha256` and the receipt digest.
+The create-only collector requires exactly the ordered baseline,
+mixed, candidate, and rollback packets. Normal verification then requires all
+of the following and rejects any non-identical evidence projection:
+
+```text
+bun tools/project_container_runtime_json_compatibility_evidence.mjs \
+  --plan <approved-plan.json> \
+  --source-manifest <source-manifest.json> \
+  --captured-at <whole-second-UTC> \
+  --out <remote-staging-evidence.json>
+
+bun tools/verify_container_runtime_json_compatibility_evidence.mjs \
+  --plan <approved-plan.json> \
+  --source-manifest <source-manifest.json> \
+  --evidence <remote-staging-evidence.json> \
+  --json
+```
+
+The standard Controller preflight rejects the JSON probe gate when true. Only
+the explicit staging-only `--json-compatibility-campaign` mode may accept a
+config where that isolated gate is true, and it rejects every other enabled
+action or Protobuf gate. `prepare_container_runtime_json_compatibility_controller_config.mjs`
+creates that config without replacing an existing file or changing any other
+value.
+
+The executor campaign config has a separate create-only preparer that changes
+only `JSON_COMPATIBILITY_EXECUTOR_ENABLED`. The plan and evidence projector are
+also create-only. All top-level readers reject symlinks, non-regular or changing
+files, BOM/non-UTF-8 input, and files over their type-specific limits: plan
+256 KiB; config/context 512 KiB; receipt 1 MiB; phase source 2 MiB; manifest and
+evidence 8 MiB. A cross-implementation golden vector requires Worker WebCrypto
+and offline Node.js to produce identical normalized projection digests.
+
+Focused local evidence for this implementation:
+
+| Gate | Result |
+| --- | --- |
+| `bun run check:container-runtime:json-compatibility-campaign` | passed; 41 tests, 110 assertions, planner and verifier self-tests visibly fixture-only |
+| `bun run check:container-runtime:json-compatibility-executor` | passed; generated types, local/staging Wrangler dry-runs, 9 Vitest tests |
+| `bun run check:container-controller` | passed; generated types, TypeScript, Wrangler dry-run, 310 Bun tests/2,050 assertions, 192 portable tests, 54 Workerd tests |
+| `bun run check:container-controller:deploy-preflight` | passed; 24 tests, 105 assertions, offline preflight self-test |
+| root `bun run check` | passed with exit 0 in 1,304.3 seconds; complete Worker/DO, Container supply-chain, WFP, Realtime, D1, frontend, Rust workspace, and wasm32 chain |
+
+The executor dry-run binds
+`CONTAINER_CONTROLLER_JSON_PROBE` to
+`cinatoken-container-controller-staging#JsonCompatibilityProbeEntrypoint` and
+shows `JSON_COMPATIBILITY_EXECUTOR_ENABLED=false`. The Controller dry-run shows
+`CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED=false`. Both are compile/bundle
+evidence only.
+
+Verification scope remains local until an authorized remote campaign produces
+the real receipt, independently collected context including storage-gateway
+facts, four phase packets, source manifest, and evidence. Structural validation
+of the `remote-staging` label does not authenticate its source. The SHA-256
+chain proves canonical integrity, not source identity; no cryptographic source
+signature exists yet. Signed single-use invocation permits, replay consumption,
+an authenticated private invoker, and exact per-shard topology deployment and
+readback also remain open. No Cloudflare
+deployment or private remote RPC was performed by these checks, no provider,
+billing, production traffic, D1, DNS, route, or Go/VPS state changed, and
+production remains **NO-GO**.

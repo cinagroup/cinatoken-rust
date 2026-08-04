@@ -1,4 +1,5 @@
 import { Container, ContainerProxy } from "@cloudflare/containers";
+import { WorkerEntrypoint } from "cloudflare:workers";
 import {
   DISPATCH_REPLAY_RETENTION_SECONDS,
   RelayShardLedger,
@@ -184,6 +185,20 @@ import {
   recordShardPlacementAttestation,
   requireShardPlacementMutationAuthorization,
 } from "./shard_placement_ledger";
+import {
+  JSON_COMPATIBILITY_PROBE_CONTENT_TYPE,
+  JSON_COMPATIBILITY_PROBE_RESULT_CONTRACT,
+  MAX_JSON_COMPATIBILITY_READINESS_BYTES,
+  MAX_JSON_COMPATIBILITY_WIRE_RESPONSE_BYTES,
+  buildJsonHealthProbeWireRequest,
+  createJsonHealthProbeDigestRecord,
+  digestBoundedRawJsonObject,
+  parseJsonCompatibilityProbeRequestV1,
+  serializeJsonHealthProbeWireRequest,
+  verifyJsonCompatibilityProbeResultDigests,
+  type JsonCompatibilityProbeRequestV1,
+  type JsonCompatibilityProbeResultV1,
+} from "./json_compatibility_probe";
 
 export { ContainerProxy };
 
@@ -199,6 +214,7 @@ interface ControllerRuntimeEnvironment
   CONTAINER_CONTROLLER_SERVICE_NAME: string;
   CONTAINER_CONTROLLER_ENABLED: string;
   CONTAINER_EXECUTION_ENABLED: string;
+  CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED: string;
   CONTAINER_READINESS_PROBE_ENABLED: string;
   CONTAINER_READINESS_WAKE_ENABLED: string;
   CONTAINER_STORAGE_R2_READ_ENABLED: string;
@@ -1489,6 +1505,145 @@ export class RelayShardContainer extends Container<ControllerEnv> {
     return this.ledger.readShardDrainSnapshot(shard, now);
   }
 
+  async jsonCompatibilityProbe(
+    input: unknown,
+  ): Promise<JsonCompatibilityProbeResultV1> {
+    const request = parseJsonCompatibilityProbeRequestV1(input);
+    await assertJsonCompatibilityProbePolicy(this.env, request);
+    const startedAtMs = Date.now();
+    const deadlineAtMs = request.operation.executionDeadlineAt * 1_000;
+    if (startedAtMs >= deadlineAtMs) {
+      throw new ProtocolError("json_compatibility_probe_expired", 408);
+    }
+
+    const readinessResponse = await this.containerFetch(
+      "http://container/readyz",
+      {
+        method: "GET",
+        headers: { accept: JSON_COMPATIBILITY_PROBE_CONTENT_TYPE },
+        signal: AbortSignal.timeout(Math.max(1, deadlineAtMs - Date.now())),
+      },
+    );
+    const readinessBody = await readBoundedResponse(
+      readinessResponse,
+      MAX_JSON_COMPATIBILITY_READINESS_BYTES,
+      deadlineAtMs,
+    );
+    assertJsonCompatibilityContainerResponse(
+      readinessResponse,
+      "json_compatibility_readiness_rejected",
+    );
+    const runtimeReadiness = validateRuntimeReadinessResponse(
+      readinessResponse,
+      readinessBody,
+    );
+    if (
+      runtimeReadiness.runtime_build_id !== request.expectedRuntimeBuildIdSha256 ||
+      runtimeReadiness.protocol_version !== 1 ||
+      runtimeReadiness.shard_contract_version !== 1 ||
+      runtimeReadiness.execution_enabled
+    ) {
+      throw new ProtocolError("json_compatibility_runtime_identity_mismatch", 502);
+    }
+    const readinessDigest = await digestBoundedRawJsonObject(
+      readinessBody,
+      MAX_JSON_COMPATIBILITY_READINESS_BYTES,
+      "JSON compatibility readiness response",
+    );
+
+    const wireRequest = buildJsonHealthProbeWireRequest(request);
+    const requestRawJson = serializeJsonHealthProbeWireRequest(request);
+    const requestBytes = new TextEncoder().encode(requestRawJson);
+    const operationResponse = await this.containerFetch(
+      "http://container/v1/operations",
+      {
+        method: "POST",
+        headers: {
+          accept: JSON_COMPATIBILITY_PROBE_CONTENT_TYPE,
+          "content-type": JSON_COMPATIBILITY_PROBE_CONTENT_TYPE,
+          "x-cinatoken-container-protocol": "1",
+        },
+        body: copyArrayBuffer(requestBytes),
+        signal: AbortSignal.timeout(Math.max(1, deadlineAtMs - Date.now())),
+      },
+    );
+    const operationBody = await readBoundedResponse(
+      operationResponse,
+      MAX_JSON_COMPATIBILITY_WIRE_RESPONSE_BYTES,
+      deadlineAtMs,
+    );
+    assertJsonCompatibilityContainerResponse(
+      operationResponse,
+      "json_compatibility_health_probe_rejected",
+    );
+    const operationOutcome = parseContainerOperationHttpResponse(
+      operationResponse,
+      operationBody,
+      wireRequest,
+    );
+    if (
+      operationOutcome.kind !== "outcome" ||
+      operationOutcome.outcome.status !== "completed" ||
+      operationOutcome.outcome.code !== null ||
+      operationOutcome.outcome.result !== null
+    ) {
+      throw new ProtocolError("invalid_json_compatibility_health_response", 502);
+    }
+    const responseRawJson = new TextDecoder("utf-8", {
+      fatal: true,
+      ignoreBOM: false,
+    }).decode(operationBody);
+    const healthProbeDigest = await createJsonHealthProbeDigestRecord(
+      requestBytes,
+      operationBody,
+    );
+    const completedAtMs = Date.now();
+    if (completedAtMs > deadlineAtMs) {
+      throw new ProtocolError("json_compatibility_probe_expired", 408);
+    }
+
+    return verifyJsonCompatibilityProbeResultDigests({
+      schemaVersion: 1,
+      contract: JSON_COMPATIBILITY_PROBE_RESULT_CONTRACT,
+      request,
+      startedAt: wholeSecondUtc(startedAtMs),
+      completedAt: wholeSecondUtc(completedAtMs),
+      readiness: {
+        statusCode: 200,
+        contentType: JSON_COMPATIBILITY_PROBE_CONTENT_TYPE,
+        rawJson: readinessDigest.rawJson,
+        rawByteLength: readinessDigest.byteLength,
+        rawSha256: readinessDigest.rawSha256,
+        runtimeBuildIdSha256: runtimeReadiness.runtime_build_id,
+        protocolVersion: 1,
+        shardContractVersion: 1,
+        executionEnabled: false,
+      },
+      healthProbe: {
+        operationKind: "health_probe",
+        statusCode: 200,
+        requestContentType: JSON_COMPATIBILITY_PROBE_CONTENT_TYPE,
+        responseContentType: JSON_COMPATIBILITY_PROBE_CONTENT_TYPE,
+        requestRawJson,
+        responseRawJson,
+        ...healthProbeDigest,
+        selectedTransport: "json",
+        effectiveTransport: "json",
+        attemptCount: 1,
+        legacyJsonFallbackCount: 0,
+        outcome: "completed",
+        recoveryRequired: false,
+      },
+      sideEffects: {
+        providerRequestCount: 0,
+        billingMutationCount: 0,
+        storageGatewayMutationCount: 0,
+        productionTrafficRequestCount: 0,
+        publicProbeRequestCount: 0,
+      },
+    });
+  }
+
   override async onActivityExpired(): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     const snapshot = this.ledger.readCurrentShardDrainSnapshot(now);
@@ -1506,6 +1661,17 @@ export class RelayShardContainer extends Container<ControllerEnv> {
       now,
     );
     await this.stop("SIGTERM");
+  }
+}
+
+export class JsonCompatibilityProbeEntrypoint extends WorkerEntrypoint<ControllerEnv> {
+  async probeShard(input: unknown): Promise<JsonCompatibilityProbeResultV1> {
+    const request = parseJsonCompatibilityProbeRequestV1(input);
+    await assertJsonCompatibilityProbePolicy(this.env, request);
+    const result = await selectRelayShardNamespace(this.env)
+      .getByName(request.shard.instanceName)
+      .jsonCompatibilityProbe(request);
+    return verifyJsonCompatibilityProbeResultDigests(result);
   }
 }
 
@@ -2952,6 +3118,72 @@ function copyArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   const copy = new Uint8Array(bytes.byteLength);
   copy.set(bytes);
   return copy.buffer;
+}
+
+async function assertJsonCompatibilityProbePolicy(
+  env: ControllerEnv,
+  request: JsonCompatibilityProbeRequestV1,
+): Promise<void> {
+  if (env.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED !== "true") {
+    throw new ProtocolError("json_compatibility_probe_disabled", 503);
+  }
+  if (
+    env.ENVIRONMENT !== "staging" ||
+    env.CONTAINER_CONTROLLER_SERVICE_NAME !== request.controllerServiceName ||
+    env.CF_VERSION_METADATA.id !== request.controllerVersionId
+  ) {
+    throw new ProtocolError("json_compatibility_controller_identity_mismatch", 409);
+  }
+  if (
+    configuredInteger(env.CONTAINER_RING_GENERATION, 1, Number.MAX_SAFE_INTEGER) !==
+      request.shard.ringGeneration ||
+    configuredInteger(env.CONTAINER_SHARD_COUNT, 2, 1_024) !==
+      request.shard.shardCount
+  ) {
+    throw new ProtocolError("json_compatibility_topology_mismatch", 409);
+  }
+  if (
+    env.CONTAINER_PROTOBUF_TRANSPORT_ENABLED !== "false" ||
+    env.CONTAINER_PROTOBUF_TRANSPORT_STAGING_VERIFIED !== "false"
+  ) {
+    throw new ProtocolError("json_compatibility_transport_not_isolated", 503);
+  }
+  const actionGates = await campaignActionGateInventory(env);
+  if (!actionGates.allActionGatesFalse) {
+    throw new ProtocolError("json_compatibility_action_gate_open", 503);
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const requestedAtSeconds = Math.floor(Date.parse(request.requestedAt) / 1_000);
+  if (
+    requestedAtSeconds > nowSeconds ||
+    nowSeconds - requestedAtSeconds > 30 ||
+    request.operation.executionDeadlineAt <= nowSeconds
+  ) {
+    throw new ProtocolError("json_compatibility_probe_expired", 408);
+  }
+}
+
+function assertJsonCompatibilityContainerResponse(
+  response: Response,
+  rejectionCode: string,
+): void {
+  if (response.status !== 200) {
+    throw new ProtocolError(rejectionCode, 502);
+  }
+  if (
+    responseContentType(response) !== JSON_COMPATIBILITY_PROBE_CONTENT_TYPE ||
+    response.headers.has("content-encoding") ||
+    response.headers.has("location")
+  ) {
+    throw new ProtocolError("invalid_json_compatibility_container_response", 502);
+  }
+}
+
+function wholeSecondUtc(epochMs: number): string {
+  return new Date(Math.floor(epochMs / 1_000) * 1_000)
+    .toISOString()
+    .replace(".000Z", "Z");
 }
 
 async function readBoundedResponse(

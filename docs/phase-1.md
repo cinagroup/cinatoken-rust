@@ -5406,7 +5406,7 @@ or recovery semantics. JSON remains the default transport and both Protobuf
 gates remain false in local, staging, production, generated types, config
 tests, and deployment preflight.
 
-Current local evidence passes 297 Controller Bun tests with 1,994 assertions,
+At that checkpoint, local evidence passed 309 Controller Bun tests with 2,047 assertions,
 192 portable Vitest tests, 54 Workerd runtime tests, generated Worker type
 drift, TypeScript compilation, and Wrangler dry-run. The complete repository
 gate also passes with exit 0 in 1,250.6 seconds. Local and staging
@@ -5428,10 +5428,13 @@ traffic change occurred. Go/VPS remains authoritative and production remains
 The next activation prerequisite is now executable as a credential-free,
 offline contract instead of remaining only prose. The new planner validates the
 tracked staging Controller through the existing deploy preflight, requires
-private Service Binding access, exact observability sampling 1, every action
-gate false, both Protobuf gates false, distinct N/N-1 build and OCI identities,
-and a bounded candidate shard. It emits a canonical SHA-256-bound four-phase
-plan: all N-1, one N mixed with N-1, all N, then rollback to all N-1.
+private Service Binding transport, exact observability sampling 1, only the
+isolated JSON probe gate true, every other action gate false, both Protobuf
+gates false, distinct N/N-1 build and OCI identities, and a bounded candidate
+shard in the fixed eight-shard ring. It emits a canonical SHA-256-bound
+four-phase plan: all N-1, one N mixed with N-1, all N, then rollback to all N-1.
+Service Binding privacy is not campaign authentication; a signed, expiring,
+single-use phase permit and replay registry remain required.
 
 The evidence verifier requires one readiness/build-identity and no-provider
 JSON `health_probe` observation for every configured shard in every phase. Raw
@@ -5440,36 +5443,83 @@ across phases. A checked-in projection
 algorithm removes only volatile operation, trace, owner lease/deadline,
 provider-operation, and admission identities; all protocol, input, shard/ring,
 and response semantics remain covered. These projection digests, rather than
-the raw per-operation bytes, must match the N-1 baseline because unique
-operation identities are required to avoid Durable Object replay masking the
-runtime under test.
+the raw per-operation bytes, must match the N-1 baseline. Unique operation and
+trace identities make raw artifacts unique, expose cross-phase replay, and
+avoid cache-identity reuse; the direct private probe does not use the
+production operation ledger. Worker WebCrypto and offline Node.js projection
+implementations are locked by one shared golden parity vector.
 
 The closed evidence packet also requires one stable Controller deployment,
-phase-specific Container deployment readback, exact JSON-only telemetry counts,
-zero Protobuf attempt/fallback/recovery, unchanged provider/billing/production
-snapshot digests, zero protected mutation counters, all shards observed, and
-rollback ledger convergence. Normal verification rejects synthetic evidence;
-the self-test path is visibly `fixtureOnly`.
+phase-specific per-shard Container deployment readback, exact JSON-only
+telemetry counts, zero Protobuf attempt/fallback/recovery, unchanged
+provider/billing/storage-gateway/production snapshot digests, zero protected
+mutation counters, all shards observed, and rollback ledger convergence.
+Normal structural verification rejects synthetic evidence, but the accepted
+`remote-staging` label remains an untrusted source claim until a cryptographic
+signature is verified; the self-test path is visibly `fixtureOnly`.
 
 Repository commands are:
 
 ```text
 bun run check:container-runtime:json-compatibility-campaign
-bun run plan:container-runtime:json-compatibility-campaign -- <exact identities>
+bun run check:container-runtime:json-compatibility-executor
+bun run prepare:container-runtime:json-compatibility-controller-config -- \
+  --out <create-only-campaign-wrangler.jsonc>
+bun run prepare:container-runtime:json-compatibility-executor-config -- \
+  --out <create-only-executor-campaign-wrangler.jsonc>
+bun tools/preflight_container_controller_deploy.mjs \
+  --environment staging \
+  --config <create-only-campaign-wrangler.jsonc> \
+  --json-compatibility-campaign --offline --json
+bun run plan:container-runtime:json-compatibility-campaign -- \
+  --config <create-only-campaign-wrangler.jsonc> <exact identities> \
+  --out <approved-plan.json>
+bun run assemble:container-runtime:json-compatibility-phase-source -- \
+  --plan <approved-plan.json> --receipt <executor-receipt.json> \
+  --context <independent-readback-context.json> --out <phase-source.json>
+bun run collect:container-runtime:json-compatibility-source-manifest -- \
+  --plan <approved-plan.json> --phase <baseline.json> --phase <mixed.json> \
+  --phase <candidate.json> --phase <rollback.json> --out <source-manifest.json>
+bun run project:container-runtime:json-compatibility-evidence -- \
+  --plan <approved-plan.json> --source-manifest <source-manifest.json> \
+  --captured-at <whole-second-UTC> --out <remote-evidence.json>
 bun run verify:container-runtime:json-compatibility-campaign -- \
-  --plan <approved-plan.json> --evidence <remote-evidence.json> --json
+  --plan <approved-plan.json> --source-manifest <source-manifest.json> \
+  --evidence <remote-evidence.json> --json
 ```
 
-The tooling performs no network request, credential read, file write, remote
-mutation, deployment, provider call, billing action, or traffic change. The
-complete repository gate passes with exit 0 in 1,211.9 seconds, including the
-Worker/DO, Container supply-chain, WFP, Realtime, D1, frontend, Rust workspace,
-and wasm32 checks. The authenticated private staging probe executor and signed
-source-manifest
-collector remain unimplemented; until those exist and produce approved remote
-evidence, the JSON compatibility campaign remains open. Protobuf and all
-execution gates remain false, Go/VPS remains authoritative, and production
-remains **NO-GO**.
+The private staging implementation now includes a named Controller
+`WorkerEntrypoint`, direct shard Durable Object probe, an eight-shard bounded
+Service Binding executor, a strict executor receipt, independent context plus
+receipt phase assembly, a four-phase source-manifest collector, and exact
+manifest-to-evidence projection verification. The Controller and executor use
+separate default-off gates. Standard deployment preflight requires the probe
+gate false; the explicit campaign mode permits only that one gate in staging.
+The phase packet retains the independent `sourceContext.contextSha256`, and its
+context now covers the storage gateway as well as provider, billing, traffic,
+deployment, and ledger observations.
+
+All preparation, assembly, collection, and verification CLIs are offline and
+create-only or read-only, use no-follow regular-file stable reads, strict UTF-8,
+and type-specific size limits. Actual deployment and private RPC invocation are
+not performed by these commands and still require separate authorization. The
+signed single-use permit and replay registry, authenticated private invoker,
+exact per-shard topology runner/readback, independent remote context collector,
+cryptographic source signature, immutable archive, authorized publication, and
+real four-phase staging packet remain open. Canonical SHA-256 binding is
+integrity, not signer authentication. Until those gaps close, Protobuf and all
+production execution gates remain false, Go/VPS remains authoritative, and
+production remains **NO-GO**.
+
+Focused local checks pass 41 campaign/source-chain tests with 110 assertions, 9
+executor tests, and 24 deployment-preflight tests with 105 assertions. The
+Controller suite passes 310 Bun tests with 2,050 assertions, 192 portable tests,
+and 54 Workerd tests. Executor
+and Controller Wrangler type checks and dry-runs pass with the named Service
+Binding and both tracked JSON campaign gates false. None of these dry-runs
+invoked a remote Worker or Container. The complete root `bun run check` gate
+passes with exit 0 in 1,304.3 seconds, including the Rust workspace and all
+configured wasm32 checks.
 
 ## Current-Main Supply-Chain Freshness
 
@@ -5488,7 +5538,8 @@ and signed provenance
 [run 30809105647](https://github.com/cinagroup/cinatoken-rust/actions/runs/30809105647).
 Focused candidate, vulnerability, OCI, SBOM, and provenance contracts passed,
 and the complete repository gate passed in 1,222.5 seconds. This is current
-supply-chain evidence only. The private remote JSON campaign executor and
-source-manifest collector remain next; no Cloudflare staging deployment or
-runtime proof was produced, all execution/Protobuf gates remain false, and
-production remains **NO-GO**.
+supply-chain evidence only. The later private JSON campaign code closes the
+executor and digest-bound source-manifest implementation gap, but no Cloudflare
+staging deployment, authenticated source signature, or runtime proof was
+produced. All execution/Protobuf gates remain false and production remains
+**NO-GO**.

@@ -1,14 +1,19 @@
 #!/usr/bin/env bun
 
-import { readFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   JsonCompatibilityCampaignError,
   buildJsonCompatibilityCampaignPlan,
+  canonicalJson,
   parseStrictJsonObject,
   validateJsonCompatibilityCampaignPlan,
 } from "./container_runtime_json_compatibility_campaign.mjs";
+import {
+  JSON_COMPATIBILITY_CONFIG_MAX_BYTES,
+  readBoundedUtf8File,
+} from "./lib/bounded_json_file.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const defaultConfigPath = path.join(
@@ -21,9 +26,16 @@ const defaultConfigPath = path.join(
 export async function runJsonCompatibilityCampaignPlanner(options) {
   const configPath = path.resolve(options.configPath ?? defaultConfigPath);
   const config = parseStrictJsonObject(
-    await readFile(configPath, "utf8"),
+    await readBoundedUtf8File(
+      configPath,
+      JSON_COMPATIBILITY_CONFIG_MAX_BYTES,
+      "staging Controller config",
+    ),
     "staging Controller config",
   );
+  if (options.selfTest) {
+    config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED = "true";
+  }
   const inputs = options.selfTest
     ? {
         campaignIdSha256: "11".repeat(32),
@@ -37,6 +49,14 @@ export async function runJsonCompatibilityCampaignPlanner(options) {
     : options;
   const plan = buildJsonCompatibilityCampaignPlan({ config, ...inputs });
   validateJsonCompatibilityCampaignPlan(plan);
+  if (!options.selfTest && options.outPath !== undefined) {
+    const output = path.resolve(options.outPath);
+    if (output === configPath) throw new Error("--out must not replace --config");
+    await writeFile(output, canonicalJson(plan), {
+      encoding: "utf8",
+      flag: "wx",
+    });
+  }
   if (!options.selfTest) return plan;
   return {
     ok: true,
@@ -49,6 +69,8 @@ export async function runJsonCompatibilityCampaignPlanner(options) {
     shardCount: plan.ring.shardCount,
     candidateShardIndex: plan.ring.candidateShardIndex,
     privateProbeTransport: plan.controller.privateProbeTransport,
+    jsonCompatibilityProbeEnabled:
+      plan.controller.jsonCompatibilityProbeEnabled,
     protobufTransportEnabled: false,
     protobufTransportStagingVerified: false,
     credentialsRead: false,
@@ -65,6 +87,7 @@ function parseArgs(argv) {
   const flags = new Set();
   const valueOptions = new Set([
     "--config",
+    "--out",
     "--campaign-id-sha256",
     "--controller-version-id",
     "--runtime-n-build-id",
@@ -105,6 +128,9 @@ function parseArgs(argv) {
   if (selfTest && liveInputOptions.some((name) => values.has(name))) {
     throw new Error("--self-test does not accept campaign identity options");
   }
+  if (selfTest && values.has("--out")) {
+    throw new Error("--self-test does not accept --out");
+  }
   if (!selfTest) {
     for (const name of liveInputOptions.slice(0, 6)) {
       if (!values.has(name)) throw new Error(`${name} is required`);
@@ -117,6 +143,7 @@ function parseArgs(argv) {
     selfTest,
     json: flags.has("--json"),
     configPath: values.get("--config"),
+    outPath: values.get("--out"),
     campaignIdSha256: values.get("--campaign-id-sha256"),
     controllerVersionId: values.get("--controller-version-id"),
     runtimeNBuildIdSha256: values.get("--runtime-n-build-id"),
@@ -130,11 +157,11 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --campaign-id-sha256 <sha256> --controller-version-id <id> --runtime-n-build-id <sha256> --runtime-n-image-digest <sha256:...> --runtime-n-minus-one-build-id <sha256> --runtime-n-minus-one-image-digest <sha256:...> [--candidate-shard-index <index>] [--config <path>] [--json]",
+    "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --campaign-id-sha256 <sha256> --controller-version-id <id> --runtime-n-build-id <sha256> --runtime-n-image-digest <sha256:...> --runtime-n-minus-one-build-id <sha256> --runtime-n-minus-one-image-digest <sha256:...> [--candidate-shard-index <index>] [--config <path>] [--out <create-only-plan.json>] [--json]",
     "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --self-test [--config <path>] [--json]",
     "",
-    "This planner reads only the tracked staging config. It performs no network request, credential read, file write, deployment, gate change, provider call, or traffic mutation.",
-    "The resulting plan requires a future private Service Binding probe executor; public Controller URLs are forbidden.",
+    "This planner requires a staging campaign config with only CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED=true. It performs no network request, credential read, deployment, gate change, provider call, or traffic mutation.",
+    "When --out is supplied, the local plan artifact is create-only. The resulting plan requires a private Service Binding probe executor; public Controller URLs are forbidden.",
   ].join("\n");
 }
 
@@ -147,6 +174,28 @@ async function cliMain(argv = process.argv.slice(2)) {
       return;
     }
     const result = await runJsonCompatibilityCampaignPlanner(options);
+    if (!options.selfTest && options.outPath !== undefined) {
+      const report = {
+        ok: true,
+        schemaVersion: 1,
+        mode: "offline-plan-creation",
+        environment: "staging",
+        planDigestSha256: result.planDigestSha256,
+        phaseCount: result.phases.length,
+        shardCount: result.ring.shardCount,
+        filesWritten: true,
+        credentialsRead: false,
+        networkRequestsPerformed: false,
+        deploymentMutationPerformed: false,
+      };
+      if (options.json) console.log(JSON.stringify(report, null, 2));
+      else {
+        console.log(
+          `JSON compatibility plan created: ${report.planDigestSha256}; ${report.phaseCount} phases and ${report.shardCount} shards.`,
+        );
+      }
+      return;
+    }
     if (options.json || !options.selfTest) {
       console.log(JSON.stringify(result, null, 2));
       return;

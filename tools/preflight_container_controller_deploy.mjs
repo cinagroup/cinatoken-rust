@@ -118,8 +118,17 @@ export function findUnsafePlaceholders(value) {
   return findings;
 }
 
-export function validateControllerConfig(config, environment) {
+export function validateControllerConfig(
+  config,
+  environment,
+  { jsonCompatibilityCampaign = false } = {},
+) {
   const contract = requireEnvironmentContract(environment);
+  if (jsonCompatibilityCampaign && environment !== "staging") {
+    throw new DeployPreflightError(
+      "JSON compatibility campaign mode is staging-only",
+    );
+  }
   if (!isRecord(config)) {
     throw new DeployPreflightError("Controller config must be an object");
   }
@@ -176,8 +185,21 @@ export function validateControllerConfig(config, environment) {
   for (const name of REQUIRED_DISABLED_RING_TRANSITION_VARS) {
     requireEqual(config.vars[name], "0", `${environment} ${name}`);
   }
+  requireEqual(
+    config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED,
+    jsonCompatibilityCampaign ? "true" : "false",
+    `${environment} CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED`,
+  );
   for (const [name, value] of Object.entries(config.vars)) {
-    if (/(?:_ENABLED|_VERIFIED)$/.test(name) && value !== "false") {
+    if (
+      /(?:_ENABLED|_VERIFIED)$/.test(name) &&
+      value !== "false" &&
+      !(
+        jsonCompatibilityCampaign &&
+        name === "CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED" &&
+        value === "true"
+      )
+    ) {
       throw new DeployPreflightError(
         `${environment} action gate ${name} must remain false`,
       );
@@ -239,6 +261,9 @@ export function validateControllerConfig(config, environment) {
 
   return {
     environment,
+    jsonCompatibilityCampaign,
+    jsonCompatibilityProbeEnabled:
+      config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED === "true",
     controllerName: contract.controllerName,
     providerEgressWorker: contract.providerEgressService,
     identities: {
@@ -448,6 +473,7 @@ export async function runContainerControllerDeployPreflight(
     controllerConfigSource,
     offline = false,
     selfTest = false,
+    jsonCompatibilityCampaign = false,
   } = options ?? {};
   requireEnvironmentContract(environment);
 
@@ -481,7 +507,9 @@ export async function runContainerControllerDeployPreflight(
     source,
     controllerConfigPath ?? "injected Controller config",
   );
-  const validation = validateControllerConfig(config, environment);
+  const validation = validateControllerConfig(config, environment, {
+    jsonCompatibilityCampaign,
+  });
   const report = {
     ok: true,
     readyForDeploy: false,
@@ -537,6 +565,7 @@ export function parseCliArguments(argv) {
   const options = {
     offline: false,
     selfTest: false,
+    jsonCompatibilityCampaign: false,
     json: false,
     help: false,
   };
@@ -571,6 +600,9 @@ export function parseCliArguments(argv) {
         break;
       case "--self-test":
         options.selfTest = true;
+        break;
+      case "--json-compatibility-campaign":
+        options.jsonCompatibilityCampaign = true;
         break;
       case "--json":
         options.json = true;
@@ -698,6 +730,7 @@ function usage() {
     "Options:",
     "  --offline                    Validate config only; skip secret inventories",
     "  --self-test                  Alias for an offline, non-deploy-ready check",
+    "  --json-compatibility-campaign  Allow only the isolated staging JSON probe gate",
     "  --provider-egress-config P   Override crates/container-egress/wrangler.toml",
     "  --wrangler-cli P             Override the local Wrangler JavaScript entrypoint",
     "  --json                       Print a machine-readable report",

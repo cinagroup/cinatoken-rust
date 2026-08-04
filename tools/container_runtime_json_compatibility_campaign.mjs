@@ -7,6 +7,7 @@ export const JSON_COMPATIBILITY_PLAN_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-plan-v1";
 export const JSON_COMPATIBILITY_EVIDENCE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-evidence-v1";
+export const JSON_COMPATIBILITY_SHARD_COUNT = 8;
 export const JSON_COMPATIBILITY_PHASE_IDS = Object.freeze([
   "baseline-n-minus-one",
   "mixed-n-n-minus-one",
@@ -29,7 +30,7 @@ const REQUIRED_CHECKS = Object.freeze([
   "raw-json-request-response-digests",
   "normalized-json-compatibility-digests",
   "bounded-transport-telemetry",
-  "zero-provider-billing-production-public-mutation",
+  "zero-provider-billing-storage-production-public-mutation",
   "ledger-convergence",
 ]);
 
@@ -173,7 +174,9 @@ export function buildJsonCompatibilityCampaignPlan({
   runtimeNMinusOneImageDigest,
   candidateShardIndex,
 }) {
-  const validated = validateControllerConfig(config, "staging");
+  const validated = validateControllerConfig(config, "staging", {
+    jsonCompatibilityCampaign: true,
+  });
   const vars = requireRecord(config.vars, "[config] staging vars");
   const observability = requireRecord(
     config.observability,
@@ -219,6 +222,11 @@ export function buildJsonCompatibilityCampaignPlan({
     1024,
     "[config] shard count",
   );
+  requireEqual(
+    shardCount,
+    JSON_COMPATIBILITY_SHARD_COUNT,
+    "[config] JSON compatibility shard count",
+  );
   const selectedCandidateShard =
     candidateShardIndex === undefined
       ? Number.parseInt(campaignIdSha256.slice(0, 8), 16) % shardCount
@@ -247,6 +255,7 @@ export function buildJsonCompatibilityCampaignPlan({
       versionId: controllerVersionId,
       configSha256: sha256Canonical(config),
       privateProbeTransport: "service-binding",
+      jsonCompatibilityProbeEnabled: true,
       workersDev: false,
       previewUrls: false,
       observabilitySamplingRate: 1,
@@ -272,6 +281,7 @@ export function buildJsonCompatibilityCampaignPlan({
       legacyJsonFallbacksAllowed: 0,
       providerRequestsAllowed: 0,
       billingMutationsAllowed: 0,
+      storageGatewayMutationsAllowed: 0,
       productionTrafficRequestsAllowed: 0,
       publicProbeRequestsAllowed: 0,
     },
@@ -349,7 +359,11 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
     "[plan] ring",
   );
   requireInteger(ring.generation, 1, Number.MAX_SAFE_INTEGER, "[plan] ring generation");
-  requireInteger(ring.shardCount, 2, 1024, "[plan] shard count");
+  requireEqual(
+    ring.shardCount,
+    JSON_COMPATIBILITY_SHARD_COUNT,
+    "[plan] JSON compatibility shard count",
+  );
   requireInteger(
     ring.candidateShardIndex,
     0,
@@ -481,6 +495,7 @@ export function verifyJsonCompatibilityCampaignEvidence(
     legacyJsonFallbackCount: 0,
     providerRequestCount: 0,
     billingMutationCount: 0,
+    storageGatewayMutationCount: 0,
     productionTrafficRequestCount: 0,
     publicProbeRequestCount: 0,
     credentialsRead: false,
@@ -573,6 +588,7 @@ export function createSyntheticJsonCompatibilityEvidence(plan) {
     );
     const unchangedProviderDigest = sha256Text(`provider-${index}`);
     const unchangedBillingDigest = sha256Text(`billing-${index}`);
+    const unchangedStorageGatewayDigest = sha256Text(`storage-gateway-${index}`);
     const unchangedTrafficDigest = sha256Text(`production-traffic-${index}`);
     return {
       ordinal: planPhase.ordinal,
@@ -604,10 +620,13 @@ export function createSyntheticJsonCompatibilityEvidence(plan) {
         providerAfterSha256: unchangedProviderDigest,
         billingBeforeSha256: unchangedBillingDigest,
         billingAfterSha256: unchangedBillingDigest,
+        storageGatewayBeforeSha256: unchangedStorageGatewayDigest,
+        storageGatewayAfterSha256: unchangedStorageGatewayDigest,
         productionTrafficBeforeSha256: unchangedTrafficDigest,
         productionTrafficAfterSha256: unchangedTrafficDigest,
         providerRequestCount: 0,
         billingMutationCount: 0,
+        storageGatewayMutationCount: 0,
         productionTrafficRequestCount: 0,
         publicProbeRequestCount: 0,
       },
@@ -637,6 +656,7 @@ export function createSyntheticJsonCompatibilityEvidence(plan) {
       legacyJsonFallbackCount: 0,
       providerRequestCount: 0,
       billingMutationCount: 0,
+      storageGatewayMutationCount: 0,
       productionTrafficRequestCount: 0,
       publicProbeRequestCount: 0,
       allShardsObserved: true,
@@ -912,10 +932,13 @@ function validateZeroMutationProof(value, phaseId) {
     "providerAfterSha256",
     "billingBeforeSha256",
     "billingAfterSha256",
+    "storageGatewayBeforeSha256",
+    "storageGatewayAfterSha256",
     "productionTrafficBeforeSha256",
     "productionTrafficAfterSha256",
     "providerRequestCount",
     "billingMutationCount",
+    "storageGatewayMutationCount",
     "productionTrafficRequestCount",
     "publicProbeRequestCount",
   ], `[evidence] ${phaseId} zero-mutation proof`);
@@ -925,6 +948,8 @@ function validateZeroMutationProof(value, phaseId) {
     "providerAfterSha256",
     "billingBeforeSha256",
     "billingAfterSha256",
+    "storageGatewayBeforeSha256",
+    "storageGatewayAfterSha256",
     "productionTrafficBeforeSha256",
     "productionTrafficAfterSha256",
   ]) {
@@ -941,6 +966,11 @@ function validateZeroMutationProof(value, phaseId) {
     `[evidence] ${phaseId} billing snapshot`,
   );
   requireEqual(
+    proof.storageGatewayAfterSha256,
+    proof.storageGatewayBeforeSha256,
+    `[evidence] ${phaseId} storage gateway snapshot`,
+  );
+  requireEqual(
     proof.productionTrafficAfterSha256,
     proof.productionTrafficBeforeSha256,
     `[evidence] ${phaseId} production traffic snapshot`,
@@ -948,6 +978,7 @@ function validateZeroMutationProof(value, phaseId) {
   for (const name of [
     "providerRequestCount",
     "billingMutationCount",
+    "storageGatewayMutationCount",
     "productionTrafficRequestCount",
     "publicProbeRequestCount",
   ]) {
@@ -966,6 +997,7 @@ function validateAggregate(value, plan, observationCount) {
     "legacyJsonFallbackCount",
     "providerRequestCount",
     "billingMutationCount",
+    "storageGatewayMutationCount",
     "productionTrafficRequestCount",
     "publicProbeRequestCount",
     "allShardsObserved",
@@ -986,6 +1018,7 @@ function validateAggregate(value, plan, observationCount) {
     "legacyJsonFallbackCount",
     "providerRequestCount",
     "billingMutationCount",
+    "storageGatewayMutationCount",
     "productionTrafficRequestCount",
     "publicProbeRequestCount",
   ]) {
@@ -1007,6 +1040,7 @@ function validateControllerIdentity(value, label) {
     "versionId",
     "configSha256",
     "privateProbeTransport",
+    "jsonCompatibilityProbeEnabled",
     "workersDev",
     "previewUrls",
     "observabilitySamplingRate",
@@ -1022,6 +1056,11 @@ function validateControllerIdentity(value, label) {
   requireToken(controller.versionId, `${label} version ID`);
   requireSha256(controller.configSha256, `${label} config digest`);
   requireEqual(controller.privateProbeTransport, "service-binding", `${label} probe transport`);
+  requireEqual(
+    controller.jsonCompatibilityProbeEnabled,
+    true,
+    `${label} isolated JSON probe gate`,
+  );
   requireEqual(controller.workersDev, false, `${label} workers_dev`);
   requireEqual(controller.previewUrls, false, `${label} preview URLs`);
   requireEqual(controller.observabilitySamplingRate, 1, `${label} sampling rate`);
@@ -1069,6 +1108,7 @@ function validateConstraints(value, shardCount) {
     "legacyJsonFallbacksAllowed",
     "providerRequestsAllowed",
     "billingMutationsAllowed",
+    "storageGatewayMutationsAllowed",
     "productionTrafficRequestsAllowed",
     "publicProbeRequestsAllowed",
   ], "[plan] constraints");
@@ -1081,6 +1121,7 @@ function validateConstraints(value, shardCount) {
     "legacyJsonFallbacksAllowed",
     "providerRequestsAllowed",
     "billingMutationsAllowed",
+    "storageGatewayMutationsAllowed",
     "productionTrafficRequestsAllowed",
     "publicProbeRequestsAllowed",
   ]) {

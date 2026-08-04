@@ -2519,9 +2519,44 @@ not a waiver for this remote matrix. Production remains **NO-GO**.
 
 This campaign is the mandatory staging step between publishing a candidate
 runtime image and attempting any Protobuf transport activation. It does not
-authorize a deployment by itself. The Controller remains private, all action
-and Protobuf gates remain false, Go/VPS remains authoritative, and no public
-Controller or Container URL may be introduced for probing.
+authorize a deployment by itself. The Controller remains private, all tracked
+action and Protobuf gates remain false before and after the campaign, Go/VPS
+remains authoritative, and no public Controller or Container URL may be
+introduced for probing.
+
+### Prepare and validate isolated configs
+
+The tracked local, staging, and production Controller configs must keep
+`CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED=false`. Create a campaign-only copy
+and prove that only this isolated gate changes:
+
+```text
+bun tools/prepare_container_runtime_json_compatibility_controller_config.mjs \
+  --out <create-only-campaign-wrangler.jsonc> --json
+
+bun tools/prepare_container_runtime_json_compatibility_executor_config.mjs \
+  --out <create-only-executor-campaign-wrangler.jsonc> --json
+
+bun tools/preflight_container_controller_deploy.mjs \
+  --environment staging \
+  --config <create-only-campaign-wrangler.jsonc> \
+  --json-compatibility-campaign --offline --json
+```
+
+Both preparers refuse to overwrite output. Standard deployment preflight
+must continue to reject this gate when true; the campaign mode is staging-only
+and permits no other action, provider, storage, terminal, recovery, or Protobuf
+gate. The executor has the separate `JSON_COMPATIBILITY_EXECUTOR_ENABLED` gate,
+also false in tracked configs. In the authorized change window, repeat the
+Controller campaign preflight without `--offline`; the offline pass cannot
+establish Cloudflare account, service, binding, or deployed-version state.
+
+Separately authorize and upload the reviewed Controller and executor campaign
+versions without activating them, read back their exact version IDs, Service
+Binding target, and route-free exposure, and pin those identities in the
+campaign record. Keep the active deployed versions on their default-off configs
+while the plan is created. Service Binding privacy is capability transport, not
+campaign authorization.
 
 ### Offline plan
 
@@ -2538,17 +2573,26 @@ bun tools/plan_container_runtime_json_compatibility_campaign.mjs \
   --runtime-n-minus-one-build-id <baseline-runtime-build-sha256> \
   --runtime-n-minus-one-image-digest <sha256:baseline-image-digest> \
   --candidate-shard-index <0..shard-count-minus-one> \
+  --config <create-only-campaign-wrangler.jsonc> \
+  --out <approved-plan.json> \
   --json
 ```
 
-The planner reads only the staging Controller config and reuses the deployment
-preflight validator. It fails unless `workers_dev` and preview URLs are false,
-observability sampling is exactly 1, every action gate is false, both Protobuf
-gates are false, runtime identities are distinct, and the candidate shard is
-in the configured ring. It performs no credential read, network request, file
-write, deployment, gate change, provider call, or traffic mutation. Redirecting
-stdout into an approved plan file is an operator-controlled action outside the
-planner.
+The planner reads the prepared campaign Controller config and reuses the
+campaign deployment preflight validator. It fails unless `workers_dev` and
+preview URLs are false,
+observability sampling is exactly 1, the isolated JSON probe gate is true,
+every other action gate and both Protobuf gates are false, runtime identities
+are distinct, exactly eight shards are configured, and the candidate shard is
+in that ring. `--out` is create-only and cannot replace the input config. The
+planner performs no credential read, network request, deployment, gate change,
+provider call, or traffic mutation.
+
+After the plan is approved, activate and read back the Controller campaign
+version first, then the executor campaign version. Do not invoke the executor
+until a signed, expiring, single-use permit bound to the campaign, plan, phase,
+versions, runtime/ring, nonce, and replay registry has been verified and
+consumed. That permit path is not yet implemented.
 
 ### Ordered remote phases
 
@@ -2562,13 +2606,29 @@ one stable Controller deployment set:
 4. `rollback-n-minus-one`: every shard resolves to N-1 again and the operation
    ledger converges.
 
-For every shard in every phase, archive a bounded deployment readback, JSON
-`/readyz` result with exact runtime build identity, and one no-provider
-`health_probe` operation through an authenticated private Service Binding
-executor. The operation must have a unique operation/trace identity so the
-Durable Object cannot satisfy a later phase from an earlier ledger result.
+Before each phase, an authorized topology runner must deploy and independently
+read back the exact expected N/N-1 build and image identity for each named
+shard. A percentage Container rollout is not sufficient evidence of named-shard
+placement. This precise topology runner/readback remains an implementation
+blocker.
+
+Once per phase, the separately authorized private invoker calls the executor
+`executePhase` RPC. The executor reaches all eight shards through its Service
+Binding to `JsonCompatibilityProbeEntrypoint.probeShard`; the
+Controller selects the Durable Object by name, then archives a bounded JSON
+`/readyz` result with exact runtime build identity and one no-provider
+`health_probe` operation. The executor uses a unique operation/trace identity
+for every shard so raw artifacts are unique, cross-phase replay is visible, and
+runtime/cache identity cannot be reused. The direct private probe bypasses the
+production operation ledger, so this is not a ledger anti-replay guarantee.
 Public URLs, provider credentials, customer traffic, and billing mutations are
 forbidden.
+
+There is intentionally no public or credential-taking CLI for remote executor
+invocation in this repository. An approved private Cloudflare RPC invoker and
+explicit deployment authorization are prerequisites. The repository also lacks
+the signed permit/replay consumer and global campaign lease. Local dry-run
+success is not permission to deploy or execute the campaign.
 
 The evidence record retains SHA-256 of the raw request and response bytes. For
 cross-version comparison it also computes the checked-in normalized projection
@@ -2579,38 +2639,100 @@ shard/ring identity, response status, and all other fields remain covered. Raw
 digests may differ because each phase must execute a fresh operation; normalized
 request and response digests must equal the N-1 baseline for the same shard.
 Raw request and response digests must each remain unique for that shard across
-all four phases, so replay cannot masquerade as a fresh runtime observation.
+all four phases, so a replayed raw artifact cannot masquerade as a fresh runtime
+observation. Worker WebCrypto and offline Node.js implementations are required
+to match the same version-1 golden projection vector.
 
-Each phase must additionally prove:
+The executor output is a phase probe receipt, not the final phase packet. Each
+phase must additionally collect an independent context that proves:
 
 - exactly one telemetry event per shard, selected/effective transport JSON,
   one attempt, zero Protobuf attempts, zero legacy fallback, and zero recovery;
 - stable Controller and Container deployment readback over the observation
   window;
-- equal before/after provider, billing, and production-traffic snapshot
-  digests, with zero provider requests, billing mutations, production requests,
-  and public probes; and
+- equal before/after provider, billing, storage-gateway, and production-traffic
+  snapshot digests, with zero provider requests, billing mutations,
+  storage-gateway mutations, production requests, and public probes; and
 - ledger convergence before advancing, including after rollback.
 
-Verify the completed packet offline:
+The independent remote context collector is not implemented yet. The receipt
+only records digest-bound private-path claims; it does not independently prove
+deployment topology, zero external mutation, campaign authorization, or source
+identity. Top-level artifact readers are no-follow, regular-file-only,
+stable-read, strict UTF-8, and bounded: plan 256 KiB; config/context 512 KiB;
+receipt 1 MiB; phase source 2 MiB; manifest/evidence 8 MiB.
+
+Assemble each phase packet offline and create-only:
+
+```text
+bun tools/assemble_container_runtime_json_compatibility_phase_source.mjs \
+  --plan <approved-plan.json> \
+  --receipt <executor-phase-receipt.json> \
+  --context <independent-readback-context.json> \
+  --out <phase-source.json>
+```
+
+Each resulting packet retains `sourceContext.contextSha256` and the receipt
+digest. Immediately after the rollback context and ledger state are captured,
+disable and read back the executor gate, wait for all in-flight RPCs to settle,
+then disable and read back the Controller gate. Restore the standard staging
+configs, run standard preflight, and confirm both deployed gates are false.
+Do not keep either online gate open while assembling or verifying offline
+artifacts.
+
+With both gates closed, collect exactly the ordered packets:
+
+```text
+bun tools/collect_container_runtime_json_compatibility_source_manifest.mjs \
+  --plan <approved-plan.json> \
+  --phase <baseline.json> \
+  --phase <mixed.json> \
+  --phase <candidate.json> \
+  --phase <rollback.json> \
+  --out <source-manifest.json>
+```
+
+Project the sole accepted evidence shape and verify it offline:
+
+```text
+bun tools/project_container_runtime_json_compatibility_evidence.mjs \
+  --plan <approved-plan.json> \
+  --source-manifest <source-manifest.json> \
+  --captured-at <whole-second-UTC> \
+  --out <remote-staging-evidence.json> \
+  --json
+```
 
 ```text
 bun tools/verify_container_runtime_json_compatibility_evidence.mjs \
   --plan <approved-plan.json> \
+  --source-manifest <source-manifest.json> \
   --evidence <remote-staging-evidence.json> \
   --json
 ```
 
-Normal verification accepts only `remote-staging` evidence. Synthetic
-`--self-test` evidence is explicitly marked and rejected by normal mode. The
-current repository provides the planner, projection, closed evidence contract,
-and offline verifier, but not yet the authenticated private remote probe
-executor or signed source-manifest collector. Therefore local success is not
-remote staging evidence and does not authorize image publication, rollout,
-Protobuf gates, production traffic, or DNS changes.
+Normal verification accepts only the `remote-staging` evidence shape. That
+label is an untrusted claim until a cryptographic source signature is verified.
+Synthetic `--self-test` evidence is explicitly marked and rejected by normal
+mode. The
+current repository provides the named private Controller entrypoint, bounded
+executor, two create-only campaign config preparers, create-only plan and
+evidence projector, receipt/context phase assembler, source-manifest collector,
+and offline verifier. It does not yet provide the signed single-use permit and
+replay registry, authenticated remote invoker, exact per-shard topology runner,
+automated independent context collector, cryptographic source signature,
+immutable archive, deployed versions, or real staging packet.
+Canonical digests detect mutation but do not authenticate the source.
+Therefore local success is not remote staging evidence and does not authorize
+image publication, rollout, Protobuf gates, production traffic, or DNS changes.
 
-Abort immediately on Controller version drift, public reachability, a missing
-or duplicate shard, wrong build identity, projection drift, any Protobuf
-attempt/fallback, telemetry undercount, recovery, provider/billing/production
-mutation, phase overlap, unstable deployment readback, or rollback ledger
-non-convergence. Production remains **NO-GO**.
+After structural verification, authenticate the source envelope and publish the
+approved immutable archive. Neither step exists yet. Never leave a campaign
+config as the normal staging deployment input.
+
+Abort immediately on permit/authentication/replay failure, Controller or
+executor version drift, public reachability, a missing or duplicate shard,
+wrong per-shard build/image identity, projection drift, any Protobuf
+attempt/fallback, telemetry undercount, recovery, provider/billing/storage-
+gateway/production mutation, phase overlap, unstable deployment readback, or
+rollback ledger non-convergence. Production remains **NO-GO**.

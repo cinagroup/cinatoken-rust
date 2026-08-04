@@ -1,15 +1,26 @@
 #!/usr/bin/env bun
 
-import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   JsonCompatibilityCampaignError,
   buildJsonCompatibilityCampaignPlan,
-  createSyntheticJsonCompatibilityEvidence,
   parseStrictJsonObject,
   verifyJsonCompatibilityCampaignEvidence,
 } from "./container_runtime_json_compatibility_campaign.mjs";
+import {
+  buildJsonCompatibilityEvidenceFromSourceManifest,
+  createSyntheticJsonCompatibilitySourceManifest,
+  validateJsonCompatibilitySourceManifest,
+  verifyJsonCompatibilityEvidenceSourceManifestBinding,
+} from "./container_runtime_json_compatibility_source_manifest.mjs";
+import {
+  JSON_COMPATIBILITY_CONFIG_MAX_BYTES,
+  JSON_COMPATIBILITY_EVIDENCE_MAX_BYTES,
+  JSON_COMPATIBILITY_PLAN_MAX_BYTES,
+  JSON_COMPATIBILITY_SOURCE_MANIFEST_MAX_BYTES,
+  readBoundedUtf8File,
+} from "./lib/bounded_json_file.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const defaultConfigPath = path.join(
@@ -22,9 +33,14 @@ const defaultConfigPath = path.join(
 export async function runJsonCompatibilityEvidenceVerifier(options) {
   if (options.selfTest) {
     const config = parseStrictJsonObject(
-      await readFile(path.resolve(options.configPath ?? defaultConfigPath), "utf8"),
+      await readBoundedUtf8File(
+        path.resolve(options.configPath ?? defaultConfigPath),
+        JSON_COMPATIBILITY_CONFIG_MAX_BYTES,
+        "staging Controller config",
+      ),
       "staging Controller config",
     );
+    config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED = "true";
     const plan = buildJsonCompatibilityCampaignPlan({
       config,
       campaignIdSha256: "11".repeat(32),
@@ -35,30 +51,77 @@ export async function runJsonCompatibilityEvidenceVerifier(options) {
       runtimeNMinusOneImageDigest: `sha256:${"55".repeat(32)}`,
       candidateShardIndex: 3,
     });
-    const evidence = createSyntheticJsonCompatibilityEvidence(plan);
+    const sourceManifest = createSyntheticJsonCompatibilitySourceManifest(plan);
+    const evidence = buildJsonCompatibilityEvidenceFromSourceManifest(
+      plan,
+      sourceManifest,
+      {
+        capturedAt: "2026-08-03T00:08:00Z",
+        evidenceSource: "synthetic-self-test",
+      },
+    );
+    validateJsonCompatibilitySourceManifest(plan, sourceManifest);
+    verifyJsonCompatibilityEvidenceSourceManifestBinding(
+      plan,
+      sourceManifest,
+      evidence,
+    );
     return {
       ...verifyJsonCompatibilityCampaignEvidence(plan, evidence, {
         allowSynthetic: true,
       }),
       mode: "self-test",
       fixtureOnly: true,
+      sourceManifestValidated: true,
     };
   }
-  const plan = parseStrictJsonObject(
-    await readFile(path.resolve(options.planPath), "utf8"),
-    "JSON compatibility plan",
+  const [planSource, sourceManifestSource, evidenceSource] = await Promise.all([
+    readBoundedUtf8File(
+      path.resolve(options.planPath),
+      JSON_COMPATIBILITY_PLAN_MAX_BYTES,
+      "JSON compatibility plan",
+    ),
+    readBoundedUtf8File(
+      path.resolve(options.sourceManifestPath),
+      JSON_COMPATIBILITY_SOURCE_MANIFEST_MAX_BYTES,
+      "JSON compatibility source manifest",
+    ),
+    readBoundedUtf8File(
+      path.resolve(options.evidencePath),
+      JSON_COMPATIBILITY_EVIDENCE_MAX_BYTES,
+      "JSON compatibility evidence",
+    ),
+  ]);
+  const plan = parseStrictJsonObject(planSource, "JSON compatibility plan");
+  const sourceManifest = parseStrictJsonObject(
+    sourceManifestSource,
+    "JSON compatibility source manifest",
   );
   const evidence = parseStrictJsonObject(
-    await readFile(path.resolve(options.evidencePath), "utf8"),
+    evidenceSource,
     "JSON compatibility evidence",
   );
-  return verifyJsonCompatibilityCampaignEvidence(plan, evidence);
+  validateJsonCompatibilitySourceManifest(plan, sourceManifest);
+  verifyJsonCompatibilityEvidenceSourceManifestBinding(
+    plan,
+    sourceManifest,
+    evidence,
+  );
+  return {
+    ...verifyJsonCompatibilityCampaignEvidence(plan, evidence),
+    sourceManifestValidated: true,
+  };
 }
 
 function parseArgs(argv) {
   const values = new Map();
   const flags = new Set();
-  const valueOptions = new Set(["--plan", "--evidence", "--config"]);
+  const valueOptions = new Set([
+    "--plan",
+    "--source-manifest",
+    "--evidence",
+    "--config",
+  ]);
   const flagOptions = new Set(["--self-test", "--json", "--help"]);
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -79,11 +142,18 @@ function parseArgs(argv) {
   }
   if (flags.has("--help")) return { help: true };
   const selfTest = flags.has("--self-test");
-  if (selfTest && (values.has("--plan") || values.has("--evidence"))) {
-    throw new Error("--self-test does not accept --plan or --evidence");
+  if (
+    selfTest &&
+    (values.has("--plan") ||
+      values.has("--source-manifest") ||
+      values.has("--evidence"))
+  ) {
+    throw new Error(
+      "--self-test does not accept --plan, --source-manifest, or --evidence",
+    );
   }
   if (!selfTest) {
-    for (const name of ["--plan", "--evidence"]) {
+    for (const name of ["--plan", "--source-manifest", "--evidence"]) {
       if (!values.has(name)) throw new Error(`${name} is required`);
     }
     if (values.has("--config")) {
@@ -95,6 +165,7 @@ function parseArgs(argv) {
     json: flags.has("--json"),
     configPath: values.get("--config"),
     planPath: values.get("--plan"),
+    sourceManifestPath: values.get("--source-manifest"),
     evidencePath: values.get("--evidence"),
   };
 }
@@ -102,10 +173,10 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  bun tools/verify_container_runtime_json_compatibility_evidence.mjs --plan <plan.json> --evidence <evidence.json> [--json]",
+    "  bun tools/verify_container_runtime_json_compatibility_evidence.mjs --plan <plan.json> --source-manifest <manifest.json> --evidence <evidence.json> [--json]",
     "  bun tools/verify_container_runtime_json_compatibility_evidence.mjs --self-test [--config <path>] [--json]",
     "",
-    "Verification is offline and read-only. Normal mode accepts only evidence marked remote-staging; synthetic-self-test evidence is rejected.",
+    "Verification is offline and read-only. Normal mode requires the complete source manifest, accepts only the untrusted remote-staging source claim, and rejects any evidence projection that differs from the manifest. Cryptographic source authentication remains external and mandatory.",
   ].join("\n");
 }
 

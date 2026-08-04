@@ -27431,11 +27431,11 @@ gates remain false, Go/VPS remains authoritative, and production remains
 
 ## 2026-08-03 JSON-Only Runtime N/N-1 Campaign Contract
 
-The first remote activation prerequisite after transport telemetry is now
-represented by executable offline tooling. This checkpoint does not publish an
-image or call Cloudflare. It defines the exact staging plan and evidence packet
-that a later authorized private executor must satisfy before any Protobuf gate
-can be considered.
+At the 2026-08-03 checkpoint, the first remote activation prerequisite after
+transport telemetry was represented by executable offline tooling. That
+checkpoint did not publish an image or call Cloudflare. It defined the exact
+staging plan and evidence packet that a later authorized private executor must
+satisfy before any Protobuf gate can be considered.
 
 ### Architecture and access boundary
 
@@ -27444,18 +27444,23 @@ stateless ingress, TypeScript Durable Objects retain shard/lease/journal/retry
 and recovery authority, Rust Linux Containers remain replaceable compute, and
 KV/D1/R2 retain durable data. The staging Controller has `workers_dev: false`,
 `preview_urls: false`, and no public route. A campaign executor must therefore
-reach it through an authenticated private Service Binding. Creating a public
-URL for convenience is a release blocker, not a workaround.
+reach it through a private Service Binding. A Service Binding is capability
+transport, not campaign authentication: a signed, expiring, single-use permit
+bound to campaign, plan, phase, Controller/executor versions, runtime/ring,
+nonce, and replay consumption remains a release blocker. Creating a public URL
+for convenience is a release blocker, not a workaround.
 
 `buildJsonCompatibilityCampaignPlan` reuses the Controller deployment preflight
 and fails unless:
 
 - environment and service identity are exactly staging;
 - private exposure controls remain false and sampling is exactly 1;
-- every action, execution, provider, storage, terminal, recovery, and Protobuf
-  gate remains false;
+- the isolated JSON compatibility probe gate is true in the campaign-only
+  config, while every other action, execution, provider, storage, terminal,
+  recovery, and Protobuf gate remains false;
 - N and N-1 each have distinct runtime build SHA-256 and OCI image digest;
-- ring generation/shard count are valid and at least two shards exist; and
+- ring generation is valid and the executable contract has exactly eight
+  shards; and
 - the mixed-phase candidate shard is inside that exact ring.
 
 The canonical plan is digest-bound and explicitly records zero credentials,
@@ -27471,10 +27476,12 @@ authorization, remote evidence, and public URL permission.
 | candidate N | all shards N | same normalized JSON contract as baseline |
 | rollback N-1 | all shards N-1 | same contract plus converged operation ledger |
 
-Each remote probe needs a new operation and trace identity; otherwise the
-Durable Object ledger could return an earlier terminal result without reaching
-the newly selected runtime. Consequently the packet stores raw request/response
-SHA-256 for artifact binding but does not demand raw equality. The checked-in
+Each remote probe needs a new operation and trace identity so raw evidence is
+unique, cross-phase replay is detectable, and runtime or intermediary cache
+identity cannot be reused. The direct private probe does not use the production
+operation ledger, so these identities must not be described as a Durable Object
+ledger anti-replay mechanism. The packet stores raw request/response SHA-256
+for artifact binding but does not demand raw equality. The checked-in
 projection function parses the exact health-probe envelope and completed
 response, validates their closed field sets, then replaces only:
 
@@ -27487,6 +27494,10 @@ shard index/name, response protocol/status, and unexpected fields remain part
 of the projection. Any semantic change therefore changes the compatibility
 digest or fails parsing. Every phase/shard projection must equal its N-1
 baseline counterpart.
+
+The Worker WebCrypto and offline Node.js implementations use the same version-1
+algorithm. A shared golden vector asserts parity for every normalized digest;
+the Worker additionally records bounded wire byte lengths.
 
 ### Closed evidence and fail-closed verification
 
@@ -27505,23 +27516,26 @@ zero-mutation snapshots, timestamps, and aggregate totals. It rejects:
   before/after snapshot drift; and
 - rollback without ledger convergence.
 
-The normal verifier accepts only `evidenceSource: remote-staging`. Synthetic
-self-test packets require an explicit in-process override and every CLI self
-test prints `fixtureOnly: true`, preventing local contract tests from being
-reported as live proof.
+The normal verifier accepts only the `evidenceSource: remote-staging` claim and
+requires exact manifest projection. That label is untrusted until a separate
+cryptographic source envelope is verified. Synthetic self-test packets require
+an explicit in-process override and every CLI self test prints
+`fixtureOnly: true`, preventing local contract tests from being reported as
+live proof.
 
 ### Current readiness and remaining work
 
-The focused gate currently passes 15 tests with 51 assertions plus planner and
-verifier self-tests. Both CLIs report zero network, credentials, writes, and
-deployment mutation. The contract is in the root `bun run check` chain, whose
-complete Worker/DO, Container supply-chain, WFP, Realtime, D1, frontend, Rust
-workspace, and wasm32 gate passes with exit 0 in 1,211.9 seconds.
+At that checkpoint, the focused gate passed 15 tests with 51 assertions plus
+planner and verifier self-tests. Both CLIs reported zero network, credentials,
+writes, and deployment mutation. The contract entered the root `bun run check`
+chain, whose then-current Worker/DO, Container supply-chain, WFP, Realtime, D1,
+frontend, Rust workspace, and wasm32 gate passed with exit 0 in 1,211.9 seconds.
 
-This checkpoint still lacks the authenticated private probe executor, bounded
-remote source-manifest collector, source authenticity/signature verification,
-authorized Cloudflare image/version publication, and actual staging packet.
-Those are the next implementation slices. The subsequent no-provider Protobuf,
+This checkpoint's original planner-only boundary has since been superseded by
+the 2026-08-04 private probe and source-chain implementation below. Source
+authenticity/signature verification, authorized Cloudflare image/version
+publication, independently collected remote readback context, and an actual
+staging packet remain open. The subsequent no-provider Protobuf,
 malformed/body-limit/deadline/restart/response-loss and gate/rollback campaigns
 remain separate. No Cloudflare resource, API token, route, DNS, D1 row,
 provider, billing, traffic, or Go/VPS state changed. Production remains
@@ -27557,10 +27571,143 @@ The local focused contracts and complete 1,222.5-second repository gate also
 passed.
 
 This restores current-main S2/S3 supply-chain evidence freshness; it does not
-advance runtime action gates or authorize staging publication. The next active
-implementation boundary remains the authenticated private JSON campaign
-executor and bounded signed source-manifest collector, followed by an actual
-N/N-1 remote packet and separate no-provider Protobuf/fault campaigns. No
+advance runtime action gates or authorize staging publication. The private
+JSON campaign implementation described below supersedes the earlier executor
+and collector gap, but an actual N/N-1 remote packet, cryptographic source
+authentication, and separate no-provider Protobuf/fault campaigns remain. No
 Cloudflare deployment, route, DNS, D1 mutation, provider request, billing
 action, traffic change, or Go/VPS change occurred. Production remains
 **NO-GO**.
+
+## 2026-08-04 Private JSON Probe And Source Chain Checkpoint
+
+The JSON-only N/N-1 campaign now has a private execution path and a strict
+offline evidence source chain. This is implementation and local contract
+evidence only. Nothing in this checkpoint publishes a Container image, deploys
+a Worker, invokes a remote staging binding, or authorizes production traffic.
+
+### Private Controller probe boundary
+
+The staging Controller now exports
+`JsonCompatibilityProbeEntrypoint extends WorkerEntrypoint`. Its only RPC
+method, `probeShard`, validates the closed campaign request and resolves the
+target Durable Object with the configured ring namespace and `getByName`. The
+Durable Object then executes one bounded probe against its own Container:
+
+1. `GET /readyz` must return an exact uncompressed JSON object for the expected
+   runtime build, protocol version 1, contract version 1, and disabled runtime
+   execution;
+2. `POST /v1/operations` carries an exact no-provider JSON `health_probe`;
+3. the operation response must satisfy the existing Controller response
+   parser; and
+4. bounded raw readiness/request/response bytes and WebCrypto SHA-256 digests
+   are returned; this code path performs no provider, billing, storage-gateway,
+   production, or public-route action, while independent observations remain
+   mandatory.
+
+No public `fetch` route was added. The Controller remains `workers_dev: false`,
+`preview_urls: false`, and route-free. The private executor binds directly to
+the named entrypoint through a Cloudflare Service Binding.
+
+### Independent default-off gates
+
+Two gates must be enabled independently for an authorized staging campaign:
+
+- `CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED` protects the Controller RPC and
+  is false in tracked local, staging, and production Controller configs; and
+- `JSON_COMPATIBILITY_EXECUTOR_ENABLED` protects the executor and is false in
+  its tracked local and staging configs.
+
+The standard Controller deployment preflight still requires every execution
+gate, including the JSON probe, to be false. A separate
+`--json-compatibility-campaign` preflight mode is staging-only and permits only
+the isolated JSON probe gate. It continues to reject Protobuf, provider,
+storage, terminal, recovery, production-action, public exposure, or any other
+enabled action gate. The create-only config preparer copies the reviewed
+staging config and changes exactly the JSON probe value; it cannot overwrite an
+existing file. A separate create-only executor config preparer changes exactly
+its executor gate in the reviewed staging config.
+
+### Receipt, context, packet, manifest, evidence
+
+The evidence path deliberately separates execution facts from independent
+readback facts:
+
+1. The private executor invokes all eight shard RPCs in bounded batches with a
+   maximum concurrency of four and awaits every launched RPC with
+   `Promise.allSettled`. It emits a closed phase probe receipt containing raw
+   bytes, digests, topology, runtime identity, transport totals, zero-mutation
+   counters, and a digest of its code-enforced execution boundary. The receipt
+   records claims made by the private path; it does not authenticate who invoked
+   the campaign.
+2. An independently collected phase context supplies Controller deployment
+   readback, phase-specific Container deployment set, ledger convergence, and
+   before/after provider, billing, storage-gateway, and production-traffic
+   snapshots plus their mutation counters. The executor receipt does not claim
+   these external observations.
+3. The offline, create-only phase assembler binds the approved plan, executor
+   receipt, and independent context into one strict phase source packet. The
+   packet preserves `sourceContext.contextSha256` and the receipt digest so the
+   manifest retains the original context boundary.
+4. The offline source-manifest collector accepts exactly the four ordered
+   phase packets. It rejects topology, deployment, build, timestamp, digest,
+   normalized-contract, mutation, or rollback drift.
+5. A create-only projector constructs the sole accepted evidence shape from the
+   complete manifest. The normal verifier requires the approved plan, source
+   manifest, and projected `remote-staging` evidence, then rejects any
+   difference. `remote-staging` is still an untrusted claim until signature
+   verification; naming an arbitrary source digest is no longer sufficient.
+
+Every top-level file reader is no-follow, regular-file-only, stable-read, strict
+UTF-8, and bounded: plan 256 KiB; config and context 512 KiB; receipt 1 MiB;
+phase source 2 MiB; source manifest and evidence 8 MiB. Worker-side bounds are
+16 KiB per RPC request, 64 KiB per result, 4 KiB readiness, 8 KiB wire request,
+and 4 KiB wire response.
+
+The canonical SHA-256 chain provides deterministic integrity and tamper
+detection. It is not a source-authenticity signature. An Ed25519 or equivalent
+authorization/signature envelope, signer policy, and keyless or managed-key
+verification remain mandatory before this evidence can become an activation
+artifact.
+
+### Operational sequence and production boundary
+
+The required order is:
+
+1. produce and approve N and N-1 OCI/build identities;
+2. prepare create-only Controller and executor campaign configs, then pass
+   Controller offline and authorized live campaign preflight;
+3. publish and read back the reviewed Controller/executor versions, pin their
+   exact IDs, and create the plan as a create-only artifact;
+4. enable and read back the Controller gate first, then the executor gate;
+5. for each non-overlapping phase, an authorized topology runner deploys and
+   reads back the exact per-shard N/N-1 map; percentage rollout alone is not
+   accepted as named-shard proof;
+6. collect independent before-state, invoke the private executor, collect
+   independent after-state plus ledger state, and assemble the phase packet;
+7. immediately after rollback context is complete, disable/read back the
+   executor gate, wait for in-flight RPCs to drain, disable/read back the
+   Controller gate, restore the standard config, and pass standard preflight;
+8. only with both gates closed, collect the ordered manifest, create the exact
+   evidence projection, verify it offline, authenticate its source, and archive
+   immutable signed evidence.
+
+The remaining implementation and operational gaps are a signed single-use
+invocation permit plus replay registry and global campaign lease, an
+authenticated private invoker, an exact per-shard topology deployment/readback
+runner, an automated independent remote context collector, cryptographic source
+signatures, immutable archive publication, and a real staging packet with
+remote Workerd/Container proof. No remote Cloudflare mutation or
+customer-impacting action occurred in this checkpoint. Both Protobuf gates and
+every production action gate remain false, Go/VPS remains authoritative, and
+production remains **NO-GO**.
+
+Focused local verification for this checkpoint passes 41 campaign/source-chain
+tests with 110 assertions, 9 executor tests, 310 Controller Bun tests with 2,050
+assertions, 192 portable Controller protocol tests, 54 Workerd runtime tests,
+and 24 deploy-preflight tests with 105 assertions. Wrangler generated-type
+checks and local/staging dry-runs pass; the executor dry-run resolves the exact
+named Controller entrypoint and reports both tracked gates false. These are
+local and dry-run results, not Cloudflare staging observations. The complete
+root `bun run check` gate also passes with exit 0 in 1,304.3 seconds, including
+the Rust workspace and all configured wasm32 checks.

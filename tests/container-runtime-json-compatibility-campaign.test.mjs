@@ -16,6 +16,7 @@ const config = JSON.parse(
     ),
   ).text(),
 );
+config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED = "true";
 
 const validInputs = Object.freeze({
   campaignIdSha256: "11".repeat(32),
@@ -118,7 +119,7 @@ test("health-probe projection removes only volatile execution identity", () => {
 });
 
 describe("container runtime JSON compatibility campaign plan", () => {
-  test("builds a deterministic, private, default-off four-phase plan", () => {
+  test("builds a deterministic, private, isolated-gate four-phase plan", () => {
     const plan = buildPlan();
 
     expect(validateJsonCompatibilityCampaignPlan(plan)).toEqual(plan);
@@ -126,6 +127,7 @@ describe("container runtime JSON compatibility campaign plan", () => {
     expect(plan.controller).toMatchObject({
       serviceName: "cinatoken-container-controller-staging",
       privateProbeTransport: "service-binding",
+      jsonCompatibilityProbeEnabled: true,
       workersDev: false,
       previewUrls: false,
       observabilitySamplingRate: 1,
@@ -197,6 +199,12 @@ describe("container runtime JSON compatibility campaign plan", () => {
     expect(() => buildPlan({ candidateShardIndex: 8 })).toThrow(
       /candidate shard index/,
     );
+
+    const wrongShardCount = structuredClone(config);
+    wrongShardCount.vars.CONTAINER_SHARD_COUNT = "4";
+    expect(() => buildPlan({}, wrongShardCount)).toThrow(
+      /JSON compatibility shard count/,
+    );
   });
 
   test("detects plan tampering through the canonical digest", () => {
@@ -228,6 +236,7 @@ describe("container runtime JSON compatibility evidence", () => {
       legacyJsonFallbackCount: 0,
       providerRequestCount: 0,
       billingMutationCount: 0,
+      storageGatewayMutationCount: 0,
       productionTrafficRequestCount: 0,
       publicProbeRequestCount: 0,
       networkRequestsPerformed: false,
@@ -331,7 +340,7 @@ describe("container runtime JSON compatibility evidence", () => {
     );
   });
 
-  test("rejects provider, billing, production traffic, or public probe mutations", () => {
+  test("rejects provider, billing, storage, production traffic, or public probe mutations", () => {
     const plan = buildPlan();
 
     const provider = remoteEvidence(plan);
@@ -344,6 +353,12 @@ describe("container runtime JSON compatibility evidence", () => {
     billing.phases[0].zeroMutationProof.billingAfterSha256 = "88".repeat(32);
     expect(() => verifyJsonCompatibilityCampaignEvidence(plan, billing)).toThrow(
       /billing snapshot/,
+    );
+
+    const storage = remoteEvidence(plan);
+    storage.phases[0].zeroMutationProof.storageGatewayAfterSha256 = "99".repeat(32);
+    expect(() => verifyJsonCompatibilityCampaignEvidence(plan, storage)).toThrow(
+      /storage gateway snapshot/,
     );
 
     const traffic = remoteEvidence(plan);

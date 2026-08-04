@@ -2524,6 +2524,12 @@ action and Protobuf gates remain false before and after the campaign, Go/VPS
 remains authoritative, and no public Controller or Container URL may be
 introduced for probing.
 
+**Current status:** the independent Ed25519 permit issuer, authenticated
+private invoker, and their campaign-scoped SQLite Durable Object ledgers are
+being landed as local implementation. They have not been deployed or exercised
+in Cloudflare staging. This runbook is an execution specification, not evidence
+that the ceremony has occurred. Production remains **NO-GO**.
+
 ### Prepare and validate isolated configs
 
 The tracked local, staging, and production Controller configs must keep
@@ -2539,13 +2545,29 @@ bun tools/prepare_container_runtime_json_compatibility_executor_config.mjs \
   --permit-key-id <reviewed-non-secret-key-id> \
   --permit-spki-sha256 <reviewed-public-key-sha256> --json
 
+bun tools/prepare_container_runtime_json_compatibility_permit_issuer_config.mjs \
+  --out <create-only-issuer-campaign-wrangler.jsonc> \
+  --authority-current-kid <reviewed-invoker-to-issuer-kid> \
+  --authority-current-credential-id-sha256 <reviewed-credential-sha256> \
+  --permit-key-id <reviewed-non-secret-key-id> \
+  --permit-spki-sha256 <reviewed-public-key-sha256> --json
+
+bun tools/prepare_container_runtime_json_compatibility_invoker_config.mjs \
+  --out <create-only-invoker-campaign-wrangler.jsonc> \
+  --operator-current-kid <reviewed-operator-kid> \
+  --operator-current-credential-id-sha256 <reviewed-credential-sha256> \
+  --issuer-hmac-kid <reviewed-invoker-to-issuer-kid> \
+  --issuer-hmac-credential-id-sha256 <reviewed-credential-sha256> \
+  --permit-key-id <reviewed-non-secret-key-id> \
+  --permit-spki-sha256 <reviewed-public-key-sha256> --json
+
 bun tools/preflight_container_controller_deploy.mjs \
   --environment staging \
   --config <create-only-campaign-wrangler.jsonc> \
   --json-compatibility-campaign --offline --json
 ```
 
-Both preparers refuse to overwrite output. Standard deployment preflight
+All four preparers refuse to overwrite output. Standard deployment preflight
 must continue to reject this gate when true; the campaign mode is staging-only
 and permits no other action, provider, storage, terminal, recovery, or Protobuf
 gate. The executor has the separate `JSON_COMPATIBILITY_EXECUTOR_ENABLED` gate,
@@ -2557,14 +2579,32 @@ argument. In the authorized change window, repeat the
 Controller campaign preflight without `--offline`; the offline pass cannot
 establish Cloudflare account, service, binding, or deployed-version state.
 
-Separately authorize and upload the reviewed Controller and executor campaign
-versions without activating them, read back their exact version IDs, Service
-Binding target, route-free exposure, campaign-authority SQLite Durable Object
-migration, fixed issuer/audience, pinned key ID/SPKI digest, and secret
-presence without revealing secret bytes. Pin those identities in the campaign
-record. Keep the active deployed versions on their default-off configs while
-the plan is created. Service Binding privacy is capability transport, not
-campaign authorization.
+The issuer and invoker add independent default-off gates:
+`JSON_COMPATIBILITY_PERMIT_ISSUER_ENABLED` and
+`JSON_COMPATIBILITY_INVOKER_ENABLED`. Their create-only preparers and strict
+config tests are part of the focused local gate. Tracked configs retain empty
+credential/key digests, contain no secret values, expose no route, and keep
+`workers_dev` and preview URLs false. The issuer/invoker preparers accept only
+non-secret KIDs and SHA-256 pins; provision HMAC and Ed25519 bytes separately
+through Worker-secret stdin. Do not hand-edit an enabled config as a substitute
+for the required preparers and review artifacts.
+
+The issuer and invoker configs use Workers Web APIs without `nodejs_compat`.
+Do not add a local `Promise.race` timeout to issuer or executor RPC and call it
+cancellation: Service Binding work may still commit after the caller stops
+waiting. A 60-second HMAC window limits credential age but does not cancel a
+downstream call. Until a reviewed cancellation/status contract exists, any
+transport loss or unknown result is a terminal campaign incident with no retry.
+
+Separately authorize and upload the reviewed Controller, executor, permit
+issuer, and private invoker campaign versions without activating them. Read
+back their exact Version Metadata IDs, named WorkerEntrypoints, all Service
+Binding targets, route-free exposure, three campaign-ledger SQLite Durable
+Object migrations, fixed issuer/audience values, pinned credential/key/SPKI
+digests, and secret presence without revealing secret bytes. Pin those
+identities in the campaign record. Keep the active deployed versions on their
+default-off configs while the plan is created. Service Binding privacy is
+capability transport, not application-level caller authentication.
 
 ### Offline plan
 
@@ -2597,13 +2637,16 @@ planner performs no credential read, network request, deployment, gate change,
 provider call, or traffic mutation.
 
 After the plan is approved, activate and read back the Controller campaign
-version first, then the executor campaign version. The executor now verifies a
+version first, then executor, issuer, and invoker. The executor verifies a
 signed, expiring, single-use permit bound to campaign, plan, phase, exact
 Controller/executor versions, N/N-1 identities, ring, and topology. It consumes
 that permit and acquires the ordered phase lease in the campaign-named SQLite
-Durable Object before the first probe. The independent permit issuer and
-authenticated private invoker are not yet implemented; do not substitute a
-local signer or public route.
+Durable Object before the first probe. The locally verified issuer, invoker,
+and phase-source chain do not authorize activation. The integrated local tree
+passes the root gate with exit 0 in 1,242.1 seconds, but do not proceed until
+the published commit remains green and exact deployed versions, bindings,
+migrations, vars, and secret presence are independently read back.
+Never substitute a local signer, direct executor call, or public route.
 
 ### Ordered remote phases
 
@@ -2623,27 +2666,39 @@ shard. A percentage Container rollout is not sufficient evidence of named-shard
 placement. This precise topology runner/readback remains an implementation
 blocker.
 
-Once per phase, the separately authorized private invoker calls the executor
-`executePhase` RPC. The executor reaches all eight shards through its Service
-Binding to `JsonCompatibilityProbeEntrypoint.probeShard`; the
+Once per phase, a separately controlled operator sends one canonical,
+short-lived HMAC-authenticated command to the private invoker. The invoker must
+persist the attempt before any downstream RPC, authenticate itself to the
+permit issuer with a different HMAC identity, receive and independently verify
+one Ed25519 permit, then call the executor `executePhase` RPC. The issuer must
+persist one issuance for the exact ordered phase before returning the permit.
+The executor independently verifies and consumes the permit and acquires its
+phase lease before reaching all eight shards through its Service Binding to
+`JsonCompatibilityProbeEntrypoint.probeShard`; the
 Controller selects the Durable Object by name, then archives a bounded JSON
 `/readyz` result with exact runtime build identity and one no-provider
 `health_probe` operation. The executor uses a unique operation/trace identity
 for every shard so raw artifacts are unique, cross-phase replay is visible, and
 runtime/cache identity cannot be reused. The direct private probe bypasses the
 production operation ledger, so it is not protected by that ledger. Campaign
-invocation replay is instead fenced by the separate campaign Durable Object,
-which persists accepted permit IDs, one active phase, and exact four-phase
-order across eviction. Public URLs, provider credentials, customer traffic,
-and billing mutations are forbidden.
+replay is instead fenced by three separate campaign-named Durable Objects:
+issuer issuance, invoker attempt, and executor permit-consumption/phase lease.
+They are not a distributed transaction. A lost response after any commit is an
+ambiguous terminal incident, not permission to retry. Public URLs, provider
+credentials, customer traffic, and billing mutations are forbidden.
 
 There is intentionally no public or credential-taking CLI for remote executor
-invocation in this repository. An approved private Cloudflare RPC invoker and
-explicit deployment authorization are prerequisites. The repository also lacks
-the independent issuer, remote trust/readback ceremony, and approved invoker;
-the local permit consumer and per-campaign replay/lease authority are present.
-Never retry a permit after an ambiguous authority or executor result. Local
+invocation in this repository. The operator-to-invoker transport must itself be
+a reviewed private Service Binding, and the HMAC envelope is an additional
+application authentication layer. Explicit deployment authorization, remote
+trust/readback, and key ceremony remain prerequisites. Never retry the command,
+issuer request, permit, or executor call after an ambiguous result. Local
 dry-run success is not permission to deploy or execute the campaign.
+
+HMAC current/previous slots support controlled credential rotation. The
+Ed25519 campaign key is frozen into the approved plan and executor trust pin;
+do not rotate it in place during a campaign. Key compromise or required
+rotation aborts the campaign and requires a new key, plan, and campaign ID.
 
 The evidence record retains SHA-256 of the raw request and response bytes. For
 cross-version comparison it also computes the checked-in normalized projection
@@ -2670,33 +2725,50 @@ phase must additionally collect an independent context that proves:
   storage-gateway mutations, production requests, and public probes; and
 - ledger convergence before advancing, including after rollback.
 
-The independent remote context collector is not implemented yet. The v2
-receipt retains the verified permit envelope and campaign lease digests, but it
-does not independently prove deployment topology, zero external mutation,
-issuer operation, or source identity. Top-level artifact readers are no-follow,
-regular-file-only,
-stable-read, strict UTF-8, and bounded: plan 256 KiB; config/context 512 KiB;
-receipt 1 MiB; phase source 2 MiB; manifest/evidence 8 MiB.
+The independent remote context collector is not implemented yet. The private
+invoker receipt is intended to retain the operator command/authentication,
+invocation-ledger receipt, issuer receipt and signed permit, and nested v2
+executor receipt. None of those records independently proves deployment
+topology, zero external mutation, or source identity. Top-level artifact
+readers are no-follow, regular-file-only, stable-read, strict UTF-8, and
+bounded: plan 256 KiB; config/context 512 KiB; executor receipt 1 MiB; phase
+source 2 MiB; manifest/evidence 8 MiB.
 
-Assemble each phase packet offline and create-only:
+The private-invocation receipt is capped at 1.5 MiB. The assembler reads that
+input under the same explicit ceiling and rejects a phase-source output over 2
+MiB. The phase packet retains a strict projection of operator authentication,
+invoker identity, invocation-attempt/completion receipts, issuer identity and
+authority, issuance receipt, permit envelope digest, nested executor digest,
+and the outer invocation/body digests. Archive the complete canonical private
+invocation receipt as a raw source object; the packet projection is not a
+replacement for that source.
+
+After independent context is complete, assemble with the full private
+invocation receipt:
 
 ```text
 bun tools/assemble_container_runtime_json_compatibility_phase_source.mjs \
   --plan <approved-plan.json> \
-  --receipt <executor-phase-receipt.json> \
+  --receipt <private-invocation-receipt.json> \
   --context <independent-readback-context.json> \
   --out <phase-source.json>
 ```
 
-Each resulting packet retains `sourceContext.contextSha256` and the receipt
-digest. Immediately after the rollback context and ledger state are captured,
-disable and read back the executor gate, wait for all in-flight RPCs to settle,
-then disable and read back the Controller gate. Restore the standard staging
-configs, run standard preflight, and confirm both deployed gates are false.
-Do not keep either online gate open while assembling or verifying offline
-artifacts.
+The assembler rejects a direct version-2 executor receipt. It revalidates the
+outer canonical/body digests, operator command and HMAC evidence bindings,
+attempt/completion receipts, permit-issuance receipt, nested permit/executor
+links, all eight executor observations, and independent context. Canonical
+digests prove deterministic integrity only; the later source signature is
+still required for origin authentication.
 
-With both gates closed, collect exactly the ordered packets:
+Immediately after the rollback context and ledger state are captured, disable
+and read back the invoker gate first, wait for in-flight invocation RPCs to
+settle, then disable and read back issuer, executor, and Controller gates in
+that order. Restore the standard staging configs, run standard preflight, and
+confirm all four deployed gates are false. Do not keep an online campaign gate
+open while assembling or verifying offline artifacts.
+
+With all four gates closed, collect exactly the ordered packets:
 
 ```text
 bun tools/collect_container_runtime_json_compatibility_source_manifest.mjs \
@@ -2732,13 +2804,14 @@ label is an untrusted claim until a cryptographic source signature is verified.
 Synthetic `--self-test` evidence is explicitly marked and rejected by normal
 mode. The
 current repository provides the named private Controller entrypoint, bounded
-executor, two create-only campaign config preparers, create-only plan and
+executor, four create-only campaign config preparers, create-only plan and
 evidence projector, receipt/context phase assembler, source-manifest collector,
 offline verifier, signed-permit consumer, and per-campaign SQLite replay/lease
-authority. It does not yet provide the independent permit issuer,
-authenticated remote invoker, exact per-shard topology runner, automated
-independent context collector, cryptographic source signature, immutable
-archive, deployed versions, or real staging packet.
+authority. The current change set adds local issuer and invoker boundaries plus
+separate campaign-scoped issuance and invocation ledgers. It does not yet
+provide a reviewed private operator caller, an exact per-shard topology runner,
+an automated independent context collector, cryptographic source signature, immutable
+archive, deployed versions, or a real staging packet.
 Canonical digests detect mutation but do not authenticate the source.
 Therefore local success is not remote staging evidence and does not authorize
 image publication, rollout, Protobuf gates, production traffic, or DNS changes.

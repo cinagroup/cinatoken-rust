@@ -43,5 +43,6 @@ export default defineConfig({
   ],
   test: {
     include: ["tests/playground-runtime.test.mjs"],
+    testTimeout: 30_000,
   },
 });

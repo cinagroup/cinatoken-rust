@@ -132,6 +132,11 @@ export interface JsonCompatibilityExecutePhaseRequestV2 {
   readonly authorization: JsonCompatibilityPhasePermitEnvelopeV1;
 }
 
+export type JsonCompatibilityExecutePhaseRequestSubjectV2 = Omit<
+  JsonCompatibilityExecutePhaseRequestV2,
+  "authorization"
+>;
+
 export class JsonCompatibilityExecutorProtocolError extends Error {
   constructor(
     readonly code:
@@ -173,6 +178,33 @@ export function parseJsonCompatibilityExecutePhaseRequestV2(
     "phase",
     "authorization",
   ], "executePhase request");
+  const authorization = parsePermitEnvelope(value.authorization);
+  const { authorization: _authorization, ...subjectInput } = value;
+  const request = {
+    ...parseJsonCompatibilityExecutePhaseRequestSubjectV2(subjectInput),
+    authorization,
+  };
+  requirePermitSubjectBinding(request);
+  return request;
+}
+
+export function parseJsonCompatibilityExecutePhaseRequestSubjectV2(
+  input: unknown,
+): JsonCompatibilityExecutePhaseRequestSubjectV2 {
+  const value = requireRecord(input, "executePhase request subject");
+  requireExactKeys(value, [
+    "schemaVersion",
+    "contract",
+    "kind",
+    "environment",
+    "campaignIdSha256",
+    "planDigestSha256",
+    "phaseExecutionId",
+    "controller",
+    "runtimes",
+    "ring",
+    "phase",
+  ], "executePhase request subject");
   requireEqual(value.schemaVersion, 2, "executePhase schema version");
   requireEqual(
     value.contract,
@@ -201,9 +233,7 @@ export function parseJsonCompatibilityExecutePhaseRequestV2(
   const runtimes = parseRuntimes(value.runtimes);
   const ring = parseRing(value.ring);
   const phase = parsePhase(value.phase, ring.candidateShardIndex);
-  const authorization = parsePermitEnvelope(value.authorization);
-
-  const request = {
+  return {
     schemaVersion: 2 as const,
     contract: JSON_COMPATIBILITY_EXECUTE_PHASE_REQUEST_CONTRACT,
     kind: "container-runtime-json-compatibility-phase-execution" as const,
@@ -215,10 +245,7 @@ export function parseJsonCompatibilityExecutePhaseRequestV2(
     runtimes,
     ring,
     phase,
-    authorization,
   };
-  requirePermitSubjectBinding(request);
-  return request;
 }
 
 export function expectedRuntimeGeneration(

@@ -3,6 +3,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  JSON_COMPATIBILITY_PHASE_SOURCE_MAX_BYTES,
+  JSON_COMPATIBILITY_PRIVATE_INVOCATION_RECEIPT_MAX_BYTES,
   readBoundedUtf8File,
 } from "../tools/lib/bounded_json_file.mjs";
 
@@ -25,6 +27,16 @@ async function temporaryPath(name) {
 }
 
 describe("JSON compatibility bounded file reader", () => {
+  test("leaves headroom between the private invocation and phase source limits", () => {
+    expect(JSON_COMPATIBILITY_PRIVATE_INVOCATION_RECEIPT_MAX_BYTES).toBe(
+      1536 * 1024,
+    );
+    expect(JSON_COMPATIBILITY_PHASE_SOURCE_MAX_BYTES).toBe(2 * 1024 * 1024);
+    expect(JSON_COMPATIBILITY_PRIVATE_INVOCATION_RECEIPT_MAX_BYTES).toBeLessThan(
+      JSON_COMPATIBILITY_PHASE_SOURCE_MAX_BYTES,
+    );
+  });
+
   test("reads a stable nonempty regular UTF-8 file within its explicit limit", async () => {
     const file = await temporaryPath("plan.json");
     await writeFile(file, '{"schemaVersion":1}', "utf8");

@@ -60,6 +60,10 @@ function buildPlan() {
 }
 
 function buildPhasePackets(plan) {
+  const syntheticPrivateInvocations =
+    createSyntheticJsonCompatibilitySourceManifest(plan).phases.map(
+      (packet) => packet.privateInvocation,
+    );
   const controllerDeploymentSetSha256 = sha256Canonical({
     deployment: "controller-staging-fixed",
   });
@@ -297,6 +301,13 @@ function buildPhasePackets(plan) {
         phaseIndex,
         deployment: "container",
       }),
+      privateInvocation: {
+        ...structuredClone(syntheticPrivateInvocations[phaseIndex]),
+        phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
+        executorReceiptSha256: receiptSha256,
+        startedAt: `2026-08-04T00:0${phaseIndex * 2}:00Z`,
+        completedAt: `2026-08-04T00:0${phaseIndex * 2 + 1}:00Z`,
+      },
       executorReceipt: {
         contract:
           "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v2",

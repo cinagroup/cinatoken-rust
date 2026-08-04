@@ -483,6 +483,13 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
         domain: "synthetic-container-deployment-set",
         phaseIndex,
       }),
+      privateInvocation: createSyntheticPrivateInvocationReference({
+        phase,
+        phaseIndex,
+        receiptSha256,
+        startedAt: startedAt.toISOString().replace(".000Z", "Z"),
+        completedAt: completedAt.toISOString().replace(".000Z", "Z"),
+      }),
       executorReceipt: {
         contract:
           "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v2",
@@ -628,6 +635,7 @@ function validatePhasePacket(plan, packet, expectedOrdinal, crossPhase) {
     "ring",
     "topology",
     "containerDeploymentSetSha256",
+    "privateInvocation",
     "executorReceipt",
     "sourceContext",
     "shards",
@@ -656,6 +664,12 @@ function validatePhasePacket(plan, packet, expectedOrdinal, crossPhase) {
   requireCanonicalEqual(value.ring, plan.ring, `${label} ring topology`);
   requireCanonicalEqual(value.topology, expectedPlanPhase.topology, `${label} topology`);
   requireSha256(value.containerDeploymentSetSha256, `${label} container deployment set`);
+  validatePrivateInvocationReference(
+    value.privateInvocation,
+    value.executorReceipt,
+    expectedPlanPhase,
+    label,
+  );
   validateExecutorReceiptReference(
     value.executorReceipt,
     expectedPlanPhase,
@@ -753,6 +767,277 @@ function validatePacketController(value, expected, label) {
   const { deploymentSetSha256, ...identity } = controller;
   requireCanonicalEqual(identity, expected, `${label} Controller identity`);
   requireSha256(deploymentSetSha256, `${label} Controller deployment set`);
+}
+
+function createSyntheticPrivateInvocationReference({
+  phase,
+  phaseIndex,
+  receiptSha256,
+  startedAt,
+  completedAt,
+}) {
+  const digest = (domain) => sha256Canonical({
+    domain,
+    phaseIndex,
+  });
+  return {
+    contract:
+      "cinatoken-container-runtime-json-compatibility-private-invocation-receipt-v1",
+    receiptSha256: digest("synthetic-private-invocation-receipt"),
+    invocationBodySha256: digest("synthetic-private-invocation-body"),
+    phaseExecutionId: `synthetic-phase-execution-${phaseIndex + 1}`,
+    phaseOrdinal: phase.ordinal,
+    phaseId: phase.id,
+    commandIdSha256: digest("synthetic-private-command"),
+    operatorAuthority: {
+      issuer: "cinatoken-json-compatibility-campaign-operator-staging",
+      audience:
+        "cinatoken-container-runtime-json-compatibility-invoker-staging",
+      keyId: "synthetic-operator-key",
+      credentialIdSha256: digest("synthetic-operator-credential"),
+      claimsSha256: digest("synthetic-operator-claims"),
+      commandSubjectSha256: digest("synthetic-command-subject"),
+      authorityEnvelopeSha256: digest("synthetic-command-envelope"),
+      issuedAt: Math.floor(Date.parse(startedAt) / 1000),
+      expiresAt: Math.floor(Date.parse(startedAt) / 1000) + 60,
+    },
+    invoker: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-invoker-staging",
+      versionId: "invoker-version-self-test",
+      gateName: "JSON_COMPATIBILITY_INVOKER_ENABLED",
+    },
+    privateTransport: {
+      kind: "service-binding-rpc",
+      publicUrlUsed: false,
+      cloudflareRestUsed: false,
+      permitIssuerBinding: "JSON_COMPATIBILITY_PERMIT_ISSUER_SERVICE",
+      executorBinding: "JSON_COMPATIBILITY_EXECUTOR_SERVICE",
+    },
+    invocationAuthority: {
+      attemptIdSha256: digest("synthetic-invocation-attempt"),
+      attemptReceiptSha256: digest("synthetic-invocation-attempt-receipt"),
+      completionReceiptSha256:
+        digest("synthetic-invocation-completion-receipt"),
+      oneAttemptPerPhasePersisted: true,
+      phaseOrderEnforced: true,
+      ambiguousRetryRejected: true,
+      attemptCompletionPersisted: true,
+      phaseOrderAdvanced: true,
+      campaignTerminal: phase.ordinal === JSON_COMPATIBILITY_PHASE_IDS.length,
+    },
+    permitIssue: {
+      contract:
+        "cinatoken-container-runtime-json-compatibility-permit-issue-receipt-v1",
+      receiptSha256: digest("synthetic-permit-issue-receipt"),
+      issueIntentSha256: digest("synthetic-permit-issue-intent"),
+      permitEnvelopeSha256: digest("synthetic-permit-envelope"),
+      issuanceAuthorityReceiptSha256:
+        digest("synthetic-permit-issuance-authority-receipt"),
+      issuer: {
+        serviceName:
+          "cinatoken-container-runtime-json-compatibility-permit-issuer-staging",
+        versionId: "permit-issuer-version-self-test",
+        keyId: "synthetic-permit-key",
+        signerSpkiSha256: digest("synthetic-permit-spki"),
+      },
+      authority: {
+        issuer:
+          "cinatoken-container-runtime-json-compatibility-invoker-staging",
+        audience:
+          "cinatoken-container-runtime-json-compatibility-permit-issuer-staging",
+        keyId: "synthetic-issuer-authority-key",
+        credentialIdSha256: digest("synthetic-issuer-authority-credential"),
+        requestIdSha256: digest("synthetic-issuer-request"),
+        claimsSha256: digest("synthetic-issuer-claims"),
+      },
+    },
+    executorReceiptSha256: receiptSha256,
+    startedAt,
+    completedAt,
+  };
+}
+
+function validatePrivateInvocationReference(
+  value,
+  executorReceiptValue,
+  expectedPhase,
+  label,
+) {
+  const invocation = requireRecord(value, `${label} private invocation`);
+  requireExactKeys(invocation, [
+    "contract", "receiptSha256", "invocationBodySha256", "phaseExecutionId",
+    "phaseOrdinal", "phaseId", "commandIdSha256", "operatorAuthority",
+    "invoker", "privateTransport", "invocationAuthority", "permitIssue",
+    "executorReceiptSha256", "startedAt", "completedAt",
+  ], `${label} private invocation`);
+  requireEqual(
+    invocation.contract,
+    "cinatoken-container-runtime-json-compatibility-private-invocation-receipt-v1",
+    `${label} private invocation contract`,
+  );
+  for (const name of [
+    "receiptSha256", "invocationBodySha256", "commandIdSha256",
+    "executorReceiptSha256",
+  ]) requireSha256(invocation[name], `${label} private invocation ${name}`);
+  requireSafeToken(
+    invocation.phaseExecutionId,
+    `${label} private invocation execution ID`,
+  );
+  requireEqual(
+    invocation.phaseOrdinal,
+    expectedPhase.ordinal,
+    `${label} private invocation phase ordinal`,
+  );
+  requireEqual(
+    invocation.phaseId,
+    expectedPhase.id,
+    `${label} private invocation phase ID`,
+  );
+
+  const executorReceipt = requireRecord(
+    executorReceiptValue,
+    `${label} executor receipt`,
+  );
+  requireEqual(
+    invocation.phaseExecutionId,
+    executorReceipt.phaseExecutionId,
+    `${label} private invocation execution binding`,
+  );
+  requireEqual(
+    invocation.executorReceiptSha256,
+    executorReceipt.receiptSha256,
+    `${label} private invocation executor digest`,
+  );
+  const startedAtMs = parseWholeSecondUtc(
+    invocation.startedAt,
+    `${label} private invocation start`,
+  );
+  const completedAtMs = parseWholeSecondUtc(
+    invocation.completedAt,
+    `${label} private invocation completion`,
+  );
+  if (
+    completedAtMs < startedAtMs
+    || startedAtMs > Date.parse(executorReceipt.startedAt)
+    || completedAtMs < Date.parse(executorReceipt.completedAt)
+  ) {
+    throw new JsonCompatibilityCampaignError(
+      `${label} private invocation must enclose the executor receipt`,
+    );
+  }
+
+  const operator = requireRecord(
+    invocation.operatorAuthority,
+    `${label} operator authority`,
+  );
+  requireExactKeys(operator, [
+    "issuer", "audience", "keyId", "credentialIdSha256", "claimsSha256",
+    "commandSubjectSha256", "authorityEnvelopeSha256", "issuedAt", "expiresAt",
+  ], `${label} operator authority`);
+  requireSafeToken(operator.issuer, `${label} operator issuer`);
+  requireEqual(
+    operator.audience,
+    "cinatoken-container-runtime-json-compatibility-invoker-staging",
+    `${label} operator audience`,
+  );
+  requireSafeToken(operator.keyId, `${label} operator key ID`);
+  for (const name of [
+    "credentialIdSha256", "claimsSha256", "commandSubjectSha256",
+    "authorityEnvelopeSha256",
+  ]) requireSha256(operator[name], `${label} operator ${name}`);
+  requireInteger(operator.issuedAt, 1, Number.MAX_SAFE_INTEGER, `${label} operator issuedAt`);
+  requireInteger(operator.expiresAt, 1, Number.MAX_SAFE_INTEGER, `${label} operator expiresAt`);
+  if (operator.expiresAt <= operator.issuedAt || operator.expiresAt - operator.issuedAt > 60) {
+    throw new JsonCompatibilityCampaignError(`${label} operator time window is invalid`);
+  }
+
+  const invoker = requireRecord(invocation.invoker, `${label} invoker`);
+  requireExactKeys(invoker, ["serviceName", "versionId", "gateName"], `${label} invoker`);
+  requireEqual(
+    invoker.serviceName,
+    "cinatoken-container-runtime-json-compatibility-invoker-staging",
+    `${label} invoker service`,
+  );
+  requireSafeToken(invoker.versionId, `${label} invoker version`);
+  requireEqual(invoker.gateName, "JSON_COMPATIBILITY_INVOKER_ENABLED", `${label} invoker gate`);
+
+  const transport = requireRecord(
+    invocation.privateTransport,
+    `${label} private transport`,
+  );
+  requireExactKeys(transport, [
+    "kind", "publicUrlUsed", "cloudflareRestUsed", "permitIssuerBinding",
+    "executorBinding",
+  ], `${label} private transport`);
+  requireEqual(transport.kind, "service-binding-rpc", `${label} private transport kind`);
+  requireEqual(transport.publicUrlUsed, false, `${label} private public URL use`);
+  requireEqual(transport.cloudflareRestUsed, false, `${label} private REST use`);
+  requireEqual(transport.permitIssuerBinding, "JSON_COMPATIBILITY_PERMIT_ISSUER_SERVICE", `${label} permit issuer binding`);
+  requireEqual(transport.executorBinding, "JSON_COMPATIBILITY_EXECUTOR_SERVICE", `${label} executor binding`);
+
+  const authority = requireRecord(
+    invocation.invocationAuthority,
+    `${label} invocation authority`,
+  );
+  requireExactKeys(authority, [
+    "attemptIdSha256", "attemptReceiptSha256", "completionReceiptSha256",
+    "oneAttemptPerPhasePersisted", "phaseOrderEnforced",
+    "ambiguousRetryRejected", "attemptCompletionPersisted",
+    "phaseOrderAdvanced", "campaignTerminal",
+  ], `${label} invocation authority`);
+  for (const name of ["attemptIdSha256", "attemptReceiptSha256", "completionReceiptSha256"]) {
+    requireSha256(authority[name], `${label} invocation authority ${name}`);
+  }
+  for (const name of [
+    "oneAttemptPerPhasePersisted", "phaseOrderEnforced",
+    "ambiguousRetryRejected", "attemptCompletionPersisted", "phaseOrderAdvanced",
+  ]) requireEqual(authority[name], true, `${label} invocation authority ${name}`);
+  requireEqual(
+    authority.campaignTerminal,
+    expectedPhase.ordinal === JSON_COMPATIBILITY_PHASE_IDS.length,
+    `${label} invocation campaign terminal flag`,
+  );
+
+  const permit = requireRecord(invocation.permitIssue, `${label} permit issue`);
+  requireExactKeys(permit, [
+    "contract", "receiptSha256", "issueIntentSha256", "permitEnvelopeSha256",
+    "issuanceAuthorityReceiptSha256", "issuer", "authority",
+  ], `${label} permit issue`);
+  requireEqual(
+    permit.contract,
+    "cinatoken-container-runtime-json-compatibility-permit-issue-receipt-v1",
+    `${label} permit issue contract`,
+  );
+  for (const name of [
+    "receiptSha256", "issueIntentSha256", "permitEnvelopeSha256",
+    "issuanceAuthorityReceiptSha256",
+  ]) requireSha256(permit[name], `${label} permit issue ${name}`);
+  const issuer = requireRecord(permit.issuer, `${label} permit issuer`);
+  requireExactKeys(issuer, ["serviceName", "versionId", "keyId", "signerSpkiSha256"], `${label} permit issuer`);
+  requireEqual(
+    issuer.serviceName,
+    "cinatoken-container-runtime-json-compatibility-permit-issuer-staging",
+    `${label} permit issuer service`,
+  );
+  requireSafeToken(issuer.versionId, `${label} permit issuer version`);
+  requireSafeToken(issuer.keyId, `${label} permit key ID`);
+  requireSha256(issuer.signerSpkiSha256, `${label} signer SPKI digest`);
+  const permitAuthority = requireRecord(permit.authority, `${label} permit authority`);
+  requireExactKeys(permitAuthority, [
+    "issuer", "audience", "keyId", "credentialIdSha256", "requestIdSha256",
+    "claimsSha256",
+  ], `${label} permit authority`);
+  requireEqual(permitAuthority.issuer, invoker.serviceName, `${label} permit authority issuer`);
+  requireEqual(
+    permitAuthority.audience,
+    issuer.serviceName,
+    `${label} permit authority audience`,
+  );
+  requireSafeToken(permitAuthority.keyId, `${label} permit authority key ID`);
+  for (const name of ["credentialIdSha256", "requestIdSha256", "claimsSha256"]) {
+    requireSha256(permitAuthority[name], `${label} permit authority ${name}`);
+  }
 }
 
 function validateExecutorReceiptReference(

@@ -13491,9 +13491,9 @@ the real receipt, independently collected context including storage-gateway
 facts, four phase packets, source manifest, and evidence. Structural validation
 of the `remote-staging` label does not authenticate its source. The SHA-256
 chain proves canonical integrity, not source identity; no cryptographic source
-signature exists yet. Signed single-use invocation permits, replay consumption,
-an authenticated private invoker, and exact per-shard topology deployment and
-readback also remain open. No Cloudflare
+signature exists yet. The independent issuer, authenticated private invoker,
+and replay authorities are now focused-local verified. A private operator
+caller and exact per-shard topology deployment/readback remain open. No Cloudflare
 deployment or private remote RPC was performed by these checks, no provider,
 billing, production traffic, D1, DNS, route, or Go/VPS state changed, and
 production remains **NO-GO**.
@@ -13542,3 +13542,67 @@ Cloudflare secret state, remote DO migration, exact shard topology, Container
 runtime behavior, independent context, source signature, archive, or staging
 campaign. No deployment or private remote RPC is performed. Production remains
 **NO-GO**.
+
+## Independent Issuer And Private Invoker Verification Audit
+
+This section records focused local acceptance of the independent Ed25519
+permit issuer, authenticated private invoker, their campaign-scoped SQLite
+Durable Object ledgers, and the complete private-invocation phase-source chain.
+It did not deploy a Worker, provision or read a secret, invoke a
+remote Service Binding, mutate remote Durable Object state, or execute a real
+Container phase. No real staging evidence was produced, and production remains
+**NO-GO**.
+
+### Required local acceptance
+
+The integrating change is not accepted until the following evidence is
+recorded with exact command output and current counts:
+
+| Gate | Required evidence | Audit status |
+| --- | --- | --- |
+| Permit issuer protocol | Strict issue-intent and HMAC envelope parsing; current/previous credential rotation; time, issuer, audience, request, version, and credential-digest binding; Ed25519 PKCS8/SPKI self-check; exact permit subject and receipt validation | PASS: 6 Node tests |
+| Permit issuance DO | One issuance per phase, exact `1 -> 2 -> 3 -> 4` order, binding pin, concurrent/replay rejection, and eviction persistence | PASS: 2 Workerd SQLite tests; no remote DO proof |
+| Private invoker protocol | Operator HMAC command verification, distinct invoker-to-issuer HMAC, exact version/plan/phase/topology/context binding, strict issuer/permit/executor receipt validation, 1.5 MiB bounded output, and no public fetch path | PASS: 9 Node tests, generated types, and local/staging dry-runs |
+| Invocation DO | Attempt persisted before issuer RPC, one attempt per phase, exact phase order, replay and ambiguity rejection across eviction, digest-bound completion receipt, and downstream failure terminalizing the campaign | PASS: 3 Workerd SQLite tests; no remote DO proof |
+| Chained local flow | Operator command -> invocation ledger -> issuer HMAC -> issuance ledger -> Ed25519 permit -> executor permit consumption/lease -> eight-shard mock receipt, including default-off, issuer rejection, invalid executor receipt, terminalization, replay, and concurrent negatives | PASS in the invoker Workerd suite; transport loss after a downstream commit remains deliberately unknown and non-retryable |
+| Private operator caller | Separate private Service Binding to the invoker, exact caller Version Metadata identity, one-shot canonical command creation, bounded response, no public route, and no secret-bearing CLI or logs | Required; invoker authentication alone does not implement or attest the caller |
+| Wrangler/config | Generated types, TypeScript, local/staging dry-runs, named WorkerEntrypoints, private Service Bindings, three SQLite DO migrations, no routes, `workers_dev=false`, preview URLs false, all four gates false, empty tracked secret/key material, and create-only issuer/invoker config preparation | PASS locally; remote readback remains separate |
+| Workers runtime bounds | Every launched Promise awaited, executor receipt 1 MiB, private invocation 1.5 MiB, phase source 2 MiB, and no compatibility flag beyond demonstrated dependencies | PASS for local bounds and minimum compatibility surface. A naive timeout cannot cancel Service Binding work; unknown transport outcomes remain terminal until a reviewed status/cancellation contract exists |
+| Phase-source chain | Assembler and manifest revalidate and retain the outer private-invocation digest projection, operator auth bindings, invocation ledger, issuer receipt, permit, nested executor receipt, and independent context | PASS as part of 53 campaign/source tests with 171 expectations; a direct executor-only receipt is rejected |
+| Repository gate | Focused issuer/invoker/executor/campaign checks followed by complete root `bun run check`, Rust workspace, and configured wasm32 checks | PASS on the integrated local tree: exit 0 in 1,242.1 seconds; exact published-commit CI and remote evidence remain separate |
+
+The three campaign-named Durable Objects are deliberately separate. Tests and
+documentation must not claim an end-to-end distributed transaction or exactly
+once execution. The verifiable guarantee is fail-closed at-most-once admission
+at each authority: a lost response after a commit is terminal and cannot be
+resolved by resubmitting the command, issuing a replacement permit, taking over
+the phase lease, or skipping forward.
+
+### Required remote evidence
+
+Even a complete local pass establishes only implementation and bundle shape.
+The first admissible isolated-staging evidence must additionally prove:
+
+- exact Controller, executor, issuer, invoker, and operator Version Metadata
+  IDs; named RPC entrypoints; private Service Binding targets; no public route;
+  and all three remote SQLite DO migrations;
+- all four gates deployed false, then enabled and read back only in the reviewed
+  `Controller -> executor -> issuer -> invoker` order, and closed in reverse
+  caller-first order after rollback;
+- independently created and rotated operator HMAC, invoker-to-issuer HMAC, and
+  Ed25519 identities, with secret presence read back without exposing values
+  and only public IDs/digests retained in evidence;
+- one exact named-shard topology and independent before/after context for each
+  ordered phase, plus one authenticated private invocation and one permit per
+  phase with no retry after an unknown result;
+- remote replay, wrong credential/key/version/topology, Durable Object eviction,
+  downstream failure, gate-drain, and rollback behavior; and
+- complete private-invocation phase sources, an independently authenticated
+  source signature, revocation-aware signer policy, and immutable archive
+  publication/readback.
+
+The `remote-staging` field remains a structural label, not proof of origin.
+Canonical SHA-256 links prove deterministic integrity only. Until the remote
+readbacks, source signature, immutable archive, real four-phase packet, and
+wider provider/billing/storage/SLO/security/approval gates pass, Go/VPS remains
+authoritative and production remains **NO-GO**.

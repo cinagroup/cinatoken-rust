@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   JSON_COMPATIBILITY_PHASE_SOURCE_MAX_BYTES,
+  JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_MAX_BYTES,
   JSON_COMPATIBILITY_PRIVATE_INVOCATION_RECEIPT_MAX_BYTES,
   readBoundedUtf8File,
 } from "../tools/lib/bounded_json_file.mjs";
@@ -27,12 +28,18 @@ async function temporaryPath(name) {
 }
 
 describe("JSON compatibility bounded file reader", () => {
-  test("leaves headroom between the private invocation and phase source limits", () => {
+  test("leaves headroom across private, operator, and phase source limits", () => {
     expect(JSON_COMPATIBILITY_PRIVATE_INVOCATION_RECEIPT_MAX_BYTES).toBe(
       1536 * 1024,
     );
     expect(JSON_COMPATIBILITY_PHASE_SOURCE_MAX_BYTES).toBe(2 * 1024 * 1024);
+    expect(JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_MAX_BYTES).toBe(
+      1792 * 1024,
+    );
     expect(JSON_COMPATIBILITY_PRIVATE_INVOCATION_RECEIPT_MAX_BYTES).toBeLessThan(
+      JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_MAX_BYTES,
+    );
+    expect(JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_MAX_BYTES).toBeLessThan(
       JSON_COMPATIBILITY_PHASE_SOURCE_MAX_BYTES,
     );
   });

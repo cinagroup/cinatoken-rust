@@ -1,0 +1,31 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-container-runtime-json-compatibility-operator-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-04",
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "services": [
+    {
+      "binding": "JSON_COMPATIBILITY_INVOKER_SERVICE",
+      "service": "cinatoken-container-runtime-json-compatibility-invoker-staging",
+      "entrypoint": "JsonCompatibilityCampaignInvokerEntrypoint"
+    }
+  ],
+  "vars": {
+    "ENVIRONMENT": "local",
+    "JSON_COMPATIBILITY_OPERATOR_ENABLED": "false",
+    "JSON_COMPATIBILITY_OPERATOR_ISSUER": "cinatoken-json-compatibility-campaign-operator-staging",
+    "JSON_COMPATIBILITY_OPERATOR_AUDIENCE": "cinatoken-container-runtime-json-compatibility-invoker-staging",
+    "JSON_COMPATIBILITY_OPERATOR_CURRENT_KID": "",
+    "JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256": "",
+    "JSON_COMPATIBILITY_OPERATOR_INVOKER_VERSION_ID": ""
+  }
+}

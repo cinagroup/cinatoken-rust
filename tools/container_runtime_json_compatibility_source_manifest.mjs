@@ -398,7 +398,7 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
       executor: {
         serviceName:
           "cinatoken-container-runtime-json-compatibility-executor-staging",
-        versionId: "executor-version-self-test",
+        versionId: validatedPlan.privateServices.executor.versionId,
       },
       runtimes: cloneJson(validatedPlan.runtimes),
       ring: cloneJson(validatedPlan.ring),
@@ -456,6 +456,23 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
         concurrentPhaseRejected: true,
       },
     };
+    const operatorInvocation = createSyntheticOperatorInvocationReference({
+      plan: validatedPlan,
+      phase,
+      phaseIndex,
+      startedAt: startedAt.toISOString().replace(".000Z", "Z"),
+      completedAt: completedAt.toISOString().replace(".000Z", "Z"),
+    });
+    const privateInvocation = createSyntheticPrivateInvocationReference({
+      plan: validatedPlan,
+      phase,
+      phaseIndex,
+      receiptSha256,
+      rawReceiptSha256: operatorInvocation.privateInvocationReceiptSha256,
+      commandIdSha256: operatorInvocation.commandIdSha256,
+      startedAt: startedAt.toISOString().replace(".000Z", "Z"),
+      completedAt: completedAt.toISOString().replace(".000Z", "Z"),
+    });
     const packetSubject = {
       schemaVersion: 1,
       contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
@@ -483,13 +500,8 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
         domain: "synthetic-container-deployment-set",
         phaseIndex,
       }),
-      privateInvocation: createSyntheticPrivateInvocationReference({
-        phase,
-        phaseIndex,
-        receiptSha256,
-        startedAt: startedAt.toISOString().replace(".000Z", "Z"),
-        completedAt: completedAt.toISOString().replace(".000Z", "Z"),
-      }),
+      operatorInvocation,
+      privateInvocation,
       executorReceipt: {
         contract:
           "cinatoken-container-runtime-json-compatibility-phase-probe-receipt-v2",
@@ -501,7 +513,7 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
         phaseExecutionId: `synthetic-phase-execution-${phaseIndex + 1}`,
         executorServiceName:
           "cinatoken-container-runtime-json-compatibility-executor-staging",
-        executorVersionId: "executor-version-self-test",
+        executorVersionId: validatedPlan.privateServices.executor.versionId,
         startedAt: startedAt.toISOString().replace(".000Z", "Z"),
         completedAt: completedAt.toISOString().replace(".000Z", "Z"),
         targetService: "cinatoken-container-controller-staging",
@@ -635,6 +647,7 @@ function validatePhasePacket(plan, packet, expectedOrdinal, crossPhase) {
     "ring",
     "topology",
     "containerDeploymentSetSha256",
+    "operatorInvocation",
     "privateInvocation",
     "executorReceipt",
     "sourceContext",
@@ -664,10 +677,18 @@ function validatePhasePacket(plan, packet, expectedOrdinal, crossPhase) {
   requireCanonicalEqual(value.ring, plan.ring, `${label} ring topology`);
   requireCanonicalEqual(value.topology, expectedPlanPhase.topology, `${label} topology`);
   requireSha256(value.containerDeploymentSetSha256, `${label} container deployment set`);
+  validateOperatorInvocationReference(
+    value.operatorInvocation,
+    value.privateInvocation,
+    expectedPlanPhase,
+    plan,
+    label,
+  );
   validatePrivateInvocationReference(
     value.privateInvocation,
     value.executorReceipt,
     expectedPlanPhase,
+    plan,
     label,
   );
   validateExecutorReceiptReference(
@@ -769,10 +790,50 @@ function validatePacketController(value, expected, label) {
   requireSha256(deploymentSetSha256, `${label} Controller deployment set`);
 }
 
+function createSyntheticOperatorInvocationReference({
+  plan,
+  phase,
+  phaseIndex,
+  startedAt,
+  completedAt,
+}) {
+  const digest = (domain) => sha256Canonical({ domain, phaseIndex });
+  return {
+    contract:
+      "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v1",
+    receiptSha256: digest("synthetic-operator-invocation-receipt"),
+    operatorBodySha256: digest("synthetic-operator-invocation-body"),
+    privateInvocationReceiptSha256:
+      digest("synthetic-private-invocation-raw-receipt"),
+    requestSha256: digest("synthetic-operator-request"),
+    commandIdSha256: digest("synthetic-private-command"),
+    phaseExecutionId: `synthetic-phase-execution-${phaseIndex + 1}`,
+    phaseOrdinal: phase.ordinal,
+    phaseId: phase.id,
+    operator: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-operator-staging",
+      versionId: plan.privateServices.operator.versionId,
+      gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+    },
+    privateTransport: {
+      kind: "service-binding-rpc",
+      publicUrlUsed: false,
+      cloudflareRestUsed: false,
+      invokerBinding: "JSON_COMPATIBILITY_INVOKER_SERVICE",
+    },
+    startedAt,
+    completedAt,
+  };
+}
+
 function createSyntheticPrivateInvocationReference({
+  plan,
   phase,
   phaseIndex,
   receiptSha256,
+  rawReceiptSha256,
+  commandIdSha256,
   startedAt,
   completedAt,
 }) {
@@ -784,11 +845,12 @@ function createSyntheticPrivateInvocationReference({
     contract:
       "cinatoken-container-runtime-json-compatibility-private-invocation-receipt-v1",
     receiptSha256: digest("synthetic-private-invocation-receipt"),
+    rawReceiptSha256,
     invocationBodySha256: digest("synthetic-private-invocation-body"),
     phaseExecutionId: `synthetic-phase-execution-${phaseIndex + 1}`,
     phaseOrdinal: phase.ordinal,
     phaseId: phase.id,
-    commandIdSha256: digest("synthetic-private-command"),
+    commandIdSha256,
     operatorAuthority: {
       issuer: "cinatoken-json-compatibility-campaign-operator-staging",
       audience:
@@ -804,7 +866,7 @@ function createSyntheticPrivateInvocationReference({
     invoker: {
       serviceName:
         "cinatoken-container-runtime-json-compatibility-invoker-staging",
-      versionId: "invoker-version-self-test",
+      versionId: plan.privateServices.invoker.versionId,
       gateName: "JSON_COMPATIBILITY_INVOKER_ENABLED",
     },
     privateTransport: {
@@ -837,7 +899,7 @@ function createSyntheticPrivateInvocationReference({
       issuer: {
         serviceName:
           "cinatoken-container-runtime-json-compatibility-permit-issuer-staging",
-        versionId: "permit-issuer-version-self-test",
+        versionId: plan.privateServices.permitIssuer.versionId,
         keyId: "synthetic-permit-key",
         signerSpkiSha256: digest("synthetic-permit-spki"),
       },
@@ -858,15 +920,133 @@ function createSyntheticPrivateInvocationReference({
   };
 }
 
+function validateOperatorInvocationReference(
+  value,
+  privateInvocationValue,
+  expectedPhase,
+  plan,
+  label,
+) {
+  const invocation = requireRecord(value, `${label} operator invocation`);
+  requireExactKeys(invocation, [
+    "contract", "receiptSha256", "operatorBodySha256",
+    "privateInvocationReceiptSha256", "requestSha256", "commandIdSha256",
+    "phaseExecutionId", "phaseOrdinal", "phaseId", "operator",
+    "privateTransport", "startedAt", "completedAt",
+  ], `${label} operator invocation`);
+  requireEqual(
+    invocation.contract,
+    "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v1",
+    `${label} operator invocation contract`,
+  );
+  for (const name of [
+    "receiptSha256", "operatorBodySha256", "privateInvocationReceiptSha256",
+    "requestSha256", "commandIdSha256",
+  ]) requireSha256(invocation[name], `${label} operator invocation ${name}`);
+  requireSafeToken(
+    invocation.phaseExecutionId,
+    `${label} operator invocation execution ID`,
+  );
+  requireEqual(
+    invocation.phaseOrdinal,
+    expectedPhase.ordinal,
+    `${label} operator invocation phase ordinal`,
+  );
+  requireEqual(
+    invocation.phaseId,
+    expectedPhase.id,
+    `${label} operator invocation phase ID`,
+  );
+
+  const privateInvocation = requireRecord(
+    privateInvocationValue,
+    `${label} private invocation`,
+  );
+  requireEqual(
+    invocation.phaseExecutionId,
+    privateInvocation.phaseExecutionId,
+    `${label} operator/private execution binding`,
+  );
+  requireEqual(
+    invocation.commandIdSha256,
+    privateInvocation.commandIdSha256,
+    `${label} operator/private command binding`,
+  );
+  requireEqual(
+    invocation.privateInvocationReceiptSha256,
+    privateInvocation.rawReceiptSha256,
+    `${label} operator/private raw receipt binding`,
+  );
+  const startedAtMs = parseWholeSecondUtc(
+    invocation.startedAt,
+    `${label} operator invocation start`,
+  );
+  const completedAtMs = parseWholeSecondUtc(
+    invocation.completedAt,
+    `${label} operator invocation completion`,
+  );
+  if (
+    completedAtMs < startedAtMs
+    || startedAtMs > Date.parse(privateInvocation.startedAt)
+    || completedAtMs < Date.parse(privateInvocation.completedAt)
+  ) {
+    throw new JsonCompatibilityCampaignError(
+      `${label} operator invocation must enclose the private invocation`,
+    );
+  }
+
+  const operator = requireRecord(
+    invocation.operator,
+    `${label} operator identity`,
+  );
+  requireExactKeys(
+    operator,
+    ["serviceName", "versionId", "gateName"],
+    `${label} operator identity`,
+  );
+  requireEqual(
+    operator.serviceName,
+    plan.privateServices.operator.serviceName,
+    `${label} operator service`,
+  );
+  requireEqual(
+    operator.versionId,
+    plan.privateServices.operator.versionId,
+    `${label} operator version`,
+  );
+  requireEqual(
+    operator.gateName,
+    plan.privateServices.operator.gateName,
+    `${label} operator gate`,
+  );
+
+  const transport = requireRecord(
+    invocation.privateTransport,
+    `${label} operator private transport`,
+  );
+  requireExactKeys(transport, [
+    "kind", "publicUrlUsed", "cloudflareRestUsed", "invokerBinding",
+  ], `${label} operator private transport`);
+  requireEqual(transport.kind, "service-binding-rpc", `${label} operator transport`);
+  requireEqual(transport.publicUrlUsed, false, `${label} operator public URL`);
+  requireEqual(transport.cloudflareRestUsed, false, `${label} operator REST`);
+  requireEqual(
+    transport.invokerBinding,
+    "JSON_COMPATIBILITY_INVOKER_SERVICE",
+    `${label} operator invoker binding`,
+  );
+}
+
 function validatePrivateInvocationReference(
   value,
   executorReceiptValue,
   expectedPhase,
+  plan,
   label,
 ) {
   const invocation = requireRecord(value, `${label} private invocation`);
   requireExactKeys(invocation, [
-    "contract", "receiptSha256", "invocationBodySha256", "phaseExecutionId",
+    "contract", "receiptSha256", "rawReceiptSha256", "invocationBodySha256", "phaseExecutionId",
     "phaseOrdinal", "phaseId", "commandIdSha256", "operatorAuthority",
     "invoker", "privateTransport", "invocationAuthority", "permitIssue",
     "executorReceiptSha256", "startedAt", "completedAt",
@@ -877,7 +1057,7 @@ function validatePrivateInvocationReference(
     `${label} private invocation contract`,
   );
   for (const name of [
-    "receiptSha256", "invocationBodySha256", "commandIdSha256",
+    "receiptSha256", "rawReceiptSha256", "invocationBodySha256", "commandIdSha256",
     "executorReceiptSha256",
   ]) requireSha256(invocation[name], `${label} private invocation ${name}`);
   requireSafeToken(
@@ -960,6 +1140,11 @@ function validatePrivateInvocationReference(
     `${label} invoker service`,
   );
   requireSafeToken(invoker.versionId, `${label} invoker version`);
+  requireEqual(
+    invoker.versionId,
+    plan.privateServices.invoker.versionId,
+    `${label} planned invoker version`,
+  );
   requireEqual(invoker.gateName, "JSON_COMPATIBILITY_INVOKER_ENABLED", `${label} invoker gate`);
 
   const transport = requireRecord(
@@ -1021,6 +1206,11 @@ function validatePrivateInvocationReference(
     `${label} permit issuer service`,
   );
   requireSafeToken(issuer.versionId, `${label} permit issuer version`);
+  requireEqual(
+    issuer.versionId,
+    plan.privateServices.permitIssuer.versionId,
+    `${label} planned permit issuer version`,
+  );
   requireSafeToken(issuer.keyId, `${label} permit key ID`);
   requireSha256(issuer.signerSpkiSha256, `${label} signer SPKI digest`);
   const permitAuthority = requireRecord(permit.authority, `${label} permit authority`);
@@ -1107,6 +1297,11 @@ function validateExecutorReceiptReference(
   requireSafeToken(
     receipt.executorVersionId,
     `${label} executor version ID`,
+  );
+  requireEqual(
+    receipt.executorVersionId,
+    plan.privateServices.executor.versionId,
+    `${label} planned executor version ID`,
   );
   const startedAtMs = parseWholeSecondUtc(
     receipt.startedAt,

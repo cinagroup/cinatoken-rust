@@ -191,6 +191,7 @@ export function bindJsonCompatibilityPrivateInvocationToExecutor(
   return {
     contract: invocation.contract,
     receiptSha256: invocation.receiptSha256,
+    rawReceiptSha256: sha256Canonical(invocation),
     invocationBodySha256: invocation.invocationBodySha256,
     phaseExecutionId: invocation.phaseExecutionId,
     phaseOrdinal: invocation.phaseOrdinal,

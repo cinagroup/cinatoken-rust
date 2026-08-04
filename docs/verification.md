@@ -13492,11 +13492,11 @@ facts, four phase packets, source manifest, and evidence. Structural validation
 of the `remote-staging` label does not authenticate its source. The SHA-256
 chain proves canonical integrity, not source identity; no cryptographic source
 signature exists yet. The independent issuer, authenticated private invoker,
-and replay authorities are now focused-local verified. A private operator
-caller and exact per-shard topology deployment/readback remain open. No Cloudflare
-deployment or private remote RPC was performed by these checks, no provider,
-billing, production traffic, D1, DNS, route, or Go/VPS state changed, and
-production remains **NO-GO**.
+replay authorities, and default-off private operator caller now exist at the
+local contract and Wrangler dry-run boundary. Exact per-shard topology
+deployment/readback remains open. No Cloudflare deployment or private remote
+RPC was performed by these checks, no provider, billing, production traffic,
+D1, DNS, route, or Go/VPS state changed, and production remains **NO-GO**.
 
 ## Signed JSON Campaign Authorization Verification
 
@@ -13537,21 +13537,21 @@ SPKI bytes are separately required at runtime as the
 by the preparer. Remote verification must prove secret presence without
 printing its value.
 
-These checks do not establish a deployed issuer, authenticated invoker,
-Cloudflare secret state, remote DO migration, exact shard topology, Container
-runtime behavior, independent context, source signature, archive, or staging
-campaign. No deployment or private remote RPC is performed. Production remains
-**NO-GO**.
+These checks do not establish a deployed operator, issuer, authenticated
+invoker, Cloudflare secret state, remote Service Binding or DO migration,
+exact shard topology, Container runtime behavior, independent context, source
+signature, archive, or staging campaign. No deployment or private remote RPC
+is performed. Production remains **NO-GO**.
 
-## Independent Issuer And Private Invoker Verification Audit
+## Independent Issuer, Private Invoker, And Operator Verification Audit
 
-This section records focused local acceptance of the independent Ed25519
-permit issuer, authenticated private invoker, their campaign-scoped SQLite
-Durable Object ledgers, and the complete private-invocation phase-source chain.
-It did not deploy a Worker, provision or read a secret, invoke a
-remote Service Binding, mutate remote Durable Object state, or execute a real
-Container phase. No real staging evidence was produced, and production remains
-**NO-GO**.
+This section records local implementation evidence and acceptance boundaries
+for the independent Ed25519 permit issuer, authenticated private invoker,
+default-off private operator, their campaign-scoped SQLite Durable Object
+ledgers, and the complete nested operator-invocation phase-source chain. It did
+not deploy a Worker, provision or read a secret, invoke a remote Service
+Binding, mutate remote Durable Object state, or execute a real Container phase.
+No real staging evidence was produced, and production remains **NO-GO**.
 
 ### Required local acceptance
 
@@ -13565,11 +13565,20 @@ recorded with exact command output and current counts:
 | Private invoker protocol | Operator HMAC command verification, distinct invoker-to-issuer HMAC, exact version/plan/phase/topology/context binding, strict issuer/permit/executor receipt validation, 1.5 MiB bounded output, and no public fetch path | PASS: 9 Node tests, generated types, and local/staging dry-runs |
 | Invocation DO | Attempt persisted before issuer RPC, one attempt per phase, exact phase order, replay and ambiguity rejection across eviction, digest-bound completion receipt, and downstream failure terminalizing the campaign | PASS: 3 Workerd SQLite tests; no remote DO proof |
 | Chained local flow | Operator command -> invocation ledger -> issuer HMAC -> issuance ledger -> Ed25519 permit -> executor permit consumption/lease -> eight-shard mock receipt, including default-off, issuer rejection, invalid executor receipt, terminalization, replay, and concurrent negatives | PASS in the invoker Workerd suite; transport loss after a downstream commit remains deliberately unknown and non-retryable |
-| Private operator caller | Separate private Service Binding to the invoker, exact caller Version Metadata identity, one-shot canonical command creation, bounded response, no public route, and no secret-bearing CLI or logs | Required; invoker authentication alone does not implement or attest the caller |
-| Wrangler/config | Generated types, TypeScript, local/staging dry-runs, named WorkerEntrypoints, private Service Bindings, three SQLite DO migrations, no routes, `workers_dev=false`, preview URLs false, all four gates false, empty tracked secret/key material, and create-only issuer/invoker config preparation | PASS locally; remote readback remains separate |
-| Workers runtime bounds | Every launched Promise awaited, executor receipt 1 MiB, private invocation 1.5 MiB, phase source 2 MiB, and no compatibility flag beyond demonstrated dependencies | PASS for local bounds and minimum compatibility surface. A naive timeout cannot cancel Service Binding work; unknown transport outcomes remain terminal until a reviewed status/cancellation contract exists |
-| Phase-source chain | Assembler and manifest revalidate and retain the outer private-invocation digest projection, operator auth bindings, invocation ledger, issuer receipt, permit, nested executor receipt, and independent context | PASS as part of 53 campaign/source tests with 171 expectations; a direct executor-only receipt is rejected |
-| Repository gate | Focused issuer/invoker/executor/campaign checks followed by complete root `bun run check`, Rust workspace, and configured wasm32 checks | PASS on the integrated local tree: exit 0 in 1,242.1 seconds; exact published-commit CI and remote evidence remain separate |
+| Private operator | `JsonCompatibilityCampaignOperatorEntrypoint.invokePhase`; exact operator Version Metadata identity; deterministic command ID over canonical request plus operator version; 300-second permit intent; 60-second HMAC; five-second cross-Worker clock tolerance; exactly one invoker RPC with no retry; non-recursive depth/node/byte preflight; known-code-only rejection classification; bounded outer receipt; no public `fetch`, REST fallback, or secret-bearing CLI/log | PASS: 11 local tests plus TypeScript and local/staging dry-runs. Independent approved-plan/caller authorization is not implemented, so the gate must remain false |
+| Wrangler/config | Generated types, TypeScript, local/staging dry-runs, named WorkerEntrypoints, private Service Bindings, three SQLite DO migrations, no routes, `workers_dev=false`, preview URLs false, all five gates false, empty tracked secret/key material, and create-only operator/issuer/invoker config preparation | Local/dry-run evidence only; remote readback remains separate |
+| Workers runtime bounds | Every launched Promise awaited, executor receipt 1 MiB, private-invoker receipt 1.5 MiB, operator receipt 1.75 MiB, phase source 2 MiB, and no compatibility flag beyond demonstrated dependencies | PASS for local bounds and minimum compatibility surface. A naive timeout cannot cancel Service Binding work; unknown transport outcomes remain terminal until a reviewed status/cancellation contract exists |
+| Phase-source chain | Assembler and manifest revalidate and retain the outer operator-invocation projection and raw digest, nested private-invocation projection and digest, operator auth bindings, invocation ledger, issuer receipt, permit, executor receipt, and independent context | Implemented locally; direct private-invoker and executor-only receipts are rejected by contract, while remote source authenticity remains open |
+| Repository gate | Focused operator/issuer/invoker/executor/campaign checks followed by complete root `bun run check`, Rust workspace, and configured wasm32 checks | PASS on the final integrated local tree: exit 0 in 1,571 seconds. This is not remote Cloudflare or cutover evidence |
+
+The campaign-plan validator now requires exactly four `privateServices` roles:
+operator, invoker, permit issuer, and executor. Each role is frozen by exact
+`serviceName`, named `entrypoint`, Version Metadata `versionId`,
+`configSha256`, `gateName`, and `privateRpcOnly=true`. The Controller remains
+an independent plan object and is the fifth active service identity. Receipt,
+phase-source, and source-manifest validation bind all four private identities
+back to the plan while retaining the Controller's separate version and config
+identity.
 
 The three campaign-named Durable Objects are deliberately separate. Tests and
 documentation must not claim an end-to-end distributed transaction or exactly
@@ -13583,12 +13592,17 @@ the phase lease, or skipping forward.
 Even a complete local pass establishes only implementation and bundle shape.
 The first admissible isolated-staging evidence must additionally prove:
 
-- exact Controller, executor, issuer, invoker, and operator Version Metadata
-  IDs; named RPC entrypoints; private Service Binding targets; no public route;
-  and all three remote SQLite DO migrations;
-- all four gates deployed false, then enabled and read back only in the reviewed
-  `Controller -> executor -> issuer -> invoker` order, and closed in reverse
-  caller-first order after rollback;
+- an independently controlled, pre-execution phase authorization or immutable
+  approved-plan lookup that the operator verifies before issuing any HMAC
+  command, including unauthorized-first-call, plan substitution and replay
+  negatives; Service Binding reachability alone is not authorization;
+- exact Controller, operator, invoker, issuer, and executor Version Metadata
+  IDs and configuration digests; named RPC entrypoints; private Service Binding
+  targets; no public route; `workers_dev=false`; preview URLs false; and all
+  three remote SQLite DO migrations;
+- all five gates deployed false, then enabled and read back only in the reviewed
+  `Controller -> executor -> issuer -> invoker -> operator` order, and closed
+  in reverse caller-first order after rollback;
 - independently created and rotated operator HMAC, invoker-to-issuer HMAC, and
   Ed25519 identities, with secret presence read back without exposing values
   and only public IDs/digests retained in evidence;
@@ -13597,12 +13611,15 @@ The first admissible isolated-staging evidence must additionally prove:
   phase with no retry after an unknown result;
 - remote replay, wrong credential/key/version/topology, Durable Object eviction,
   downstream failure, gate-drain, and rollback behavior; and
-- complete private-invocation phase sources, an independently authenticated
-  source signature, revocation-aware signer policy, and immutable archive
-  publication/readback.
+- complete outer operator-invocation phase sources, an independently
+  authenticated source signature, revocation-aware signer policy, and
+  immutable archive publication/readback.
 
 The `remote-staging` field remains a structural label, not proof of origin.
-Canonical SHA-256 links prove deterministic integrity only. Until the remote
-readbacks, source signature, immutable archive, real four-phase packet, and
-wider provider/billing/storage/SLO/security/approval gates pass, Go/VPS remains
+Canonical SHA-256 links prove deterministic integrity only. The exact
+named-shard deployment/readback runner, independent before/after context
+collector, source signature and immutable archive, and real four-phase staging
+campaign are still absent. Until those, the remote version, config, binding,
+and Durable Object migration readbacks, and wider provider, billing, storage,
+SLO, security, approval, Go/VPS drain and cutover gates pass, Go/VPS remains
 authoritative and production remains **NO-GO**.

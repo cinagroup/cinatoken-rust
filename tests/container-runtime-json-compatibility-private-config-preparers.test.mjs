@@ -16,6 +16,11 @@ import {
   prepareJsonCompatibilityInvokerConfig,
   validateJsonCompatibilityInvokerConfig,
 } from "../tools/prepare_container_runtime_json_compatibility_invoker_config.mjs";
+import {
+  parseJsonCompatibilityOperatorConfigArgs,
+  prepareJsonCompatibilityOperatorConfig,
+  validateJsonCompatibilityOperatorConfig,
+} from "../tools/prepare_container_runtime_json_compatibility_operator_config.mjs";
 
 const temporaryDirectories = [];
 const digest = (byte) => byte.repeat(64);
@@ -94,6 +99,36 @@ describe("JSON compatibility private service config preparers", () => {
     ]);
   });
 
+  test("creates an operator campaign config pinned to one invoker version", async () => {
+    const outPath = await temporaryFile("operator.jsonc");
+    const options = {
+      outPath,
+      currentKid: "operator-2026-08",
+      currentCredentialIdSha256: digest("5"),
+      invokerVersionId: "invoker-version-001",
+    };
+    const result = await prepareJsonCompatibilityOperatorConfig(options);
+    const source = await readFile(outPath, "utf8");
+    const config = parseStrictJsonObject(source, "prepared operator config");
+    expect(source).toBe(canonicalJson(config));
+    expect(validateJsonCompatibilityOperatorConfig(config, options)).toMatchObject({
+      enabled: true,
+      privateServiceBinding: true,
+    });
+    expect(config.vars).toMatchObject({
+      JSON_COMPATIBILITY_OPERATOR_ENABLED: "true",
+      JSON_COMPATIBILITY_OPERATOR_CURRENT_KID: options.currentKid,
+      JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
+        options.currentCredentialIdSha256,
+      JSON_COMPATIBILITY_OPERATOR_INVOKER_VERSION_ID:
+        options.invokerVersionId,
+    });
+    expect(source).not.toContain("CURRENT_SECRET");
+    expect(result.secretsRequired).toEqual([
+      "JSON_COMPATIBILITY_OPERATOR_CURRENT_SECRET",
+    ]);
+  });
+
   test("is create-only and rejects secret-shaped CLI options", async () => {
     const outPath = await temporaryFile("existing.jsonc");
     await writeFile(outPath, "sentinel", "utf8");
@@ -113,6 +148,10 @@ describe("JSON compatibility private service config preparers", () => {
     ])).toThrow(/unknown option/);
     expect(() => parseJsonCompatibilityInvokerConfigArgs([
       "--operator-current-secret",
+      "not-accepted",
+    ])).toThrow(/unknown option/);
+    expect(() => parseJsonCompatibilityOperatorConfigArgs([
+      "--hmac-secret",
       "not-accepted",
     ])).toThrow(/unknown option/);
   });

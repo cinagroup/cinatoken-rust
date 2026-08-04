@@ -27834,7 +27834,7 @@ authoritative and production remains **NO-GO**.
 The intended local status is therefore "integrated local verification passed,
 remote proof pending", not "staging ready". The complete repository
 `bun run check` gate passes on this integrated local tree with exit 0 in
-1,242.1 seconds, including the Rust workspace and configured wasm32 checks.
+1,571 seconds, including the Rust workspace and configured wasm32 checks.
 The exact published commit and every deployed identity still require their own
 CI and remote readback evidence before deployment review can begin.
 
@@ -27922,7 +27922,7 @@ The independent issuer and authenticated invoker close two source-level design
 gaps only. The following remain release blockers:
 
 - keep complete root verification green on the published commit. The current
-  integrated local tree passes `bun run check` with exit 0 in 1,242.1 seconds;
+  integrated local tree passes `bun run check` with exit 0 in 1,571 seconds;
   focused acceptance covers default-off configs, generated bindings, SQLite
   migrations, negative tests, strict private-invocation phase-source retention,
   and both local/staging dry-run bundles;
@@ -27955,13 +27955,116 @@ untrusted claim until the independent source signature and remote readbacks are
 verified. Production remains **NO-GO**.
 
 Focused local evidence for this integrated checkpoint is current: the campaign
-and source chain passes 53 tests with 171 expectations; the permit issuer passes
+and source chain passes 62 tests with 215 expectations; the operator passes 11
+tests; the permit issuer passes
 6 Node tests and 2 Workerd SQLite tests; the private invoker passes 9 Node tests
 and 7 Workerd tests; the executor passes 12 Node tests and 4 Workerd tests.
 Generated types are current and local/staging dry-runs pass for issuer, invoker,
-and executor. The new services use no `nodejs_compat`; the private invocation
-receipt is capped at 1.5 MiB, below the 2 MiB phase-source ceiling, and the
-assembler enforces both input and output limits. These remain local and dry-run
-facts only. The complete repository gate also passes on this integrated local
-tree with exit 0 in 1,242.1 seconds; no part of that local result is remote
+executor, and operator. The new services use no `nodejs_compat`; private,
+operator, and phase-source receipts are capped at 1.5 MiB, 1.75 MiB, and 2 MiB
+respectively, and the assembler enforces both input and output limits. These
+remain local and dry-run facts only. The complete repository gate also passes
+on this integrated local tree with exit 0 in 1,571 seconds; no part of that local result is remote
 Cloudflare or cutover evidence.
+
+## 2026-08-04 Private Campaign Operator And Frozen Service Identity Chain
+
+This checkpoint supersedes the preceding audit's statement that a reviewed
+private operator caller is still missing. The local implementation now exports
+only the named
+`JsonCompatibilityCampaignOperatorEntrypoint.invokePhase` Worker RPC. Its
+tracked local and staging configurations keep
+`JSON_COMPATIBILITY_OPERATOR_ENABLED=false`, `workers_dev=false`, and
+`preview_urls=false`, declare no route, and bind only to
+`JsonCompatibilityCampaignInvokerEntrypoint` through a Cloudflare Service
+Binding. There is no public `fetch` path, REST invocation fallback, or
+secret-bearing operator CLI. These are local configuration, contract, and
+Wrangler dry-run facts only. The Worker has not been deployed or invoked in
+Cloudflare staging. The final integrated tree now passes the complete root
+`bun run check` gate with exit 0 in 1,571 seconds; that is current local
+acceptance evidence only and does not establish any remote identity or state.
+
+The approved campaign plan now freezes `privateServices.operator`,
+`privateServices.invoker`, `privateServices.permitIssuer`, and
+`privateServices.executor`. Every private-service identity contains exactly
+the reviewed `serviceName`, named `entrypoint`, Version Metadata `versionId`,
+configuration `configSha256`, `gateName`, and `privateRpcOnly=true` fields.
+The Controller remains a separate plan identity because it owns shard Durable
+Object resolution and Container access rather than campaign authorization.
+Together the independently pinned Controller plus four private Workers form
+the five-service active campaign identity chain:
+
+```text
+Operator -> Invoker -> PermitIssuer -> Executor -> Controller
+```
+
+The operator accepts one bounded canonical phase request, derives
+`commandIdSha256` deterministically as SHA-256 over the versioned command-ID
+domain, canonical request, and exact operator Version Metadata ID, then creates
+one permit intent with a 300-second validity window and one operator-to-invoker
+HMAC envelope with a 60-second validity window. It performs exactly one
+`invokePhase` Service Binding RPC and has no retry loop. A rejection, transport
+loss, oversized response, detached receipt, or unknown result fails closed and
+must not be converted into another command or invocation.
+
+The operator is not yet an approved-plan authority. Its current RPC validates
+the request shape and pinned downstream version, but it does not verify an
+independently signed phase approval, read an immutable approved plan, or
+authenticate a specific topology-runner identity. A Service Binding limits
+which deployed Workers can reach the RPC; it does not prove that the first
+request from a bound Worker is the owner-approved campaign. The invoker DO
+prevents a second phase attempt only after one request has won admission, so it
+cannot repair this missing pre-execution authorization. Before any remote gate
+is enabled, add either an offline-signed, phase-scoped plan authorization or an
+equivalent immutable approved-plan lookup, bind it to the exact caller and all
+execution identities, and test unauthorized-first-call and replay races.
+
+The returned operator receipt is the retained outer receipt. It records the
+operator request and command identity, operator version and gate, private
+transport facts, timing, body and receipt digests, and embeds the complete
+private invoker receipt. That nested receipt continues to retain the invoker
+attempt/completion authority, permit-issuer request and signed permit, executor
+permit-consumption/phase-lease evidence, and the executor's Controller/shard
+observations. Phase-source assembly now requires the outer operator receipt;
+it rejects a direct private-invoker or executor receipt. The phase source and
+ordered source manifest both retain the strict operator-invocation projection,
+the nested private-invocation projection and raw receipt digests, and bind each
+service version back to the frozen plan identity.
+
+This chain does not create a distributed transaction. The issuer, invoker, and
+executor Durable Objects remain separate coordination atoms, and a response
+can be lost after any one of them commits. The supported safety statement is
+**fail-closed at-most-once admission**, not end-to-end exactly-once execution.
+An ambiguous Service Binding or Durable Object result is a terminal campaign
+incident: do not replay the operator request, derive a replacement command,
+mint another permit, take over a lease, or skip a phase.
+
+The reviewed activation order is Controller, executor, permit issuer, invoker,
+then operator; closure after rollback is operator, invoker, permit issuer,
+executor, then Controller. That ceremony is documentation and local contract
+shape, not remote evidence. Before staging can be considered, the following
+remain blocking:
+
+- authenticated remote readback of all five deployed versions, exact configs,
+  named entrypoints, Service Binding targets, default-off/on/off gate states,
+  route exposure, secret presence, and all three SQLite Durable Object
+  migrations;
+- an independently controlled pre-execution authorization that binds the
+  operator request to the owner-approved campaign plan and exact caller; the
+  current Service Binding and post-execution offline validation are
+  insufficient;
+- an authorized exact named-shard topology deployment/readback runner and an
+  independent before/after context collector;
+- independent source signing, signer/revocation policy, immutable archive
+  publication, retention and readback;
+- one real isolated-staging four-phase baseline, mixed, candidate, and rollback
+  campaign, including ambiguity, replay, eviction, drift, drain and rollback
+  negatives; and
+- the wider provider, billing, storage, lifecycle, SLO/cost,
+  privacy/security, owner-approval, Go/VPS drain and final cutover gates.
+
+No Cloudflare deployment, secret provisioning, remote binding call, Durable
+Object migration, Container probe, provider request, billing/storage mutation,
+traffic change, or cutover occurred in this checkpoint. Local and dry-run
+evidence cannot authorize staging or production. Go/VPS remains authoritative
+and production remains **NO-GO**.

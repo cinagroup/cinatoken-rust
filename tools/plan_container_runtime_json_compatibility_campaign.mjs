@@ -40,6 +40,14 @@ export async function runJsonCompatibilityCampaignPlanner(options) {
     ? {
         campaignIdSha256: "11".repeat(32),
         controllerVersionId: "controller-version-self-test",
+        operatorVersionId: "operator-version-self-test",
+        operatorConfigSha256: "66".repeat(32),
+        invokerVersionId: "invoker-version-self-test",
+        invokerConfigSha256: "77".repeat(32),
+        permitIssuerVersionId: "permit-issuer-version-self-test",
+        permitIssuerConfigSha256: "88".repeat(32),
+        executorVersionId: "executor-version-self-test",
+        executorConfigSha256: "99".repeat(32),
         runtimeNBuildIdSha256: "22".repeat(32),
         runtimeNImageDigest: `sha256:${"33".repeat(32)}`,
         runtimeNMinusOneBuildIdSha256: "44".repeat(32),
@@ -68,6 +76,10 @@ export async function runJsonCompatibilityCampaignPlanner(options) {
     phaseCount: plan.phases.length,
     shardCount: plan.ring.shardCount,
     candidateShardIndex: plan.ring.candidateShardIndex,
+    privateServiceCount: Object.keys(plan.privateServices).length,
+    privateRpcOnly: Object.values(plan.privateServices).every(
+      (service) => service.privateRpcOnly === true,
+    ),
     privateProbeTransport: plan.controller.privateProbeTransport,
     jsonCompatibilityProbeEnabled:
       plan.controller.jsonCompatibilityProbeEnabled,
@@ -90,6 +102,14 @@ function parseArgs(argv) {
     "--out",
     "--campaign-id-sha256",
     "--controller-version-id",
+    "--operator-version-id",
+    "--operator-config-sha256",
+    "--invoker-version-id",
+    "--invoker-config-sha256",
+    "--permit-issuer-version-id",
+    "--permit-issuer-config-sha256",
+    "--executor-version-id",
+    "--executor-config-sha256",
     "--runtime-n-build-id",
     "--runtime-n-image-digest",
     "--runtime-n-minus-one-build-id",
@@ -119,6 +139,14 @@ function parseArgs(argv) {
   const liveInputOptions = [
     "--campaign-id-sha256",
     "--controller-version-id",
+    "--operator-version-id",
+    "--operator-config-sha256",
+    "--invoker-version-id",
+    "--invoker-config-sha256",
+    "--permit-issuer-version-id",
+    "--permit-issuer-config-sha256",
+    "--executor-version-id",
+    "--executor-config-sha256",
     "--runtime-n-build-id",
     "--runtime-n-image-digest",
     "--runtime-n-minus-one-build-id",
@@ -132,7 +160,9 @@ function parseArgs(argv) {
     throw new Error("--self-test does not accept --out");
   }
   if (!selfTest) {
-    for (const name of liveInputOptions.slice(0, 6)) {
+    for (const name of liveInputOptions.filter(
+      (option) => option !== "--candidate-shard-index",
+    )) {
       if (!values.has(name)) throw new Error(`${name} is required`);
     }
   }
@@ -146,6 +176,14 @@ function parseArgs(argv) {
     outPath: values.get("--out"),
     campaignIdSha256: values.get("--campaign-id-sha256"),
     controllerVersionId: values.get("--controller-version-id"),
+    operatorVersionId: values.get("--operator-version-id"),
+    operatorConfigSha256: values.get("--operator-config-sha256"),
+    invokerVersionId: values.get("--invoker-version-id"),
+    invokerConfigSha256: values.get("--invoker-config-sha256"),
+    permitIssuerVersionId: values.get("--permit-issuer-version-id"),
+    permitIssuerConfigSha256: values.get("--permit-issuer-config-sha256"),
+    executorVersionId: values.get("--executor-version-id"),
+    executorConfigSha256: values.get("--executor-config-sha256"),
     runtimeNBuildIdSha256: values.get("--runtime-n-build-id"),
     runtimeNImageDigest: values.get("--runtime-n-image-digest"),
     runtimeNMinusOneBuildIdSha256: values.get("--runtime-n-minus-one-build-id"),
@@ -157,10 +195,10 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --campaign-id-sha256 <sha256> --controller-version-id <id> --runtime-n-build-id <sha256> --runtime-n-image-digest <sha256:...> --runtime-n-minus-one-build-id <sha256> --runtime-n-minus-one-image-digest <sha256:...> [--candidate-shard-index <index>] [--config <path>] [--out <create-only-plan.json>] [--json]",
+    "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --campaign-id-sha256 <sha256> --controller-version-id <id> --operator-version-id <id> --operator-config-sha256 <sha256> --invoker-version-id <id> --invoker-config-sha256 <sha256> --permit-issuer-version-id <id> --permit-issuer-config-sha256 <sha256> --executor-version-id <id> --executor-config-sha256 <sha256> --runtime-n-build-id <sha256> --runtime-n-image-digest <sha256:...> --runtime-n-minus-one-build-id <sha256> --runtime-n-minus-one-image-digest <sha256:...> [--candidate-shard-index <index>] [--config <path>] [--out <create-only-plan.json>] [--json]",
     "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --self-test [--config <path>] [--json]",
     "",
-    "This planner requires a staging campaign config with only CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED=true. It performs no network request, credential read, deployment, gate change, provider call, or traffic mutation.",
+    "This planner requires a staging campaign config with only CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED=true. It accepts only non-secret version IDs and config SHA-256 readbacks; secret options and values are not accepted. It performs no network request, credential read, deployment, gate change, provider call, or traffic mutation.",
     "When --out is supplied, the local plan artifact is create-only. The resulting plan requires a private Service Binding probe executor; public Controller URLs are forbidden.",
   ].join("\n");
 }

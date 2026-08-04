@@ -77,6 +77,14 @@ function buildPlan() {
     config: structuredClone(config),
     campaignIdSha256: "11".repeat(32),
     controllerVersionId: "controller-version-phase-source-001",
+    operatorVersionId: "operator-version-001",
+    operatorConfigSha256: "b1".repeat(32),
+    invokerVersionId: "invoker-version-001",
+    invokerConfigSha256: "b2".repeat(32),
+    permitIssuerVersionId: "permit-issuer-version-001",
+    permitIssuerConfigSha256: "b3".repeat(32),
+    executorVersionId: "executor-version-001",
+    executorConfigSha256: "b4".repeat(32),
     runtimeNBuildIdSha256: "22".repeat(32),
     runtimeNImageDigest: `sha256:${"33".repeat(32)}`,
     runtimeNMinusOneBuildIdSha256: "44".repeat(32),
@@ -289,18 +297,18 @@ async function buildReceipt(plan, phaseIndex) {
   );
 }
 
-async function buildPrivateInvocationReceipt(plan, executorReceipt, phaseIndex) {
-  const invokerVersionId = "invoker-version-001";
-  const issuerVersionId = "permit-issuer-version-001";
+async function buildOperatorInvocationReceipt(plan, executorReceipt, phaseIndex) {
+  const operatorVersionId = plan.privateServices.operator.versionId;
+  const invokerVersionId = plan.privateServices.invoker.versionId;
+  const issuerVersionId = plan.privateServices.permitIssuer.versionId;
   const startedAt = executorReceipt.startedAt;
   const completedAt = executorReceipt.completedAt;
   const startedAtSeconds = Math.floor(Date.parse(startedAt) / 1000);
   const permit = executorReceipt.authorization.permitEnvelope;
-  const commandIdSha256 = sha256Canonical({ phaseIndex, kind: "invoke-command" });
-  const issueIntent = {
+  const operatorRequest = {
     schemaVersion: 1,
     contract:
-      "cinatoken-container-runtime-json-compatibility-permit-issue-intent-v1",
+      "cinatoken-container-runtime-json-compatibility-operator-phase-request-v1",
     execution: {
       schemaVersion: 2,
       contract: JSON_COMPATIBILITY_EXECUTE_PHASE_REQUEST_CONTRACT,
@@ -324,9 +332,25 @@ async function buildPrivateInvocationReceipt(plan, executorReceipt, phaseIndex) 
         "cinatoken-container-runtime-json-compatibility-invoker-staging",
       versionId: invokerVersionId,
     },
-    authorizationIdSha256: commandIdSha256,
     topologyReadbackSha256: sha256Canonical({ phaseIndex, kind: "topology" }),
     beforeContextSha256: sha256Canonical({ phaseIndex, kind: "before-context" }),
+  };
+  const commandIdSha256 = createHash("sha256")
+    .update(
+      `cinatoken-container-runtime-json-compatibility-operator-command-id-v1\n${canonicalJson(operatorRequest)}\n${operatorVersionId}`,
+      "utf8",
+    )
+    .digest("hex");
+  const issueIntent = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-permit-issue-intent-v1",
+    execution: structuredClone(operatorRequest.execution),
+    executor: structuredClone(operatorRequest.executor),
+    invoker: structuredClone(operatorRequest.invoker),
+    authorizationIdSha256: commandIdSha256,
+    topologyReadbackSha256: operatorRequest.topologyReadbackSha256,
+    beforeContextSha256: operatorRequest.beforeContextSha256,
     issuedAt: permit.subject.issuedAt,
     notBefore: permit.subject.notBefore,
     expiresAt: permit.subject.expiresAt,
@@ -560,9 +584,48 @@ async function buildPrivateInvocationReceipt(plan, executorReceipt, phaseIndex) 
     invocationAuthority: { attempt, completion },
     invocationBodySha256,
   };
-  return {
+  const privateInvocationReceipt = {
     ...receiptSubject,
     receiptSha256: sha256Canonical(receiptSubject),
+  };
+  const operatorBody = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v1",
+    status: "operator_phase_invocation_completed",
+    environment: "staging",
+    campaignIdSha256: executorReceipt.campaignIdSha256,
+    planDigestSha256: executorReceipt.planDigestSha256,
+    phaseExecutionId: executorReceipt.phaseExecutionId,
+    phaseOrdinal: executorReceipt.phase.ordinal,
+    phaseId: executorReceipt.phase.id,
+    operator: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-operator-staging",
+      versionId: operatorVersionId,
+      gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+    },
+    request: operatorRequest,
+    requestSha256: sha256Canonical(operatorRequest),
+    commandIdSha256,
+    privateTransport: {
+      kind: "service-binding-rpc",
+      publicUrlUsed: false,
+      cloudflareRestUsed: false,
+      invokerBinding: "JSON_COMPATIBILITY_INVOKER_SERVICE",
+    },
+    privateInvocationReceipt,
+    privateInvocationReceiptSha256: sha256Canonical(privateInvocationReceipt),
+    startedAt,
+    completedAt,
+  };
+  const operatorSubject = {
+    ...operatorBody,
+    operatorBodySha256: sha256Canonical(operatorBody),
+  };
+  return {
+    ...operatorSubject,
+    receiptSha256: sha256Canonical(operatorSubject),
   };
 }
 
@@ -660,6 +723,20 @@ function resealPrivateInvocation(receipt) {
   receipt.receiptSha256 = sha256Canonical(receiptSubject);
 }
 
+function resealOperatorInvocation(receipt) {
+  receipt.privateInvocationReceiptSha256 = sha256Canonical(
+    receipt.privateInvocationReceipt,
+  );
+  const {
+    operatorBodySha256: _bodyDigest,
+    receiptSha256: _receiptDigest,
+    ...body
+  } = receipt;
+  receipt.operatorBodySha256 = sha256Canonical(body);
+  const { receiptSha256: _ignored, ...subject } = receipt;
+  receipt.receiptSha256 = sha256Canonical(subject);
+}
+
 function resealContext(context) {
   const { contextSha256: _ignored, ...subject } = context;
   context.contextSha256 = sha256Canonical(subject);
@@ -680,7 +757,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     const contexts = [];
     for (let phaseIndex = 0; phaseIndex < 4; phaseIndex += 1) {
       const executorReceipt = await buildReceipt(plan, phaseIndex);
-      const receipt = await buildPrivateInvocationReceipt(
+      const receipt = await buildOperatorInvocationReceipt(
         plan,
         executorReceipt,
         phaseIndex,
@@ -728,24 +805,39 @@ describe("container runtime JSON compatibility phase source assembly", () => {
   test("rejects nested receipt tampering even when the outer receipt is resealed", async () => {
     const plan = buildPlan();
     const executorReceipt = await buildReceipt(plan, 0);
-    const receipt = await buildPrivateInvocationReceipt(plan, executorReceipt, 0);
-    receipt.executorReceipt.observations[0].probeRequestCanonicalSha256 =
+    const receipt = await buildOperatorInvocationReceipt(plan, executorReceipt, 0);
+    receipt.privateInvocationReceipt.executorReceipt.observations[0]
+      .probeRequestCanonicalSha256 =
       "aa".repeat(32);
-    resealReceipt(receipt.executorReceipt);
-    resealPrivateInvocation(receipt);
+    resealReceipt(receipt.privateInvocationReceipt.executorReceipt);
+    resealPrivateInvocation(receipt.privateInvocationReceipt);
+    resealOperatorInvocation(receipt);
 
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
         receipt,
-        buildContext(plan, receipt.executorReceipt, 0),
+        buildContext(plan, receipt.privateInvocationReceipt.executorReceipt, 0),
       ),
     ).rejects.toThrow(/request canonical digest/);
   });
 
-  test("rejects a direct executor receipt without the authenticated private chain", async () => {
+  test("rejects receipts that omit the authenticated operator chain", async () => {
     const plan = buildPlan();
     const executorReceipt = await buildReceipt(plan, 0);
+    const operatorReceipt = await buildOperatorInvocationReceipt(
+      plan,
+      executorReceipt,
+      0,
+    );
+
+    await expect(
+      buildJsonCompatibilityPhaseSourcePacket(
+        plan,
+        operatorReceipt.privateInvocationReceipt,
+        buildContext(plan, executorReceipt, 0),
+      ),
+    ).rejects.toThrow(/operator-invocation/);
 
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
@@ -753,20 +845,57 @@ describe("container runtime JSON compatibility phase source assembly", () => {
         executorReceipt,
         buildContext(plan, executorReceipt, 0),
       ),
-    ).rejects.toThrow(/private-invocation/);
+    ).rejects.toThrow(/operator-invocation/);
+  });
+
+  test("binds the outer operator identity and deterministic command ID", async () => {
+    const plan = buildPlan();
+    const executorReceipt = await buildReceipt(plan, 0);
+    const operatorDrift = await buildOperatorInvocationReceipt(
+      plan,
+      executorReceipt,
+      0,
+    );
+    operatorDrift.operator.versionId = "operator-version-drift-001";
+    resealOperatorInvocation(operatorDrift);
+    await expect(
+      buildJsonCompatibilityPhaseSourcePacket(
+        plan,
+        operatorDrift,
+        buildContext(plan, executorReceipt, 0),
+      ),
+    ).rejects.toThrow(/operator version/);
+
+    const commandDrift = await buildOperatorInvocationReceipt(
+      plan,
+      executorReceipt,
+      0,
+    );
+    commandDrift.request.beforeContextSha256 = "aa".repeat(32);
+    commandDrift.requestSha256 = sha256Canonical(commandDrift.request);
+    resealOperatorInvocation(commandDrift);
+    await expect(
+      buildJsonCompatibilityPhaseSourcePacket(
+        plan,
+        commandDrift,
+        buildContext(plan, executorReceipt, 0),
+      ),
+    ).rejects.toThrow(/command ID/);
   });
 
   test("rejects a resealed completion receipt that is detached from its attempt", async () => {
     const plan = buildPlan();
     const executorReceipt = await buildReceipt(plan, 0);
-    const receipt = await buildPrivateInvocationReceipt(plan, executorReceipt, 0);
-    receipt.invocationAuthority.completion.attemptIdSha256 = "aa".repeat(32);
+    const receipt = await buildOperatorInvocationReceipt(plan, executorReceipt, 0);
+    receipt.privateInvocationReceipt.invocationAuthority.completion
+      .attemptIdSha256 = "aa".repeat(32);
     const { receiptSha256: _completionDigest, ...completionSubject } =
-      receipt.invocationAuthority.completion;
-    receipt.invocationAuthority.completion.receiptSha256 =
+      receipt.privateInvocationReceipt.invocationAuthority.completion;
+    receipt.privateInvocationReceipt.invocationAuthority.completion
+      .receiptSha256 =
       sha256Canonical(completionSubject);
-    const { receiptSha256: _receiptDigest, ...receiptSubject } = receipt;
-    receipt.receiptSha256 = sha256Canonical(receiptSubject);
+    resealPrivateInvocation(receipt.privateInvocationReceipt);
+    resealOperatorInvocation(receipt);
 
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
@@ -780,7 +909,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
   test("rejects drifting external snapshots even when context digests are resealed", async () => {
     const plan = buildPlan();
     const executorReceipt = await buildReceipt(plan, 1);
-    const receipt = await buildPrivateInvocationReceipt(plan, executorReceipt, 1);
+    const receipt = await buildOperatorInvocationReceipt(plan, executorReceipt, 1);
     const context = buildContext(plan, executorReceipt, 1);
     context.noMutationFacts.providerAfterSha256 = "aa".repeat(32);
     const { evidenceSha256: _ignored, ...proof } = context.noMutationFacts;
@@ -806,7 +935,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     const directory = await makeTempDirectory();
     const plan = buildPlan();
     const executorReceipt = await buildReceipt(plan, 2);
-    const receipt = await buildPrivateInvocationReceipt(plan, executorReceipt, 2);
+    const receipt = await buildOperatorInvocationReceipt(plan, executorReceipt, 2);
     const context = buildContext(plan, executorReceipt, 2);
     const planPath = path.join(directory, "plan.json");
     const receiptPath = path.join(directory, "receipt.json");

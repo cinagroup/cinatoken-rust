@@ -33,6 +33,32 @@ const REQUIRED_CHECKS = Object.freeze([
   "zero-provider-billing-storage-production-public-mutation",
   "ledger-convergence",
 ]);
+const PRIVATE_SERVICE_DEFINITIONS = Object.freeze({
+  operator: Object.freeze({
+    serviceName:
+      "cinatoken-container-runtime-json-compatibility-operator-staging",
+    entrypoint: "JsonCompatibilityCampaignOperatorEntrypoint",
+    gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+  }),
+  invoker: Object.freeze({
+    serviceName:
+      "cinatoken-container-runtime-json-compatibility-invoker-staging",
+    entrypoint: "JsonCompatibilityCampaignInvokerEntrypoint",
+    gateName: "JSON_COMPATIBILITY_INVOKER_ENABLED",
+  }),
+  permitIssuer: Object.freeze({
+    serviceName:
+      "cinatoken-container-runtime-json-compatibility-permit-issuer-staging",
+    entrypoint: "JsonCompatibilityPermitIssuerEntrypoint",
+    gateName: "JSON_COMPATIBILITY_PERMIT_ISSUER_ENABLED",
+  }),
+  executor: Object.freeze({
+    serviceName:
+      "cinatoken-container-runtime-json-compatibility-executor-staging",
+    entrypoint: "JsonCompatibilityCampaignExecutorEntrypoint",
+    gateName: "JSON_COMPATIBILITY_EXECUTOR_ENABLED",
+  }),
+});
 
 export class JsonCompatibilityCampaignError extends Error {
   constructor(message) {
@@ -168,6 +194,14 @@ export function buildJsonCompatibilityCampaignPlan({
   config,
   campaignIdSha256,
   controllerVersionId,
+  operatorVersionId,
+  operatorConfigSha256,
+  invokerVersionId,
+  invokerConfigSha256,
+  permitIssuerVersionId,
+  permitIssuerConfigSha256,
+  executorVersionId,
+  executorConfigSha256,
   runtimeNBuildIdSha256,
   runtimeNImageDigest,
   runtimeNMinusOneBuildIdSha256,
@@ -189,6 +223,32 @@ export function buildJsonCompatibilityCampaignPlan({
   );
   requireSha256(campaignIdSha256, "[plan] campaign ID");
   requireToken(controllerVersionId, "[plan] Controller version ID");
+  const privateServices = {
+    operator: normalizePrivateServiceIdentity(
+      PRIVATE_SERVICE_DEFINITIONS.operator,
+      operatorVersionId,
+      operatorConfigSha256,
+      "[plan] operator",
+    ),
+    invoker: normalizePrivateServiceIdentity(
+      PRIVATE_SERVICE_DEFINITIONS.invoker,
+      invokerVersionId,
+      invokerConfigSha256,
+      "[plan] invoker",
+    ),
+    permitIssuer: normalizePrivateServiceIdentity(
+      PRIVATE_SERVICE_DEFINITIONS.permitIssuer,
+      permitIssuerVersionId,
+      permitIssuerConfigSha256,
+      "[plan] permit issuer",
+    ),
+    executor: normalizePrivateServiceIdentity(
+      PRIVATE_SERVICE_DEFINITIONS.executor,
+      executorVersionId,
+      executorConfigSha256,
+      "[plan] executor",
+    ),
+  };
   const runtimeN = normalizeRuntimeIdentity(
     runtimeNBuildIdSha256,
     runtimeNImageDigest,
@@ -263,6 +323,7 @@ export function buildJsonCompatibilityCampaignPlan({
       protobufTransportStagingVerified: false,
       allActionGatesDisabled: true,
     },
+    privateServices,
     runtimes: {
       n: runtimeN,
       nMinusOne: runtimeNMinusOne,
@@ -314,6 +375,7 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
     "environment",
     "campaignIdSha256",
     "controller",
+    "privateServices",
     "runtimes",
     "ring",
     "constraints",
@@ -340,6 +402,7 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
   );
 
   validateControllerIdentity(value.controller, "[plan] Controller");
+  validatePrivateServices(value.privateServices, "[plan] private services");
   const runtimes = validateRuntimeSet(value.runtimes, "[plan] runtimes");
   if (runtimes.n.buildIdSha256 === runtimes.nMinusOne.buildIdSha256) {
     throw new JsonCompatibilityCampaignError(
@@ -488,6 +551,8 @@ export function verifyJsonCompatibilityCampaignEvidence(
     planDigestSha256: value.planDigestSha256,
     phaseCount: value.phases.length,
     shardCount: validatedPlan.ring.shardCount,
+    privateServiceCount: Object.keys(validatedPlan.privateServices).length,
+    privateServicesBound: true,
     observationCount,
     jsonByteCompatibilityPassed: true,
     rollbackLedgerConverged: true,
@@ -1080,6 +1145,62 @@ function validateRuntimeSet(value, label) {
   return {
     n: validateRuntimeIdentity(runtimes.n, `${label} N`),
     nMinusOne: validateRuntimeIdentity(runtimes.nMinusOne, `${label} N-1`),
+  };
+}
+
+function validatePrivateServices(value, label) {
+  const services = requireRecord(value, label);
+  requireExactKeys(
+    services,
+    ["operator", "invoker", "permitIssuer", "executor"],
+    label,
+  );
+  for (const [role, definition] of Object.entries(
+    PRIVATE_SERVICE_DEFINITIONS,
+  )) {
+    validatePrivateServiceIdentity(
+      services[role],
+      definition,
+      `${label} ${role}`,
+    );
+  }
+  return services;
+}
+
+function validatePrivateServiceIdentity(value, definition, label) {
+  const service = requireRecord(value, label);
+  requireExactKeys(service, [
+    "serviceName",
+    "entrypoint",
+    "versionId",
+    "configSha256",
+    "gateName",
+    "privateRpcOnly",
+  ], label);
+  requireEqual(service.serviceName, definition.serviceName, `${label} service name`);
+  requireEqual(service.entrypoint, definition.entrypoint, `${label} entrypoint`);
+  requireToken(service.versionId, `${label} version ID`);
+  requireSha256(service.configSha256, `${label} config digest`);
+  requireEqual(service.gateName, definition.gateName, `${label} gate name`);
+  requireEqual(service.privateRpcOnly, true, `${label} private RPC requirement`);
+  return service;
+}
+
+function normalizePrivateServiceIdentity(
+  definition,
+  versionId,
+  configSha256,
+  label,
+) {
+  requireToken(versionId, `${label} version ID`);
+  requireSha256(configSha256, `${label} config digest`);
+  return {
+    serviceName: definition.serviceName,
+    entrypoint: definition.entrypoint,
+    versionId,
+    configSha256,
+    gateName: definition.gateName,
+    privateRpcOnly: true,
   };
 }
 

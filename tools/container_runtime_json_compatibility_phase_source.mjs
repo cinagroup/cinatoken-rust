@@ -16,6 +16,10 @@ import {
   bindJsonCompatibilityPrivateInvocationToExecutor,
   validateJsonCompatibilityPrivateInvocationReceipt,
 } from "./container_runtime_json_compatibility_private_invocation.mjs";
+import {
+  projectJsonCompatibilityOperatorInvocation,
+  validateJsonCompatibilityOperatorInvocationReceipt,
+} from "./container_runtime_json_compatibility_operator_invocation.mjs";
 
 export const JSON_COMPATIBILITY_PHASE_SOURCE_CONTEXT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-phase-source-context-v1";
@@ -40,9 +44,17 @@ export async function buildJsonCompatibilityPhaseSourcePacket(
   if (validatedPlan.ring.shardCount !== SHARD_COUNT) {
     throw failure("[phase-assembly] plan shard count must equal 8");
   }
+  const verifiedOperatorInvocation =
+    validateJsonCompatibilityOperatorInvocationReceipt(
+      validatedPlan,
+      receipt,
+    );
+  const operatorInvocation = projectJsonCompatibilityOperatorInvocation(
+    verifiedOperatorInvocation,
+  );
   const verifiedInvocation = validateJsonCompatibilityPrivateInvocationReceipt(
     validatedPlan,
-    receipt,
+    verifiedOperatorInvocation.privateInvocationReceipt,
   );
   const verifiedReceipt = await validateProbeReceipt(
     validatedPlan,
@@ -138,6 +150,7 @@ export async function buildJsonCompatibilityPhaseSourcePacket(
     topology: clone(phase.topology),
     containerDeploymentSetSha256:
       verifiedContext.containerDeploymentSetSha256,
+    operatorInvocation,
     privateInvocation,
     executorReceipt: {
       contract: verifiedReceipt.contract,

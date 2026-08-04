@@ -2073,3 +2073,72 @@ See
 [`accepted-work-drain-traffic-return.md`](accepted-work-drain-traffic-return.md).
 This mapping grants no production, financial, DNS, traffic, or Go/VPS
 authority. Production remains **NO-GO**.
+
+## Private JSON Campaign Operator Mapping (2026-08-04)
+
+The cinaVibeSDK reference continues to support the broad Worker, named Durable
+Object, Service Binding, and replaceable execution split. It does not supply a
+production authorization transaction for the cinatoken JSON compatibility
+campaign. The target therefore adds a stricter, campaign-specific five-service
+identity chain while keeping the Controller's execution ownership separate
+from campaign command authorization.
+
+| Active service identity | Target responsibility | Frozen campaign identity |
+|---|---|---|
+| Operator | `JsonCompatibilityCampaignOperatorEntrypoint.invokePhase` creates one canonical command and invokes only the private invoker | service, named entrypoint, version, config digest, gate, `privateRpcOnly=true` |
+| Invoker | Authenticates the operator command, persists one attempt, obtains one permit, and calls the executor | service, named entrypoint, version, config digest, gate, `privateRpcOnly=true` |
+| Permit issuer | Authenticates the invoker, persists ordered issuance, and signs one phase permit | service, named entrypoint, version, config digest, gate, `privateRpcOnly=true` |
+| Executor | Verifies and consumes the permit, acquires the phase lease, and probes the exact shard set | service, named entrypoint, version, config digest, gate, `privateRpcOnly=true` |
+| Controller | Resolves named shard Durable Objects and reaches replaceable Containers | separate Controller service/version/config identity and private probe contract |
+
+The plan stores the first four roles under `privateServices` and requires exact
+`serviceName`, `entrypoint`, `versionId`, `configSha256`, `gateName`, and
+`privateRpcOnly=true` values for each. The Controller is frozen separately,
+forming the fifth active identity without conflating execution ownership with
+campaign authority.
+
+The operator is default-off in tracked local and staging configs. It has
+`workers_dev=false`, `preview_urls=false`, no route and no public `fetch`
+handler. Its sole outbound capability is a Service Binding to
+`JsonCompatibilityCampaignInvokerEntrypoint`; the operator-to-invoker HMAC is
+an additional application-level control rather than a claim that Service
+Binding transport authenticates the business command.
+
+That control currently authenticates the operator to the invoker, not the
+topology runner to the operator and not an owner-approved plan before
+execution. The cinaVibeSDK reference does not close this campaign-specific
+authority gap. Before activation, the target must add an independently
+controlled phase approval or immutable approved-plan lookup, bind it to the
+exact caller and execution identities, and reject unauthorized-first-call,
+plan-substitution and replay races before invoking the invoker. The default-off
+gate is the present safety boundary.
+
+For each phase, the operator derives the command ID deterministically from the
+versioned command-ID domain, canonical request, and exact operator Version
+Metadata ID. It issues a 300-second permit intent, creates a 60-second HMAC
+envelope, and makes one invoker RPC without retry. The resulting outer operator
+receipt embeds the complete private invoker/issuer/executor receipt. Phase
+source and source manifest validation retain both receipt projections and raw
+digests and bind every private-service version back to the approved plan while
+preserving the Controller as the independent fifth identity.
+
+This is intentionally stricter than copying an in-process controller promise
+or a best-effort service call from the reference. The invoker, permit issuer,
+and executor Durable Objects are independent coordination atoms. They do not
+form a distributed transaction, and a reply can disappear after one atom has
+committed. The only supported claim is **fail-closed at-most-once admission**;
+neither this mapping nor the local tests establish end-to-end exactly-once
+execution. An unknown result terminates the campaign and forbids command,
+permit, lease, or phase replay.
+
+The implementation and configuration evidence is local/dry-run only. No
+operator, invoker, issuer, executor, or Controller campaign version has been
+deployed for this chain. Authenticated remote version, config, binding and
+Durable Object migration readback, an exact named-shard topology runner, an
+independent before/after context collector, source signing, immutable archive
+publication/readback, and a real four-phase isolated-staging campaign remain
+absent. Provider, billing,
+storage, lifecycle, SLO/cost, privacy/security, owner approval, Go/VPS drain,
+traffic and cutover gates also remain open. This mapping grants no deployment,
+financial, traffic, or production authority. Go/VPS remains authoritative and
+production remains **NO-GO**.

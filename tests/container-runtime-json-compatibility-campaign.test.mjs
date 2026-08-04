@@ -4,6 +4,7 @@ import {
   buildJsonCompatibilityCampaignPlan,
   createJsonHealthProbeDigestRecord,
   createSyntheticJsonCompatibilityEvidence,
+  sha256Canonical,
   validateJsonCompatibilityCampaignPlan,
   verifyJsonCompatibilityCampaignEvidence,
 } from "../tools/container_runtime_json_compatibility_campaign.mjs";
@@ -21,6 +22,14 @@ config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED = "true";
 const validInputs = Object.freeze({
   campaignIdSha256: "11".repeat(32),
   controllerVersionId: "controller-version-001",
+  operatorVersionId: "operator-version-001",
+  operatorConfigSha256: "66".repeat(32),
+  invokerVersionId: "invoker-version-001",
+  invokerConfigSha256: "77".repeat(32),
+  permitIssuerVersionId: "permit-issuer-version-001",
+  permitIssuerConfigSha256: "88".repeat(32),
+  executorVersionId: "executor-version-001",
+  executorConfigSha256: "99".repeat(32),
   runtimeNBuildIdSha256: "22".repeat(32),
   runtimeNImageDigest: `sha256:${"33".repeat(32)}`,
   runtimeNMinusOneBuildIdSha256: "44".repeat(32),
@@ -40,6 +49,13 @@ function remoteEvidence(plan) {
   const evidence = createSyntheticJsonCompatibilityEvidence(plan);
   evidence.evidenceSource = "remote-staging";
   return evidence;
+}
+
+function resignPlan(plan) {
+  const subject = structuredClone(plan);
+  delete subject.planDigestSha256;
+  plan.planDigestSha256 = sha256Canonical(subject);
+  return plan;
 }
 
 function probeWire(identity, inputSha256 = "aa".repeat(32)) {
@@ -135,6 +151,44 @@ describe("container runtime JSON compatibility campaign plan", () => {
       protobufTransportStagingVerified: false,
       allActionGatesDisabled: true,
     });
+    expect(plan.privateServices).toEqual({
+      operator: {
+        serviceName:
+          "cinatoken-container-runtime-json-compatibility-operator-staging",
+        entrypoint: "JsonCompatibilityCampaignOperatorEntrypoint",
+        versionId: "operator-version-001",
+        configSha256: "66".repeat(32),
+        gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+        privateRpcOnly: true,
+      },
+      invoker: {
+        serviceName:
+          "cinatoken-container-runtime-json-compatibility-invoker-staging",
+        entrypoint: "JsonCompatibilityCampaignInvokerEntrypoint",
+        versionId: "invoker-version-001",
+        configSha256: "77".repeat(32),
+        gateName: "JSON_COMPATIBILITY_INVOKER_ENABLED",
+        privateRpcOnly: true,
+      },
+      permitIssuer: {
+        serviceName:
+          "cinatoken-container-runtime-json-compatibility-permit-issuer-staging",
+        entrypoint: "JsonCompatibilityPermitIssuerEntrypoint",
+        versionId: "permit-issuer-version-001",
+        configSha256: "88".repeat(32),
+        gateName: "JSON_COMPATIBILITY_PERMIT_ISSUER_ENABLED",
+        privateRpcOnly: true,
+      },
+      executor: {
+        serviceName:
+          "cinatoken-container-runtime-json-compatibility-executor-staging",
+        entrypoint: "JsonCompatibilityCampaignExecutorEntrypoint",
+        versionId: "executor-version-001",
+        configSha256: "99".repeat(32),
+        gateName: "JSON_COMPATIBILITY_EXECUTOR_ENABLED",
+        privateRpcOnly: true,
+      },
+    });
     expect(plan.ring).toEqual({
       generation: 1,
       shardCount: 8,
@@ -207,10 +261,76 @@ describe("container runtime JSON compatibility campaign plan", () => {
     );
   });
 
+  test("requires strict version and config identities for every private service", () => {
+    const missingInputs = [
+      ["operatorVersionId", /operator version ID/],
+      ["operatorConfigSha256", /operator config digest/],
+      ["invokerVersionId", /invoker version ID/],
+      ["invokerConfigSha256", /invoker config digest/],
+      ["permitIssuerVersionId", /permit issuer version ID/],
+      ["permitIssuerConfigSha256", /permit issuer config digest/],
+      ["executorVersionId", /executor version ID/],
+      ["executorConfigSha256", /executor config digest/],
+    ];
+    for (const [input, expected] of missingInputs) {
+      expect(() => buildPlan({ [input]: undefined })).toThrow(expected);
+    }
+
+    expect(() => buildPlan({ operatorVersionId: "operator version" })).toThrow(
+      /operator version ID/,
+    );
+    expect(() => buildPlan({ executorConfigSha256: "AA".repeat(32) })).toThrow(
+      /executor config digest/,
+    );
+  });
+
+  test("rejects private service name, entrypoint, gate, or public RPC drift", () => {
+    const drifts = [
+      [
+        "operator",
+        "serviceName",
+        "cinatoken-container-runtime-json-compatibility-operator-other",
+        /operator service name/,
+      ],
+      [
+        "invoker",
+        "entrypoint",
+        "JsonCompatibilityCampaignInvokerOtherEntrypoint",
+        /invoker entrypoint/,
+      ],
+      [
+        "permitIssuer",
+        "gateName",
+        "JSON_COMPATIBILITY_PERMIT_ISSUER_PUBLIC_ENABLED",
+        /permitIssuer gate name/,
+      ],
+      ["executor", "privateRpcOnly", false, /executor private RPC requirement/],
+    ];
+    for (const [role, field, value, expected] of drifts) {
+      const plan = structuredClone(buildPlan());
+      plan.privateServices[role][field] = value;
+      expect(() => validateJsonCompatibilityCampaignPlan(resignPlan(plan))).toThrow(
+        expected,
+      );
+    }
+  });
+
   test("detects plan tampering through the canonical digest", () => {
     const plan = structuredClone(buildPlan());
     plan.ring.candidateShardIndex = 4;
     expect(() => validateJsonCompatibilityCampaignPlan(plan)).toThrow(
+      /canonical digest/,
+    );
+
+    const versionTamper = structuredClone(buildPlan());
+    versionTamper.privateServices.invoker.versionId = "invoker-version-tampered";
+    expect(() => validateJsonCompatibilityCampaignPlan(versionTamper)).toThrow(
+      /canonical digest/,
+    );
+
+    const configTamper = structuredClone(buildPlan());
+    configTamper.privateServices.executor.configSha256 = "aa".repeat(32);
+    expect(() => validateJsonCompatibilityCampaignPlan(configTamper)).toThrow(
       /canonical digest/,
     );
   });
@@ -256,6 +376,18 @@ describe("container runtime JSON compatibility evidence", () => {
         allowSynthetic: true,
       }).evidenceSource,
     ).toBe("synthetic-self-test");
+  });
+
+  test("binds evidence to the complete private service identity plan", () => {
+    const approvedPlan = buildPlan();
+    const evidence = remoteEvidence(approvedPlan);
+    const driftedPlan = buildPlan({
+      permitIssuerVersionId: "permit-issuer-version-002",
+    });
+
+    expect(() =>
+      verifyJsonCompatibilityCampaignEvidence(driftedPlan, evidence),
+    ).toThrow(/plan digest/);
   });
 
   test("rejects a missing, duplicate, reordered, or wrong-build shard observation", () => {
@@ -426,7 +558,16 @@ test("package scripts keep the planner and verifier in the repository gate", asy
   expect(packageJson.scripts["check:container-runtime:json-compatibility-campaign"]).toContain(
     "verify_container_runtime_json_compatibility_evidence.mjs --self-test",
   );
+  expect(packageJson.scripts["check:container-runtime:json-compatibility-campaign"]).toContain(
+    "prepare_container_runtime_json_compatibility_operator_config.mjs --help",
+  );
+  expect(packageJson.scripts["check:container-runtime:json-compatibility-operator"]).toContain(
+    "build:container-runtime:json-compatibility-operator",
+  );
   expect(packageJson.scripts.check).toContain(
     "check:container-runtime:json-compatibility-campaign",
+  );
+  expect(packageJson.scripts.check).toContain(
+    "check:container-runtime:json-compatibility-operator",
   );
 });

@@ -51,6 +51,14 @@ function buildPlan() {
     config: structuredClone(config),
     campaignIdSha256: "11".repeat(32),
     controllerVersionId: "controller-version-source-manifest-001",
+    operatorVersionId: "operator-version-source-manifest-001",
+    operatorConfigSha256: "b1".repeat(32),
+    invokerVersionId: "invoker-version-001",
+    invokerConfigSha256: "b2".repeat(32),
+    permitIssuerVersionId: "permit-issuer-version-001",
+    permitIssuerConfigSha256: "b3".repeat(32),
+    executorVersionId: "executor-version-001",
+    executorConfigSha256: "b4".repeat(32),
     runtimeNBuildIdSha256: "22".repeat(32),
     runtimeNImageDigest: `sha256:${"33".repeat(32)}`,
     runtimeNMinusOneBuildIdSha256: "44".repeat(32),
@@ -60,10 +68,8 @@ function buildPlan() {
 }
 
 function buildPhasePackets(plan) {
-  const syntheticPrivateInvocations =
-    createSyntheticJsonCompatibilitySourceManifest(plan).phases.map(
-      (packet) => packet.privateInvocation,
-    );
+  const syntheticPhases =
+    createSyntheticJsonCompatibilitySourceManifest(plan).phases;
   const controllerDeploymentSetSha256 = sha256Canonical({
     deployment: "controller-staging-fixed",
   });
@@ -301,8 +307,14 @@ function buildPhasePackets(plan) {
         phaseIndex,
         deployment: "container",
       }),
+      operatorInvocation: {
+        ...structuredClone(syntheticPhases[phaseIndex].operatorInvocation),
+        phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
+        startedAt: `2026-08-04T00:0${phaseIndex * 2}:00Z`,
+        completedAt: `2026-08-04T00:0${phaseIndex * 2 + 1}:00Z`,
+      },
       privateInvocation: {
-        ...structuredClone(syntheticPrivateInvocations[phaseIndex]),
+        ...structuredClone(syntheticPhases[phaseIndex].privateInvocation),
         phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
         executorReceiptSha256: receiptSha256,
         startedAt: `2026-08-04T00:0${phaseIndex * 2}:00Z`,
@@ -431,6 +443,18 @@ describe("container runtime JSON compatibility source manifest", () => {
 
     expect(() => buildJsonCompatibilitySourceManifest(plan, packets)).toThrow(
       /exactly 8 shard records/,
+    );
+  });
+
+  test("rejects a resealed outer receipt detached from its private receipt", () => {
+    const plan = buildPlan();
+    const packets = buildPhasePackets(plan);
+    packets[0].operatorInvocation.privateInvocationReceiptSha256 =
+      "aa".repeat(32);
+    resealPacket(packets[0]);
+
+    expect(() => buildJsonCompatibilitySourceManifest(plan, packets)).toThrow(
+      /operator\/private raw receipt binding/,
     );
   });
 

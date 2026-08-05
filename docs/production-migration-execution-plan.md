@@ -4778,3 +4778,51 @@ addition to the Plan v5/state-plan v2 and Caller gates recorded in
 deployment, secret provisioning,
 Cloudflare RPC, DO migration, Container run, provider/billing/storage mutation,
 traffic shift, VPS drain, or cutover occurred. Production remains **NO-GO**.
+
+## 2026-08-05 Transition Control-Plane Execution Addendum
+
+The local private Transition Worker and D1 journal now exist. The release
+sequence below supersedes only the missing-coordinator implementation item;
+all remote stages remain blocked.
+
+| Unit | Local implementation | Required remote acceptance |
+| --- | --- | --- |
+| Transition Worker | Named TypeScript RPC; inert default; strict Plan v5/state-plan v2 invocation; dedicated Ed25519 approval; Version Metadata identity; default-off execution/status gates | Uploaded version/config/export/route readback and account-wide caller inventory |
+| D1 authority | Operation reservation, ordered evidence, terminal receipt, D1 time, unique identities, foreign keys, and immutable triggers; real workerd migration test | Staging database creation, non-placeholder ID, reviewed apply, normalized catalog/trigger/FK/zero-row readback, backup/Time Travel policy |
+| Source verifier | Typed Service Binding boundary and one-call coordinator behavior | Real signature/revocation/archive/artifact/account-binding verification Worker and retained evidence |
+| Deployment leaf | Typed read/mutate Service Binding boundary and at-most-one coordinator behavior | All-seven allowlist, least Cloudflare API authority, create-once request identity, exact normalized readback, no unknown-result retry |
+| Status | D1-only `not_found | inflight | terminal`; terminal receipt validation; zero adapter calls | Separately authorized readback-only inflight resolver and crash/response-loss terminalization proof |
+| Archive | Canonical D1 receipt row | Locked R2/WORM publication, signature/revocation/retention, independent readback and offline verification |
+
+### Revised pre-R1 order
+
+1. Freeze the leaf and verifier RPC schemas and threat model. Their deployment
+   identities become approved inputs; they are not selected by an operator.
+2. Build the verifier with read-only evidence authority and the leaf with
+   separate readback/mutation methods. The coordinator must never receive a
+   Cloudflare API token.
+3. Create staging D1, replace only the staging placeholder ID, apply migration
+   0001, and capture independent before/after database evidence.
+4. Deploy verifier, leaf, and coordinator with every gate false and no route.
+   Prove exact named exports, Service Binding targets, Version Metadata,
+   configs, and all account callers with equivalent leaf reachability.
+5. Upload the 18 frozen dark/status/execution versions and reconstruct the
+   approved state-plan digest from authenticated remote readback.
+6. Run disabled and status-only probes. A status request must make zero
+   verifier, readback-leaf, and mutation-leaf calls.
+7. Run reservation/append/send/response/readback/seal crash injection,
+   concurrent-owner races, drift, response loss, and N/N-1 tests. No test may
+   derive permission to resend an unknown mutation.
+8. Add the readback-only inflight resolver and locked archive, then run the
+   four transitions and four-phase campaign only in the isolated staging
+   account/cohort.
+
+The tracked configs are deliberately non-deployable production artifacts:
+they have default-false gates and a placeholder D1 ID, and no production config
+exists. Promotion requires a reviewed create-only generated config and an
+evidence packet; editing a gate in place is not a release ceremony.
+
+Local acceptance is the two focused commands documented in
+`docs/container-runtime-json-compatibility-deployment-transition-worker.md`.
+It is not remote Cloudflare evidence. Go/VPS remains the sole production
+authority and production remains **NO-GO**.

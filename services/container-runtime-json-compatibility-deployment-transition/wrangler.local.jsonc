@@ -1,0 +1,46 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-container-runtime-json-compatibility-deployment-transition-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "ENVIRONMENT": "local",
+    "JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_ENABLED": "false",
+    "JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EXECUTION_ENABLED": "false",
+    "JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_READ_ENABLED": "false",
+    "JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_PROFILE_VERSION": "1",
+    "JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-deployment-transition-local",
+    "JSON_COMPATIBILITY_DEPLOYMENT_LEAF_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-deployment-leaf-staging",
+    "JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-source-verifier-staging"
+  },
+  "services": [
+    {
+      "binding": "JSON_COMPATIBILITY_DEPLOYMENT_LEAF",
+      "service": "cinatoken-container-runtime-json-compatibility-deployment-leaf-staging",
+      "entrypoint": "JsonCompatibilityDeploymentLeafEntrypoint"
+    },
+    {
+      "binding": "JSON_COMPATIBILITY_SOURCE_VERIFIER",
+      "service": "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
+      "entrypoint": "JsonCompatibilitySourceVerifierEntrypoint"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cinatoken-json-compatibility-deployment-transition-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

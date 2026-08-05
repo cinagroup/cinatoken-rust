@@ -13863,3 +13863,40 @@ readback, applied append-only D1 journal, status-only inflight recovery, locked
 archive, source/version proof, and crash/response-loss/drift/concurrency faults.
 No credential or Cloudflare mutation was used. Go/VPS remains authoritative
 and production remains **NO-GO**.
+
+## Private Deployment Transition Worker Verification (2026-08-05)
+
+This checkpoint supersedes the missing-private-coordinator and missing-local-D1
+items in the prior transition record. It does not supersede remote deployment
+or production NO-GO conditions.
+
+| Gate | Result |
+| --- | --- |
+| `bun run check:container-runtime:json-compatibility-deployment-transition` | PASS: 12 tests, 142 expectations; dedicated authorization, exact `4/7/7/4` protocol, one-send ambiguity, replay and uncertainty semantics |
+| Generated types and TypeScript | PASS: Wrangler generated-type drift check and strict `tsc --noEmit` |
+| Wrangler build | PASS: local and staging dry-runs; 235.54 KiB upload / 39.60 KiB gzip; private D1 plus two named Service Bindings; all tracked gates false |
+| Node tests | PASS: 2 files, 8 tests; canonical JSON, private/default-off/credential-free config, placeholder D1 safety, inert default entrypoint, and six immutable trigger names |
+| Workerd/D1 tests | PASS: 1 file, 2 tests; actual migration, four concurrent named RPCs, one reservation, exact replay, D1-only terminal status, disabled execution, and all operation/event/receipt update/delete guards |
+| Runtime counts | PASS: one source authentication, four mutations, 16 stable reads, 25 append-only events, one terminal receipt; replay and status add zero downstream calls |
+| `bun run check` | PASS: exit code 0 in 1,310.7 seconds; complete configured frontend, Workers/workerd, supply-chain, Rust workspace, and wasm32 gates |
+
+During focused verification, an exact five-second wait exposed an integer-clock
+boundary: two whole-second observations could differ by four after scheduling.
+The production coordinator now waits six seconds while retaining the protocol's
+five-second minimum. The runtime mock derives pair timestamps deterministically,
+so host-clock scheduling cannot turn this boundary into a flaky semantic test.
+
+The Worker has an inert default export, no route, no credential or direct REST
+client, and independent default-false master/execution/status gates. Its
+`first-primary` D1 repository uses database time, unique operation and receipt
+identities, source-proof-before-seal and terminal-order guards, and rejects all
+updates and deletes. The status RPC revalidates the signed invocation and reads
+only D1; it cannot resolve or seal an inflight outcome.
+
+The source verifier and all-seven-service deployment readback/mutation leaf are
+still mock bindings. The tracked D1 ID is a placeholder; no remote database was
+created or migrated. Remote Worker/version/config/export/binding/route/account
+inventory, all 18 dark uploads, readback-only inflight resolution, locked
+archive, crash/response-loss campaign, and real four-phase staging remain
+blocking. No credential, deployment, Cloudflare mutation, traffic change, or
+Go/VPS operation occurred. Production remains **NO-GO**.

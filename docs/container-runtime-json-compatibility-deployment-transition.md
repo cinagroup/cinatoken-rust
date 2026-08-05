@@ -195,3 +195,47 @@ any transition. The account binding inventory, topology/context collection,
 real four-phase campaign, wider billing/provider/storage/SLO/security/privacy
 matrix, Go/VPS drain, and production cutover remain open. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## Private Worker And D1 Boundary (2026-08-05)
+
+This section supersedes the earlier missing-private-Worker and missing-local-D1
+items. It does not supersede any remote deployment blocker.
+
+`services/container-runtime-json-compatibility-deployment-transition` now
+hosts the protocol behind a named TypeScript `WorkerEntrypoint`. The inert
+default export has no `fetch`; local and staging configs have no route, disable
+Workers.dev and preview URLs, contain no credentials, and keep the master,
+execution, and status gates false. Generated Wrangler types, Version Metadata,
+one D1 binding, and separate source-verifier and deployment-leaf Service
+Bindings define the complete local capability surface.
+
+Migration 0001 provides create-only operations, ordered evidence, and one
+terminal receipt. D1 database time, unique operation/authorization/receipt
+digests, canonical body limits, terminal-event ordering, source-authentication
+prerequisite, foreign keys, and update/delete guards are enforced in SQL. A
+`first-primary` session reserves the operation before any downstream call.
+Exact terminal replay is side-effect free; an existing operation without a
+receipt is inflight and is never re-executed.
+
+The named status RPC revalidates the signed Plan/state-plan invocation, derives
+the operation digest, and reads only D1. It returns signed-shape status for
+`not_found | inflight | terminal` and validates a terminal receipt. It neither
+calls the source verifier nor reads or mutates the deployment leaf. This closes
+read-only observability and terminal recovery, but not inflight outcome
+resolution or sealing.
+
+Real workerd coverage applies the migration and races four named RPCs. One
+operation wins, the others fail inflight, and the completed dark-to-status
+transition produces one source authentication, four mutations, 16 reads, 25
+events, and one receipt. Replay and status add zero downstream calls. Node
+tests also lock default-off/private/credential-free config and all immutable
+triggers; both Wrangler configs build in dry-run mode.
+
+The detailed RPC, schema, rollout order, and evidence boundary are in
+`docs/container-runtime-json-compatibility-deployment-transition-worker.md`.
+Still missing are the real source verifier, the all-seven-service authenticated
+Cloudflare mutation/readback leaf, a non-placeholder remote D1 apply/readback,
+readback-only inflight resolution, locked archive, remote account caller
+inventory, all-18-version dark upload/readback, and the crash/response-loss
+campaign. No remote operation occurred. Go/VPS remains authoritative and
+production remains **NO-GO**.

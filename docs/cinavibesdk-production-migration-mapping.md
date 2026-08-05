@@ -2291,3 +2291,48 @@ route absence, and prove the account binding inventory. Topology/context
 collection, source signing/revocation, the real campaign, provider/billing/
 storage convergence, and Go/VPS drain remain open. Production remains
 **NO-GO**.
+
+## 2026-08-05 Transition Worker Architecture Mapping
+
+The private Transition Worker now closes the local orchestration shell
+identified above while preserving the cinaVibeSDK-aligned ownership split:
+
+| cinaVibeSDK architecture rule | cinatoken-rust application |
+| --- | --- |
+| TypeScript owns stateful control-plane coordination | The named Transition Worker validates authorization, orders steps, manages stable-read timing, and coordinates D1 plus Service Bindings |
+| Durable/platform storage owns recovery state | D1 stores one operation, ordered evidence, and one terminal receipt; status reads that authority through a `first-primary` session |
+| Bindings carry narrow internal capability | Separate verifier and deployment-leaf bindings expose only source authentication, normalized readback, and one mutation intent |
+| Default/public surface stays inert | Default entrypoint has no method or fetch; Workers.dev, preview URLs, and routes are absent/disabled |
+| Runtime identity is evidence | Version Metadata plus approved coordinator profile and adapter service names are frozen into the operation row and status receipt |
+| Rust is replaceable compute, not orchestration | No transition, journal, credential, or Cloudflare deployment logic moved into Rust Wasm; Rust remains in Linux Containers |
+
+The coordinator intentionally does not reuse cinaVibeSDK application agents or
+Sandbox APIs. The reusable design is the capability boundary: TypeScript
+control, platform-native state, named private RPC, and a separately constrained
+compute/runtime plane.
+
+The current local chain is therefore:
+
+```text
+owner-approved transition artifact
+  -> TypeScript Transition Worker
+     -> D1 operation journal
+     -> source-verifier Worker (binding contract only)
+     -> deployment-leaf Worker (binding contract only)
+        -> seven existing TypeScript Worker/DO services
+           -> Controller shard DOs
+              -> Rust Linux Containers
+```
+
+The two leaf Workers are not implemented or deployed. Local mocks prove RPC
+shape and call counts, not Cloudflare API correctness or source authenticity.
+The next architecture increment must implement those adapters in TypeScript,
+keep credentials out of the coordinator, and prove remote config/binding/route
+readback plus account-wide least-capability reachability. D1-only status cannot
+resolve an inflight mutation outcome; that resolver must be readback-only and
+separately authorized.
+
+See `docs/container-runtime-json-compatibility-deployment-transition-worker.md`
+for the exact schema, gates, tests, rollout order, and NO-GO list. The mapping
+changes no production authority. Go/VPS remains authoritative and production
+remains **NO-GO**.

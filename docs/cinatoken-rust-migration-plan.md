@@ -28652,3 +28652,66 @@ security/privacy gates, Go/VPS drain, and production cutover also remain open.
 No Cloudflare credential, upload, deployment, RPC, DO/Container, provider,
 financial, storage, traffic, or Go/VPS state changed. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-08-05 Private Deployment Transition Worker
+
+This checkpoint supersedes the prior statement that the TypeScript transition
+coordinator, append-only D1 implementation, and read-only status surface are
+unimplemented. It does not authorize staging or production deployment.
+
+The implemented control plane is now:
+
+```text
+dedicated owner-approved transition envelope
+  -> private named TypeScript Transition Worker
+     -> first-primary append-only D1 journal
+     -> private source-verifier Service Binding
+     -> private deployment readback/mutation-leaf Service Binding
+  -> canonical terminal receipt and D1-only status
+```
+
+The Worker validates current Plan v5/state-plan v2 and the dedicated Ed25519
+transition approval, pins its Version Metadata plus both adapter identities,
+linearizes one operation in D1, and delegates only authenticated source proof,
+readback, and one mutation. It adds one second of clock-granularity margin to
+the required five-second stable-read interval. The default export is inert;
+there is no public route, credential variable, direct Cloudflare REST client,
+automatic retry, or Rust-Wasm orchestration path.
+
+The D1 schema stores bounded canonical operation/event/receipt bodies with
+database timestamps. Unique identities, event order, source-proof-before-seal,
+terminal ordering, foreign keys, and update/delete rejection are SQL-enforced.
+The status method is D1-only and reports `not_found`, `inflight`, or `terminal`.
+It can recover an archived terminal receipt but cannot decide or seal an
+inflight outcome.
+
+The root acceptance graph now includes
+`check:container-runtime:json-compatibility-deployment-transition-worker`.
+Its focused evidence includes generated type drift, TypeScript, two Wrangler
+dry-runs, eight Node tests, and two workerd/D1 named RPC tests. The runtime path
+races four calls, admits one, performs exactly `1/4/16` source/mutation/readback
+calls for dark-to-status, writes 25 events and one receipt, and proves replay
+and status have zero downstream calls. This remains local evidence.
+
+The integrated `bun run check` passed with exit code 0 in 1,310.7 seconds on
+2026-08-05, covering the configured frontend, Workers/workerd, supply-chain,
+Rust workspace, and wasm32 gates. It is not remote Cloudflare evidence.
+
+The next production sequence is no longer "implement a coordinator." It is:
+
+1. implement and review the private source verifier;
+2. implement the allowlisted all-seven-service readback/create-once leaf;
+3. create and independently verify remote staging D1;
+4. deploy all control-plane Workers dark and prove exact versions, configs,
+   exports, bindings, route absence, secret-name inventory, migrations, and
+   account-wide caller reachability;
+5. upload/read back all 18 frozen service artifacts;
+6. add separately authorized readback-only inflight resolution and locked
+   archive publication/readback;
+7. pass crash, response-loss, drift, concurrency, N/N-1, and rollback faults;
+8. run the real isolated four-phase campaign before any Go/VPS authority
+   transfer.
+
+Provider, billing/settlement, storage, SLO, cost/capacity, security/privacy,
+reverse sync, drain, DNS/traffic, and rollback matrices remain mandatory.
+No Cloudflare or Go/VPS state changed. Production remains **NO-GO**.

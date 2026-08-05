@@ -5776,3 +5776,32 @@ proof, locked archive, and remote crash/fault campaign remain open. See
 `docs/container-runtime-json-compatibility-deployment-transition.md`. No
 Cloudflare state changed; Phase 1 remote staging and production remain
 **NO-GO**.
+
+## 2026-08-05 Phase 1 Private Transition Worker Boundary
+
+The private TypeScript transition Worker, local append-only D1 journal, and
+D1-only status method are now implemented. This supersedes those three local
+gaps in the preceding section while preserving every remote blocker.
+
+The Worker exports execution and status only from a named entrypoint, has an
+inert default export, no route or credential, and three tracked gates that are
+all false. Execution validates Plan v5/state-plan v2 plus the dedicated
+transition signature, reserves one operation in a `first-primary` D1 session,
+calls a source verifier once, obtains stable source/target reads through one
+leaf binding, and calls mutation at most once per frozen step. Status validates
+the same signed invocation but reads only D1 and never calls either binding.
+
+Focused acceptance includes 12 pure protocol tests/142 expectations, eight
+Node tests, two real workerd/D1 named RPC tests, generated type checks,
+TypeScript, and local/staging Wrangler dry-runs. The real migration is applied
+in workerd, concurrent execution is linearized, tables are append-preserved,
+and replay/status remain mutation-free. See
+`docs/container-runtime-json-compatibility-deployment-transition-worker.md`.
+The integrated root `bun run check` passed with exit code 0 in 1,310.7 seconds
+on 2026-08-05. It remains local evidence.
+
+Phase 1 remains blocked on real source-verifier and all-seven-service leaf
+Workers, remote D1 create/apply/readback, 18 dark uploads and independent
+config/version readback, account-wide binding inventory, inflight resolution,
+locked archive, and remote fault/recovery evidence. No Cloudflare deployment
+or Go/VPS cutover occurred; remote staging and production remain **NO-GO**.

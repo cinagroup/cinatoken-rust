@@ -28775,3 +28775,180 @@ external archive, remote R2 and Worker readback, deployment leaf, remote D1,
 inflight resolver, four-phase campaign, and wider production matrices remain
 open. See `docs/container-runtime-json-compatibility-source-verifier.md`. No
 Cloudflare or Go/VPS state changed. Production remains **NO-GO**.
+
+## 2026-08-05 Account-Wide Cloudflare Inventory Collector V2 Production Gate
+
+This section refines the first open item in the pre-R1 sequence. It does not
+supersede the private Source Verifier checkpoint and does not claim a remote
+Cloudflare run. The current local work is converging on a structured
+account-wide collector v2 and a source-authentication bundle v2 that must carry
+that evidence. An inventory containing only caller-supplied counts and set
+digests is no longer sufficient: the legacy inventory projection must be
+derived exactly from the retained structured evidence and any mismatch must
+fail closed.
+
+The production evidence flow is:
+
+```text
+owner-approved Plan/state-plan + frozen collector identity
+  -> signed collection profile
+     -> offline creation receipt A -> credential A -> collection traversal
+     -> offline creation receipt B -> credential B -> independent traversal
+  -> create-once raw response pages and predecessor-linked receipts
+  -> external compliance-mode WORM retention + independent readback
+  -> stable account service/zone/route/cross-script binding evidence
+  -> isolated source signature
+  -> create-once R2 retrieval bundle
+  -> private Source Verifier
+```
+
+Every arrow before the Source Verifier is an evidence-production boundary,
+not a Cloudflare deployment authority. The collector remains an external
+operator tool. It must not be embedded in the Transition Worker, Source
+Verifier, Rust Container, or any public route, and none of those components
+may receive a Cloudflare account token.
+
+### Credential and permission model
+
+The collection and independent-readback traversals require different token
+IDs, different custodians, separate processes, and separate create-once output
+prefixes. Reusing one credential, process secret, mutable cache, archive writer
+session, or output object between the two traversals invalidates the evidence.
+The second traversal must start no less than five seconds and no more than 15
+minutes after the first observation and must reproduce the exact semantic
+inventory.
+
+Online execution uses only the presented token's account-level verify
+endpoint. It hashes the returned credential ID and requires active status. It
+does not call token detail and does not request token-management read access.
+Permission provenance is instead created offline when each token is issued.
+A signed credential-creation receipt must bind at least:
+
+- environment and account-ID digest;
+- collection role and credential-ID digest;
+- exact permission groups and resource scopes;
+- creation and expiry/rotation boundary;
+- issuing principal, approver policy, and canonical receipt digest; and
+- an explicit absence of Workers, routes, D1, R2, DNS, or token-management
+  write permissions.
+
+The signed collection profile pins separate collection/readback receipt and
+permission-set digests. The profile assembler must validate the approved
+receipt issuer and compare token verify's credential-ID digest with the
+corresponding receipt before accepting the authentication identity. The target
+least-privilege set is limited to `Workers Scripts Read`,
+`Workers Routes Read`, and `Zone Read` over the intended staging account/zones.
+The in-progress local profile currently establishes the permission-digest
+slots; explicit receipt schemas, signature validation, and credential-ID
+cross-check are still P0 and must land before a remote run is admissible.
+
+Tokens are supplied through a secret-capable runtime channel to one process
+only. They are forbidden in argv, files, GitHub artifacts, raw-page keys,
+canonical JSON, logs, error text, receipts, R2, or WORM metadata. Neither a
+token nor a reversible representation may appear in a retained API response.
+
+### Exact account traversal
+
+For one traversal, let `S` be the complete account Workers service count, `V`
+the sum of active version IDs, `P` the account-zone page count, and `Z` the
+zone count. The only accepted endpoint schedule is:
+
+| Order | Endpoint family | Exact multiplicity |
+| --- | --- | --- |
+| 1 | account token verify | `1` |
+| 2 | account Workers scripts | `1` |
+| 3 | deployments for every returned service | `S` |
+| 4 | version detail for every active version | `V` |
+| 5 | workers.dev/preview status for every service | `S` |
+| 6 | account Workers custom domains | `1` |
+| 7 | account-filtered zones in stable ID order | `P`, contiguous pages |
+| 8 | Workers routes for every returned zone | `Z` |
+
+One pass therefore contains exactly `3 + 2*S + V + P + Z` requests and page
+receipts. The independent pass repeats the full schedule with credential B.
+Each receipt is resource-identity specific; proving eight family names without
+proving every service, active version, zone page, and zone is insufficient.
+Request IDs must be unique, predecessor links contiguous, page and result
+totals stable, response bytes bounded, UTF-8/JSON strict, redirects rejected,
+and only allowlisted HTTPS origins, paths, methods, and query parameters may be
+used. No request is retried inside an evidence operation.
+
+The custom-domain API is intentionally fail closed. It is accepted only as an
+unpaginated response or as exact page 1 of 1 with count equal to total count.
+If Cloudflare reports `total_pages > 1`, inconsistent metadata, or a hidden
+continuation, the collector stops. It must not invent an undocumented page
+parameter and then claim complete account coverage. Zone listing is the only
+numbered loop: pages are requested in order with a fixed page size and stable
+account filter/totals before one routes request is made for each zone.
+
+The account snapshot combines custom domains, zone routes, workers.dev, and
+preview URLs for all account services. The seven campaign services must have
+zero public reachability. Active-version `resources.bindings` must also prove
+all cross-script edges adjacent to the campaign, meaning the caller **or** the
+target is one of the seven services. Exact approved edges include binding type,
+caller, binding name, target service, environment, and entrypoint.
+
+Only reviewed Service Binding, external Durable Object, dispatch outbound
+Worker, and Workflow cross-script shapes can be normalized. `type=inherit`
+fails because its effective target is not proven by that version response.
+Unknown binding types fail unless they are on the explicit reviewed
+non-cross-script capability list. A newly introduced Cloudflare binding type
+requires a versioned contract update, negative fixtures, endpoint-schedule
+tests, and independent review; silent ignore is forbidden.
+
+### Create-once raw evidence
+
+Every exact API response body must reach a durable create-once sink before its
+page receipt can advance the chain. The object identity binds collection
+profile, mode, sequence, request-path digest, and response-body digest. An
+existing object, overwrite permission, sink timeout, partial write, uncertain
+completion, or readback mismatch aborts the operation. Recovery uses a new
+operation identity and prefix; it never overwrites or resumes an ambiguous
+chain.
+
+Both passes and their terminal artifacts must be retained in an external
+compliance-mode WORM archive for at least 365 days. A separately authorized
+reader verifies version, retention mode/deadline, ETag, SHA-256, byte length,
+and manifest closure. Cloudflare R2 remains a digest-addressed retrieval cache
+for the Source Verifier and cannot satisfy the WORM requirement. The local
+`rawPageSink` function boundary is not itself create-once or WORM proof; the
+real archive adapter, write receipt, independent reader, and retention evidence
+remain open.
+
+### Remaining P0 sequence
+
+| Gate | Required production evidence | Current boundary |
+| --- | --- | --- |
+| C0 collector contract | frozen identity, exact schedule, bounds, binding classifier, structured-evidence-to-inventory projection, negative/fault tests | local work in progress; no remote evidence |
+| C1 credential ceremony | two signed creation receipts, distinct IDs/custody, least privilege, verify-to-receipt match, revocation path | not completed |
+| C2 immutable raw source | create-once sink, external compliance WORM, 365-day retention, independent exact readback | not implemented |
+| C3 stable account proof | two complete traversals 5-900 seconds apart with identical service/version/zone/route/edge sets | not run |
+| C4 source publication | isolated Ed25519 ceremony, signed bundle v2, create-once R2 upload and independent body/version/ETag/metadata readback | not completed |
+| D0 deployment leaf | private all-seven-service leaf, physical read/mutate separation, exact owner/operation/plan/transition/service/version binding, one send, no retry, stable target proof | deployment mutation remains mocked locally |
+| D1 staging database | owner-approved create-once D1 provisioning, no blind retry after ambiguity, frozen returned database ID, immutable migration-set application and exact schema readback | remote D1 not created or proven |
+| D2 transition campaign | dark control plane, locked receipt archive, readback-only inflight resolution, all 18 artifacts, four transitions, fault campaign and rollback evidence | not started remotely |
+
+The deployment leaf must keep Cloudflare read and mutation credentials in
+physically separate services. The Transition Worker may call a narrow private
+RPC but must never receive either credential. Before mutation, the leaf proves
+the exact current service/version/config and persists a plan-bound intent;
+after at most one mutation call, only independent stable readback can classify
+success. Timeout, response loss, or ambiguous API status forbids resend.
+
+Remote staging D1 creation follows the same create-once rule but is a separate
+authority from Worker deployment. The approved request binds account,
+environment, intended database name, operation ID, migration-set digest, and
+expected absence. Creation is sent at most once. If the response is ambiguous,
+read-only account inventory may identify the unique matching database; the
+create call is never repeated. The returned database ID is captured in an
+immutable receipt, then the frozen migrations are applied once and the exact
+tables, columns, indexes, triggers, and migration head are independently read
+back. The existing local append-only transition journal proves neither this
+infrastructure creation nor remote schema application.
+
+No collector credential has been issued or used by this documentation update.
+No Cloudflare API, deployment, route, DNS, R2, D1, provider, billing, traffic,
+or Go/VPS state changed. The deployment leaf, D1 create-once path, external
+WORM, source publication, real four-phase campaign, and wider production
+acceptance matrix remain open. Go/VPS remains authoritative and production
+remains **NO-GO**.

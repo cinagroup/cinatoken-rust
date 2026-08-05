@@ -18,8 +18,11 @@ Container data and compute plane; this TypeScript Worker is a narrow
 Cloudflare control-plane verifier.
 
 ```text
-independent Cloudflare inventory collector
-  -> external compliance-mode WORM archive and independent readback
+offline-approved collection profile and two credential-creation receipts
+  -> collection credential -> account-wide Cloudflare inventory pass
+  -> independent credential -> complete independent readback pass
+  -> create-once raw-page sink and external compliance-mode WORM archive
+  -> independent WORM readback
   -> isolated offline Ed25519 source signer
   -> create-once canonical R2 retrieval bundle
   -> private Source Verifier Worker (R2 head/get only)
@@ -27,10 +30,12 @@ independent Cloudflare inventory collector
   -> private Deployment Transition Worker
 ```
 
-The collector, isolated signer ceremony, external archive integration,
-create-once uploader, and remote readback are not implemented by this
-increment. The diagram is the required production topology, not a deployment
-claim.
+The account-wide collector v2 protocol and local implementation are being
+developed, but no production credential ceremony, remote collection,
+create-once raw-page archive, or independent archive readback has completed.
+The isolated signer ceremony, external archive integration, create-once R2
+uploader, and remote verifier readback also remain open. The diagram is the
+required production topology, not a deployment claim.
 
 ## Transition-Bound Request
 
@@ -89,17 +94,131 @@ The canonical UTF-8 JSON body ends in exactly one LF and contains:
 7. an Ed25519 source-signature envelope; and
 8. the canonical bundle digest.
 
-The account inventory explicitly binds a complete pagination assertion,
-collector identity, authentication identity, page-chain head, independent
-readback evidence, API request/page counts, complete service/route/binding
-set digests, and the seven campaign service names. This is a protocol
-requirement. A future collector must obtain and retain the real values.
+The account inventory explicitly binds a complete endpoint-schedule and
+pagination assertion, collector identity, two authentication identities,
+two page-chain heads, independent readback evidence, API request/page counts,
+complete service/zone/route/binding set digests, and the seven campaign
+service names. The in-progress v2 collector must obtain and retain the real
+values before the bundle is admissible; fixture or synthetic values are not
+remote evidence.
 
 The archive receipt requires `external-worm`, compliance mode, at least 365
 days of retention, object version and ETag digests, retention evidence, and an
 independent readback timestamp. Cloudflare R2 is only the verifier's bounded
 retrieval cache. R2 is not represented as WORM, and an R2 object cannot satisfy
 the external immutable-retention requirement by itself.
+
+## Account-Wide Collector V2 Contract
+
+### Credential provenance and independence
+
+One token cannot both create the primary observation and attest its readback.
+The production profile requires two independently issued Cloudflare API
+tokens with different credential IDs and separate custody:
+
+| Role | Online use | Required provenance |
+| --- | --- | --- |
+| `collection` | exactly one complete account traversal | signed offline credential-creation receipt and collection permission-set digest |
+| `independent-readback` | a second complete traversal 5-900 seconds later | a different signed receipt, credential ID, custodian, and readback permission-set digest |
+
+Each token is injected into only its own process through a secret-capable
+runtime channel. It must never appear in argv, tracked files, logs, receipts,
+raw-page keys, or canonical source bundles. The two executions must not share
+a token, token ID, writable cache, mutable output prefix, or Cloudflare write
+permission.
+
+The online collector calls only
+`GET /client/v4/accounts/{account_id}/tokens/verify`. Token verification proves
+the presented token ID and active status; it does not prove the permission
+set. The exact read-only permissions and resource scopes therefore come from
+an offline credential-creation receipt. The receipt must canonically bind the
+account digest, credential-ID digest, role, creation/expiry facts, and the
+least-privilege permission set. The profile signer validates that receipt and
+pins its receipt and permission-set digests. The online verify result must
+hash to the same credential ID before any inventory request is admissible.
+
+The intended permission set contains only the account/zone scopes needed for
+`Workers Scripts Read`, `Workers Routes Read`, and `Zone Read`. It contains no
+Workers write, route write, D1 write, or token-management permission,
+including `Account API Tokens Read`. In particular, the collector must not
+call a token-detail endpoint merely to assert its own privileges. Explicit
+receipt objects,
+signature/issuer validation, and the verify-to-receipt credential-ID check are
+still P0 integration work; a bare permission digest supplied by a test fixture
+does not close this gate.
+
+### Exact endpoint schedule
+
+Let `S` be the number of all Workers services returned for the account, `V`
+the total number of active version IDs across those services, `P` the number
+of numbered account-zone pages, and `Z` the number of zones. Each credential
+must execute exactly this schedule, in order. Paths in the table are relative
+to `/client/v4`:
+
+| Resource family | Exact request | Cardinality and rule |
+| --- | --- | --- |
+| `credential-verification` | `GET /accounts/{account_id}/tokens/verify` | exactly 1; account identity |
+| `workers-scripts` | `GET /accounts/{account_id}/workers/scripts` | exactly 1; no pagination metadata accepted |
+| `worker-deployments` | `GET /accounts/{account_id}/workers/scripts/{service}/deployments` | exactly `S`, one for every listed service |
+| `worker-version` | `GET /accounts/{account_id}/workers/scripts/{service}/versions/{version_id}` | exactly `V`, one for every active version; bindings come from `resources.bindings` |
+| `worker-subdomain` | `GET /accounts/{account_id}/workers/scripts/{service}/subdomain` | exactly `S`; captures workers.dev and preview status |
+| `account-worker-domains` | `GET /accounts/{account_id}/workers/domains` | exactly 1; absent pagination metadata or exact page 1 of 1 only |
+| `account-zones` | `GET /zones?account.id=...&page=N&per_page=50&order=id&direction=asc&match=all` | exactly pages 1 through `P`, with stable totals and no gaps |
+| `zone-worker-routes` | `GET /zones/{zone_id}/workers/routes` | exactly `Z`, one for every returned zone |
+
+The exact request/page count for one traversal is therefore
+`3 + 2*S + V + P + Z`; stable collection and independent readback contribute
+twice that count. Each receipt binds its resource family and exact resource
+identity, request-path digest, response-body digest and byte length, result
+count, page coordinates, request-ID digest, observation time, and predecessor.
+Sequences must be contiguous, request IDs unique, and the expected service,
+active-version, zone-page, and zone-route identity multisets exact. Merely
+observing every resource-family name once is insufficient.
+
+The custom-domain endpoint is treated as a single-page API. If it returns
+`result_info`, only `page=1`, `total_pages=1`, and exact count/total-count
+agreement are accepted. `total_pages > 1`, inconsistent metadata, or any need
+to invent an undocumented page query fails closed. Zone enumeration is the
+only numbered pagination loop in this contract.
+
+### Route and cross-script closure
+
+The snapshot covers the whole account, not only the seven campaign services.
+It combines custom domains, every zone route, workers.dev state, and preview
+URL state. The private-campaign assertion then requires zero public routes for
+campaign services and compares every cross-script edge whose caller **or**
+target is a campaign service against the exact approved edge set. An
+unapproved outside caller into the campaign is as fatal as an unapproved
+campaign caller out.
+
+Active-version `resources.bindings` are normalized only for reviewed
+cross-script capabilities: Service Bindings, external Durable Object
+namespaces, dispatch-namespace outbound Workers, and Workflows targeting
+another script. A binding with `type=inherit` fails closed because the
+effective target is not proven by the active-version response. An unknown
+binding type also fails closed unless it is present in the reviewed explicit
+non-cross-script allowlist. New Cloudflare binding types require a contract
+update, fixtures, negative tests, and review before collection can proceed.
+
+### Raw-page create-once and WORM evidence
+
+Normalization is not a substitute for source evidence. Before a page receipt
+can advance the predecessor chain, the exact response bytes must be durably
+accepted by a create-once sink under a deterministic key bound to profile,
+mode, sequence, request-path digest, and response digest. Existing keys,
+overwrite capability, partial writes, sink timeout, uncertain completion, or
+digest/readback mismatch terminate that traversal. A retry starts a new
+operation and output prefix; it never overwrites or silently resumes the
+failed evidence chain.
+
+Both traversals' raw pages, page receipts, collector/profile identities, and
+terminal artifacts must then be placed in an external compliance-mode WORM
+archive with at least 365 days retention. A separately authorized reader must
+verify object version, retention mode/deadline, ETag and SHA-256, byte length,
+and canonical manifest closure before source signing. The collector library's
+`rawPageSink` callback is only an integration boundary. Until a reviewed
+create-once sink, external WORM implementation, and independent readback
+receipt exist, it is not immutable-storage evidence.
 
 ## Verification Pipeline
 
@@ -183,31 +302,57 @@ Binding.
 
 Before any isolated staging transition:
 
-1. implement and independently review the account-wide paginated inventory
-   collector with least-privilege read credentials and retained raw pages;
-2. provision the external compliance-mode WORM archive, independently read it
-   back, and produce the exact retention receipt;
-3. implement an isolated offline signer ceremony with current/previous key
+1. freeze and independently review collector v2, its signed profile, exact
+   endpoint schedule, cross-script binding classifier, bounds, poisoned-fetch
+   self-test, and create-once raw-page sink interface;
+2. issue two independently held read-only tokens, produce signed offline
+   credential-creation receipts, and prove verify-result credential IDs and
+   permission-set digests match the corresponding profile slots;
+3. provision the external compliance-mode WORM archive, run the complete
+   `collection` and `independent-readback` traversals in separate processes,
+   and independently read back every raw page and terminal artifact;
+4. require stable service, active-version, zone, route, and cross-script edge
+   sets across both traversals, then generate the canonical account evidence;
+5. implement an isolated offline signer ceremony with current/previous key
    rotation, revocation publication, two-person approval, and no key in argv,
    environment, tracked files, logs, Worker secrets, or R2;
-4. implement a create-once uploader that refuses an existing key, publishes
+6. implement a create-once R2 uploader that refuses an existing key, publishes
    canonical body/metadata, reads back exact version/ETag/body, and retains the
    result independently;
-5. create the remote R2 bucket and deploy this Worker dark with gates false;
-6. independently read back exact Worker version, named export, configuration,
-   trust policy, R2 binding, route absence, and all callers that can reach it;
-7. deploy the all-seven-service deployment readback/mutation leaf and
-   Transition Worker, also dark, after their separate reviews;
-8. upload and read back all 18 frozen artifacts, generate release evidence,
-   and execute only the first two transitions under separate approvals;
-9. run the four-phase campaign, generate closure source-manifest v3, then use
-   separately approved closure evidence for the final two transitions; and
-10. retain all raw evidence, signatures, revocation state, receipts, and remote
-    readbacks for independent offline replay.
+7. create the remote R2 bucket and deploy this Worker dark with both gates
+   false, then independently read back its exact version, named export,
+   configuration, trust policy, R2 binding, route absence, and every caller;
+8. implement and audit the all-seven-service deployment leaf with physically
+   separate read and mutation capabilities, exact account/service/version/
+   entrypoint allowlists, one mutation send, no automatic retry, stable target
+   readback, and an immutable operation receipt;
+9. provision staging D1 through a separately approved create-once operation:
+   prove the intended name is absent, send create at most once, resolve an
+   ambiguous response only by read-only inventory, freeze the returned
+   database ID and migration-set digest, apply the immutable schema once, and
+   independently read back the exact migration/table/index/trigger inventory;
+10. deploy the Transition Worker dark only after its D1 binding, append-only
+    journal schema, source-verifier binding, deployment-leaf binding, routes,
+    gates, and Version Metadata are independently proven;
+11. upload and read back all 18 frozen artifacts, regenerate account-wide
+    inventory after bootstrap, and execute only the first two transitions
+    under separate owner approvals;
+12. pass response-loss, timeout, crash, concurrency, drift, stale-approval,
+    archive-readback, custom-domain pagination, unknown-binding, and D1
+    create-ambiguity fault campaigns without a second mutation send;
+13. run the four-phase campaign, generate closure source-manifest v3, then use
+    separately approved closure evidence for the final two transitions; and
+14. retain all raw evidence, signatures, revocation state, receipts, remote
+    readbacks, D1 creation/migration evidence, and deployment receipts for
+    independent offline replay.
 
-The source verifier closes one local P0 implementation gap. The collector,
-signer, uploader, external archive, remote bucket/readback, deployment leaf,
-remote D1, inflight resolver, fault campaign, and wider provider/billing/
-settlement/storage/SLO/cost/security/privacy/rollback/cutover evidence remain
-open. No Cloudflare or Go/VPS state changed. Go/VPS remains authoritative and
-production remains **NO-GO**.
+The source verifier closes one local P0 implementation gap. Collector v2 is
+still local work in progress and has not produced admissible remote evidence.
+The signed credential receipts, create-once raw-page/WORM sink, independent
+archive reader, signer, R2 uploader, remote bucket/verifier readback,
+deployment leaf, D1 create-once provisioner and immutable remote schema,
+inflight resolver, fault campaign, and wider provider/billing/settlement/
+storage/SLO/cost/security/privacy/rollback/cutover evidence remain open. The
+existing local append-only D1 journal does not prove remote D1 creation or
+schema application. No Cloudflare or Go/VPS state changed. Go/VPS remains
+authoritative and production remains **NO-GO**.

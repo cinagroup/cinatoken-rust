@@ -20,6 +20,14 @@ import {
   buildJsonCompatibilityPhaseSourcePacket,
 } from "../tools/container_runtime_json_compatibility_phase_source.mjs";
 import {
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_V1_SIGNATURE_DOMAIN,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_V1_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_V1_CONTRACT,
+} from "../tools/container_runtime_json_compatibility_operator_invocation.mjs";
+import {
   runJsonCompatibilityPhaseSourceAssembler,
 } from "../tools/assemble_container_runtime_json_compatibility_phase_source.mjs";
 import {
@@ -63,6 +71,24 @@ const permitIssuer = "cinatoken-json-compatibility-permit-issuer-staging";
 const permitAudience =
   "cinatoken-container-runtime-json-compatibility-executor-staging";
 const permitKeyId = "phase-source-test-key";
+const approvalProtocols = Object.freeze({
+  1: Object.freeze({
+    schemaVersion: 1,
+    subjectContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_V1_CONTRACT,
+    envelopeContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_V1_CONTRACT,
+    signatureDomain: JSON_COMPATIBILITY_OPERATOR_APPROVAL_V1_SIGNATURE_DOMAIN,
+  }),
+  2: Object.freeze({
+    schemaVersion: 2,
+    subjectContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+    envelopeContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+    signatureDomain: JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
+  }),
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -308,7 +334,12 @@ async function buildReceipt(plan, phaseIndex) {
   );
 }
 
-async function buildOperatorInvocationReceipt(plan, executorReceipt, phaseIndex) {
+async function buildOperatorInvocationReceipt(
+  plan,
+  executorReceipt,
+  phaseIndex,
+  approvalOverrides = {},
+) {
   const operatorVersionId = plan.privateServices.operator.versionId;
   const invokerVersionId = plan.privateServices.invoker.versionId;
   const issuerVersionId = plan.privateServices.permitIssuer.versionId;
@@ -352,10 +383,23 @@ async function buildOperatorInvocationReceipt(plan, executorReceipt, phaseIndex)
       "utf8",
     )
     .digest("hex");
+  const expectedApprovalVersion = plan.schemaVersion === 4
+      && plan.contract ===
+        "cinatoken-container-runtime-json-compatibility-plan-v5"
+    ? 2
+    : 1;
+  const subjectProtocol = approvalProtocols[
+    approvalOverrides.subjectVersion ?? expectedApprovalVersion
+  ];
+  const envelopeProtocol = approvalProtocols[
+    approvalOverrides.envelopeVersion ?? expectedApprovalVersion
+  ];
+  const signatureProtocol = approvalProtocols[
+    approvalOverrides.signatureVersion ?? expectedApprovalVersion
+  ];
   const approvalSubject = {
-    schemaVersion: 1,
-    contract:
-      "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v1",
+    schemaVersion: subjectProtocol.schemaVersion,
+    contract: subjectProtocol.subjectContract,
     environment: "staging",
     issuer:
       "cinatoken-json-compatibility-campaign-approval-authority-staging",
@@ -370,6 +414,13 @@ async function buildOperatorInvocationReceipt(plan, executorReceipt, phaseIndex)
     caller: structuredClone(plan.privateServices.runner),
     campaignIdSha256: operatorRequest.execution.campaignIdSha256,
     planDigestSha256: operatorRequest.execution.planDigestSha256,
+    ...(subjectProtocol.schemaVersion === 2
+      ? {
+          planContract: approvalOverrides.planContract ?? plan.contract,
+          planSchemaVersion:
+            approvalOverrides.planSchemaVersion ?? plan.schemaVersion,
+        }
+      : {}),
     phaseExecutionId: operatorRequest.execution.phaseExecutionId,
     phaseOrdinal: operatorRequest.execution.phase.ordinal,
     phaseId: operatorRequest.execution.phase.id,
@@ -385,13 +436,12 @@ async function buildOperatorInvocationReceipt(plan, executorReceipt, phaseIndex)
     "Ed25519",
     permitKeyPair.privateKey,
     new TextEncoder().encode(
-      `cinatoken-container-runtime-json-compatibility-operator-phase-approval-v1\n${canonicalJson(approvalSubject)}`,
+      `${signatureProtocol.signatureDomain}${canonicalJson(approvalSubject)}`,
     ),
   ));
   const approvalEnvelope = {
-    schemaVersion: 1,
-    contract:
-      "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v1",
+    schemaVersion: envelopeProtocol.schemaVersion,
+    contract: envelopeProtocol.envelopeContract,
     algorithm: "Ed25519",
     subject: approvalSubject,
     subjectSha256: sha256Canonical(approvalSubject),
@@ -1261,6 +1311,23 @@ async function makeTempDirectory() {
   return directory;
 }
 
+async function assembleFirstPhase(plan, approvalOverrides = {}) {
+  const executorReceipt = await buildReceipt(plan, 0);
+  const operatorReceipt = await buildOperatorInvocationReceipt(
+    plan,
+    executorReceipt,
+    0,
+    approvalOverrides,
+  );
+  const runnerReceipt = buildRunnerInvocationReceipt(plan, operatorReceipt);
+  const packet = await buildJsonCompatibilityPhaseSourcePacket(
+    plan,
+    wrapRunnerReceiptForPlan(plan, runnerReceipt),
+    buildContext(plan, executorReceipt, 0),
+  );
+  return { operatorReceipt, packet };
+}
+
 describe("container runtime JSON compatibility phase source assembly", () => {
   test("binds four private executor receipts into a complete manifest and evidence", async () => {
     const plan = buildPlan();
@@ -1326,6 +1393,19 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     );
     const runnerStatusReceipt = buildRunnerStatusReceipt(plan, operatorReceipt);
 
+    expect(operatorReceipt.authorization.approvalEnvelope).toMatchObject({
+      schemaVersion: 2,
+      contract:
+        JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+      subject: {
+        schemaVersion: 2,
+        contract:
+          JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+        planContract: plan.contract,
+        planSchemaVersion: plan.schemaVersion,
+      },
+    });
+
     const packet = await buildJsonCompatibilityPhaseSourcePacket(
       plan,
       wrapRunnerReceiptForPlan(plan, runnerStatusReceipt),
@@ -1366,6 +1446,15 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     );
     const runnerStatusReceipt = buildRunnerStatusReceipt(plan, operatorReceipt);
 
+    expect(operatorReceipt.authorization.approvalEnvelope).toMatchObject({
+      schemaVersion: 1,
+      contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_V1_CONTRACT,
+      subject: {
+        schemaVersion: 1,
+        contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_V1_CONTRACT,
+      },
+    });
+
     const packet = await buildJsonCompatibilityPhaseSourcePacket(
       plan,
       wrapRunnerReceiptForPlan(plan, runnerStatusReceipt),
@@ -1387,6 +1476,14 @@ describe("container runtime JSON compatibility phase source assembly", () => {
       executorReceipt,
       0,
     );
+    expect(operatorReceipt.authorization.approvalEnvelope).toMatchObject({
+      schemaVersion: 1,
+      contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_V1_CONTRACT,
+      subject: {
+        schemaVersion: 1,
+        contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_V1_CONTRACT,
+      },
+    });
     const packet = await buildJsonCompatibilityPhaseSourcePacket(
       plan,
       buildRunnerStatusReceipt(plan, operatorReceipt),
@@ -1466,6 +1563,69 @@ describe("container runtime JSON compatibility phase source assembly", () => {
         buildContext(plan, executorReceipt, 0),
       ),
     ).rejects.toThrow(/plan does not authorize status recovery/);
+  });
+
+  test("keeps direct Plan v2 receipts readable with approval v1", async () => {
+    const plan = downgradeToLegacyPlan(structuredClone(buildPlan()));
+    const { operatorReceipt, packet } = await assembleFirstPhase(plan);
+
+    expect(operatorReceipt.authorization.approvalEnvelope).toMatchObject({
+      schemaVersion: 1,
+      contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_V1_CONTRACT,
+      subject: {
+        schemaVersion: 1,
+        contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_V1_CONTRACT,
+      },
+    });
+    expect(packet.callerInvocation).toBeUndefined();
+    expect(packet.runnerInvocation.mode).toBe("direct");
+  });
+
+  test("rejects current v1 and historical v2 approval receipts", async () => {
+    const currentPlan = buildPlan();
+    await expect(assembleFirstPhase(currentPlan, {
+      subjectVersion: 1,
+      envelopeVersion: 1,
+      signatureVersion: 1,
+    })).rejects.toThrow(/approval envelope schema/);
+
+    for (const historicalPlan of [
+      downgradeToPlanV4(structuredClone(buildPlan())),
+      downgradeToPlanV3(structuredClone(buildPlan())),
+    ]) {
+      await expect(assembleFirstPhase(historicalPlan, {
+        subjectVersion: 2,
+        envelopeVersion: 2,
+        signatureVersion: 2,
+      })).rejects.toThrow(/approval envelope schema/);
+    }
+  });
+
+  test("rejects mixed approval subject and envelope versions", async () => {
+    const currentPlan = buildPlan();
+    await expect(assembleFirstPhase(currentPlan, {
+      subjectVersion: 1,
+      envelopeVersion: 2,
+      signatureVersion: 2,
+    })).rejects.toThrow(/approval subject.*fields/);
+    await expect(assembleFirstPhase(currentPlan, {
+      subjectVersion: 2,
+      envelopeVersion: 1,
+      signatureVersion: 2,
+    })).rejects.toThrow(/approval envelope schema/);
+  });
+
+  test("rejects wrong Plan bindings and the v1 signature domain under approval v2", async () => {
+    const currentPlan = buildPlan();
+    await expect(assembleFirstPhase(currentPlan, {
+      planContract: "cinatoken-container-runtime-json-compatibility-plan-v4",
+    })).rejects.toThrow(/approval plan contract/);
+    await expect(assembleFirstPhase(currentPlan, {
+      planSchemaVersion: 3,
+    })).rejects.toThrow(/approval plan schema version/);
+    await expect(assembleFirstPhase(currentPlan, {
+      signatureVersion: 1,
+    })).rejects.toThrow(/approval signature is invalid/);
   });
 
   test("rejects nested receipt tampering even when the outer receipt is resealed", async () => {

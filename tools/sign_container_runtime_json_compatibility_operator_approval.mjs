@@ -6,10 +6,16 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
+  JSON_COMPATIBILITY_PLAN_CONTRACT,
   canonicalJson,
   parseStrictJsonObject,
 } from "./container_runtime_json_compatibility_campaign.mjs";
 import {
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION,
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
   signJsonCompatibilityOperatorApproval,
 } from "./container_runtime_json_compatibility_operator_approval.mjs";
 import {
@@ -66,6 +72,18 @@ export async function runJsonCompatibilityOperatorApprovalSigner(options) {
     ok: true,
     schemaVersion: 1,
     contract: JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
+    planContract: JSON_COMPATIBILITY_PLAN_CONTRACT,
+    planSchemaVersion: JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
+    approvalEnvelopeContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+    approvalEnvelopeSchemaVersion:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION,
+    approvalSubjectContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+    approvalSubjectSchemaVersion:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION,
+    approvalSignatureDomain:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
     mode: "offline-ed25519-phase-approval-signing",
     campaignIdSha256: authorized.request.execution.campaignIdSha256,
     planDigestSha256: authorized.request.execution.planDigestSha256,
@@ -196,6 +214,18 @@ function describe() {
   return {
     schemaVersion: 1,
     contract: JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
+    planContract: JSON_COMPATIBILITY_PLAN_CONTRACT,
+    planSchemaVersion: JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
+    approvalEnvelopeContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+    approvalEnvelopeSchemaVersion:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION,
+    approvalSubjectContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+    approvalSubjectSchemaVersion:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION,
+    approvalSignatureDomain:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
     mode: "offline-ed25519-phase-approval-signing",
     privateKeyInput: "stdin-only",
     privateKeyInArgv: false,

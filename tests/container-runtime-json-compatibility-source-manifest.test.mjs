@@ -95,6 +95,32 @@ function downgradeToPlanV4(plan) {
   return plan;
 }
 
+function downgradeToPlanV3(plan) {
+  plan.schemaVersion = 2;
+  plan.contract =
+    "cinatoken-container-runtime-json-compatibility-plan-v3";
+  delete plan.deploymentStateBinding;
+  delete plan.privateServices.caller;
+  delete plan.statusRecovery.statusReadGates.caller;
+  const subject = structuredClone(plan);
+  delete subject.planDigestSha256;
+  plan.planDigestSha256 = sha256Canonical(subject);
+  return plan;
+}
+
+function downgradeToPlanV2(plan) {
+  plan.schemaVersion = 1;
+  plan.contract =
+    "cinatoken-container-runtime-json-compatibility-plan-v2";
+  delete plan.statusRecovery;
+  delete plan.deploymentStateBinding;
+  delete plan.privateServices.caller;
+  const subject = structuredClone(plan);
+  delete subject.planDigestSha256;
+  plan.planDigestSha256 = sha256Canonical(subject);
+  return plan;
+}
+
 function buildPhasePackets(plan) {
   const syntheticPhases =
     createSyntheticJsonCompatibilitySourceManifest(plan).phases;
@@ -490,25 +516,48 @@ describe("container runtime JSON compatibility source manifest", () => {
       phaseStatus: "completed",
       completion: { executionRetryPermitted: false },
     });
+    expect(manifest.phases[0].operatorInvocation.authorization.contract).toBe(
+      "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1",
+    );
     expect(manifest.sourceManifestSha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test("pairs Plan v4 only with the historical packet and manifest v2", () => {
-    const plan = downgradeToPlanV4(structuredClone(buildPlan()));
+  test("pairs Plan v4 and v3 with historical packet and manifest v2", () => {
+    for (const plan of [
+      downgradeToPlanV4(structuredClone(buildPlan())),
+      downgradeToPlanV3(structuredClone(buildPlan())),
+    ]) {
+      const manifest = createSyntheticJsonCompatibilitySourceManifest(plan);
+
+      expect(validateJsonCompatibilitySourceManifest(plan, manifest)).toEqual(
+        manifest,
+      );
+      expect(manifest).toMatchObject({
+        schemaVersion: 2,
+        contract: JSON_COMPATIBILITY_SOURCE_MANIFEST_V2_CONTRACT,
+      });
+      expect(manifest.phases[0]).toMatchObject({
+        schemaVersion: 2,
+        contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT,
+      });
+      expect(manifest.phases[0].callerInvocation).toBeUndefined();
+      expect(manifest.phases[0].operatorInvocation.authorization.contract).toBe(
+        "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1",
+      );
+    }
+  });
+
+  test("keeps the existing Plan v2 direct source-manifest behavior", () => {
+    const plan = downgradeToPlanV2(structuredClone(buildPlan()));
     const manifest = createSyntheticJsonCompatibilitySourceManifest(plan);
 
-    expect(validateJsonCompatibilitySourceManifest(plan, manifest)).toEqual(
-      manifest,
-    );
+    expect(validateJsonCompatibilitySourceManifest(plan, manifest)).toEqual(manifest);
     expect(manifest).toMatchObject({
       schemaVersion: 2,
       contract: JSON_COMPATIBILITY_SOURCE_MANIFEST_V2_CONTRACT,
     });
-    expect(manifest.phases[0]).toMatchObject({
-      schemaVersion: 2,
-      contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT,
-    });
     expect(manifest.phases[0].callerInvocation).toBeUndefined();
+    expect(manifest.phases[0].runnerInvocation.mode).toBe("direct");
   });
 
   test("rejects a Plan v5 packet downgraded to v2 even when resealed", () => {

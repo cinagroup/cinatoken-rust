@@ -1122,3 +1122,43 @@ audit-driven indexes. That baseline and Workerd recovery
 cases do not satisfy remote D1, provider, TaskRunner hot-path, WFP namespace
 upload/readback, or paid-canary evidence. Scheduler cutover must remain false
 until recovery cutover is ready, and production remains **NO-GO**.
+
+## 2026-08-05 Plan-Bound Campaign Admission Overlay
+
+The four-layer data plane remains unchanged:
+
+```text
+Edge Worker -> shard scheduler Durable Objects -> Rust Linux Containers
+            -> KV / D1 / R2 shared storage
+```
+
+Approval v2 adds a control-plane admission chain beside that data plane. It
+does not place campaign policy in the Rust container and does not add a public
+edge route:
+
+```text
+offline approval signer
+  -> Caller -> Runner -> Operator
+  -> Invoker DO -> PermitIssuer DO -> Executor DO -> Controller DO
+```
+
+The signed subject identifies Plan v5/schema 4 and its exact digest. Caller and
+Runner validate private transport and nested receipts; Operator owns Ed25519
+verification; Invoker owns durable attempt/result state; PermitIssuer owns
+ordered one-use issuance; Executor owns phase lease/admission; Controller owns
+shard resolution and lifecycle calls. Each layer has one downstream capability
+and cannot substitute for the authority of another layer.
+
+This is deliberately TypeScript/Web Crypto at the Worker/DO boundary. It
+follows the cinaVibeSDK operational stack and keeps request coordination,
+hibernation/recovery semantics, Service Bindings, and Durable Object storage in
+the platform-native runtime. Rust stays in the Linux Container compute layer;
+there is no session-DO or campaign-DO Rust Wasm rewrite.
+
+Current local validation proves current-v2 and historical-v1 separation plus
+zero Invoker calls on malformed current authorization; the complete repository
+`bun run check` passes with exit code 0 in 1,403.6 seconds. It does not prove
+Cloudflare account reachability, an uploaded version, binding topology, secret
+presence, state transition, or customer traffic. The remote transition executor
+and authenticated readback chain are the next required control-plane components.
+Production remains **NO-GO**.

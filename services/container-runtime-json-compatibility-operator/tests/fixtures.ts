@@ -25,6 +25,8 @@ import {
   type JsonCompatibilityInvocationStatusQueryV1,
 } from "../../container-runtime-json-compatibility-invoker/src/authorization";
 import {
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
   JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
   JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
   JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
@@ -131,17 +133,19 @@ export async function validAuthorizedOperatorRequest(
   overrides: {
     readonly issuedAt?: number;
     readonly keyId?: string;
+    readonly operatorVersionId?: string;
     readonly callerVersionId?: string;
     readonly callerConfigSha256?: string;
   } = {},
 ): Promise<JsonCompatibilityOperatorAuthorizedPhaseRequestV1> {
   const issuedAt = overrides.issuedAt ?? NOW_SECONDS;
+  const operatorVersionId = overrides.operatorVersionId ?? OPERATOR_VERSION_ID;
   const requestSha256 = await sha256Hex(canonicalJson(request));
   const commandIdSha256 = await sha256Hex(
-    `${COMMAND_ID_DOMAIN}${canonicalJson(request)}\n${OPERATOR_VERSION_ID}`,
+    `${COMMAND_ID_DOMAIN}${canonicalJson(request)}\n${operatorVersionId}`,
   );
   const subject = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
     environment: "staging" as const,
     issuer: JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER,
@@ -149,7 +153,7 @@ export async function validAuthorizedOperatorRequest(
     keyId: overrides.keyId ?? OPERATOR_APPROVAL_KEY_ID,
     operator: {
       serviceName: JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
-      versionId: OPERATOR_VERSION_ID,
+      versionId: operatorVersionId,
     },
     caller: {
       serviceName: JSON_COMPATIBILITY_RUNNER_SERVICE_NAME,
@@ -160,6 +164,9 @@ export async function validAuthorizedOperatorRequest(
       privateRpcOnly: true as const,
     },
     campaignIdSha256: request.execution.campaignIdSha256,
+    planContract: JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT,
+    planSchemaVersion:
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
     planDigestSha256: request.execution.planDigestSha256,
     phaseExecutionId: request.execution.phaseExecutionId,
     phaseOrdinal: request.execution.phase.ordinal,
@@ -173,7 +180,7 @@ export async function validAuthorizedOperatorRequest(
     expiresAt: issuedAt + 600,
   };
   const unsignedEnvelope = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
     algorithm: "Ed25519" as const,
     subject,

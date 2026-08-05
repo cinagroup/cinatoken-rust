@@ -5715,3 +5715,28 @@ The next hardening item is approval subject/envelope v2 with explicit Plan
 v5/schema 4 runtime binding, followed by the remote transition/readback and
 source-authenticity work. No deployment occurred; Phase 1 remote staging and
 production remain **NO-GO**.
+
+## 2026-08-05 Phase 1 Approval v2 Boundary
+
+The local approval protocol now explicitly binds Plan v5/schema 4 inside the
+Ed25519-signed subject. Subject and envelope are v2/schema 2 and use a distinct
+v2 signature domain; the authorized-request wrapper remains v1. Plan v5 with
+approval v1, mixed v1/v2 artifacts, wrong Plan contract/schema, and cross-domain
+signatures fail before any Invoker RPC.
+
+The current offline signer remains create-only, stdin-keyed, credential-free,
+and network-free. It refuses Plan v4/v3/v2. Historical Plan v4/v3 and direct
+Plan v2 receipts remain readable with approval v1 but cannot authorize new
+execution. Plan v5 and campaign/state-plan shapes are unchanged.
+
+Focused gates pass 133 campaign/source/config tests with 578 expectations, 14
+deployment-state tests with 82 expectations, and the Operator, Runner, and
+Caller service checks with 16+2, 10+2, and 11+2 Node/workerd tests
+respectively. The complete repository `bun run check` passes with exit code 0
+in 1,403.6 seconds.
+
+See `docs/container-runtime-json-compatibility-operator-approval-v2.md` for
+the exact subject, signature payload, compatibility matrix, failure semantics,
+and acceptance commands. The next hard gate is the remote transition executor
+and authenticated readback chain. No deployment occurred; Phase 1 remote
+staging and production remain **NO-GO**.

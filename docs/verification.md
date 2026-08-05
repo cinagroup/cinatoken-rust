@@ -13783,3 +13783,32 @@ Go/VPS cutover occurred. Approval subject/envelope v2 with explicit Plan
 v5/schema 4 runtime binding, remote transition execution/readback, account
 binding inventory, source signing/archive, and real isolated staging remain
 blocking. Production remains **NO-GO**.
+
+## Operator Approval v2 Verification (2026-08-05)
+
+This checkpoint supersedes the local approval-v2 blocker above. The current
+Plan v5/schema 4 path requires approval subject/envelope v2/schema 2 and the
+v2 signature domain. Plan v4/v3 and direct Plan v2 historical receipts retain
+approval v1 read compatibility; no historical plan may enter the signer.
+
+| Gate | Result |
+| --- | --- |
+| `bun run check:container-runtime:json-compatibility-operator` | PASS: generated types, TypeScript, local/staging Wrangler dry-runs, 16 Node tests, and 2 workerd named Invoker RPC tests |
+| `bun run check:container-runtime:json-compatibility-runner` | PASS: generated types, TypeScript, local/staging Wrangler dry-runs, 10 Node tests, and 2 workerd named Operator RPC tests |
+| `bun run check:container-runtime:json-compatibility-caller` | PASS: generated types, TypeScript, local/staging Wrangler dry-runs, 11 Node tests, and 2 workerd named Runner RPC tests |
+| `bun run check:container-runtime:json-compatibility-campaign` | PASS: 133 tests and 578 expectations across current v2, historical v1, mixed-version rejection, Caller-first evidence, bounded files, source chain, and self-tests |
+| `bun run check:container-runtime:json-compatibility-deployment-states` | PASS: 14 tests and 82 expectations; Plan/state shapes remain unchanged |
+| `bun run check` | PASS: complete repository gate, exit code 0 in 1,403.6 seconds |
+
+The workerd negative proves a malformed v1 or wrong-Plan approval is rejected
+with zero named Invoker calls. Offline tests additionally prove v1-domain
+signatures over a v2 subject, mixed contracts, validly re-signed wrong Plan
+metadata, digest-only resealing, request drift, key drift, and historical/current
+cross-pairing fail closed. The signer remains stdin-only, create-only, bounded,
+network-free, and deployment-free.
+
+No Cloudflare upload/deploy, secret read/write, remote RPC, Durable Object or
+Container mutation, provider/billing/storage request, traffic change, or
+Go/VPS cutover occurred. Remote transition execution/readback, account binding
+inventory, source signing/archive, and real isolated staging remain blocking.
+Production remains **NO-GO**.

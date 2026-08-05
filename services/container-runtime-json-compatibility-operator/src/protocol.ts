@@ -18,9 +18,13 @@ export const JSON_COMPATIBILITY_OPERATOR_PHASE_REQUEST_CONTRACT =
 export const JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1" as const;
 export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v1" as const;
+  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v2" as const;
 export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v1" as const;
+  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v2" as const;
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-plan-v5" as const;
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION =
+  4 as const;
 export const JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v2" as const;
 export const JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT =
@@ -56,8 +60,8 @@ export interface JsonCompatibilityOperatorCallerV1 {
   readonly privateRpcOnly: true;
 }
 
-export interface JsonCompatibilityOperatorPhaseApprovalSubjectV1 {
-  readonly schemaVersion: 1;
+export interface JsonCompatibilityOperatorPhaseApprovalSubjectV2 {
+  readonly schemaVersion: 2;
   readonly contract:
     typeof JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT;
   readonly environment: "staging";
@@ -70,6 +74,10 @@ export interface JsonCompatibilityOperatorPhaseApprovalSubjectV1 {
   };
   readonly caller: JsonCompatibilityOperatorCallerV1;
   readonly campaignIdSha256: string;
+  readonly planContract:
+    typeof JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT;
+  readonly planSchemaVersion:
+    typeof JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION;
   readonly planDigestSha256: string;
   readonly phaseExecutionId: string;
   readonly phaseOrdinal: 1 | 2 | 3 | 4;
@@ -83,12 +91,12 @@ export interface JsonCompatibilityOperatorPhaseApprovalSubjectV1 {
   readonly expiresAt: number;
 }
 
-export interface JsonCompatibilityOperatorPhaseApprovalEnvelopeV1 {
-  readonly schemaVersion: 1;
+export interface JsonCompatibilityOperatorPhaseApprovalEnvelopeV2 {
+  readonly schemaVersion: 2;
   readonly contract:
     typeof JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT;
   readonly algorithm: "Ed25519";
-  readonly subject: JsonCompatibilityOperatorPhaseApprovalSubjectV1;
+  readonly subject: JsonCompatibilityOperatorPhaseApprovalSubjectV2;
   readonly subjectSha256: string;
   readonly signerSpkiBase64url: string;
   readonly signatureBase64url: string;
@@ -99,7 +107,7 @@ export interface JsonCompatibilityOperatorAuthorizedPhaseRequestV1 {
   readonly contract:
     typeof JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT;
   readonly request: JsonCompatibilityOperatorPhaseRequestV1;
-  readonly approval: JsonCompatibilityOperatorPhaseApprovalEnvelopeV1;
+  readonly approval: JsonCompatibilityOperatorPhaseApprovalEnvelopeV2;
 }
 
 export interface JsonCompatibilityOperatorPhaseStatusRequestV1 {
@@ -184,7 +192,7 @@ export function parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1(
     schemaVersion: 1,
     contract: JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
     request: parseJsonCompatibilityOperatorPhaseRequestV1(value.request),
-    approval: parseJsonCompatibilityOperatorPhaseApprovalEnvelopeV1(
+    approval: parseJsonCompatibilityOperatorPhaseApprovalEnvelopeV2(
       value.approval,
     ),
   };
@@ -213,9 +221,9 @@ export function parseJsonCompatibilityOperatorPhaseStatusRequestV1(
   };
 }
 
-export function parseJsonCompatibilityOperatorPhaseApprovalEnvelopeV1(
+export function parseJsonCompatibilityOperatorPhaseApprovalEnvelopeV2(
   input: unknown,
-): JsonCompatibilityOperatorPhaseApprovalEnvelopeV1 {
+): JsonCompatibilityOperatorPhaseApprovalEnvelopeV2 {
   const value = exactRecord(input, [
     "schemaVersion",
     "contract",
@@ -225,14 +233,14 @@ export function parseJsonCompatibilityOperatorPhaseApprovalEnvelopeV1(
     "signerSpkiBase64url",
     "signatureBase64url",
   ]);
-  literal(value.schemaVersion, 1);
+  literal(value.schemaVersion, 2);
   literal(
     value.contract,
     JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
   );
   literal(value.algorithm, "Ed25519");
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
     algorithm: "Ed25519",
     subject: parseApprovalSubject(value.subject),
@@ -244,7 +252,7 @@ export function parseJsonCompatibilityOperatorPhaseApprovalEnvelopeV1(
 
 function parseApprovalSubject(
   input: unknown,
-): JsonCompatibilityOperatorPhaseApprovalSubjectV1 {
+): JsonCompatibilityOperatorPhaseApprovalSubjectV2 {
   const value = exactRecord(input, [
     "schemaVersion",
     "contract",
@@ -255,6 +263,8 @@ function parseApprovalSubject(
     "operator",
     "caller",
     "campaignIdSha256",
+    "planContract",
+    "planSchemaVersion",
     "planDigestSha256",
     "phaseExecutionId",
     "phaseOrdinal",
@@ -277,7 +287,7 @@ function parseApprovalSubject(
     "privateRpcOnly",
   ]);
   return {
-    schemaVersion: literal(value.schemaVersion, 1),
+    schemaVersion: literal(value.schemaVersion, 2),
     contract: literal(
       value.contract,
       JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
@@ -314,6 +324,14 @@ function parseApprovalSubject(
       privateRpcOnly: literal(caller.privateRpcOnly, true),
     },
     campaignIdSha256: digest(value.campaignIdSha256),
+    planContract: literal(
+      value.planContract,
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT,
+    ),
+    planSchemaVersion: literal(
+      value.planSchemaVersion,
+      JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
+    ),
     planDigestSha256: digest(value.planDigestSha256),
     phaseExecutionId: token(value.phaseExecutionId),
     phaseOrdinal: integer(value.phaseOrdinal, 1, 4) as 1 | 2 | 3 | 4,

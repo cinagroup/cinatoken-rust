@@ -13,6 +13,12 @@ import {
   validateJsonCompatibilityCallerStatusReceipt,
 } from "../tools/container_runtime_json_compatibility_caller_invocation.mjs";
 import {
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_V1_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_V1_CONTRACT,
+} from "../tools/container_runtime_json_compatibility_operator_invocation.mjs";
+import {
   getJsonCompatibilityOperatorPhaseStatus,
   invokeJsonCompatibilityOperatorPhase,
 } from "../services/container-runtime-json-compatibility-operator/src/operator.ts";
@@ -331,9 +337,65 @@ function resealRunnerReceipt(receipt) {
   receipt.receiptSha256 = sha256Canonical({ ...body, runnerBodySha256 });
 }
 
+function rewriteDirectCallerApprovalAsV1(callerReceipt) {
+  const runnerReceipt = callerReceipt.runnerReceipt;
+  const operatorReceipt = runnerReceipt.operatorReceipt;
+  const authorized = runnerReceipt.authorizedPhaseRequest;
+  const approval = authorized.approval;
+  approval.schemaVersion = 1;
+  approval.contract =
+    JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_V1_CONTRACT;
+  approval.subject.schemaVersion = 1;
+  approval.subject.contract =
+    JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_V1_CONTRACT;
+  delete approval.subject.planContract;
+  delete approval.subject.planSchemaVersion;
+  approval.subjectSha256 = sha256Canonical(approval.subject);
+
+  Object.assign(operatorReceipt.authorization, {
+    approvalEnvelope: structuredClone(approval),
+    approvalEnvelopeSha256: sha256Canonical(approval),
+    approvalSubjectSha256: approval.subjectSha256,
+  });
+  const {
+    operatorBodySha256: _oldBodySha256,
+    receiptSha256: _oldReceiptSha256,
+    ...operatorBody
+  } = operatorReceipt;
+  operatorReceipt.operatorBodySha256 = sha256Canonical(operatorBody);
+  const { receiptSha256: _ignored, ...operatorSubject } = operatorReceipt;
+  operatorReceipt.receiptSha256 = sha256Canonical(operatorSubject);
+
+  runnerReceipt.authorizedPhaseRequestSha256 = sha256Canonical(authorized);
+  runnerReceipt.operatorReceiptSha256 = sha256Canonical(operatorReceipt);
+  resealRunnerReceipt(runnerReceipt);
+  callerReceipt.authorizedPhaseRequestSha256 =
+    runnerReceipt.authorizedPhaseRequestSha256;
+  callerReceipt.runnerReceiptSha256 = sha256Canonical(runnerReceipt);
+  resealCallerReceipt(callerReceipt);
+}
+
 describe("JSON compatibility Caller offline receipt validation", () => {
   test("validates a direct Caller receipt through the complete Runner chain", async () => {
     const { plan, callerReceipt } = await invocationFixtures();
+    const authorized = callerReceipt.runnerReceipt.authorizedPhaseRequest;
+    expect(authorized).toMatchObject({
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1",
+      approval: {
+        schemaVersion: 2,
+        contract:
+          JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+        subject: {
+          schemaVersion: 2,
+          contract:
+            JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+          planContract: plan.contract,
+          planSchemaVersion: plan.schemaVersion,
+        },
+      },
+    });
     expect(validateJsonCompatibilityCallerInvocationReceipt(
       plan,
       callerReceipt,
@@ -419,6 +481,16 @@ describe("JSON compatibility Caller offline receipt validation", () => {
         operatorInvokePhaseCalled: false,
       },
     });
+  });
+
+  test("rejects a resealed current approval v1 through the Caller chain", async () => {
+    const currentV1 = await invocationFixtures();
+    rewriteDirectCallerApprovalAsV1(currentV1.callerReceipt);
+    expect(() => validateJsonCompatibilityCallerInvocationReceipt(
+      currentV1.plan,
+      currentV1.callerReceipt,
+      EXPECTED_CALLER,
+    )).toThrow(/approval envelope schema/);
   });
 
   test("anchors Caller version and config in the validated Plan", async () => {

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createPrivateKey, sign as signSignature } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -10,6 +11,7 @@ import {
   sha256Canonical,
 } from "../tools/container_runtime_json_compatibility_campaign.mjs";
 import {
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
   signJsonCompatibilityOperatorApproval,
   validateJsonCompatibilityOperatorApprovalArtifact,
 } from "../tools/container_runtime_json_compatibility_operator_approval.mjs";
@@ -28,6 +30,12 @@ const TEST_SPKI_SHA256 =
   "471850d2dcfe546734941e2d44fde594cb3e4445900da72536ac9683f6be5d10";
 const TEST_PKCS8_BASE64URL =
   "MC4CAQAwBQYDK2VwBCIEIM79XI3U3zwizihw3d_2C1BkrjVK11rROOfxqGj5nW5v";
+const APPROVAL_SUBJECT_V1_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v1";
+const APPROVAL_ENVELOPE_V1_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v1";
+const APPROVAL_SIGNATURE_V1_DOMAIN =
+  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v1\n";
 const NOW = new Date("2026-08-04T08:00:00Z");
 const temporaryDirectories = [];
 
@@ -147,8 +155,30 @@ async function fixture() {
   };
 }
 
+function resealAuthorizedRequest(authorized, signatureDomain) {
+  const candidate = structuredClone(authorized);
+  candidate.approval.subjectSha256 = sha256Canonical(
+    candidate.approval.subject,
+  );
+  const privateKey = createPrivateKey({
+    key: Buffer.from(TEST_PKCS8_BASE64URL, "base64url"),
+    format: "der",
+    type: "pkcs8",
+  });
+  const payload = Buffer.from(
+    `${signatureDomain}${canonicalJson(candidate.approval.subject)}`,
+    "utf8",
+  );
+  candidate.approval.signatureBase64url = signSignature(
+    null,
+    payload,
+    privateKey,
+  ).toString("base64url");
+  return candidate;
+}
+
 describe("offline JSON compatibility operator approval", () => {
-  test("binds the final plan, exact runner, phase request, and command", async () => {
+  test("binds Plan v5/schema 4, exact runner, phase request, and command", async () => {
     const value = await fixture();
     const authorized = signJsonCompatibilityOperatorApproval({
       ...value,
@@ -158,6 +188,27 @@ describe("offline JSON compatibility operator approval", () => {
       value.plan,
       authorized,
     )).toEqual(authorized);
+    expect(JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN).toBe(
+      "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v2\n",
+    );
+    expect(authorized).toMatchObject({
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1",
+      approval: {
+        schemaVersion: 2,
+        contract:
+          "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v2",
+        subject: {
+          schemaVersion: 2,
+          contract:
+            "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v2",
+          planContract:
+            "cinatoken-container-runtime-json-compatibility-plan-v5",
+          planSchemaVersion: 4,
+        },
+      },
+    });
     expect(authorized.approval.subject).toMatchObject({
       planDigestSha256: value.plan.planDigestSha256,
       caller: value.plan.privateServices.runner,
@@ -177,6 +228,94 @@ describe("offline JSON compatibility operator approval", () => {
         value.plan.privateServices.operator.versionId,
       ),
     );
+  });
+
+  test("rejects v1 downgrade, cross-domain signatures, and resealed plan metadata", async () => {
+    const value = await fixture();
+    const authorized = signJsonCompatibilityOperatorApproval({
+      ...value,
+      now: NOW,
+    });
+
+    const wrapperSchemaDrift = structuredClone(authorized);
+    wrapperSchemaDrift.schemaVersion = 2;
+    expect(() => validateJsonCompatibilityOperatorApprovalArtifact(
+      value.plan,
+      wrapperSchemaDrift,
+    )).toThrow(/authorized request schema/u);
+
+    const wrapperContractDrift = structuredClone(authorized);
+    wrapperContractDrift.contract =
+      "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v2";
+    expect(() => validateJsonCompatibilityOperatorApprovalArtifact(
+      value.plan,
+      wrapperContractDrift,
+    )).toThrow(/authorized request contract/u);
+
+    const v1 = structuredClone(authorized);
+    v1.approval.schemaVersion = 1;
+    v1.approval.contract = APPROVAL_ENVELOPE_V1_CONTRACT;
+    v1.approval.subject.schemaVersion = 1;
+    v1.approval.subject.contract = APPROVAL_SUBJECT_V1_CONTRACT;
+    delete v1.approval.subject.planContract;
+    delete v1.approval.subject.planSchemaVersion;
+    expect(() => validateJsonCompatibilityOperatorApprovalArtifact(
+      value.plan,
+      resealAuthorizedRequest(v1, APPROVAL_SIGNATURE_V1_DOMAIN),
+    )).toThrow(/envelope schema/u);
+
+    const envelopeDowngrade = structuredClone(authorized);
+    envelopeDowngrade.approval.contract = APPROVAL_ENVELOPE_V1_CONTRACT;
+    expect(() => validateJsonCompatibilityOperatorApprovalArtifact(
+      value.plan,
+      envelopeDowngrade,
+    )).toThrow(/envelope contract/u);
+
+    const subjectSchemaDowngrade = structuredClone(authorized);
+    subjectSchemaDowngrade.approval.subject.schemaVersion = 1;
+    expect(() => validateJsonCompatibilityOperatorApprovalArtifact(
+      value.plan,
+      resealAuthorizedRequest(
+        subjectSchemaDowngrade,
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
+      ),
+    )).toThrow(/subject schema/u);
+
+    const subjectDowngrade = structuredClone(authorized);
+    subjectDowngrade.approval.subject.contract = APPROVAL_SUBJECT_V1_CONTRACT;
+    expect(() => validateJsonCompatibilityOperatorApprovalArtifact(
+      value.plan,
+      resealAuthorizedRequest(
+        subjectDowngrade,
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
+      ),
+    )).toThrow(/subject contract/u);
+
+    expect(() => validateJsonCompatibilityOperatorApprovalArtifact(
+      value.plan,
+      resealAuthorizedRequest(authorized, APPROVAL_SIGNATURE_V1_DOMAIN),
+    )).toThrow(/signature is invalid/u);
+
+    for (const [field, replacement, error] of [
+      [
+        "planContract",
+        "cinatoken-container-runtime-json-compatibility-plan-v4",
+        /plan contract/u,
+      ],
+      ["planSchemaVersion", 3, /plan schema version/u],
+      ["planDigestSha256", "ab".repeat(32), /planDigestSha256/u],
+    ]) {
+      const wrongPlanMetadata = structuredClone(authorized);
+      wrongPlanMetadata.approval.subject[field] = replacement;
+      const resealed = resealAuthorizedRequest(
+        wrongPlanMetadata,
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
+      );
+      expect(() => validateJsonCompatibilityOperatorApprovalArtifact(
+        value.plan,
+        resealed,
+      )).toThrow(error);
+    }
   });
 
   test("rejects request, caller, signature, config, and trust-anchor drift", async () => {
@@ -245,6 +384,10 @@ describe("offline JSON compatibility operator approval", () => {
 
   test("keeps historical plans readable but refuses to sign new execution approval", async () => {
     const value = await fixture();
+    const currentAuthorized = signJsonCompatibilityOperatorApproval({
+      ...value,
+      now: NOW,
+    });
     const planV4 = structuredClone(value.plan);
     planV4.schemaVersion = 3;
     planV4.contract =
@@ -265,6 +408,10 @@ describe("offline JSON compatibility operator approval", () => {
       request: requestV4,
       now: NOW,
     })).toThrow(/current plan contract/u);
+    expect(() => validateJsonCompatibilityOperatorApprovalArtifact(
+      planV4,
+      currentAuthorized,
+    )).toThrow(/current plan contract/u);
 
     const planV3 = structuredClone(planV4);
     planV3.schemaVersion = 2;
@@ -322,6 +469,20 @@ describe("offline JSON compatibility operator approval", () => {
     expect(source).toBe(`${canonicalJson(authorized)}\n`);
     expect(result).toMatchObject({
       ok: true,
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1",
+      planContract:
+        "cinatoken-container-runtime-json-compatibility-plan-v5",
+      planSchemaVersion: 4,
+      approvalEnvelopeContract:
+        "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v2",
+      approvalEnvelopeSchemaVersion: 2,
+      approvalSubjectContract:
+        "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v2",
+      approvalSubjectSchemaVersion: 2,
+      approvalSignatureDomain:
+        "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v2\n",
       privateKeySource: "stdin",
       privateKeyPersisted: false,
       networkRequestsPerformed: false,

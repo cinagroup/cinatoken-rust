@@ -17,18 +17,24 @@ export const JSON_COMPATIBILITY_OPERATOR_PHASE_REQUEST_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-phase-request-v1";
 export const JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1";
-export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT =
+export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_V1_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v1";
-export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT =
+export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_V1_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v1";
+export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v2";
+export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v2";
 export const JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v2";
 export const JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-phase-status-request-v1";
 export const JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_RECEIPT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-phase-status-receipt-v1";
-export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN =
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_V1_SIGNATURE_DOMAIN =
   "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v1\n";
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN =
+  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v2\n";
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER =
   "cinatoken-json-compatibility-campaign-approval-authority-staging";
 
@@ -669,6 +675,7 @@ function validateOperatorAuthorization(
   label,
   purpose = "invoke",
 ) {
+  const approvalProtocol = approvalProtocolForPlan(plan);
   const authorization = record(input, `${label} authorization`);
   exactKeys(authorization, [
     "contract",
@@ -704,10 +711,14 @@ function validateOperatorAuthorization(
     "signerSpkiBase64url",
     "signatureBase64url",
   ], `${label} approval envelope`);
-  equal(envelope.schemaVersion, 1, `${label} approval envelope schema`);
+  equal(
+    envelope.schemaVersion,
+    approvalProtocol.schemaVersion,
+    `${label} approval envelope schema`,
+  );
   equal(
     envelope.contract,
-    JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+    approvalProtocol.envelopeContract,
     `${label} approval envelope contract`,
   );
   equal(envelope.algorithm, "Ed25519", `${label} approval algorithm`);
@@ -719,6 +730,7 @@ function validateOperatorAuthorization(
     requestSha256,
     commandIdSha256,
     label,
+    approvalProtocol,
   );
   sha256(envelope.subjectSha256, `${label} approval subject digest`);
   equal(
@@ -754,7 +766,7 @@ function validateOperatorAuthorization(
     || !verifySignature(
       null,
       Buffer.from(
-        `${JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN}${canonicalJson(subject)}`,
+        `${approvalProtocol.signatureDomain}${canonicalJson(subject)}`,
         "utf8",
       ),
       publicKey,
@@ -820,21 +832,42 @@ function validateApprovalSubject(
   requestSha256,
   commandIdSha256,
   label,
+  approvalProtocol,
 ) {
   const subject = record(input, `${label} approval subject`);
   exactKeys(subject, [
     "schemaVersion", "contract", "environment", "issuer", "audience",
     "keyId", "operator", "caller", "campaignIdSha256",
-    "planDigestSha256", "phaseExecutionId", "phaseOrdinal", "phaseId",
+    "planDigestSha256",
+    ...(approvalProtocol.planBound
+      ? ["planContract", "planSchemaVersion"]
+      : []),
+    "phaseExecutionId", "phaseOrdinal", "phaseId",
     "requestSha256", "commandIdSha256", "topologyReadbackSha256",
     "beforeContextSha256", "issuedAt", "notBefore", "expiresAt",
   ], `${label} approval subject`);
-  equal(subject.schemaVersion, 1, `${label} approval subject schema`);
+  equal(
+    subject.schemaVersion,
+    approvalProtocol.schemaVersion,
+    `${label} approval subject schema`,
+  );
   equal(
     subject.contract,
-    JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+    approvalProtocol.subjectContract,
     `${label} approval subject contract`,
   );
+  if (approvalProtocol.planBound) {
+    equal(
+      subject.planContract,
+      JSON_COMPATIBILITY_PLAN_CONTRACT,
+      `${label} approval plan contract`,
+    );
+    equal(
+      subject.planSchemaVersion,
+      4,
+      `${label} approval plan schema version`,
+    );
+  }
   equal(subject.environment, "staging", `${label} approval environment`);
   equal(subject.issuer, plan.operatorApproval.issuer, `${label} approval issuer`);
   equal(subject.audience, plan.operatorApproval.audience, `${label} approval audience`);
@@ -864,6 +897,33 @@ function validateApprovalSubject(
     integer(subject[name], 0, Number.MAX_SAFE_INTEGER, `${label} approval ${name}`);
   }
   return subject;
+}
+
+function approvalProtocolForPlan(plan) {
+  if (
+    plan.schemaVersion === 4
+    && plan.contract === JSON_COMPATIBILITY_PLAN_CONTRACT
+  ) {
+    return {
+      schemaVersion: 2,
+      subjectContract:
+        JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+      envelopeContract:
+        JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+      signatureDomain:
+        JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
+      planBound: true,
+    };
+  }
+  return {
+    schemaVersion: 1,
+    subjectContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_V1_CONTRACT,
+    envelopeContract:
+      JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_V1_CONTRACT,
+    signatureDomain: JSON_COMPATIBILITY_OPERATOR_APPROVAL_V1_SIGNATURE_DOMAIN,
+    planBound: false,
+  };
 }
 
 function validateOperator(

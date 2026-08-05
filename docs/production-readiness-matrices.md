@@ -1558,3 +1558,19 @@ contracts. It does not authorize a route, remote migration, or traffic shift.
 | Mutation atomicity | Password changes/resets, role changes, disable and soft delete atomically increment the session generation in the same D1 statement; 0074 remains the five-effect registration linearization point and 0075 independently rechecks exact Root generation | Run deployed stale-session/browser concurrency plus registration response-loss exact `5/0` campaigns | Local pass; remote blocked |
 | Privacy | Cookie, raw `sid`, session secret, username, raw IP and assertion excluded from proof contract | Staging log/trace/metric/evidence-bundle redaction campaign and retention/legal approval | Local contract |
 | Promotion | No route, binding, key, remote D1 apply, deployment, traffic or Go/VPS change | Complete ordered staging campaign and independent security/SRE/database/privacy/finance/release/rollback approvals | **NO-GO** |
+
+## 2026-08-05 JSON Campaign Approval v2 Overlay
+
+This matrix advances only the local JSON compatibility campaign authorization
+rows. It grants no Cloudflare deployment or production authority.
+
+| Control | Current local evidence | Production implementation/evidence still required | Decision |
+|---|---|---|---|
+| Plan meaning | Ed25519 subject v2 binds Plan v5 contract, schema 4, exact digest, request, phase, Runner and Operator identities, topology/context, command and time window | Independent owner ceremony, managed key lifecycle and retained approved Plan artifact | Local pass; remote open |
+| Downgrade closure | Plan v5 rejects approval v1; Plan v4/v3 and direct v2 retain v1 historical reads; mixed versions and cross-domain signatures fail | Re-run negatives against uploaded N/N-1 versions and retained remote receipts | Local pass; remote open |
+| Runtime side effects | Node and real workerd tests prove malformed v1/wrong-Plan input reaches zero Invoker calls; valid v2 reaches exactly one named binding call | Remote invocation counters, trace correlation, response-loss and restart drill | Local pass; remote open |
+| Signer custody | Current-only signer validates Plan/config/trust pins, reads bounded private key from non-TTY stdin, clears it, writes create-only canonical JSON and performs no network action | Managed isolated signer, phishing-resistant owner approval, rotation/revocation and immutable audit evidence | Foundation only |
+| Private transport | Caller -> Runner -> Operator -> Invoker uses named entrypoints and Service Bindings; default entries remain inert and tracked gates false | Account-wide binding inventory, exact uploaded-version/config/route/secret-presence readback and least-capability review | Local pass; remote blocked |
+| State transitions | Plan v5 binds state-plan v2 and 18 dark/status/execution artifacts | Fail-closed executor for only four frozen transitions, owner approval, authenticated readback and immutable receipts | **Blocked** |
+| Campaign evidence | Caller-first packet/source-manifest v3 validates full approval/receipt chain; historical packet/manifest v2 remains read only | Signed topology/context, source signer and revocation, locked archive, real four-phase and rollback campaigns | **Blocked** |
+| Promotion | No credential, remote RPC, upload, deployment, DO/Container/provider/financial/storage/traffic mutation or Go/VPS change occurred | Complete remote campaign, SLO/cost/security/privacy/finance/rollback evidence and independent approvals | **NO-GO** |

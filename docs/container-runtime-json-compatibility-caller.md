@@ -129,37 +129,38 @@ bun run check:container-runtime:json-compatibility-campaign
 bun run check:container-runtime:json-compatibility-deployment-states
 ```
 
-Current results are 126 campaign/source/config tests with 538 expectations,
+Current results are 133 campaign/source/config tests with 578 expectations,
 14 deployment-state tests with 82 expectations, and Caller service checks with
 11 Node plus 2 workerd tests. The complete root `bun run check` passed with
-exit code 0 in 1,381.4 seconds.
+exit code 0 in 1,403.6 seconds.
 
 These are local and dry-run gates. They do not prove account-level binding
 reachability or a deployed version.
 
 ## Remaining NO-GO Gates
 
+Approval subject/envelope v2 is now implemented locally. Plan v5/schema 4 is
+part of the signed subject, the signature domain is v2, Plan v5 approval v1 is
+rejected, and historical Plan v4/v3/v2 approval v1 remains read only. See
+`docs/container-runtime-json-compatibility-operator-approval-v2.md`.
+
 Before isolated staging execution:
 
-1. Upgrade the current approval subject/envelope so the runtime signature
-   explicitly binds Plan v5/schema 4, while keeping approval v1 historical and
-   read only. The current signer already refuses non-current plans and signs
-   the exact plan digest, but protocol-level version binding is stronger.
-2. Implement the fail-closed remote transition executor for only the four
+1. Implement the fail-closed remote transition executor for only the four
    frozen state transitions, including owner approval, source authentication,
    authenticated remote readback, and immutable transition receipts.
-3. Upload all 18 versions dark, then independently read back exact version,
+2. Upload all 18 versions dark, then independently read back exact version,
    config, entrypoint, binding target, route absence, gate state, secret
    presence without values, and Durable Object migrations.
-4. Produce the complete account binding inventory and prove no unauthorized
+3. Produce the complete account binding inventory and prove no unauthorized
    Worker has equivalent reachability.
-5. Implement exact topology deployment/readback and independent before/after
+4. Implement exact topology deployment/readback and independent before/after
    context collection.
-6. Add source signing, signer revocation evidence, immutable archive
+5. Add source signing, signer revocation evidence, immutable archive
    publication, retention, and readback.
-7. Run the real baseline, mixed, candidate, and rollback campaign plus replay,
+6. Run the real baseline, mixed, candidate, and rollback campaign plus replay,
    ambiguity, eviction, drift, response-loss, drain, and rollback negatives.
-8. Complete the wider provider, billing, storage, SLO/cost, security/privacy,
+7. Complete the wider provider, billing, storage, SLO/cost, security/privacy,
    owner approval, Go/VPS drain, and production cutover gates.
 
 Until every remote gate passes, all tracked campaign gates stay false,

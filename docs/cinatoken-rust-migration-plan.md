@@ -28463,3 +28463,51 @@ authenticated version/config/binding readback, account binding inventory,
 topology/context collectors, source signing, immutable archive, and a real
 four-phase staging campaign remain hard gates. No remote or production state
 changed; Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-08-05 Approval v2 Plan-Meaning Boundary
+
+This section supersedes the preceding approval-v2 blocker for local
+implementation status. Plan v5 itself remains byte- and shape-stable. The
+authorized Operator request wrapper remains v1, while its signed subject and
+envelope are now v2/schema 2 with a distinct v2 signature domain.
+
+The v2 subject retains the exact Plan digest and additionally requires:
+
+```text
+planContract      cinatoken-container-runtime-json-compatibility-plan-v5
+planSchemaVersion 4
+```
+
+The offline signer validates the actual Plan v5/schema 4 document, frozen
+Operator config digest, Invoker version, approval KID, and approval SPKI digest
+before signing. It still accepts private key bytes only through bounded
+non-TTY stdin, creates a new canonical output file, clears the in-memory key
+buffer, and performs no network or deployment action.
+
+The Operator Worker accepts only approval v2 for the current runtime. It
+checks the Plan contract/schema literals, all request and phase bindings,
+Runner and Operator identities, trust anchor, time window, subject digest, and
+Ed25519 signature before the first Invoker Service Binding RPC. A v1 downgrade,
+mixed subject/envelope versions, wrong Plan metadata, v1-domain signature over
+a v2 subject, or resealed digest-only tampering fails without an Invoker call.
+
+Offline historical evidence remains version-directed: Plan v4/v3 uses
+approval v1, and Plan v2 remains historical direct-only v1. Historical plans
+cannot be passed to the current signer, and Plan v5 cannot consume approval
+v1. The complete contract and threat matrix is in
+`docs/container-runtime-json-compatibility-operator-approval-v2.md`.
+
+Focused acceptance passes 133 campaign/source/config tests with 578
+expectations, 14 deployment-state tests with 82 expectations, the Operator
+service's 16 Node plus 2 workerd tests, the Runner service's 10 Node plus 2
+workerd tests, and the Caller service's 11 Node plus 2 workerd tests. The
+Worker gates include generated type checks, TypeScript, named Service Binding
+RPC tests, and local/staging Wrangler dry-runs. The complete repository
+`bun run check` passes with exit code 0 in 1,403.6 seconds.
+
+This closes the local approval protocol ambiguity only. It does not provide
+the remote transition executor, authenticated version/config/binding readback,
+account binding inventory, topology/context collection, source signing and
+immutable archive, or a real four-phase staging campaign. No Cloudflare or
+production state changed; Go/VPS remains authoritative and production remains
+**NO-GO**.

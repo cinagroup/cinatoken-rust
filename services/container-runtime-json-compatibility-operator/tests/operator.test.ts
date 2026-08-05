@@ -12,12 +12,19 @@ import {
   JSON_COMPATIBILITY_INVOKER_SERVICE_NAME,
 } from "../../container-runtime-json-compatibility-permit-issuer/src/protocol";
 import {
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
   JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
   JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT,
   JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
   parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1,
   parseJsonCompatibilityOperatorPhaseRequestV1,
 } from "../src/protocol";
+import {
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
+} from "../src/authorization";
 import {
   COMMAND_ID_DOMAIN,
   JSON_COMPATIBILITY_OPERATOR_ISSUER,
@@ -90,6 +97,85 @@ describe("JSON compatibility private operator", () => {
     const authorized = await validAuthorizedOperatorRequest(request);
     expect(parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1(authorized))
       .toEqual(authorized);
+    expect(authorized).toMatchObject({
+      schemaVersion: 1,
+      approval: {
+        schemaVersion: 2,
+        contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+        subject: {
+          schemaVersion: 2,
+          contract:
+            JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+          planContract: JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT,
+          planSchemaVersion:
+            JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
+          planDigestSha256: request.execution.planDigestSha256,
+        },
+      },
+    });
+    expect(JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN).toBe(
+      "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v2\n",
+    );
+  });
+
+  test("rejects legacy or invalid plan-bound approvals before every Invoker RPC", async () => {
+    const authorized = await validAuthorizedOperatorRequest();
+    const legacy = structuredClone(authorized);
+    const legacyApproval = record(legacy.approval);
+    const legacySubject = record(legacyApproval.subject);
+    legacyApproval.schemaVersion = 1;
+    legacyApproval.contract =
+      "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v1";
+    legacySubject.schemaVersion = 1;
+    legacySubject.contract =
+      "cinatoken-container-runtime-json-compatibility-operator-phase-approval-subject-v1";
+    delete legacySubject.planContract;
+    delete legacySubject.planSchemaVersion;
+
+    const wrongPlanContract = structuredClone(authorized);
+    record(record(wrongPlanContract.approval).subject).planContract =
+      "cinatoken-container-runtime-json-compatibility-plan-v4";
+    const wrongPlanSchema = structuredClone(authorized);
+    record(record(wrongPlanSchema.approval).subject).planSchemaVersion = 3;
+    const missingPlanSchema = structuredClone(authorized);
+    delete record(record(missingPlanSchema.approval).subject).planSchemaVersion;
+
+    for (const candidate of [
+      legacy,
+      wrongPlanContract,
+      wrongPlanSchema,
+      missingPlanSchema,
+    ]) {
+      let invokeCalls = 0;
+      let statusCalls = 0;
+      const env = operatorEnv(
+        async () => {
+          invokeCalls += 1;
+          return {};
+        },
+        true,
+        async () => {
+          statusCalls += 1;
+          return {};
+        },
+      );
+      await expect(invokeJsonCompatibilityOperatorPhase(
+        env,
+        candidate,
+        runtimeSequence(NOW_MS),
+      )).rejects.toMatchObject({ code: "invalid_operator_phase_request" });
+      await expect(getJsonCompatibilityOperatorPhaseStatus(
+        env,
+        {
+          schemaVersion: 1,
+          contract: JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT,
+          authorizedPhaseRequest: candidate,
+        },
+        runtimeSequence(NOW_MS),
+      )).rejects.toMatchObject({ code: "invalid_operator_status_request" });
+      expect(invokeCalls).toBe(0);
+      expect(statusCalls).toBe(0);
+    }
   });
 
   test("derives a deterministic command and signs it for the existing verifier", async () => {
@@ -171,6 +257,20 @@ describe("JSON compatibility private operator", () => {
         gateName: "JSON_COMPATIBILITY_OPERATOR_ENABLED",
       },
       authorization: {
+        approvalEnvelope: {
+          schemaVersion: 2,
+          contract:
+            JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+          subject: {
+            schemaVersion: 2,
+            contract:
+              JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+            planContract: JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT,
+            planSchemaVersion:
+              JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
+            planDigestSha256: request.execution.planDigestSha256,
+          },
+        },
         issuer:
           "cinatoken-json-compatibility-campaign-approval-authority-staging",
         audience: JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,

@@ -26,6 +26,14 @@ import {
   validateJsonCompatibilityOperatorConfig,
 } from "./prepare_container_runtime_json_compatibility_operator_config.mjs";
 
+export {
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
+};
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION = 2;
+export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION = 4;
+
 const OPERATOR_SERVICE =
   "cinatoken-container-runtime-json-compatibility-operator-staging";
 const MAX_PRIVATE_KEY_BYTES = 64 * 1024;
@@ -38,13 +46,10 @@ export function signJsonCompatibilityOperatorApproval({
   keySlot = "current",
   now = new Date(),
 }) {
-  const plan = validateJsonCompatibilityCampaignPlan(planInput);
-  if (
-    plan.schemaVersion !== 4
-    || plan.contract !== JSON_COMPATIBILITY_PLAN_CONTRACT
-  ) {
-    throw new Error("operator approval signing requires the current plan contract");
-  }
+  const plan = validateCurrentApprovalPlan(
+    planInput,
+    "operator approval signing",
+  );
   const request = validateJsonCompatibilityOperatorPhaseRequest(
     plan,
     requestInput,
@@ -106,7 +111,7 @@ export function signJsonCompatibilityOperatorApproval({
   );
 
   const subject = {
-    schemaVersion: 1,
+    schemaVersion: JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION,
     contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
     environment: "staging",
     issuer: JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER,
@@ -118,6 +123,8 @@ export function signJsonCompatibilityOperatorApproval({
     },
     caller: structuredClone(plan.privateServices.runner),
     campaignIdSha256: request.execution.campaignIdSha256,
+    planContract: JSON_COMPATIBILITY_PLAN_CONTRACT,
+    planSchemaVersion: JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
     planDigestSha256: request.execution.planDigestSha256,
     phaseExecutionId: request.execution.phaseExecutionId,
     phaseOrdinal: request.execution.phase.ordinal,
@@ -143,7 +150,7 @@ export function signJsonCompatibilityOperatorApproval({
     throw new Error("operator approval signature self-verification failed");
   }
   const approval = {
-    schemaVersion: 1,
+    schemaVersion: JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION,
     contract: JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
     algorithm: "Ed25519",
     subject,
@@ -165,7 +172,10 @@ export function validateJsonCompatibilityOperatorApprovalArtifact(
   planInput,
   input,
 ) {
-  const plan = validateJsonCompatibilityCampaignPlan(planInput);
+  const plan = validateCurrentApprovalPlan(
+    planInput,
+    "operator approval artifact validation",
+  );
   const value = record(input, "authorized operator request");
   exactKeys(
     value,
@@ -192,7 +202,11 @@ export function validateJsonCompatibilityOperatorApprovalArtifact(
     "signerSpkiBase64url",
     "signatureBase64url",
   ], "operator approval envelope");
-  requireEqual(approval.schemaVersion, 1, "operator approval envelope schema");
+  requireEqual(
+    approval.schemaVersion,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION,
+    "operator approval envelope schema",
+  );
   requireEqual(
     approval.contract,
     JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT,
@@ -203,11 +217,16 @@ export function validateJsonCompatibilityOperatorApprovalArtifact(
   exactKeys(subject, [
     "schemaVersion", "contract", "environment", "issuer", "audience",
     "keyId", "operator", "caller", "campaignIdSha256",
-    "planDigestSha256", "phaseExecutionId", "phaseOrdinal", "phaseId",
+    "planContract", "planSchemaVersion", "planDigestSha256",
+    "phaseExecutionId", "phaseOrdinal", "phaseId",
     "requestSha256", "commandIdSha256", "topologyReadbackSha256",
     "beforeContextSha256", "issuedAt", "notBefore", "expiresAt",
   ], "operator approval subject");
-  requireEqual(subject.schemaVersion, 1, "operator approval subject schema");
+  requireEqual(
+    subject.schemaVersion,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_SCHEMA_VERSION,
+    "operator approval subject schema",
+  );
   requireEqual(
     subject.contract,
     JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_SUBJECT_CONTRACT,
@@ -217,6 +236,16 @@ export function validateJsonCompatibilityOperatorApprovalArtifact(
   requireEqual(subject.issuer, plan.operatorApproval.issuer, "approval issuer");
   requireEqual(subject.audience, plan.operatorApproval.audience, "approval audience");
   requireEqual(subject.keyId, plan.operatorApproval.keyId, "approval key ID");
+  requireEqual(
+    subject.planContract,
+    JSON_COMPATIBILITY_PLAN_CONTRACT,
+    "approval plan contract",
+  );
+  requireEqual(
+    subject.planSchemaVersion,
+    JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
+    "approval plan schema version",
+  );
   canonicalEqual(subject.operator, {
     serviceName: OPERATOR_SERVICE,
     versionId: plan.privateServices.operator.versionId,
@@ -230,7 +259,7 @@ export function validateJsonCompatibilityOperatorApprovalArtifact(
     );
   for (const [name, expected] of [
     ["campaignIdSha256", request.execution.campaignIdSha256],
-    ["planDigestSha256", request.execution.planDigestSha256],
+    ["planDigestSha256", plan.planDigestSha256],
     ["phaseExecutionId", request.execution.phaseExecutionId],
     ["phaseOrdinal", request.execution.phase.ordinal],
     ["phaseId", request.execution.phase.id],
@@ -291,6 +320,17 @@ export function validateJsonCompatibilityOperatorApprovalArtifact(
     throw new Error("operator approval signature is invalid");
   }
   return value;
+}
+
+function validateCurrentApprovalPlan(planInput, operation) {
+  const plan = validateJsonCompatibilityCampaignPlan(planInput);
+  if (
+    plan.schemaVersion !== JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION
+    || plan.contract !== JSON_COMPATIBILITY_PLAN_CONTRACT
+  ) {
+    throw new Error(`${operation} requires the current plan contract and schema`);
+  }
+  return plan;
 }
 
 function validateOperatorConfigForPlan(configInput, plan) {

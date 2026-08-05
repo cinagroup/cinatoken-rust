@@ -3,16 +3,18 @@ import {
   sha256Hex,
 } from "../../container-controller/src/json_compatibility_probe";
 import {
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION,
   JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
   type JsonCompatibilityOperatorAuthorizedPhaseRequestV1,
   type JsonCompatibilityOperatorCallerV1,
-  type JsonCompatibilityOperatorPhaseApprovalEnvelopeV1,
+  type JsonCompatibilityOperatorPhaseApprovalEnvelopeV2,
 } from "./protocol";
 
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER =
   "cinatoken-json-compatibility-campaign-approval-authority-staging" as const;
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN =
-  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v1\n" as const;
+  "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v2\n" as const;
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_MAX_LIFETIME_SECONDS = 600;
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_MIN_REMAINING_SECONDS = 180;
 export const JSON_COMPATIBILITY_OPERATOR_STATUS_RECOVERY_WINDOW_SECONDS = 86_400;
@@ -30,8 +32,8 @@ export interface JsonCompatibilityOperatorApprovalVerifierEnv {
   readonly JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256: string;
 }
 
-export interface VerifiedJsonCompatibilityOperatorApprovalV1 {
-  readonly envelope: JsonCompatibilityOperatorPhaseApprovalEnvelopeV1;
+export interface VerifiedJsonCompatibilityOperatorApprovalV2 {
+  readonly envelope: JsonCompatibilityOperatorPhaseApprovalEnvelopeV2;
   readonly envelopeSha256: string;
   readonly subjectSha256: string;
   readonly issuer: typeof JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER;
@@ -63,7 +65,7 @@ export async function verifyJsonCompatibilityOperatorApproval(
   expectedRequestSha256: string,
   expectedCommandIdSha256: string,
   nowMilliseconds: number,
-): Promise<VerifiedJsonCompatibilityOperatorApprovalV1> {
+): Promise<VerifiedJsonCompatibilityOperatorApprovalV2> {
   return await verifyJsonCompatibilityOperatorApprovalForPurpose(
     env,
     authorized,
@@ -82,7 +84,7 @@ export async function verifyJsonCompatibilityOperatorStatusApproval(
   expectedRequestSha256: string,
   expectedCommandIdSha256: string,
   nowMilliseconds: number,
-): Promise<VerifiedJsonCompatibilityOperatorApprovalV1> {
+): Promise<VerifiedJsonCompatibilityOperatorApprovalV2> {
   return await verifyJsonCompatibilityOperatorApprovalForPurpose(
     env,
     authorized,
@@ -102,7 +104,7 @@ async function verifyJsonCompatibilityOperatorApprovalForPurpose(
   expectedCommandIdSha256: string,
   nowMilliseconds: number,
   purpose: "invoke" | "status",
-): Promise<VerifiedJsonCompatibilityOperatorApprovalV1> {
+): Promise<VerifiedJsonCompatibilityOperatorApprovalV2> {
   const trust = requireApprovalTrust(env);
   const envelope = authorized.approval;
   const subject = envelope.subject;
@@ -113,6 +115,10 @@ async function verifyJsonCompatibilityOperatorApprovalForPurpose(
     || subject.operator.serviceName !== JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME
     || subject.operator.versionId !== operatorVersionId
     || subject.campaignIdSha256 !== request.execution.campaignIdSha256
+    || subject.planContract
+      !== JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_CONTRACT
+    || subject.planSchemaVersion
+      !== JSON_COMPATIBILITY_OPERATOR_APPROVAL_PLAN_SCHEMA_VERSION
     || subject.planDigestSha256 !== request.execution.planDigestSha256
     || subject.phaseExecutionId !== request.execution.phaseExecutionId
     || subject.phaseOrdinal !== request.execution.phase.ordinal
@@ -204,7 +210,7 @@ async function verifyJsonCompatibilityOperatorApprovalForPurpose(
 }
 
 export function operatorApprovalSigningPayload(
-  envelope: Pick<JsonCompatibilityOperatorPhaseApprovalEnvelopeV1, "subject">,
+  envelope: Pick<JsonCompatibilityOperatorPhaseApprovalEnvelopeV2, "subject">,
 ): Uint8Array {
   return new TextEncoder().encode(
     `${JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN}${canonicalJson(envelope.subject)}`,

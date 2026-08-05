@@ -2215,3 +2215,71 @@ remote binding inventory, real Version Metadata/config readback, source
 signing, immutable archive, and real staging recovery remain unverified.
 The mapping changes no production authority: Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-08-05 Plan-Bound Approval v2 Mapping Overlay
+
+This overlay supersedes the older statement that the campaign lacks an
+independently controlled phase approval and the later statement that the
+upstream Runner caller is absent. It does not supersede any remote-readiness,
+exactly-once, billing, provider, storage, or cutover warning.
+
+The source architecture provides the reusable design rules, not the campaign
+protocol itself:
+
+- cinaVibeSDK verifies signed OAuth state before accepting callback-controlled
+  input;
+- TypeScript Durable Objects own stateful coordination and recovery;
+- bindings carry internal capability calls; and
+- cryptographic verification uses Web Crypto at the Worker boundary.
+
+cinatoken-rust applies those rules to a stricter immutable campaign chain:
+
+```text
+offline approval signer
+  -> approval subject/envelope v2
+  -> private Caller Worker
+  -> private Runner Worker
+  -> private Operator Worker
+  -> Invoker campaign Durable Object
+  -> PermitIssuer Durable Object
+  -> Executor Durable Object
+  -> Controller shard Durable Objects
+  -> Rust Linux Containers
+```
+
+The approval is not a transport credential. The v2 Ed25519 subject binds the
+exact request and command plus Plan contract
+`cinatoken-container-runtime-json-compatibility-plan-v5`, Plan schema `4`, Plan
+digest, campaign, phase, topology/context readback, Operator version, Runner
+version/config, key ID, and bounded validity window. The Operator verifies it
+before its first Invoker RPC. Named Service Bindings provide private transport;
+the signed artifact is the application-authority proof that a future
+independently controlled owner ceremony must issue.
+
+This division preserves the target architecture. Caller, Runner, Operator,
+and all campaign/session Durable Objects remain TypeScript. Rust remains the
+replaceable Linux Container compute implementation. No approval verifier,
+session DO, or lifecycle coordinator is moved to Rust Wasm for stack
+uniformity.
+
+Plan-directed compatibility prevents downgrade ambiguity. Current Plan
+v5/schema 4 accepts only approval subject/envelope v2 and the v2 signature
+domain. Historical Plan v4/v3 and direct Plan v2 receipts retain approval v1
+readability, but historical plans cannot enter the signer and Plan v5 rejects
+approval v1. The authorized-request wrapper stays v1 because its outer shape
+is unchanged and the nested approval remains self-describing.
+
+Local workerd evidence proves invalid Plan metadata and approval v1 are
+rejected with zero Invoker calls. Offline evidence covers mixed versions,
+cross-domain signatures, validly re-signed wrong Plan metadata, trust drift,
+and historical/current cross-pairing. The complete repository `bun run check`
+passes with exit code 0 in 1,403.6 seconds. This proves the local protocol and
+side-effect boundary only.
+
+The next architecture gap is remote orchestration: deploy all 18 dark
+artifacts, independently read back versions/configs/entrypoints/bindings and
+route absence, execute only the four frozen state transitions, retain signed
+transition receipts, and prove the account binding inventory. Topology/context
+collection, source signing/revocation, immutable archive, the real campaign,
+provider/billing/storage convergence, and Go/VPS drain remain open. Production
+remains **NO-GO**.

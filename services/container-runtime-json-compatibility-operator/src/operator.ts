@@ -45,7 +45,7 @@ import {
   parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1,
   parseJsonCompatibilityOperatorPhaseStatusRequestV1,
   type JsonCompatibilityOperatorAuthorizedPhaseRequestV1,
-  type JsonCompatibilityOperatorPhaseApprovalEnvelopeV1,
+  type JsonCompatibilityOperatorPhaseApprovalEnvelopeV2,
   type JsonCompatibilityOperatorCallerV1,
   type JsonCompatibilityOperatorPhaseRequestV1,
   type JsonCompatibilityOperatorPhaseStatusRequestV1,
@@ -133,7 +133,7 @@ export interface JsonCompatibilityOperatorInvocationReceiptV2 {
   readonly authorization: {
     readonly contract:
       typeof JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT;
-    readonly approvalEnvelope: JsonCompatibilityOperatorPhaseApprovalEnvelopeV1;
+    readonly approvalEnvelope: JsonCompatibilityOperatorPhaseApprovalEnvelopeV2;
     readonly approvalEnvelopeSha256: string;
     readonly approvalSubjectSha256: string;
     readonly issuer: string;
@@ -189,7 +189,7 @@ export interface JsonCompatibilityOperatorPhaseStatusReceiptV1 {
   readonly authorization: {
     readonly contract:
       typeof JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT;
-    readonly approvalEnvelope: JsonCompatibilityOperatorPhaseApprovalEnvelopeV1;
+    readonly approvalEnvelope: JsonCompatibilityOperatorPhaseApprovalEnvelopeV2;
     readonly approvalEnvelopeSha256: string;
     readonly approvalSubjectSha256: string;
     readonly issuer: string;

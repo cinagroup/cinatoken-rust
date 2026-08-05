@@ -28725,8 +28725,9 @@ protocol. It does not implement the deployment leaf or authorize R1.
 The source-authentication request/proof is now v2 and is reconstructed
 identically during execution and terminal replay. It binds the operation and
 owner-authorized transition, exact Plan v5/state-plan v2, the full transition,
-account and source evidence, and a digest of the approved verifier service,
-key prefix, issuer/audience, current key, and bounded previous key. Cross-plan,
+account and source evidence, and digests of the approved verifier service,
+key prefix, issuer/audience, current key, bounded previous key, and exact
+Version Metadata identity. Cross-plan,
 cross-operation, cross-transition, and trust-policy substitution fail before
 R2 or deployment authority.
 
@@ -28745,13 +28746,13 @@ rejected; storage/crypto uncertainty is ambiguous. Both outcomes prevent an
 automatic transition retry.
 
 Local acceptance is 13 protocol tests/150 expectations, generated type and
-TypeScript checks, two 300.16 KiB / 49.25 KiB gzip dry-runs, 13 verifier Node
+TypeScript checks, two 301.25 KiB / 49.37 KiB gzip dry-runs, 13 verifier Node
 tests, three real Workerd/R2 tests, and the Transition Worker's eight Node plus
 two Workerd integration tests. The transition integration now executes the
 actual source verifier once against shared R2 and proves replay/status do not
 call it again. The deployment leaf remains mocked.
 
-The complete repository `bun run check` passes with exit code 0 in 1,588.8
+The complete repository `bun run check` passes with exit code 0 in 1,452.7
 seconds, covering the configured frontend, Workers/Workerd, supply-chain
 contracts, Rust workspace, and wasm32 checks. This remains local evidence.
 

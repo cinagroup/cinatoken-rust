@@ -6,9 +6,11 @@ import {
   createSourceAuthenticationFixture,
 } from "../../tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs";
 
+const sourceVerifierVersionId = "source-verifier-runtime-version-001";
 const fixture = await createSourceAuthenticationFixture({
   now: Math.floor(Date.now() / 1000),
   operationSeed: "source-verifier-workerd-operation",
+  sourceVerifierVersionId,
 });
 
 export default defineConfig({
@@ -30,7 +32,7 @@ export default defineConfig({
             fixture.sourceSignatureEnvelopeSha256,
           TEST_SOURCE_SIGNER_SPKI_SHA256: fixture.sourceSignerSpkiSha256,
           CF_VERSION_METADATA: {
-            id: "source-verifier-runtime-version-001",
+            id: sourceVerifierVersionId,
             tag: "runtime-test",
             timestamp: "2026-08-05T00:00:00.000Z",
           },

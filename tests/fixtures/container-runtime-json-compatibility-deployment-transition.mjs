@@ -54,6 +54,7 @@ export function buildSourceEvidence(accountIdSha256, transition) {
       : null,
     sourceSignatureEnvelopeSha256: digest("source-signature"),
     sourceVerifierPolicySha256: digest("source-verifier-policy"),
+    sourceVerifierIdentitySha256: digest("source-verifier-identity"),
     immutableSourceArchiveReceiptSha256: digest("source-archive-receipt"),
     artifactInventoryReadbackSha256: digest("artifact-inventory-readback"),
     accountBindingInventorySha256: digest("account-binding-inventory"),

@@ -45,12 +45,13 @@ proof v2. The canonical request binds:
 - transition and optional phase source-manifest digests;
 - all-18-artifact and account-wide binding-inventory digests;
 - external immutable-archive receipt and source-signature-envelope digests;
-- the approved verifier-policy digest; and
+- the approved verifier-policy and exact Version Metadata identity digests; and
 - the canonical request digest itself.
 
 The transition approval binds the final source-signature-envelope digest. The
-source signature binds the operation, plans, transition, evidence roots, and
-approved verifier policy. Execution and terminal-receipt replay reconstruct
+source signature binds the operation, plans, transition, evidence roots,
+approved verifier policy, and exact verifier deployment identity. Execution
+and terminal-receipt replay reconstruct
 the exact same v2 request. A proof for another operation, plan, transition,
 policy, or source bundle cannot be substituted.
 
@@ -108,8 +109,8 @@ The Worker fails closed in this order:
    default-off gates;
 2. validate Version Metadata, R2 binding, current key, and optional bounded
    previous-key window;
-3. recompute the verifier-policy digest and reject a non-approved policy before
-   any R2 read;
+3. recompute the verifier-policy and Version Metadata identity digests and
+   reject a non-approved policy or code version before any R2 read;
 4. accept at most 16 KiB of strict canonical request input;
 5. derive one bundle key from the approved envelope digest and perform only
    R2 `head` and `get`;
@@ -135,8 +136,9 @@ Source signatures have a maximum seven-day lifetime, require at least 15
 minutes remaining at verification, and bind evidence observed no more than one
 hour before signing. The previous trust key has an explicit `acceptUntil` and
 cannot overlap the current key ID or SPKI digest. The source request also binds
-the complete current/previous verifier policy, preventing an operator from
-silently changing trust while reusing an approval.
+the complete current/previous verifier policy and exact Worker version,
+preventing an operator from silently changing trust or code while reusing an
+approval.
 
 ## Local Acceptance
 
@@ -154,12 +156,12 @@ Current focused evidence on 2026-08-05 is:
 | --- | --- |
 | Transition protocol | 13 tests, 150 expectations; includes exact v2 request/proof replay, cross-operation/plan binding, and proof-time rejection |
 | Generated types and TypeScript | pass |
-| Source verifier dry-runs | local and staging pass; 300.16 KiB upload / 49.25 KiB gzip; both gates false |
+| Source verifier dry-runs | local and staging pass; 301.25 KiB upload / 49.37 KiB gzip; both gates false |
 | Source verifier Node tests | 3 files, 13 tests |
 | Source verifier Workerd/R2 tests | 1 file, 3 tests; canonical read-only verification, missing object, and revocation |
 | Transition Worker Node tests | 2 files, 8 tests |
 | Transition Worker Workerd integration | 1 file, 2 tests; real secondary verifier Worker plus shared R2 and real D1 |
-| Complete repository | `bun run check` passed with exit code 0 in 1,588.8 seconds |
+| Complete repository | `bun run check` passed with exit code 0 in 1,452.7 seconds |
 
 The integrated Workerd test seeds a canonical R2 bundle, routes the transition
 through the actual verifier named entrypoint, proves exactly one verifier call,

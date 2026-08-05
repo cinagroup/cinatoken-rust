@@ -4835,7 +4835,7 @@ R1 or any production authority.
 
 | Unit | Current local implementation | Required remote acceptance |
 | --- | --- | --- |
-| Request/proof | v2 canonical operation/authorization/Plan/state-plan/transition/evidence/policy binding; exact execution and replay reconstruction | Retained owner approval and independently reproduced request digest from remote artifacts |
+| Request/proof | v2 canonical operation/authorization/Plan/state-plan/transition/evidence/policy/exact-verifier-version binding; exact execution and replay reconstruction | Retained owner approval and independently reproduced request digest from remote artifacts |
 | Evidence profiles | `release-v1` before campaign; `campaign-closure-v1` with phase manifest v3 after campaign | Real transition and phase source manifests from authenticated remote readback |
 | Source verifier | Private named Worker; inert default; R2 head/get only; strict canonical bundle; pinned current/previous Ed25519 SPKI; double revocation check | Dark deploy and exact version/export/config/trust/R2/binding/route/caller readback |
 | Account inventory | Protocol requires pagination complete, collector/auth identities, page-chain and readback roots, service/route/binding sets | Least-privilege collector, retained raw pages, pagination proof and independent account-wide reconciliation |

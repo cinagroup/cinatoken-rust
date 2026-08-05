@@ -31,9 +31,11 @@ await build({
   },
   logLevel: "silent",
 });
+const sourceVerifierVersionId = "source-verifier-integration-version-001";
 const sourceFixture = await createSourceAuthenticationFixture({
   now: Math.floor(Date.now() / 1000),
   operationSeed: "deployment-transition-workerd-operation",
+  sourceVerifierVersionId,
 });
 const invocation = {
   campaignPlan: sourceFixture.campaignPlan,
@@ -136,7 +138,7 @@ export default defineConfig({
             compatibilityFlags: ["nodejs_compat"],
             bindings: {
               CF_VERSION_METADATA: {
-                id: "source-verifier-integration-version-001",
+                id: sourceVerifierVersionId,
                 tag: "runtime-integration-test",
                 timestamp: "2026-08-05T00:00:00.000Z",
               },

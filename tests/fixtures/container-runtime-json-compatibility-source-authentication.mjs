@@ -25,6 +25,7 @@ import {
   buildJsonCompatibilitySourceImmutableArchiveReceipt,
   buildJsonCompatibilitySourceSignatureEnvelope,
   buildJsonCompatibilitySourceSignatureSubject,
+  buildJsonCompatibilitySourceVerifierIdentity,
   buildJsonCompatibilitySourceVerifierPolicy,
   buildJsonCompatibilityTransitionSourceManifest,
   sourceAuthenticationBundleKey,
@@ -52,6 +53,7 @@ export async function createSourceAuthenticationFixture({
   operationSeed = "source-authentication-operation",
   invalidSourceSignature = false,
   sourceSignerTrustSlot = "current",
+  sourceVerifierVersionId = "source-verifier-version-001",
   evidenceObservedAt = now - 120,
   archiveLockedAt = now - 90,
   archiveReadbackAt = now - 60,
@@ -225,6 +227,11 @@ export async function createSourceAuthenticationFixture({
       current: sourcePolicyCurrent,
       previous: sourcePolicyPrevious,
     });
+    const sourceVerifierIdentity = buildJsonCompatibilitySourceVerifierIdentity({
+      versionId: sourceVerifierVersionId,
+      sourceVerifierPolicySha256:
+        sourceVerifierPolicy.sourceVerifierPolicySha256,
+    });
     const sourceEvidenceWithoutEnvelope = {
       schemaVersion: 2,
       contract:
@@ -238,6 +245,8 @@ export async function createSourceAuthenticationFixture({
       sourceSignatureEnvelopeSha256: digest("source-envelope-placeholder"),
       sourceVerifierPolicySha256:
         sourceVerifierPolicy.sourceVerifierPolicySha256,
+      sourceVerifierIdentitySha256:
+        sourceVerifierIdentity.sourceVerifierIdentitySha256,
       immutableSourceArchiveReceiptSha256:
         immutableSourceArchiveReceipt.immutableSourceArchiveReceiptSha256,
       artifactInventoryReadbackSha256:
@@ -344,6 +353,8 @@ export async function createSourceAuthenticationFixture({
       sourceSignatureKeyId: SOURCE_SIGNATURE_KEY_ID,
       sourcePolicyCurrent,
       sourcePolicyPrevious,
+      sourceVerifierVersionId,
+      sourceVerifierIdentity,
     };
   } finally {
     transitionPrivateKey?.fill(0);

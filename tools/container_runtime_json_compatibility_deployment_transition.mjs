@@ -1098,6 +1098,7 @@ function validateSourceEvidence(input, transition) {
     "phaseSourceManifestSha256",
     "sourceSignatureEnvelopeSha256",
     "sourceVerifierPolicySha256",
+    "sourceVerifierIdentitySha256",
     "immutableSourceArchiveReceiptSha256",
     "artifactInventoryReadbackSha256",
     "accountBindingInventorySha256",

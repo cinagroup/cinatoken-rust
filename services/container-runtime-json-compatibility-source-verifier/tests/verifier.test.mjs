@@ -124,7 +124,7 @@ describe("private source verifier", () => {
     expect(gated.counts).toEqual({ head: 0, get: 0 });
   });
 
-  test("rejects an unapproved verifier policy before reading R2", async () => {
+  test("rejects an unapproved policy or deployment identity before R2", async () => {
     const fixture = await createSourceAuthenticationFixture();
     const bucket = new MemorySourceBucket(fixture);
     const proof = await authenticateTransitionSource(
@@ -139,6 +139,20 @@ describe("private source verifier", () => {
       reasonCode: "source_verifier_policy_mismatch",
     });
     expect(bucket.counts).toEqual({ head: 0, get: 0 });
+
+    const identityBucket = new MemorySourceBucket(fixture);
+    const identityProof = await authenticateTransitionSource(
+      verifierEnv(fixture, identityBucket, {
+        CF_VERSION_METADATA: { id: "unapproved-source-verifier-version" },
+      }),
+      fixture.sourceAuthenticationRequest,
+      { now: () => fixture.now },
+    );
+    expect(identityProof).toMatchObject({
+      classification: "rejected",
+      reasonCode: "source_verifier_identity_mismatch",
+    });
+    expect(identityBucket.counts).toEqual({ head: 0, get: 0 });
   });
 });
 
@@ -191,7 +205,7 @@ class MemorySourceBucket {
 
 function verifierEnv(fixture, bucket, overrides = {}) {
   return {
-    CF_VERSION_METADATA: { id: "source-verifier-version-001" },
+    CF_VERSION_METADATA: { id: fixture.sourceVerifierVersionId },
     SOURCE_AUTHENTICATION_BUCKET: bucket,
     ENVIRONMENT: "staging",
     JSON_COMPATIBILITY_SOURCE_VERIFIER_ENABLED: "true",

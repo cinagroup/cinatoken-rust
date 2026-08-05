@@ -33,6 +33,8 @@ export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER =
   "cinatoken-json-compatibility-source-archive-authority-staging";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE =
   "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+export const JSON_COMPATIBILITY_SOURCE_VERIFIER_IDENTITY_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-source-verifier-identity-v1";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_MAX_LIFETIME_SECONDS =
   7 * 24 * 60 * 60;
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_MIN_REMAINING_SECONDS =
@@ -104,6 +106,26 @@ export function buildJsonCompatibilitySourceVerifierPolicy({
     previous,
   };
   return { ...subject, sourceVerifierPolicySha256: sha256Canonical(subject) };
+}
+
+export function buildJsonCompatibilitySourceVerifierIdentity({
+  versionId,
+  sourceVerifierPolicySha256,
+}) {
+  safeToken(versionId, "source verifier version ID");
+  sha256(sourceVerifierPolicySha256, "source verifier policy");
+  const subject = {
+    schemaVersion: SCHEMA_VERSION,
+    contract: JSON_COMPATIBILITY_SOURCE_VERIFIER_IDENTITY_CONTRACT,
+    environment: "staging",
+    serviceName: JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE,
+    versionId,
+    sourceVerifierPolicySha256,
+  };
+  return {
+    ...subject,
+    sourceVerifierIdentitySha256: sha256Canonical(subject),
+  };
 }
 
 export function buildJsonCompatibilityTransitionSourceManifest({
@@ -535,6 +557,7 @@ export function buildJsonCompatibilitySourceSignatureSubject({
     transitionSha256: request.transition.transitionSha256,
     accountIdSha256: source.accountIdSha256,
     sourceVerifierPolicySha256: source.sourceVerifierPolicySha256,
+    sourceVerifierIdentitySha256: source.sourceVerifierIdentitySha256,
     transitionSourceManifestSha256:
       source.transitionSourceManifestSha256,
     phaseSourceManifestSha256: source.phaseSourceManifestSha256,
@@ -924,7 +947,7 @@ function validateSignatureSubject(input) {
     "statePlanDigestSha256", "transitionId", "transitionOrdinal",
     "fromState", "toState", "transitionSha256", "accountIdSha256",
     "transitionSourceManifestSha256", "phaseSourceManifestSha256",
-    "sourceVerifierPolicySha256",
+    "sourceVerifierPolicySha256", "sourceVerifierIdentitySha256",
     "artifactInventoryReadbackSha256", "accountBindingInventorySha256",
     "immutableSourceArchiveReceiptSha256", "issuedAt", "notBefore",
     "expiresAt",
@@ -964,6 +987,7 @@ function buildJsonCompatibilitySourceSignatureSubjectFromFields(value) {
     ["transition", value.transitionSha256],
     ["account ID", value.accountIdSha256],
     ["source verifier policy", value.sourceVerifierPolicySha256],
+    ["source verifier identity", value.sourceVerifierIdentitySha256],
     ["transition source manifest", value.transitionSourceManifestSha256],
     ["artifact inventory", value.artifactInventoryReadbackSha256],
     ["account binding inventory", value.accountBindingInventorySha256],

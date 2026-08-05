@@ -5815,7 +5815,7 @@ inert default export, R2 `head/get` only, Version Metadata identity, exact
 current/previous Ed25519 trust, and independent default-false master/read
 gates. It returns strict source-authentication proof v2 bound to the complete
 operation, owner-approved transition, Plan v5, state-plan v2, source roots,
-and approved verifier-policy digest.
+and approved verifier-policy plus exact Version Metadata identity digests.
 
 Release transitions use a transition-source manifest and require no phase
 manifest. The two closure transitions require phase source-manifest v3 because
@@ -5827,13 +5827,13 @@ of retention. R2 is only a read cache and is not claimed to be WORM.
 Focused acceptance passes 13 transition-protocol tests with 150 expectations,
 13 source-verifier Node tests, three real Workerd/R2 verifier tests, and the
 Transition Worker's eight Node plus two Workerd/D1/R2 integration tests. Both
-source-verifier Wrangler dry-runs are 300.16 KiB / 49.25 KiB gzip with gates
+source-verifier Wrangler dry-runs are 301.25 KiB / 49.37 KiB gzip with gates
 false. The integrated runtime calls the actual verifier once; replay/status add
 no verifier calls. A dedicated pinned, least-privilege GitHub workflow covers
 the three focused gates.
 
 The complete repository `bun run check` also passes with exit code 0 in
-1,588.8 seconds, covering the configured frontend, Workers/Workerd,
+1,452.7 seconds, covering the configured frontend, Workers/Workerd,
 supply-chain contracts, Rust workspace, and wasm32 checks.
 
 This remains local evidence. The Cloudflare collector, isolated signer,

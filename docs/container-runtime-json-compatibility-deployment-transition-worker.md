@@ -123,11 +123,11 @@ Exact replay and status then add no downstream call. It also proves all three
 tables reject update/delete and that a disabled gate reaches neither D1 nor a
 Service Binding.
 
-The current local and staging transition dry-runs are 242.44 KiB upload /
+The current local and staging transition dry-runs are 242.48 KiB upload /
 40.64 KiB gzip with all three tracked gates false.
 
 After the real source-verifier integration, the complete repository
-`bun run check` passed again with exit code 0 in 1,588.8 seconds on
+`bun run check` passed again with exit code 0 in 1,452.7 seconds on
 2026-08-05. This supersedes only the local root-gate timing below; it does not
 add remote evidence.
 

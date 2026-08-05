@@ -9,6 +9,7 @@ import {
   JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE,
   JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER,
   JsonCompatibilitySourceAuthenticationProtocolError,
+  buildJsonCompatibilitySourceVerifierIdentity,
   buildJsonCompatibilitySourceVerifierPolicy,
   sourceAuthenticationBundleKey,
   sourceAuthenticationRevocationKey,
@@ -121,6 +122,10 @@ export async function authenticateTransitionSource(
       request.sourceEvidence.sourceVerifierPolicySha256,
       configuration.sourceVerifierPolicySha256,
     )) throw new SourceRejectedError("source_verifier_policy_mismatch");
+    if (!constantTimeHexEqual(
+      request.sourceEvidence.sourceVerifierIdentitySha256,
+      configuration.verifierIdentitySha256,
+    )) throw new SourceRejectedError("source_verifier_identity_mismatch");
     const loaded = await loadBundle(env, configuration, request, now);
     const signerSpkiSha256 = await verifyBundleSignature(
       env,
@@ -426,17 +431,6 @@ async function requireConfiguration(
       "source_verifier_trust_invalid",
     );
   }
-  const identity = {
-    schemaVersion: 1,
-    contract:
-      "cinatoken-container-runtime-json-compatibility-source-verifier-identity-v1",
-    serviceName: EXPECTED_SERVICE_NAME,
-    versionId: env.CF_VERSION_METADATA.id,
-    profileVersion: 1,
-    keyPrefix: EXPECTED_KEY_PREFIX,
-    current,
-    previous,
-  };
   const policy = buildJsonCompatibilitySourceVerifierPolicy({
     serviceName: EXPECTED_SERVICE_NAME,
     profileVersion: 1,
@@ -455,6 +449,10 @@ async function requireConfiguration(
         acceptUntil: previous.acceptUntil!,
       },
   });
+  const identity = buildJsonCompatibilitySourceVerifierIdentity({
+    versionId: env.CF_VERSION_METADATA.id,
+    sourceVerifierPolicySha256: policy.sourceVerifierPolicySha256,
+  });
   return {
     serviceName: EXPECTED_SERVICE_NAME,
     versionId: env.CF_VERSION_METADATA.id,
@@ -462,7 +460,7 @@ async function requireConfiguration(
     current,
     previous,
     sourceVerifierPolicySha256: policy.sourceVerifierPolicySha256,
-    verifierIdentitySha256: await sha256Canonical(identity),
+    verifierIdentitySha256: identity.sourceVerifierIdentitySha256,
   };
 }
 

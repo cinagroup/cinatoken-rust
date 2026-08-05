@@ -1599,7 +1599,7 @@ staging or production authority.
 
 | Control | Current local evidence | Production implementation/evidence still required | Decision |
 | --- | --- | --- | --- |
-| Request authority | Source request/proof v2 binds operation, owner authorization, Plan v5, state-plan v2, exact transition, evidence roots and approved verifier policy; execution/replay reconstruct identically | Retained owner approval and independent digest reconstruction from remote evidence | Local pass; remote open |
+| Request authority | Source request/proof v2 binds operation, owner authorization, Plan v5, state-plan v2, exact transition, evidence roots, approved verifier policy and exact Version Metadata identity; execution/replay reconstruct identically | Retained owner approval and independent digest reconstruction from remote evidence | Local pass; remote open |
 | Temporal profile | Release profiles require no impossible pre-campaign phase manifest; closure profiles require source-manifest v3 | Real release evidence before arm and separately approved closure evidence after archived campaign | Local contract |
 | Verifier isolation | Named route-free Worker, inert default, no credential/fetch, R2 head/get only, default-false master/read gates | Remote exact version/export/config/binding/route/caller readback and least-capability review | Local pass; remote blocked |
 | Trust and revocation | Approved current/previous policy digest, pinned Ed25519 SPKI, bounded previous window, double revocation check, seven-day maximum signature and 15-minute remaining window | Managed isolated signer, two-person ceremony, key rotation/revocation drill and retained audit evidence | Verification pass; issuer blocked |

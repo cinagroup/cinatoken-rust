@@ -42,6 +42,7 @@ export interface JsonCompatibilityDeploymentTransitionSourceEvidenceV2 {
   readonly phaseSourceManifestSha256: string | null;
   readonly sourceSignatureEnvelopeSha256: string;
   readonly sourceVerifierPolicySha256: string;
+  readonly sourceVerifierIdentitySha256: string;
   readonly immutableSourceArchiveReceiptSha256: string;
   readonly artifactInventoryReadbackSha256: string;
   readonly accountBindingInventorySha256: string;

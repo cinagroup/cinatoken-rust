@@ -59,6 +59,13 @@ export function buildJsonCompatibilitySourceVerifierPolicy(input: {
   readonly sourceVerifierPolicySha256: string;
 };
 
+export function buildJsonCompatibilitySourceVerifierIdentity(input: {
+  readonly versionId: string;
+  readonly sourceVerifierPolicySha256: string;
+}): Readonly<Record<string, unknown>> & {
+  readonly sourceVerifierIdentitySha256: string;
+};
+
 export function validateJsonCompatibilitySourceAuthenticationBundle(
   request: JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2,
   input: unknown,

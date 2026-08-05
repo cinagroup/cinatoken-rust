@@ -1,8 +1,10 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import {
+  getJsonCompatibilityPhaseStatus,
   invokeJsonCompatibilityPhase,
   type JsonCompatibilityInvokerEnv,
+  type JsonCompatibilityPrivateInvocationStatusReceiptV1,
   type JsonCompatibilityPrivateInvocationReceiptV1,
 } from "./invoker";
 
@@ -15,6 +17,13 @@ export class JsonCompatibilityCampaignInvokerEntrypoint
   ): Promise<JsonCompatibilityPrivateInvocationReceiptV1> {
     return await invokeJsonCompatibilityPhase(this.env, input);
   }
+
+  async getPhaseStatus(
+    input: unknown,
+  ): Promise<JsonCompatibilityPrivateInvocationStatusReceiptV1> {
+    return await getJsonCompatibilityPhaseStatus(this.env, input);
+  }
 }
 
-export default JsonCompatibilityCampaignInvokerEntrypoint;
+export default class JsonCompatibilityInvokerDefaultEntrypoint
+  extends WorkerEntrypoint<JsonCompatibilityInvokerEnv> {}

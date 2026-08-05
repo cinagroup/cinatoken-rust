@@ -28,6 +28,8 @@ const EXECUTOR_SERVICE =
   "cinatoken-container-runtime-json-compatibility-executor-staging";
 const OPERATOR_ISSUER =
   "cinatoken-json-compatibility-campaign-operator-staging";
+const STATUS_OPERATOR_ISSUER =
+  "cinatoken-json-compatibility-campaign-operator-status-staging";
 const PERMIT_ISSUER = "cinatoken-json-compatibility-permit-issuer-staging";
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -73,6 +75,11 @@ export function validateJsonCompatibilityInvokerConfig(input, campaign = null) {
   if (enabled) {
     keyId(campaign.operatorCurrentKid, "operator current KID");
     sha256(campaign.operatorCurrentCredentialIdSha256, "operator credential digest");
+    keyId(campaign.statusOperatorCurrentKid, "status operator current KID");
+    sha256(
+      campaign.statusOperatorCurrentCredentialIdSha256,
+      "status operator credential digest",
+    );
     keyId(campaign.issuerHmacKid, "issuer HMAC KID");
     sha256(campaign.issuerHmacCredentialIdSha256, "issuer HMAC credential digest");
     keyId(campaign.permitKeyId, "permit key ID");
@@ -81,6 +88,7 @@ export function validateJsonCompatibilityInvokerConfig(input, campaign = null) {
   canonicalEqual(config.vars, {
     ENVIRONMENT: "staging",
     JSON_COMPATIBILITY_INVOKER_ENABLED: enabled ? "true" : "false",
+    JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED: enabled ? "true" : "false",
     JSON_COMPATIBILITY_INVOKER_OPERATOR_ISSUER: OPERATOR_ISSUER,
     JSON_COMPATIBILITY_INVOKER_OPERATOR_AUDIENCE: INVOKER_SERVICE,
     JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_KID:
@@ -89,6 +97,15 @@ export function validateJsonCompatibilityInvokerConfig(input, campaign = null) {
       enabled ? campaign.operatorCurrentCredentialIdSha256 : "",
     JSON_COMPATIBILITY_INVOKER_OPERATOR_PREVIOUS_KID: "",
     JSON_COMPATIBILITY_INVOKER_OPERATOR_PREVIOUS_CREDENTIAL_ID_SHA256: "",
+    JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_ISSUER: STATUS_OPERATOR_ISSUER,
+    JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_AUDIENCE: INVOKER_SERVICE,
+    JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_KID:
+      enabled ? campaign.statusOperatorCurrentKid : "",
+    JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
+      enabled ? campaign.statusOperatorCurrentCredentialIdSha256 : "",
+    JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_PREVIOUS_KID: "",
+    JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_PREVIOUS_CREDENTIAL_ID_SHA256:
+      "",
     JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_ISSUER: INVOKER_SERVICE,
     JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_AUDIENCE: ISSUER_SERVICE,
     JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_KID:
@@ -122,6 +139,9 @@ export async function prepareJsonCompatibilityInvokerConfig(options) {
     operatorCurrentKid: options.operatorCurrentKid,
     operatorCurrentCredentialIdSha256:
       options.operatorCurrentCredentialIdSha256,
+    statusOperatorCurrentKid: options.statusOperatorCurrentKid,
+    statusOperatorCurrentCredentialIdSha256:
+      options.statusOperatorCurrentCredentialIdSha256,
     issuerHmacKid: options.issuerHmacKid,
     issuerHmacCredentialIdSha256: options.issuerHmacCredentialIdSha256,
     permitKeyId: options.permitKeyId,
@@ -132,6 +152,11 @@ export async function prepareJsonCompatibilityInvokerConfig(options) {
     values.operatorCurrentKid;
   campaign.vars.JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256 =
     values.operatorCurrentCredentialIdSha256;
+  campaign.vars.JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED = "true";
+  campaign.vars.JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_KID =
+    values.statusOperatorCurrentKid;
+  campaign.vars.JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256 =
+    values.statusOperatorCurrentCredentialIdSha256;
   campaign.vars.JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_KID =
     values.issuerHmacKid;
   campaign.vars.JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_CREDENTIAL_ID_SHA256 =
@@ -149,8 +174,11 @@ export async function prepareJsonCompatibilityInvokerConfig(options) {
     configSha256: sha256Canonical(campaign),
     changedVars: [
       "JSON_COMPATIBILITY_INVOKER_ENABLED",
+      "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED",
       "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_KID",
       "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256",
+      "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_KID",
+      "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256",
       "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_KID",
       "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_CREDENTIAL_ID_SHA256",
       "JSON_COMPATIBILITY_PERMIT_KEY_ID",
@@ -158,6 +186,7 @@ export async function prepareJsonCompatibilityInvokerConfig(options) {
     ],
     secretsRequired: [
       "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_SECRET",
+      "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_SECRET",
       "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_SECRET",
       "JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL",
     ],
@@ -171,17 +200,25 @@ export function parseJsonCompatibilityInvokerConfigArgs(argv) {
   const names = [
     "--base", "--out", "--operator-current-kid",
     "--operator-current-credential-id-sha256", "--issuer-hmac-kid",
+    "--status-operator-current-kid",
+    "--status-operator-current-credential-id-sha256",
     "--issuer-hmac-credential-id-sha256", "--permit-key-id",
     "--permit-spki-sha256",
   ];
   const values = parseArgs(argv, names);
   if (values.help) return values;
   for (const name of names.slice(1)) requiredValue(values.map, name);
-  for (const name of ["--operator-current-kid", "--issuer-hmac-kid", "--permit-key-id"]) {
+  for (const name of [
+    "--operator-current-kid",
+    "--status-operator-current-kid",
+    "--issuer-hmac-kid",
+    "--permit-key-id",
+  ]) {
     keyId(values.map.get(name), name);
   }
   for (const name of [
     "--operator-current-credential-id-sha256",
+    "--status-operator-current-credential-id-sha256",
     "--issuer-hmac-credential-id-sha256",
     "--permit-spki-sha256",
   ]) sha256(values.map.get(name), name);
@@ -192,6 +229,10 @@ export function parseJsonCompatibilityInvokerConfigArgs(argv) {
     operatorCurrentKid: values.map.get("--operator-current-kid"),
     operatorCurrentCredentialIdSha256:
       values.map.get("--operator-current-credential-id-sha256"),
+    statusOperatorCurrentKid:
+      values.map.get("--status-operator-current-kid"),
+    statusOperatorCurrentCredentialIdSha256:
+      values.map.get("--status-operator-current-credential-id-sha256"),
     issuerHmacKid: values.map.get("--issuer-hmac-kid"),
     issuerHmacCredentialIdSha256:
       values.map.get("--issuer-hmac-credential-id-sha256"),
@@ -203,9 +244,9 @@ export function parseJsonCompatibilityInvokerConfigArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  bun tools/prepare_container_runtime_json_compatibility_invoker_config.mjs --out <campaign-wrangler.jsonc> --operator-current-kid <kid> --operator-current-credential-id-sha256 <sha256> --issuer-hmac-kid <kid> --issuer-hmac-credential-id-sha256 <sha256> --permit-key-id <kid> --permit-spki-sha256 <sha256> [--base <tracked-staging.jsonc>] [--json]",
+    "  bun tools/prepare_container_runtime_json_compatibility_invoker_config.mjs --out <campaign-wrangler.jsonc> --operator-current-kid <kid> --operator-current-credential-id-sha256 <sha256> --status-operator-current-kid <kid> --status-operator-current-credential-id-sha256 <sha256> --issuer-hmac-kid <kid> --issuer-hmac-credential-id-sha256 <sha256> --permit-key-id <kid> --permit-spki-sha256 <sha256> [--base <tracked-staging.jsonc>] [--json]",
     "",
-    "The output is create-only and contains no secret material. Provision both HMAC secrets and the Ed25519 public SPKI separately as Worker secrets.",
+    "The output is create-only and contains no secret material. Provision the execution, status, and issuer HMAC secrets plus the Ed25519 public SPKI separately as Worker secrets.",
   ].join("\n");
 }
 

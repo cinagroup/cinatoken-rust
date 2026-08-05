@@ -13,6 +13,7 @@ import {
 } from "../../container-runtime-json-compatibility-permit-issuer/src/protocol";
 import {
   JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_CONTRACT,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT,
   JSON_COMPATIBILITY_OPERATOR_SERVICE_NAME,
   parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1,
   parseJsonCompatibilityOperatorPhaseRequestV1,
@@ -20,7 +21,9 @@ import {
 import {
   COMMAND_ID_DOMAIN,
   JSON_COMPATIBILITY_OPERATOR_ISSUER,
+  JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_RECEIPT_CONTRACT,
   JsonCompatibilityOperatorError,
+  getJsonCompatibilityOperatorPhaseStatus,
   invokeJsonCompatibilityOperatorPhase,
 } from "../src/operator";
 import {
@@ -38,7 +41,9 @@ import {
   runtimeSequence,
   validAuthorizedOperatorRequest,
   validOperatorRequest,
+  validInvokeCommandForOperatorRequest,
   validPrivateInvocationReceipt,
+  validPrivateInvocationStatusReceipt,
 } from "./fixtures";
 
 const RECEIPT_KEYS = [
@@ -201,6 +206,88 @@ describe("JSON compatibility private operator", () => {
     })));
     expect(new TextEncoder().encode(canonicalJson(receipt)).byteLength)
       .toBeLessThanOrEqual(1792 * 1024);
+  });
+
+  test("recovers a committed receipt through one read-only status RPC", async () => {
+    const request = validOperatorRequest("12".repeat(32));
+    const authorized = await validAuthorizedOperatorRequest(request);
+    const originalCommand = await validInvokeCommandForOperatorRequest(request);
+    const privateReceipt = await validPrivateInvocationReceipt(originalCommand);
+    let invokeCalls = 0;
+    let statusCalls = 0;
+    const statusStart = NOW_MS + 3_600_000;
+    const receipt = await getJsonCompatibilityOperatorPhaseStatus(
+      operatorEnv(
+        async () => {
+          invokeCalls += 1;
+          throw new Error("execution must not be retried");
+        },
+        true,
+        async (query) => {
+          statusCalls += 1;
+          return await validPrivateInvocationStatusReceipt(query, privateReceipt);
+        },
+      ),
+      {
+        schemaVersion: 1,
+        contract: JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT,
+        authorizedPhaseRequest: authorized,
+      },
+      runtimeSequence(statusStart, statusStart + 2_000),
+    );
+
+    expect(invokeCalls).toBe(0);
+    expect(statusCalls).toBe(1);
+    expect(receipt).toMatchObject({
+      contract: JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_RECEIPT_CONTRACT,
+      status: "operator_phase_status_observed",
+      phaseStatus: "completed",
+      operator: {
+        gateName: "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED",
+      },
+      recovery: {
+        mode: "read-only-status-recovery",
+        executionRetryPermitted: false,
+        invokePhaseCalled: false,
+        permitIssuerCalled: false,
+        executorCalled: false,
+        originalOperatorReceiptReconstructed: false,
+      },
+    });
+    const { receiptSha256, ...subject } = receipt;
+    expect(receiptSha256).toBe(await sha256Hex(canonicalJson(subject)));
+  });
+
+  test("isolates status input and closes the bounded recovery window", async () => {
+    const request = validOperatorRequest("13".repeat(32));
+    const authorized = await validAuthorizedOperatorRequest(request);
+    let statusCalls = 0;
+    const env = operatorEnv(
+      async () => {
+        throw new Error("unexpected invocation");
+      },
+      true,
+      async () => {
+        statusCalls += 1;
+        return {};
+      },
+    );
+    await expect(getJsonCompatibilityOperatorPhaseStatus(
+      env,
+      authorized,
+      runtimeSequence(NOW_MS),
+    )).rejects.toMatchObject({ code: "invalid_operator_status_request" });
+    const afterRecoveryWindow = NOW_MS + (600 + 86_400 + 1) * 1_000;
+    await expect(getJsonCompatibilityOperatorPhaseStatus(
+      env,
+      {
+        schemaVersion: 1,
+        contract: JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT,
+        authorizedPhaseRequest: authorized,
+      },
+      runtimeSequence(afterRecoveryWindow),
+    )).rejects.toMatchObject({ code: "operator_phase_approval_time_window" });
+    expect(statusCalls).toBe(0);
   });
 
   test("rejects tampered, unknown-key, and expired approvals before RPC", async () => {

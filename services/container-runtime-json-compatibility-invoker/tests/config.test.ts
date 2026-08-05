@@ -47,9 +47,14 @@ describe("private invoker Worker configuration", () => {
     const vars = config.vars as Record<string, unknown>;
     expect(vars.ENVIRONMENT).toBe(environment);
     expect(vars.JSON_COMPATIBILITY_INVOKER_ENABLED).toBe("false");
+    expect(vars.JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED).toBe("false");
     expect(vars.JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_KID).toBe("");
     expect(
       vars.JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256,
+    ).toBe("");
+    expect(vars.JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_KID).toBe("");
+    expect(
+      vars.JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256,
     ).toBe("");
     expect(vars.JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_KID).toBe("");
     expect(
@@ -66,6 +71,7 @@ describe("private invoker Worker configuration", () => {
     const source = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
     expect(source).toMatch(/extends WorkerEntrypoint/);
     expect(source).toMatch(/async invokePhase\(/);
+    expect(source).toMatch(/async getPhaseStatus\(/);
     expect(source).toMatch(/JsonCompatibilityInvocationAuthority/);
     expect(source).not.toMatch(/\bfetch\s*\(/);
   });

@@ -5460,6 +5460,9 @@ Normal structural verification rejects synthetic evidence, but the accepted
 `remote-staging` label remains an untrusted source claim until a cryptographic
 signature is verified; the self-test path is visibly `fixtureOnly`.
 
+The following block is a historical checkpoint, not an activation runbook.
+Only the Runner receipt shape has been corrected here; use the superseding
+2026-08-05 boundary and each CLI's current `--help` before any local ceremony.
 Repository commands are:
 
 ```text
@@ -5479,7 +5482,8 @@ bun run plan:container-runtime:json-compatibility-campaign -- \
   --config <create-only-campaign-wrangler.jsonc> <exact identities> \
   --out <approved-plan.json>
 bun run assemble:container-runtime:json-compatibility-phase-source -- \
-  --plan <approved-plan.json> --receipt <executor-receipt.json> \
+  --plan <approved-plan-v3.json> \
+  --receipt <runner-invocation-or-completed-runner-status-receipt.json> \
   --context <independent-readback-context.json> --out <phase-source.json>
 bun run collect:container-runtime:json-compatibility-source-manifest -- \
   --plan <approved-plan.json> --phase <baseline.json> --phase <mixed.json> \
@@ -5625,3 +5629,39 @@ signature, immutable archive, and real four-phase staging campaign remain
 blocking. No Cloudflare or application state changed. Every implemented gate
 remains false, while the planned Runner and its gate are not implemented.
 Go/VPS remains authoritative, and production remains **NO-GO**.
+
+## 2026-08-05 Phase 1 Recovery Boundary
+
+The named private Runner and ambiguous-result status path are now implemented
+locally. The old paragraph above remains historical evidence and is superseded
+for implementation status, not for remote readiness.
+
+New campaigns write plan v3. It binds a 24-hour read-only recovery window,
+30-second status HMAC, five-second skew, three independent status-read gates,
+and exact, distinct execution/status issuer, audience, KID, and credential-ID
+digests. Plan v2 remains readable for direct historical receipts but cannot
+authorize recovery. Packet-v1 and manifest-v1 are not accepted by the new v2
+source validators.
+
+Invoker completion v2 persists the canonical successful private receipt body.
+If the completion RPC response is lost, no failed state is written and no
+PermitIssuer or Executor call is repeated. Runner -> Operator -> Invoker status
+RPCs may recover only a completed persisted receipt. Every other state stops
+advancement and remains non-retryable. Legacy completed rows without a body are
+reported as `completed_receipt_unavailable`.
+
+Phase source assembly now accepts only a direct Runner receipt or a completed
+Runner status receipt. It emits packet v2; four ordered packets emit source
+manifest v2. The public evidence remains v1 and binds the v2 manifest digest.
+
+Focused campaign/config/source checks pass 77 tests with 290 expectations.
+Runner checks add 10 Node tests and two real workerd named Service Binding
+tests, including direct and recovered RPCs plus deep nested-receipt validation.
+The complete repository `bun run check` also passed with exit code 0 in 1,434.3
+seconds on 2026-08-05. This is still local evidence. Runtime gates are logically
+separated, but the
+preparers and plan do not yet freeze independent dark, status-only, and
+execution-plus-status deployment versions. The upstream Runner caller/binding,
+topology runner, context collector, remote migration/readback, source signing,
+immutable retention, and real four-phase staging also remain open. Go/VPS
+remains authoritative and production is **NO-GO**.

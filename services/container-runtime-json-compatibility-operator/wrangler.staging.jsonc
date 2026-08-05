@@ -22,6 +22,7 @@
   "vars": {
     "ENVIRONMENT": "staging",
     "JSON_COMPATIBILITY_OPERATOR_ENABLED": "false",
+    "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED": "false",
     "JSON_COMPATIBILITY_OPERATOR_ISSUER": "cinatoken-json-compatibility-campaign-operator-staging",
     "JSON_COMPATIBILITY_OPERATOR_AUDIENCE": "cinatoken-container-runtime-json-compatibility-invoker-staging",
     "JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER": "cinatoken-json-compatibility-campaign-approval-authority-staging",
@@ -32,6 +33,10 @@
     "JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256": "",
     "JSON_COMPATIBILITY_OPERATOR_CURRENT_KID": "",
     "JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256": "",
+    "JSON_COMPATIBILITY_OPERATOR_STATUS_ISSUER": "cinatoken-json-compatibility-campaign-operator-status-staging",
+    "JSON_COMPATIBILITY_OPERATOR_STATUS_AUDIENCE": "cinatoken-container-runtime-json-compatibility-invoker-staging",
+    "JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_KID": "",
+    "JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_CREDENTIAL_ID_SHA256": "",
     "JSON_COMPATIBILITY_OPERATOR_INVOKER_VERSION_ID": ""
   }
 }

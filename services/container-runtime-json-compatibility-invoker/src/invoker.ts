@@ -42,20 +42,29 @@ import {
   type JsonCompatibilityPermitIssuanceReceiptV1,
 } from "../../container-runtime-json-compatibility-permit-issuer/src/issuance_authority";
 import {
+  type JsonCompatibilityInvocationStatusQueryV1,
+  type JsonCompatibilityInvocationStatusTargetV1,
   type JsonCompatibilityInvokeCommandV1,
+  type VerifiedJsonCompatibilityInvocationStatusAuthorityV1,
   type VerifiedJsonCompatibilityInvokeAuthorityV1,
+  parseJsonCompatibilityInvokeCommandV1,
+  verifyJsonCompatibilityInvocationStatusQuery,
   verifyJsonCompatibilityInvokeCommand,
 } from "./authorization";
 import {
+  JSON_COMPATIBILITY_INVOCATION_ATTEMPT_STATUS_QUERY_CONTRACT,
   JSON_COMPATIBILITY_INVOCATION_COMPLETION_RECEIPT_CONTRACT,
   JsonCompatibilityInvocationAuthority,
   type JsonCompatibilityInvocationAttemptReceiptV1,
+  type JsonCompatibilityInvocationAttemptStatusResult,
   type JsonCompatibilityInvocationCompletionReceiptV1,
   type JsonCompatibilityInvocationAuthorityErrorCode,
 } from "./invocation_authority";
 
 export const JSON_COMPATIBILITY_PRIVATE_INVOCATION_RECEIPT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-private-invocation-receipt-v1" as const;
+export const JSON_COMPATIBILITY_PRIVATE_INVOCATION_STATUS_RECEIPT_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-private-invocation-status-receipt-v1" as const;
 
 const ATTEMPT_ID_DOMAIN =
   "cinatoken-container-runtime-json-compatibility-invocation-attempt-id-v1\n";
@@ -77,6 +86,8 @@ export interface JsonCompatibilityExecutorBinding {
 interface InvokerSecrets {
   readonly JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_SECRET?: string;
   readonly JSON_COMPATIBILITY_INVOKER_OPERATOR_PREVIOUS_SECRET?: string;
+  readonly JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_SECRET?: string;
+  readonly JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_PREVIOUS_SECRET?: string;
   readonly JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_SECRET?: string;
   readonly JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL?: string;
 }
@@ -142,10 +153,70 @@ export interface JsonCompatibilityPrivateInvocationReceiptV1 {
   readonly receiptSha256: string;
 }
 
+export type JsonCompatibilityPrivateInvocationStatusResultV1 =
+  | { readonly status: "not_found"; readonly retryPermitted: false }
+  | {
+      readonly status: "active";
+      readonly attempt: JsonCompatibilityInvocationAttemptReceiptV1;
+      readonly retryPermitted: false;
+    }
+  | {
+      readonly status: "failed";
+      readonly attempt: JsonCompatibilityInvocationAttemptReceiptV1;
+      readonly failureCode: string;
+      readonly failedAt: number;
+      readonly retryPermitted: false;
+    }
+  | {
+      readonly status: "completed_receipt_unavailable";
+      readonly attempt: JsonCompatibilityInvocationAttemptReceiptV1;
+      readonly completion: JsonCompatibilityInvocationCompletionReceiptV1;
+      readonly retryPermitted: false;
+      readonly executionRpcRepeated: false;
+    }
+  | {
+      readonly status: "completed";
+      readonly attempt: JsonCompatibilityInvocationAttemptReceiptV1;
+      readonly completion: JsonCompatibilityInvocationCompletionReceiptV1;
+      readonly privateInvocationReceipt: Readonly<Record<string, unknown>>;
+      readonly privateInvocationReceiptSha256: string;
+      readonly recoveredFromPersistedAuthority: true;
+      readonly retryPermitted: false;
+      readonly executionRpcRepeated: false;
+    };
+
+export interface JsonCompatibilityPrivateInvocationStatusReceiptV1 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    typeof JSON_COMPATIBILITY_PRIVATE_INVOCATION_STATUS_RECEIPT_CONTRACT;
+  readonly status: "private_invocation_status_resolved";
+  readonly environment: "staging";
+  readonly target: JsonCompatibilityInvocationStatusTargetV1;
+  readonly query: JsonCompatibilityInvocationStatusQueryV1;
+  readonly queryAuthority:
+    VerifiedJsonCompatibilityInvocationStatusAuthorityV1;
+  readonly invoker: {
+    readonly serviceName: typeof JSON_COMPATIBILITY_INVOKER_SERVICE_NAME;
+    readonly versionId: string;
+    readonly gateName: "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED";
+  };
+  readonly privateTransport: {
+    readonly kind: "service-binding-rpc";
+    readonly publicUrlUsed: false;
+    readonly cloudflareRestUsed: false;
+    readonly invocationAuthorityBinding:
+      "JSON_COMPATIBILITY_INVOCATION_AUTHORITY";
+  };
+  readonly result: JsonCompatibilityPrivateInvocationStatusResultV1;
+  readonly queriedAt: string;
+  readonly receiptSha256: string;
+}
+
 export class JsonCompatibilityInvokerError extends Error {
   constructor(
     readonly code:
       | "invoker_disabled"
+      | "invocation_status_disabled"
       | "invoker_configuration_error"
       | "invocation_authority_conflict"
       | "invocation_authority_unavailable"
@@ -154,11 +225,90 @@ export class JsonCompatibilityInvokerError extends Error {
       | "invalid_permit_issue_receipt"
       | "executor_rejected"
       | "executor_unavailable"
-      | "invalid_executor_receipt",
+      | "invalid_executor_receipt"
+      | "invalid_invocation_status"
+      | "invocation_status_authority_unavailable",
   ) {
     super(code);
     this.name = "JsonCompatibilityInvokerError";
   }
+}
+
+export async function getJsonCompatibilityPhaseStatus(
+  env: JsonCompatibilityInvokerEnv,
+  input: unknown,
+  runtime: JsonCompatibilityInvokerRuntime = { now: () => Date.now() },
+): Promise<JsonCompatibilityPrivateInvocationStatusReceiptV1> {
+  requireInvokerStatusEnvironment(env);
+  const queriedAtMs = runtimeNow(runtime, "status query time");
+  const invokerVersionId = token(
+    env.CF_VERSION_METADATA?.id,
+    "invoker_configuration_error",
+  );
+  const verified = await verifyJsonCompatibilityInvocationStatusQuery(
+    env,
+    input,
+    invokerVersionId,
+    queriedAtMs,
+  );
+  const target = verified.query.subject.target;
+  const authority = env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY.getByName(
+    target.campaignIdSha256,
+  );
+  let authorityResult: JsonCompatibilityInvocationAttemptStatusResult;
+  try {
+    authorityResult = await authority.getAttemptStatus({
+      schemaVersion: 1,
+      contract: JSON_COMPATIBILITY_INVOCATION_ATTEMPT_STATUS_QUERY_CONTRACT,
+      campaignIdSha256: target.campaignIdSha256,
+      planDigestSha256: target.planDigestSha256,
+      phaseOrdinal: target.phaseOrdinal,
+      phaseId: target.phaseId,
+      phaseExecutionId: target.phaseExecutionId,
+      commandIdSha256: target.commandIdSha256,
+      invokerVersionId: target.invokerVersionId,
+    });
+  } catch {
+    throw invokerError("invocation_status_authority_unavailable");
+  }
+  if (!authorityResult.ok) {
+    throw invokerError("invalid_invocation_status");
+  }
+  const result = await statusResultFromAuthority(authorityResult, target);
+  const receiptSubject = {
+    schemaVersion: 1 as const,
+    contract: JSON_COMPATIBILITY_PRIVATE_INVOCATION_STATUS_RECEIPT_CONTRACT,
+    status: "private_invocation_status_resolved" as const,
+    environment: "staging" as const,
+    target,
+    query: verified.query,
+    queryAuthority: verified.authority,
+    invoker: {
+      serviceName: JSON_COMPATIBILITY_INVOKER_SERVICE_NAME,
+      versionId: invokerVersionId,
+      gateName: "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED" as const,
+    },
+    privateTransport: {
+      kind: "service-binding-rpc" as const,
+      publicUrlUsed: false as const,
+      cloudflareRestUsed: false as const,
+      invocationAuthorityBinding:
+        "JSON_COMPATIBILITY_INVOCATION_AUTHORITY" as const,
+    },
+    result,
+    queriedAt: wholeSecondUtc(queriedAtMs),
+  };
+  const canonicalSubject = canonicalJson(receiptSubject);
+  if (
+    new TextEncoder().encode(canonicalSubject).byteLength
+      > MAX_INVOCATION_RECEIPT_BYTES
+  ) {
+    throw invokerError("invalid_invocation_status");
+  }
+  return {
+    ...receiptSubject,
+    receiptSha256: await sha256Hex(canonicalSubject),
+  };
 }
 
 export async function invokeJsonCompatibilityPhase(
@@ -186,10 +336,10 @@ export async function invokeJsonCompatibilityPhase(
   const attemptIdSha256 = await sha256Hex(
     `${ATTEMPT_ID_DOMAIN}${command.subject.commandIdSha256}\n${issueIntentSha256}\n${invokerVersionId}`,
   );
-  const invocationAuthority = env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY
-    .getByName(execution.campaignIdSha256);
   const attempt = await beginInvocationAttempt(
-    invocationAuthority,
+    env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY.getByName(
+      execution.campaignIdSha256,
+    ),
     command,
     authority,
     issueIntentSha256,
@@ -198,6 +348,7 @@ export async function invokeJsonCompatibilityPhase(
     invokerVersionId,
     Math.floor(startedAtMs / 1000),
   );
+  let completionRpcAttempted = false;
 
   try {
     const permitIssueRequest = await createPermitIssueRequest(
@@ -283,21 +434,31 @@ export async function invokeJsonCompatibilityPhase(
       throw invokerError("invalid_executor_receipt");
     }
     const invocationBodySha256 = await sha256Hex(canonicalReceiptBody);
-    const completion = await invocationAuthority.completeAttempt({
-      schemaVersion: 1,
-      contract:
-        "cinatoken-container-runtime-json-compatibility-invocation-attempt-complete-v1",
-      campaignIdSha256: execution.campaignIdSha256,
-      phaseOrdinal: execution.phase.ordinal,
-      phaseExecutionId: execution.phaseExecutionId,
-      commandIdSha256: command.subject.commandIdSha256,
-      attemptIdSha256,
-      permitIdSha256: permitIssueReceipt.permitEnvelope.subject.permitIdSha256,
-      permitIssueReceiptSha256: permitIssueReceipt.receiptSha256,
-      executorReceiptSha256: executorReceipt.receiptSha256,
-      invocationBodySha256,
-      completedAt: Math.floor(completedAtMs / 1000),
-    });
+    let completion;
+    try {
+      completionRpcAttempted = true;
+      completion = await env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY
+        .getByName(execution.campaignIdSha256)
+        .completeAttemptV2({
+          schemaVersion: 2,
+          contract:
+            "cinatoken-container-runtime-json-compatibility-invocation-attempt-complete-v2",
+          campaignIdSha256: execution.campaignIdSha256,
+          phaseOrdinal: execution.phase.ordinal,
+          phaseExecutionId: execution.phaseExecutionId,
+          commandIdSha256: command.subject.commandIdSha256,
+          attemptIdSha256,
+          permitIdSha256:
+            permitIssueReceipt.permitEnvelope.subject.permitIdSha256,
+          permitIssueReceiptSha256: permitIssueReceipt.receiptSha256,
+          executorReceiptSha256: executorReceipt.receiptSha256,
+          invocationBodySha256,
+          invocationBodyJson: canonicalReceiptBody,
+          completedAt: Math.floor(completedAtMs / 1000),
+        });
+    } catch {
+      throw invokerError("invocation_authority_unavailable");
+    }
     if (!completion.ok) throw authorityConflict(completion.error.code);
     const expectedStatus = execution.phase.ordinal === 4
       ? "invocation_campaign_completed"
@@ -342,6 +503,7 @@ export async function invokeJsonCompatibilityPhase(
     };
     return receipt;
   } catch (error) {
+    if (completionRpcAttempted) throw error;
     let failedAtMs = startedAtMs;
     try {
       failedAtMs = runtimeNow(runtime, "invocation failure time");
@@ -350,7 +512,9 @@ export async function invokeJsonCompatibilityPhase(
     }
     let failure;
     try {
-      failure = await invocationAuthority.failAttempt({
+      failure = await env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY
+        .getByName(execution.campaignIdSha256)
+        .failAttempt({
         schemaVersion: 1,
         contract:
           "cinatoken-container-runtime-json-compatibility-invocation-attempt-fail-v1",
@@ -370,6 +534,167 @@ export async function invokeJsonCompatibilityPhase(
     }
     throw error;
   }
+}
+
+async function statusResultFromAuthority(
+  authority: JsonCompatibilityInvocationAttemptStatusResult & { ok: true },
+  target: JsonCompatibilityInvocationStatusTargetV1,
+): Promise<JsonCompatibilityPrivateInvocationStatusResultV1> {
+  if (authority.status === "not_found") {
+    return { status: "not_found", retryPermitted: false };
+  }
+  if (authority.status === "active") {
+    return {
+      status: "active",
+      attempt: authority.attempt,
+      retryPermitted: false,
+    };
+  }
+  if (authority.status === "failed") {
+    return {
+      status: "failed",
+      attempt: authority.attempt,
+      failureCode: authority.failureCode,
+      failedAt: authority.failedAt,
+      retryPermitted: false,
+    };
+  }
+  if (authority.status === "completed_receipt_unavailable") {
+    return {
+      status: "completed_receipt_unavailable",
+      attempt: authority.attempt,
+      completion: authority.completion,
+      retryPermitted: false,
+      executionRpcRepeated: false,
+    };
+  }
+  const privateInvocationReceipt = await restorePrivateInvocationReceipt(
+    authority,
+    target,
+  );
+  return {
+    status: "completed",
+    attempt: authority.attempt,
+    completion: authority.completion,
+    privateInvocationReceipt,
+    privateInvocationReceiptSha256: digest(
+      privateInvocationReceipt.receiptSha256,
+      "invalid_invocation_status",
+    ),
+    recoveredFromPersistedAuthority: true,
+    retryPermitted: false,
+    executionRpcRepeated: false,
+  };
+}
+
+async function restorePrivateInvocationReceipt(
+  authority: Extract<
+    JsonCompatibilityInvocationAttemptStatusResult,
+    { readonly ok: true; readonly status: "completed" }
+  >,
+  target: JsonCompatibilityInvocationStatusTargetV1,
+): Promise<Readonly<Record<string, unknown>>> {
+  const code = "invalid_invocation_status" as const;
+  if (
+    authority.invocationBodyJson.length > MAX_INVOCATION_RECEIPT_BYTES
+    || new TextEncoder().encode(authority.invocationBodyJson).byteLength
+      > MAX_INVOCATION_RECEIPT_BYTES - 16 * 1024
+  ) {
+    throw invokerError(code);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(authority.invocationBodyJson);
+  } catch {
+    throw invokerError(code);
+  }
+  if (
+    canonicalJson(parsed) !== authority.invocationBodyJson
+    || await sha256Hex(authority.invocationBodyJson)
+      !== authority.completion.invocationBodySha256
+  ) {
+    throw invokerError(code);
+  }
+  const body = statusExactRecord(parsed, [
+    "schemaVersion",
+    "contract",
+    "status",
+    "environment",
+    "campaignIdSha256",
+    "planDigestSha256",
+    "phaseExecutionId",
+    "phaseOrdinal",
+    "phaseId",
+    "command",
+    "commandAuthority",
+    "invoker",
+    "privateTransport",
+    "invocationAuthority",
+    "permitIssueReceipt",
+    "executorReceipt",
+    "startedAt",
+    "completedAt",
+  ], code);
+  const invocationAuthority = statusExactRecord(
+    body.invocationAuthority,
+    ["attempt"],
+    code,
+  );
+  const invoker = statusExactRecord(
+    body.invoker,
+    ["serviceName", "versionId", "gateName"],
+    code,
+  );
+  let command: JsonCompatibilityInvokeCommandV1;
+  try {
+    command = parseJsonCompatibilityInvokeCommandV1(body.command);
+  } catch {
+    throw invokerError(code);
+  }
+  const execution = command.subject.issueIntent.execution;
+  if (
+    body.schemaVersion !== 1
+    || body.contract !== JSON_COMPATIBILITY_PRIVATE_INVOCATION_RECEIPT_CONTRACT
+    || body.status !== "private_phase_invocation_completed"
+    || body.environment !== "staging"
+    || body.campaignIdSha256 !== target.campaignIdSha256
+    || body.planDigestSha256 !== target.planDigestSha256
+    || body.phaseExecutionId !== target.phaseExecutionId
+    || body.phaseOrdinal !== target.phaseOrdinal
+    || body.phaseId !== target.phaseId
+    || command.subject.commandIdSha256 !== target.commandIdSha256
+    || execution.campaignIdSha256 !== target.campaignIdSha256
+    || execution.planDigestSha256 !== target.planDigestSha256
+    || execution.phaseExecutionId !== target.phaseExecutionId
+    || execution.phase.ordinal !== target.phaseOrdinal
+    || execution.phase.id !== target.phaseId
+    || invoker.serviceName !== JSON_COMPATIBILITY_INVOKER_SERVICE_NAME
+    || invoker.versionId !== target.invokerVersionId
+    || invoker.gateName !== "JSON_COMPATIBILITY_INVOKER_ENABLED"
+    || canonicalJson(invocationAuthority.attempt)
+      !== canonicalJson(authority.attempt)
+  ) {
+    throw invokerError(code);
+  }
+  const receiptSubject = {
+    ...body,
+    invocationAuthority: {
+      attempt: authority.attempt,
+      completion: authority.completion,
+    },
+    invocationBodySha256: authority.completion.invocationBodySha256,
+  };
+  const canonicalSubject = canonicalJson(receiptSubject);
+  if (
+    new TextEncoder().encode(canonicalSubject).byteLength
+      > MAX_INVOCATION_RECEIPT_BYTES
+  ) {
+    throw invokerError(code);
+  }
+  return {
+    ...receiptSubject,
+    receiptSha256: await sha256Hex(canonicalSubject),
+  };
 }
 
 async function createPermitIssueRequest(
@@ -1188,14 +1513,30 @@ function requireInvokerEnvironment(env: JsonCompatibilityInvokerEnv): void {
     throw invokerError("invoker_disabled");
   }
   if (
-    env.JSON_COMPATIBILITY_PERMIT_ISSUER_SERVICE === null
+    env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY === null
+    || typeof env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY !== "object"
+    || typeof env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY.getByName !== "function"
+    || env.JSON_COMPATIBILITY_PERMIT_ISSUER_SERVICE === null
     || typeof env.JSON_COMPATIBILITY_PERMIT_ISSUER_SERVICE !== "object"
     || typeof env.JSON_COMPATIBILITY_PERMIT_ISSUER_SERVICE.issuePhasePermit !==
       "function"
     || env.JSON_COMPATIBILITY_EXECUTOR_SERVICE === null
     || typeof env.JSON_COMPATIBILITY_EXECUTOR_SERVICE !== "object"
     || typeof env.JSON_COMPATIBILITY_EXECUTOR_SERVICE.executePhase !== "function"
-    || env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY === null
+  ) {
+    throw invokerError("invoker_configuration_error");
+  }
+}
+
+function requireInvokerStatusEnvironment(env: JsonCompatibilityInvokerEnv): void {
+  if (
+    env.ENVIRONMENT !== "staging"
+    || env.JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED !== "true"
+  ) {
+    throw invokerError("invocation_status_disabled");
+  }
+  if (
+    env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY === null
     || typeof env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY !== "object"
     || typeof env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY.getByName !== "function"
   ) {
@@ -1246,6 +1587,26 @@ function exactRecord(
   code: "invalid_permit_issue_receipt" | "invalid_executor_receipt",
 ): Record<string, unknown> {
   const result = record(value, code);
+  const actual = Object.keys(result).sort();
+  const expected = [...expectedKeys].sort();
+  if (
+    actual.length !== expected.length
+    || actual.some((key, index) => key !== expected[index])
+  ) {
+    throw invokerError(code);
+  }
+  return result;
+}
+
+function statusExactRecord(
+  value: unknown,
+  expectedKeys: readonly string[],
+  code: "invalid_invocation_status",
+): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw invokerError(code);
+  }
+  const result = value as Record<string, unknown>;
   const actual = Object.keys(result).sort();
   const expected = [...expectedKeys].sort();
   if (

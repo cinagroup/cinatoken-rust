@@ -14,6 +14,8 @@ const INVOKER_SERVICE =
   "cinatoken-container-runtime-json-compatibility-invoker-staging";
 const OPERATOR_ISSUER =
   "cinatoken-json-compatibility-campaign-operator-staging";
+const OPERATOR_STATUS_ISSUER =
+  "cinatoken-json-compatibility-campaign-operator-status-staging";
 const OPERATOR_APPROVAL_ISSUER =
   "cinatoken-json-compatibility-campaign-approval-authority-staging";
 
@@ -61,6 +63,7 @@ describe("JSON compatibility private operator Wrangler config", () => {
       expect(config.vars).toEqual({
         ENVIRONMENT: environment,
         JSON_COMPATIBILITY_OPERATOR_ENABLED: "false",
+        JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED: "false",
         JSON_COMPATIBILITY_OPERATOR_ISSUER: OPERATOR_ISSUER,
         JSON_COMPATIBILITY_OPERATOR_AUDIENCE: INVOKER_SERVICE,
         JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER:
@@ -75,10 +78,17 @@ describe("JSON compatibility private operator Wrangler config", () => {
         JSON_COMPATIBILITY_OPERATOR_APPROVAL_PREVIOUS_SPKI_SHA256: "",
         JSON_COMPATIBILITY_OPERATOR_CURRENT_KID: "",
         JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256: "",
+        JSON_COMPATIBILITY_OPERATOR_STATUS_ISSUER: OPERATOR_STATUS_ISSUER,
+        JSON_COMPATIBILITY_OPERATOR_STATUS_AUDIENCE: INVOKER_SERVICE,
+        JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_KID: "",
+        JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_CREDENTIAL_ID_SHA256: "",
         JSON_COMPATIBILITY_OPERATOR_INVOKER_VERSION_ID: "",
       });
       expect(config.vars).not.toHaveProperty(
         "JSON_COMPATIBILITY_OPERATOR_CURRENT_SECRET",
+      );
+      expect(config.vars).not.toHaveProperty(
+        "JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_SECRET",
       );
     });
   }

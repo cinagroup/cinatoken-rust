@@ -2142,3 +2142,72 @@ storage, lifecycle, SLO/cost, privacy/security, owner approval, Go/VPS drain,
 traffic and cutover gates also remain open. This mapping grants no deployment,
 financial, traffic, or production authority. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-08-05 cinaVibeSDK-Aligned Private Capability Update
+
+The current local implementation now includes the missing private Runner and
+read-only recovery capability. This preserves the cinaVibeSDK design rule that
+stateful coordination and capability routing stay in TypeScript Workers and
+Durable Objects, while Rust remains the Linux Container compute layer. No core
+session or campaign Durable Object was migrated to Rust Wasm for stack
+uniformity.
+
+The mapped capability chain is now:
+
+```text
+private named Runner
+  -> private named Operator
+  -> private named Invoker + campaign SQLite DO
+  -> private PermitIssuer + campaign SQLite DO
+  -> private Executor + campaign SQLite DO
+  -> Controller + shard Durable Objects
+  -> Rust Linux Containers
+```
+
+The Runner follows the same least-capability pattern as cinaVibeSDK named
+entrypoints: inert default export, no route, no storage, no secret, one exact
+downstream binding, and methods separated into execution and read-only status
+capabilities. Signed approval supplies application authority; Service Binding
+supplies private transport. Version Metadata and config digests are evidence
+anchors, but config digest still requires deployment readback because it is not
+available as a trusted runtime property.
+
+Plan v3 freezes status behavior instead of leaving it as Worker-local policy.
+Execution and status use separate gates and exact plan-bound HMAC identities:
+issuer, audience, KID, and credential-ID digest are frozen independently. The Invoker DO
+persists enough canonical result data to recover a completion after an RPC
+response is lost, while the outer Operator and Runner status receipts make it
+explicit that their original invocation receipts were not reconstructed.
+
+Packet-v2 and manifest-v2 retain both direct and recovered completion modes.
+This is a stronger audit chain, not distributed exactly-once execution. The
+independent Durable Objects remain separate commit domains and every ambiguous
+non-completed state remains non-retryable.
+
+Three orchestration roles must not be conflated:
+
+1. The private campaign Runner is implemented and now has real workerd named
+   Service Binding coverage.
+2. The upstream private Worker/binding that invokes that Runner is not
+   implemented.
+3. The per-shard topology deployment/readback runner and independent context
+   collector are also not implemented.
+
+Runtime execution/status gates are logically separated, but deployable state
+artifacts are not. Current preparers produce only all-false or
+execution-plus-status configs, while plan v3 pins one version/config per
+service. A production ceremony needs frozen dark, status-only, and
+execution-plus-status identities plus an allowed transition graph. Until then,
+status-first activation and 24-hour status-only closure are design targets, not
+executable steps.
+
+Local implementation, tests, generated types, dry-runs, and direct/status
+workerd Runner RPCs pass. The complete repository `bun run check` also passed
+with exit code 0 in 1,434.3 seconds on 2026-08-05. The Runner receipt's config
+digest remains an approved claim, not a trusted runtime property, so
+authenticated deployment readback is still mandatory. Cloudflare deployment,
+upstream caller, gate-state artifacts,
+remote binding inventory, real Version Metadata/config readback, source
+signing, immutable archive, and real staging recovery remain unverified.
+The mapping changes no production authority: Go/VPS remains authoritative and
+production remains **NO-GO**.

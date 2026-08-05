@@ -2,6 +2,7 @@ import { createHash, createPublicKey, verify as verifySignature } from "node:cry
 
 import {
   JsonCompatibilityCampaignError,
+  JSON_COMPATIBILITY_PLAN_CONTRACT,
   canonicalJson,
   sha256Canonical,
   validateJsonCompatibilityCampaignPlan,
@@ -20,6 +21,10 @@ export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v1";
 export const JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v2";
+export const JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-operator-phase-status-request-v1";
+export const JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_RECEIPT_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-operator-phase-status-receipt-v1";
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN =
   "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v1\n";
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_ISSUER =
@@ -211,6 +216,7 @@ export function projectJsonCompatibilityOperatorInvocation(receipt) {
   return {
     contract: receipt.contract,
     receiptSha256: receipt.receiptSha256,
+    rawReceiptSha256: sha256Canonical(receipt),
     operatorBodySha256: receipt.operatorBodySha256,
     privateInvocationReceiptSha256:
       receipt.privateInvocationReceiptSha256,
@@ -241,6 +247,411 @@ export function projectJsonCompatibilityOperatorInvocation(receipt) {
   };
 }
 
+export function validateJsonCompatibilityOperatorStatusReceipt(plan, input) {
+  const validatedPlan = validateJsonCompatibilityCampaignPlan(plan);
+  if (
+    validatedPlan.contract !== JSON_COMPATIBILITY_PLAN_CONTRACT
+    || validatedPlan.statusRecovery?.mode !== "read-only-status-recovery"
+  ) {
+    failure("[operator-status] plan does not authorize status recovery");
+  }
+  const recoveryPolicy = validatedPlan.statusRecovery;
+  const label = "[operator-status] receipt";
+  const value = record(input, label);
+  exactKeys(value, [
+    "schemaVersion", "contract", "status", "phaseStatus", "environment",
+    "campaignIdSha256", "planDigestSha256", "phaseExecutionId",
+    "phaseOrdinal", "phaseId", "operator", "authorization", "request",
+    "requestSha256", "commandIdSha256", "statusQuery", "statusQuerySha256",
+    "privateTransport", "privateInvocationStatusReceipt",
+    "privateInvocationStatusReceiptSha256", "recovery", "queryStartedAt",
+    "queryCompletedAt", "operatorBodySha256", "receiptSha256",
+  ], label);
+  equal(value.schemaVersion, 1, `${label} schema version`);
+  equal(
+    value.contract,
+    JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_RECEIPT_CONTRACT,
+    `${label} contract`,
+  );
+  equal(value.status, "operator_phase_status_observed", `${label} status`);
+  equal(value.phaseStatus, "completed", `${label} completed status`);
+  equal(value.environment, "staging", `${label} environment`);
+  equal(value.campaignIdSha256, validatedPlan.campaignIdSha256, `${label} campaign ID`);
+  equal(value.planDigestSha256, validatedPlan.planDigestSha256, `${label} plan digest`);
+  const phaseOrdinal = integer(value.phaseOrdinal, 1, 4, `${label} phase ordinal`);
+  const expectedPhase = validatedPlan.phases[phaseOrdinal - 1];
+  equal(value.phaseId, expectedPhase.id, `${label} phase ID`);
+  safeToken(value.phaseExecutionId, `${label} phase execution ID`);
+  const operator = validateOperator(
+    value.operator,
+    validatedPlan,
+    label,
+    "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED",
+  );
+  const request = validateRequest(value.request, validatedPlan, expectedPhase, label);
+  equal(value.phaseExecutionId, request.execution.phaseExecutionId, `${label} execution ID`);
+  sha256(value.requestSha256, `${label} request digest`);
+  equal(value.requestSha256, sha256Canonical(request), `${label} request digest`);
+  sha256(value.commandIdSha256, `${label} command ID`);
+  equal(
+    value.commandIdSha256,
+    deriveJsonCompatibilityOperatorCommandIdSha256(request, operator.versionId),
+    `${label} command ID`,
+  );
+  const queryStartedAt = wholeSecond(value.queryStartedAt, `${label} query start`);
+  const authorization = validateOperatorAuthorization(
+    value.authorization,
+    validatedPlan,
+    request,
+    operator,
+    value.requestSha256,
+    value.commandIdSha256,
+    queryStartedAt,
+    label,
+    "status",
+  );
+  const query = validateStatusQuery(
+    value.statusQuery,
+    request,
+    value.requestSha256,
+    value.commandIdSha256,
+    authorization.approvalEnvelopeSha256,
+    operator.versionId,
+    recoveryPolicy,
+    label,
+  );
+  equal(value.statusQuerySha256, sha256Canonical(query), `${label} status query digest`);
+  const transport = record(value.privateTransport, `${label} transport`);
+  exactKeys(transport, [
+    "kind", "publicUrlUsed", "cloudflareRestUsed", "invokerBinding",
+    "rpcMethod",
+  ], `${label} transport`);
+  equal(transport.kind, "service-binding-rpc", `${label} transport kind`);
+  equal(transport.publicUrlUsed, false, `${label} public URL`);
+  equal(transport.cloudflareRestUsed, false, `${label} REST use`);
+  equal(transport.invokerBinding, "JSON_COMPATIBILITY_INVOKER_SERVICE", `${label} binding`);
+  equal(transport.rpcMethod, "getPhaseStatus", `${label} RPC method`);
+
+  const queryCompletedAt = wholeSecond(
+    value.queryCompletedAt,
+    `${label} query completion`,
+  );
+  if (queryCompletedAt < queryStartedAt) {
+    failure(`${label} completion precedes start`);
+  }
+
+  const privateStatus = validatePrivateInvocationStatusReceipt(
+    validatedPlan,
+    value.privateInvocationStatusReceipt,
+    query,
+    request,
+    value.commandIdSha256,
+    queryStartedAt,
+    queryCompletedAt,
+    recoveryPolicy,
+    label,
+  );
+  equal(
+    value.privateInvocationStatusReceiptSha256,
+    sha256Canonical(privateStatus),
+    `${label} private status raw digest`,
+  );
+  const recovery = record(value.recovery, `${label} recovery`);
+  exactKeys(recovery, [
+    "mode", "executionRetryPermitted", "invokePhaseCalled",
+    "permitIssuerCalled", "executorCalled", "originalOperatorReceiptReconstructed",
+  ], `${label} recovery`);
+  equal(recovery.mode, "read-only-status-recovery", `${label} recovery mode`);
+  for (const name of [
+    "executionRetryPermitted", "invokePhaseCalled", "permitIssuerCalled",
+    "executorCalled", "originalOperatorReceiptReconstructed",
+  ]) equal(recovery[name], false, `${label} recovery ${name}`);
+  sha256(value.operatorBodySha256, `${label} body digest`);
+  sha256(value.receiptSha256, `${label} receipt digest`);
+  const { operatorBodySha256, receiptSha256, ...body } = value;
+  equal(operatorBodySha256, sha256Canonical(body), `${label} body digest`);
+  equal(
+    receiptSha256,
+    sha256Canonical({ ...body, operatorBodySha256 }),
+    `${label} receipt digest`,
+  );
+  return value;
+}
+
+export function projectJsonCompatibilityOperatorStatus(receipt) {
+  const result = receipt.privateInvocationStatusReceipt.result;
+  return {
+    contract: receipt.contract,
+    receiptSha256: receipt.receiptSha256,
+    rawReceiptSha256: sha256Canonical(receipt),
+    operatorBodySha256: receipt.operatorBodySha256,
+    privateInvocationStatusReceiptSha256:
+      receipt.privateInvocationStatusReceiptSha256,
+    recoveredPrivateInvocationReceiptSha256:
+      result.privateInvocationReceiptSha256,
+    requestSha256: receipt.requestSha256,
+    commandIdSha256: receipt.commandIdSha256,
+    phaseExecutionId: receipt.phaseExecutionId,
+    phaseOrdinal: receipt.phaseOrdinal,
+    phaseId: receipt.phaseId,
+    phaseStatus: receipt.phaseStatus,
+    operator: structuredClone(receipt.operator),
+    authorization: {
+      contract: receipt.authorization.contract,
+      approvalEnvelopeSha256: receipt.authorization.approvalEnvelopeSha256,
+      approvalSubjectSha256: receipt.authorization.approvalSubjectSha256,
+      issuer: receipt.authorization.issuer,
+      audience: receipt.authorization.audience,
+      keyId: receipt.authorization.keyId,
+      signerSpkiSha256: receipt.authorization.signerSpkiSha256,
+      caller: structuredClone(receipt.authorization.caller),
+      issuedAt: receipt.authorization.issuedAt,
+      notBefore: receipt.authorization.notBefore,
+      expiresAt: receipt.authorization.expiresAt,
+    },
+    statusQuerySha256: receipt.statusQuerySha256,
+    privateTransport: structuredClone(receipt.privateTransport),
+    recovery: structuredClone(receipt.recovery),
+    startedAt: receipt.queryStartedAt,
+    completedAt: receipt.queryCompletedAt,
+  };
+}
+
+function validateStatusQuery(
+  input,
+  request,
+  requestSha256,
+  commandIdSha256,
+  approvalEnvelopeSha256,
+  operatorVersionId,
+  recoveryPolicy,
+  label,
+) {
+  const query = record(input, `${label} status query`);
+  exactKeys(query, ["schemaVersion", "contract", "subject", "authority"], `${label} status query`);
+  equal(query.schemaVersion, 1, `${label} status query schema`);
+  equal(
+    query.contract,
+    "cinatoken-container-runtime-json-compatibility-invocation-status-query-v1",
+    `${label} status query contract`,
+  );
+  const subject = record(query.subject, `${label} status query subject`);
+  exactKeys(subject, [
+    "schemaVersion", "contract", "statusQueryIdSha256", "target",
+  ], `${label} status query subject`);
+  equal(subject.schemaVersion, 1, `${label} status subject schema`);
+  equal(
+    subject.contract,
+    "cinatoken-container-runtime-json-compatibility-invocation-status-query-subject-v1",
+    `${label} status subject contract`,
+  );
+  const target = record(subject.target, `${label} status target`);
+  exactKeys(target, [
+    "schemaVersion", "contract", "campaignIdSha256", "planDigestSha256",
+    "phaseOrdinal", "phaseId", "phaseExecutionId", "commandIdSha256",
+    "operatorRequestSha256", "approvalEnvelopeSha256", "operatorVersionId",
+    "invokerVersionId",
+  ], `${label} status target`);
+  equal(target.schemaVersion, 1, `${label} status target schema`);
+  equal(
+    target.contract,
+    "cinatoken-container-runtime-json-compatibility-invocation-status-target-v1",
+    `${label} status target contract`,
+  );
+  for (const [name, expected] of [
+    ["campaignIdSha256", request.execution.campaignIdSha256],
+    ["planDigestSha256", request.execution.planDigestSha256],
+    ["phaseOrdinal", request.execution.phase.ordinal],
+    ["phaseId", request.execution.phase.id],
+    ["phaseExecutionId", request.execution.phaseExecutionId],
+    ["commandIdSha256", commandIdSha256],
+    ["operatorRequestSha256", requestSha256],
+    ["approvalEnvelopeSha256", approvalEnvelopeSha256],
+    ["operatorVersionId", operatorVersionId],
+    ["invokerVersionId", request.invoker.versionId],
+  ]) equal(target[name], expected, `${label} status target ${name}`);
+  const authority = record(query.authority, `${label} status authority`);
+  exactKeys(authority, [
+    "schemaVersion", "contract", "algorithm", "keyId", "claims",
+    "claimsSha256", "signatureBase64url",
+  ], `${label} status authority`);
+  equal(authority.schemaVersion, 1, `${label} status authority schema`);
+  equal(
+    authority.contract,
+    "cinatoken-container-runtime-json-compatibility-invocation-status-authority-envelope-v1",
+    `${label} status authority contract`,
+  );
+  equal(authority.algorithm, "HMAC-SHA-256", `${label} status authority algorithm`);
+  if (!KEY_ID.test(authority.keyId)) failure(`${label} status key ID is invalid`);
+  equal(
+    authority.keyId,
+    recoveryPolicy.statusAuthority.status.keyId,
+    `${label} planned status key ID`,
+  );
+  if (typeof authority.signatureBase64url !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(authority.signatureBase64url)) {
+    failure(`${label} status signature is invalid`);
+  }
+  const claims = record(authority.claims, `${label} status claims`);
+  exactKeys(claims, [
+    "schemaVersion", "contract", "issuer", "audience", "credentialIdSha256",
+    "statusQueryIdSha256", "statusQuerySubjectSha256", "issuedAt", "expiresAt",
+  ], `${label} status claims`);
+  equal(claims.schemaVersion, 1, `${label} status claims schema`);
+  equal(
+    claims.contract,
+    "cinatoken-container-runtime-json-compatibility-invocation-status-authority-claims-v1",
+    `${label} status claims contract`,
+  );
+  equal(
+    claims.issuer,
+    recoveryPolicy.statusAuthority.status.issuer,
+    `${label} planned status issuer`,
+  );
+  equal(
+    claims.audience,
+    recoveryPolicy.statusAuthority.status.audience,
+    `${label} planned status audience`,
+  );
+  sha256(claims.credentialIdSha256, `${label} status credential`);
+  equal(
+    claims.credentialIdSha256,
+    recoveryPolicy.statusAuthority.status.credentialIdSha256,
+    `${label} planned status credential digest`,
+  );
+  equal(claims.statusQueryIdSha256, subject.statusQueryIdSha256, `${label} status query ID`);
+  equal(
+    claims.statusQuerySubjectSha256,
+    sha256Canonical(subject),
+    `${label} status subject digest`,
+  );
+  equal(authority.claimsSha256, sha256Canonical(claims), `${label} status claims digest`);
+  integer(claims.issuedAt, 1, Number.MAX_SAFE_INTEGER, `${label} status issued time`);
+  equal(
+    claims.expiresAt,
+    claims.issuedAt + recoveryPolicy.statusQueryLifetimeSeconds,
+    `${label} status expiry`,
+  );
+  const expectedQueryId = createHash("sha256")
+    .update(
+      `cinatoken-container-runtime-json-compatibility-invocation-status-query-id-v1\n${canonicalJson(target)}\n${claims.issuedAt}`,
+      "utf8",
+    )
+    .digest("hex");
+  equal(subject.statusQueryIdSha256, expectedQueryId, `${label} status query ID`);
+  return query;
+}
+
+function validatePrivateInvocationStatusReceipt(
+  plan,
+  input,
+  expectedQuery,
+  request,
+  commandIdSha256,
+  queryStartedAt,
+  queryCompletedAt,
+  recoveryPolicy,
+  label,
+) {
+  const value = record(input, `${label} private status receipt`);
+  exactKeys(value, [
+    "schemaVersion", "contract", "status", "environment", "target", "query",
+    "queryAuthority", "invoker", "privateTransport", "result", "queriedAt",
+    "receiptSha256",
+  ], `${label} private status receipt`);
+  equal(value.schemaVersion, 1, `${label} private status schema`);
+  equal(
+    value.contract,
+    "cinatoken-container-runtime-json-compatibility-private-invocation-status-receipt-v1",
+    `${label} private status contract`,
+  );
+  equal(value.status, "private_invocation_status_resolved", `${label} private status`);
+  equal(value.environment, "staging", `${label} private status environment`);
+  canonicalEqual(value.target, expectedQuery.subject.target, `${label} private status target`);
+  canonicalEqual(value.query, expectedQuery, `${label} private status query`);
+  const queryAuthority = record(
+    value.queryAuthority,
+    `${label} private status authority`,
+  );
+  exactKeys(queryAuthority, [
+    "issuer", "audience", "keyId", "credentialIdSha256",
+    "statusQueryIdSha256", "statusQuerySubjectSha256", "claimsSha256",
+    "authorityEnvelopeSha256", "issuedAt", "expiresAt",
+  ], `${label} private status authority`);
+  const claims = expectedQuery.authority.claims;
+  for (const [name, expected] of [
+    ["issuer", claims.issuer],
+    ["audience", claims.audience],
+    ["keyId", expectedQuery.authority.keyId],
+    ["credentialIdSha256", claims.credentialIdSha256],
+    ["statusQueryIdSha256", expectedQuery.subject.statusQueryIdSha256],
+    ["statusQuerySubjectSha256", sha256Canonical(expectedQuery.subject)],
+    ["claimsSha256", expectedQuery.authority.claimsSha256],
+    ["authorityEnvelopeSha256", sha256Canonical(expectedQuery.authority)],
+    ["issuedAt", claims.issuedAt],
+    ["expiresAt", claims.expiresAt],
+  ]) equal(queryAuthority[name], expected, `${label} private status authority ${name}`);
+  const invoker = record(value.invoker, `${label} private status invoker`);
+  exactKeys(invoker, ["serviceName", "versionId", "gateName"], `${label} private status invoker`);
+  equal(invoker.serviceName, INVOKER_SERVICE, `${label} private status invoker service`);
+  equal(invoker.versionId, request.invoker.versionId, `${label} private status invoker version`);
+  equal(invoker.gateName, "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED", `${label} private status gate`);
+  const privateTransport = record(
+    value.privateTransport,
+    `${label} private status transport`,
+  );
+  exactKeys(privateTransport, [
+    "kind", "publicUrlUsed", "cloudflareRestUsed",
+    "invocationAuthorityBinding",
+  ], `${label} private status transport`);
+  equal(privateTransport.kind, "service-binding-rpc", `${label} private status transport kind`);
+  equal(privateTransport.publicUrlUsed, false, `${label} private status public URL`);
+  equal(privateTransport.cloudflareRestUsed, false, `${label} private status REST use`);
+  equal(
+    privateTransport.invocationAuthorityBinding,
+    "JSON_COMPATIBILITY_INVOCATION_AUTHORITY",
+    `${label} private status authority binding`,
+  );
+  const result = record(value.result, `${label} private status result`);
+  exactKeys(result, [
+    "status", "attempt", "completion", "privateInvocationReceipt",
+    "privateInvocationReceiptSha256", "recoveredFromPersistedAuthority",
+    "retryPermitted", "executionRpcRepeated",
+  ], `${label} private status result`);
+  equal(result.status, "completed", `${label} private status completion`);
+  equal(result.recoveredFromPersistedAuthority, true, `${label} persisted recovery`);
+  equal(result.retryPermitted, false, `${label} retry permission`);
+  equal(result.executionRpcRepeated, false, `${label} execution repetition`);
+  const privateInvocation = validateJsonCompatibilityPrivateInvocationReceipt(
+    plan,
+    result.privateInvocationReceipt,
+  );
+  equal(
+    result.privateInvocationReceiptSha256,
+    sha256Canonical(privateInvocation),
+    `${label} recovered private digest`,
+  );
+  equal(privateInvocation.command.subject.commandIdSha256, commandIdSha256, `${label} recovered command`);
+  canonicalEqual(result.attempt, privateInvocation.invocationAuthority.attempt, `${label} recovered attempt`);
+  canonicalEqual(result.completion, privateInvocation.invocationAuthority.completion, `${label} recovered completion`);
+  const queriedAt = wholeSecond(
+    value.queriedAt,
+    `${label} private status query time`,
+  );
+  const clockSkewMs = recoveryPolicy.clockSkewSeconds * 1000;
+  if (
+    queriedAt + clockSkewMs < queryStartedAt
+    || queriedAt > queryCompletedAt + clockSkewMs
+    || queriedAt + clockSkewMs < claims.issuedAt * 1000
+    || queriedAt > claims.expiresAt * 1000 + clockSkewMs
+  ) {
+    failure(`${label} private status query time is outside the enclosing query`);
+  }
+  sha256(value.receiptSha256, `${label} private status receipt digest`);
+  const { receiptSha256, ...subject } = value;
+  equal(receiptSha256, sha256Canonical(subject), `${label} private status receipt digest`);
+  return value;
+}
+
 function validateOperatorAuthorization(
   input,
   plan,
@@ -250,6 +661,7 @@ function validateOperatorAuthorization(
   commandIdSha256,
   startedAtMs,
   label,
+  purpose = "invoke",
 ) {
   const authorization = record(input, `${label} authorization`);
   exactKeys(authorization, [
@@ -268,7 +680,9 @@ function validateOperatorAuthorization(
   ], `${label} authorization`);
   equal(
     authorization.contract,
-    JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
+    purpose === "status"
+      ? JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT
+      : JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
     `${label} authorization contract`,
   );
   const envelope = record(
@@ -367,14 +781,25 @@ function validateOperatorAuthorization(
     subject.caller,
     `${label} authorization caller`,
   );
+  const clockSkewSeconds = purpose === "status"
+    ? plan.statusRecovery.clockSkewSeconds
+    : CLOCK_SKEW_MS / 1000;
+  const clockSkewMs = clockSkewSeconds * 1000;
+  const approvalMaxLifetimeSeconds =
+    plan.operatorApproval?.maxLifetimeSeconds ?? APPROVAL_MAX_LIFETIME_SECONDS;
+  const approvalMinimumRemainingSeconds =
+    plan.operatorApproval?.minimumRemainingLifetimeSeconds
+    ?? APPROVAL_MIN_REMAINING_SECONDS;
   if (
-    subject.issuedAt * 1000 > startedAtMs + CLOCK_SKEW_MS
-    || subject.notBefore * 1000 > startedAtMs + CLOCK_SKEW_MS
-    || subject.notBefore < subject.issuedAt - 5
+    subject.issuedAt * 1000 > startedAtMs + clockSkewMs
+    || subject.notBefore * 1000 > startedAtMs + clockSkewMs
+    || subject.notBefore < subject.issuedAt - clockSkewSeconds
     || subject.expiresAt <= subject.notBefore
-    || subject.expiresAt - subject.issuedAt > APPROVAL_MAX_LIFETIME_SECONDS
-    || subject.expiresAt * 1000 - startedAtMs
-      < APPROVAL_MIN_REMAINING_SECONDS * 1000
+    || subject.expiresAt - subject.issuedAt > approvalMaxLifetimeSeconds
+    || (purpose === "invoke" && subject.expiresAt * 1000 - startedAtMs
+      < approvalMinimumRemainingSeconds * 1000)
+    || (purpose === "status" && startedAtMs - subject.expiresAt * 1000
+      > plan.statusRecovery.approvalRecoveryWindowSeconds * 1000)
   ) {
     failure(`${label} approval time window is invalid`);
   }
@@ -435,7 +860,12 @@ function validateApprovalSubject(
   return subject;
 }
 
-function validateOperator(input, plan, label) {
+function validateOperator(
+  input,
+  plan,
+  label,
+  expectedGate = "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+) {
   const value = record(input, `${label} operator`);
   exactKeys(
     value,
@@ -446,7 +876,7 @@ function validateOperator(input, plan, label) {
   safeToken(value.versionId, `${label} operator version`);
   equal(
     value.gateName,
-    "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+    expectedGate,
     `${label} operator gate`,
   );
   const planned = record(
@@ -456,7 +886,9 @@ function validateOperator(input, plan, label) {
   equal(planned.serviceName, OPERATOR_SERVICE, `${label} planned operator service`);
   equal(planned.entrypoint, OPERATOR_ENTRYPOINT, `${label} planned operator entrypoint`);
   equal(value.versionId, planned.versionId, `${label} operator version`);
-  equal(value.gateName, planned.gateName, `${label} operator gate`);
+  if (expectedGate === "JSON_COMPATIBILITY_OPERATOR_ENABLED") {
+    equal(value.gateName, planned.gateName, `${label} operator gate`);
+  }
   equal(planned.privateRpcOnly, true, `${label} operator private RPC`);
   return value;
 }

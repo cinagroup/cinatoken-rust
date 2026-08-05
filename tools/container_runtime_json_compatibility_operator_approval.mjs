@@ -293,6 +293,10 @@ function validateOperatorConfigForPlan(configInput, plan) {
     currentKid: vars.JSON_COMPATIBILITY_OPERATOR_CURRENT_KID,
     currentCredentialIdSha256:
       vars.JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256,
+    statusCurrentKid:
+      vars.JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_KID,
+    statusCurrentCredentialIdSha256:
+      vars.JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_CREDENTIAL_ID_SHA256,
     approvalCurrentKid:
       vars.JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID,
     approvalCurrentSpkiSha256:
@@ -315,6 +319,30 @@ function validateOperatorConfigForPlan(configInput, plan) {
     plan.privateServices.invoker.versionId,
     "operator pinned invoker version",
   );
+  const executionAuthority = plan.statusRecovery?.statusAuthority?.execution;
+  const statusAuthority = plan.statusRecovery?.statusAuthority?.status;
+  if (executionAuthority !== undefined || statusAuthority !== undefined) {
+    requireEqual(
+      campaign.currentKid,
+      executionAuthority?.keyId,
+      "operator planned execution HMAC key ID",
+    );
+    requireEqual(
+      campaign.currentCredentialIdSha256,
+      executionAuthority?.credentialIdSha256,
+      "operator planned execution HMAC credential digest",
+    );
+    requireEqual(
+      campaign.statusCurrentKid,
+      statusAuthority?.keyId,
+      "operator planned status HMAC key ID",
+    );
+    requireEqual(
+      campaign.statusCurrentCredentialIdSha256,
+      statusAuthority?.credentialIdSha256,
+      "operator planned status HMAC credential digest",
+    );
+  }
   return config;
 }
 

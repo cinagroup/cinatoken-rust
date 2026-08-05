@@ -15,6 +15,7 @@ export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_SIGNATURE_DOMAIN =
   "cinatoken-container-runtime-json-compatibility-operator-phase-approval-v1\n" as const;
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_MAX_LIFETIME_SECONDS = 600;
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_MIN_REMAINING_SECONDS = 180;
+export const JSON_COMPATIBILITY_OPERATOR_STATUS_RECOVERY_WINDOW_SECONDS = 86_400;
 
 const CLOCK_SKEW_SECONDS = 5;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -63,6 +64,45 @@ export async function verifyJsonCompatibilityOperatorApproval(
   expectedCommandIdSha256: string,
   nowMilliseconds: number,
 ): Promise<VerifiedJsonCompatibilityOperatorApprovalV1> {
+  return await verifyJsonCompatibilityOperatorApprovalForPurpose(
+    env,
+    authorized,
+    operatorVersionId,
+    expectedRequestSha256,
+    expectedCommandIdSha256,
+    nowMilliseconds,
+    "invoke",
+  );
+}
+
+export async function verifyJsonCompatibilityOperatorStatusApproval(
+  env: JsonCompatibilityOperatorApprovalVerifierEnv,
+  authorized: JsonCompatibilityOperatorAuthorizedPhaseRequestV1,
+  operatorVersionId: string,
+  expectedRequestSha256: string,
+  expectedCommandIdSha256: string,
+  nowMilliseconds: number,
+): Promise<VerifiedJsonCompatibilityOperatorApprovalV1> {
+  return await verifyJsonCompatibilityOperatorApprovalForPurpose(
+    env,
+    authorized,
+    operatorVersionId,
+    expectedRequestSha256,
+    expectedCommandIdSha256,
+    nowMilliseconds,
+    "status",
+  );
+}
+
+async function verifyJsonCompatibilityOperatorApprovalForPurpose(
+  env: JsonCompatibilityOperatorApprovalVerifierEnv,
+  authorized: JsonCompatibilityOperatorAuthorizedPhaseRequestV1,
+  operatorVersionId: string,
+  expectedRequestSha256: string,
+  expectedCommandIdSha256: string,
+  nowMilliseconds: number,
+  purpose: "invoke" | "status",
+): Promise<VerifiedJsonCompatibilityOperatorApprovalV1> {
   const trust = requireApprovalTrust(env);
   const envelope = authorized.approval;
   const subject = envelope.subject;
@@ -94,8 +134,13 @@ export async function verifyJsonCompatibilityOperatorApproval(
     || subject.expiresAt <= subject.notBefore
     || subject.expiresAt - subject.issuedAt
       > JSON_COMPATIBILITY_OPERATOR_APPROVAL_MAX_LIFETIME_SECONDS
-    || subject.expiresAt - now
-      < JSON_COMPATIBILITY_OPERATOR_APPROVAL_MIN_REMAINING_SECONDS
+    || (purpose === "invoke" && subject.expiresAt - now
+      < JSON_COMPATIBILITY_OPERATOR_APPROVAL_MIN_REMAINING_SECONDS)
+    || (purpose === "status" && (
+      subject.notBefore > now + CLOCK_SKEW_SECONDS
+      || now - subject.expiresAt
+        > JSON_COMPATIBILITY_OPERATOR_STATUS_RECOVERY_WINDOW_SECONDS
+    ))
   ) {
     throw approvalError("operator_phase_approval_time_window");
   }

@@ -55,6 +55,10 @@ function buildPlan() {
     runnerConfigSha256: "a1".repeat(32),
     operatorVersionId: "operator-version-source-manifest-001",
     operatorConfigSha256: "b1".repeat(32),
+    operatorHmacKeyId: "operator-hmac-source-manifest-001",
+    operatorHmacCredentialIdSha256: "c1".repeat(32),
+    operatorStatusHmacKeyId: "operator-status-source-manifest-001",
+    operatorStatusHmacCredentialIdSha256: "c2".repeat(32),
     operatorApprovalKeyId: "operator-approval-source-manifest-001",
     operatorApprovalSpkiSha256: "a2".repeat(32),
     invokerVersionId: "invoker-version-001",
@@ -285,7 +289,7 @@ function buildPhasePackets(plan) {
       },
     };
     const packetSubject = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
       kind: "container-runtime-json-compatibility-phase-source-packet",
       environment: "staging",
@@ -311,8 +315,22 @@ function buildPhasePackets(plan) {
         phaseIndex,
         deployment: "container",
       }),
+      runnerInvocation: {
+        ...structuredClone(syntheticPhases[phaseIndex].runnerInvocation),
+        operatorReceiptSha256: sha256Canonical({
+          phaseIndex,
+          type: "operator-raw-receipt",
+        }),
+        phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
+        startedAt: `2026-08-04T00:0${phaseIndex * 2}:00Z`,
+        completedAt: `2026-08-04T00:0${phaseIndex * 2 + 1}:00Z`,
+      },
       operatorInvocation: {
         ...structuredClone(syntheticPhases[phaseIndex].operatorInvocation),
+        rawReceiptSha256: sha256Canonical({
+          phaseIndex,
+          type: "operator-raw-receipt",
+        }),
         phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
         authorization: {
           ...structuredClone(
@@ -419,7 +437,7 @@ describe("container runtime JSON compatibility source manifest", () => {
 
     expect(validateJsonCompatibilitySourceManifest(plan, manifest)).toEqual(manifest);
     expect(manifest).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       contract: JSON_COMPATIBILITY_SOURCE_MANIFEST_CONTRACT,
       environment: "staging",
       campaignIdSha256: plan.campaignIdSha256,

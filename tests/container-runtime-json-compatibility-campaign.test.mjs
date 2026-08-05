@@ -26,6 +26,10 @@ const validInputs = Object.freeze({
   runnerConfigSha256: "aa".repeat(32),
   operatorVersionId: "operator-version-001",
   operatorConfigSha256: "66".repeat(32),
+  operatorHmacKeyId: "operator-hmac-001",
+  operatorHmacCredentialIdSha256: "c1".repeat(32),
+  operatorStatusHmacKeyId: "operator-status-hmac-001",
+  operatorStatusHmacCredentialIdSha256: "c2".repeat(32),
   operatorApprovalKeyId: "operator-approval-001",
   operatorApprovalSpkiSha256: "bb".repeat(32),
   invokerVersionId: "invoker-version-001",
@@ -143,6 +147,10 @@ describe("container runtime JSON compatibility campaign plan", () => {
     const plan = buildPlan();
 
     expect(validateJsonCompatibilityCampaignPlan(plan)).toEqual(plan);
+    expect(plan).toMatchObject({
+      schemaVersion: 2,
+      contract: "cinatoken-container-runtime-json-compatibility-plan-v3",
+    });
     expect(plan.environment).toBe("staging");
     expect(plan.controller).toMatchObject({
       serviceName: "cinatoken-container-controller-staging",
@@ -215,6 +223,39 @@ describe("container runtime JSON compatibility campaign plan", () => {
       signerSpkiSha256: "bb".repeat(32),
       maxLifetimeSeconds: 600,
       minimumRemainingLifetimeSeconds: 180,
+    });
+    expect(plan.statusRecovery).toEqual({
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-status-recovery-policy-v1",
+      mode: "read-only-status-recovery",
+      approvalRecoveryWindowSeconds: 86_400,
+      statusQueryLifetimeSeconds: 30,
+      clockSkewSeconds: 5,
+      executionRetryPermitted: false,
+      statusReadGates: {
+        runner: "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED",
+        operator: "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED",
+        invoker: "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED",
+      },
+      statusAuthority: {
+        algorithm: "HMAC-SHA-256",
+        execution: {
+          issuer: "cinatoken-json-compatibility-campaign-operator-staging",
+          audience:
+            "cinatoken-container-runtime-json-compatibility-invoker-staging",
+          keyId: "operator-hmac-001",
+          credentialIdSha256: "c1".repeat(32),
+        },
+        status: {
+          issuer:
+            "cinatoken-json-compatibility-campaign-operator-status-staging",
+          audience:
+            "cinatoken-container-runtime-json-compatibility-invoker-staging",
+          keyId: "operator-status-hmac-001",
+          credentialIdSha256: "c2".repeat(32),
+        },
+      },
     });
     expect(plan.ring).toEqual({
       generation: 1,
@@ -294,6 +335,13 @@ describe("container runtime JSON compatibility campaign plan", () => {
       ["runnerConfigSha256", /runner config digest/],
       ["operatorVersionId", /operator version ID/],
       ["operatorConfigSha256", /operator config digest/],
+      ["operatorHmacKeyId", /operator HMAC key ID/],
+      ["operatorHmacCredentialIdSha256", /operator HMAC credential digest/],
+      ["operatorStatusHmacKeyId", /operator status HMAC key ID/],
+      [
+        "operatorStatusHmacCredentialIdSha256",
+        /operator status HMAC credential digest/,
+      ],
       ["operatorApprovalKeyId", /operator approval key ID/],
       ["operatorApprovalSpkiSha256", /operator approval SPKI digest/],
       ["invokerVersionId", /invoker version ID/],
@@ -313,6 +361,13 @@ describe("container runtime JSON compatibility campaign plan", () => {
     expect(() => buildPlan({ executorConfigSha256: "AA".repeat(32) })).toThrow(
       /executor config digest/,
     );
+    expect(() => buildPlan({
+      operatorStatusHmacKeyId: validInputs.operatorHmacKeyId,
+    })).toThrow(/execution and status HMAC key IDs must differ/);
+    expect(() => buildPlan({
+      operatorStatusHmacCredentialIdSha256:
+        validInputs.operatorHmacCredentialIdSha256,
+    })).toThrow(/execution and status HMAC credential digests must differ/);
   });
 
   test("rejects private service name, entrypoint, gate, or public RPC drift", () => {
@@ -370,6 +425,50 @@ describe("container runtime JSON compatibility campaign plan", () => {
     expect(() => validateJsonCompatibilityCampaignPlan(configTamper)).toThrow(
       /canonical digest/,
     );
+  });
+
+  test("keeps plan v2 readable while reserving status recovery for plan v3", () => {
+    const legacy = structuredClone(buildPlan());
+    legacy.schemaVersion = 1;
+    legacy.contract =
+      "cinatoken-container-runtime-json-compatibility-plan-v2";
+    delete legacy.statusRecovery;
+
+    expect(validateJsonCompatibilityCampaignPlan(resignPlan(legacy))).toEqual(
+      legacy,
+    );
+    expect(legacy.statusRecovery).toBeUndefined();
+  });
+
+  test("rejects status recovery policy, gate, and authority drift", () => {
+    const mutations = [
+      ["approvalRecoveryWindowSeconds", 86_401, /status recovery window/],
+      ["statusQueryLifetimeSeconds", 31, /status query lifetime/],
+      ["executionRetryPermitted", true, /retry permission/],
+    ];
+    for (const [field, value, pattern] of mutations) {
+      const plan = structuredClone(buildPlan());
+      plan.statusRecovery[field] = value;
+      expect(() => validateJsonCompatibilityCampaignPlan(resignPlan(plan)))
+        .toThrow(pattern);
+    }
+    const gate = structuredClone(buildPlan());
+    gate.statusRecovery.statusReadGates.operator =
+      "JSON_COMPATIBILITY_OPERATOR_ENABLED";
+    expect(() => validateJsonCompatibilityCampaignPlan(resignPlan(gate)))
+      .toThrow(/operator status read gate/);
+
+    const authority = structuredClone(buildPlan());
+    authority.statusRecovery.statusAuthority.status.credentialIdSha256 =
+      authority.statusRecovery.statusAuthority.execution.credentialIdSha256;
+    expect(() => validateJsonCompatibilityCampaignPlan(resignPlan(authority)))
+      .toThrow(/execution and status HMAC credential digests must differ/);
+
+    const issuer = structuredClone(buildPlan());
+    issuer.statusRecovery.statusAuthority.status.issuer =
+      "cinatoken-json-compatibility-operator-status-staging";
+    expect(() => validateJsonCompatibilityCampaignPlan(resignPlan(issuer)))
+      .toThrow(/status HMAC authority issuer/);
   });
 });
 
@@ -600,6 +699,9 @@ test("package scripts keep the planner and verifier in the repository gate", asy
   );
   expect(packageJson.scripts["check:container-runtime:json-compatibility-operator"]).toContain(
     "build:container-runtime:json-compatibility-operator",
+  );
+  expect(packageJson.scripts["build:all"]).toContain(
+    "build:container-runtime:json-compatibility-runner",
   );
   expect(packageJson.scripts.check).toContain(
     "check:container-runtime:json-compatibility-campaign",

@@ -13672,3 +13672,70 @@ Bun/libuv `UV_HANDLE_CLOSING` assertion and exit code 9 after OpenAPI validation
 That invocation is not acceptance evidence. The exact contract subgate then
 passed independently with 43 tests and 81 expectations, and a clean complete
 root rerun passed with exit code 0 as recorded above.
+
+## Private Runner And Completion-Recovery Verification (2026-08-05)
+
+This section supersedes the earlier four-private-service and missing-Runner
+statements. The plan now binds five private roles: Runner, Operator, Invoker,
+PermitIssuer, and Executor. Controller remains a separate pinned identity.
+
+| Evidence surface | Current result | What it does not prove |
+| --- | --- | --- |
+| Plan v3 and v2 compatibility | Plan v3 recovery fields, exact execution/status issuer/audience/KID/credential-digest identities, digest tamper, exact gates/config binding, and v2 read-only compatibility pass | Owner approval or remote config readback; packet/manifest v1 are not backward-readable |
+| Invoker completion/status | Node and Workerd tests cover persisted canonical body, old rows, all statuses, fresh DO stubs, and committed-response loss without fail/replay | Deployed DO migration or live eviction behavior |
+| Operator status | Tests cover independent gate/HMAC, approval recovery window, exact status target, one status RPC, zero execution calls, and completed receipt validation | Live cross-Worker identity or secret rotation |
+| Runner capability | 10 Node tests and two workerd tests cover inert default export, exact named identity/version, real named Runner -> named Operator RPC, direct/status receipts, no retry, RPC metadata normalization, and rejection of self-consistent but detached nested receipts | Account-level binding inventory, an upstream Runner caller, or remote Version Metadata/config readback |
+| Offline chain | Direct and recovered completed Runner receipts produce packet-v2/manifest-v2; detached authority, raw receipt, command, attempt, completion, and context mutations fail closed | Source signer authenticity or immutable archive retention |
+
+The focused repository gate is:
+
+```text
+bun run check:container-runtime:json-compatibility-campaign
+bun run check:container-runtime:json-compatibility-invoker
+bun run check:container-runtime:json-compatibility-operator
+bun run check:container-runtime:json-compatibility-runner
+```
+
+The campaign gate currently passes 77 tests with 290 expectations, including
+plan v3, legacy v2 denial of status recovery, direct Runner completion,
+committed-response recovery, packet v2, manifest v2, config preparers, and
+bounded file handling. The three service gates include generated type drift,
+TypeScript, Node/Workerd tests where configured, and local/staging Wrangler
+dry-runs. The complete repository `bun run check` passed with exit code 0 in
+1,434.3 seconds on 2026-08-05.
+
+Offline validation checks canonical envelope shape, identity, digest, target,
+and timing bindings. It does not possess the HMAC secret and therefore cannot
+independently prove an HMAC signature; that authenticity is established at the
+live Operator/Invoker verification boundary and must be covered by remote
+negative tests.
+
+Required remote acceptance remains separate:
+
+1. First implement and freeze dark, status-only, and execution-plus-status
+   versions plus their allowed transition graph. Current preparers cannot emit
+   status-only artifacts, so deployment stages are not yet executable.
+2. Implement the private orchestration Worker/binding that calls the named
+   Runner; keep it separate from the topology deployment/readback runner.
+3. Deploy all six exact versions with execution and status gates false.
+4. Read back versions, config digests, named entrypoints, Service Bindings,
+   route absence, secret presence without values, and DO migrations. For the
+   Invoker, separately prove the Wrangler class migration and runtime SQLite
+   column upgrade, including v2 recovery and stable legacy-row behavior.
+5. Prove the inert default entrypoint exposes no campaign RPC. A forged but
+   structurally valid approval may reach the Operator, where signature
+   verification must reject it before any Invoker RPC, DO mutation,
+   PermitIssuer call, or Executor call.
+6. Run direct completion and committed-response-loss recovery drills. Confirm
+   PermitIssuer and Executor counters remain one and every non-completed status
+   is non-retryable.
+7. Retain signed topology/context, packet-v2, manifest-v2, source signature,
+   revocation state, immutable publication, and readback.
+
+One status HMAC credential must remain frozen across the campaign and complete
+recovery window. The current Invoker preparer deliberately has no previous
+status-key slot, so live status-key rotation is not yet an accepted ceremony.
+
+No remote step in this list has run in this checkpoint. Local pass, self-test,
+and dry-run output must not be labeled Cloudflare staging evidence. Production
+remains **NO-GO**.

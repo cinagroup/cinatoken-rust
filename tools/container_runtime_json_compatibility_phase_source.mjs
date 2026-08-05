@@ -17,9 +17,10 @@ import {
   validateJsonCompatibilityPrivateInvocationReceipt,
 } from "./container_runtime_json_compatibility_private_invocation.mjs";
 import {
-  projectJsonCompatibilityOperatorInvocation,
-  validateJsonCompatibilityOperatorInvocationReceipt,
-} from "./container_runtime_json_compatibility_operator_invocation.mjs";
+  projectJsonCompatibilityResolvedOperator,
+  projectJsonCompatibilityRunnerCompletion,
+  resolveJsonCompatibilityRunnerCompletion,
+} from "./container_runtime_json_compatibility_runner_invocation.mjs";
 
 export const JSON_COMPATIBILITY_PHASE_SOURCE_CONTEXT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-phase-source-context-v1";
@@ -44,17 +45,19 @@ export async function buildJsonCompatibilityPhaseSourcePacket(
   if (validatedPlan.ring.shardCount !== SHARD_COUNT) {
     throw failure("[phase-assembly] plan shard count must equal 8");
   }
-  const verifiedOperatorInvocation =
-    validateJsonCompatibilityOperatorInvocationReceipt(
-      validatedPlan,
-      receipt,
-    );
-  const operatorInvocation = projectJsonCompatibilityOperatorInvocation(
-    verifiedOperatorInvocation,
+  const resolvedRunner = resolveJsonCompatibilityRunnerCompletion(
+    validatedPlan,
+    receipt,
+  );
+  const runnerInvocation = projectJsonCompatibilityRunnerCompletion(
+    resolvedRunner,
+  );
+  const operatorInvocation = projectJsonCompatibilityResolvedOperator(
+    resolvedRunner,
   );
   const verifiedInvocation = validateJsonCompatibilityPrivateInvocationReceipt(
     validatedPlan,
-    verifiedOperatorInvocation.privateInvocationReceipt,
+    resolvedRunner.privateInvocationReceipt,
   );
   const verifiedReceipt = await validateProbeReceipt(
     validatedPlan,
@@ -128,7 +131,7 @@ export async function buildJsonCompatibilityPhaseSourcePacket(
       verifiedReceipt.transportTotals.recoveryRequiredCount,
   };
   const packetSubject = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
     kind: "container-runtime-json-compatibility-phase-source-packet",
     environment: "staging",
@@ -150,6 +153,7 @@ export async function buildJsonCompatibilityPhaseSourcePacket(
     topology: clone(phase.topology),
     containerDeploymentSetSha256:
       verifiedContext.containerDeploymentSetSha256,
+    runnerInvocation,
     operatorInvocation,
     privateInvocation,
     executorReceipt: {

@@ -2517,6 +2517,11 @@ not a waiver for this remote matrix. Production remains **NO-GO**.
 
 ## Container Runtime JSON-Only N/N-1 Compatibility Campaign
 
+> **Historical checkpoint; do not execute this section.** The commands and
+> five-service ceremony below predate plan v3, the private Runner, status
+> recovery, and packet/manifest v2. The executable boundary, once its stated
+> blockers are implemented, is the 2026-08-05 section later in this file.
+
 This campaign is the mandatory staging step between publishing a candidate
 runtime image and attempting any Protobuf transport activation. It does not
 authorize a deployment by itself. The Controller remains private, all tracked
@@ -2798,8 +2803,8 @@ receipt:
 
 ```text
 bun tools/assemble_container_runtime_json_compatibility_phase_source.mjs \
-  --plan <approved-plan.json> \
-  --receipt <operator-invocation-receipt.json> \
+  --plan <approved-plan-v3.json> \
+  --receipt <runner-invocation-or-completed-runner-status-receipt.json> \
   --context <independent-readback-context.json> \
   --out <phase-source.json>
 ```
@@ -2892,3 +2897,87 @@ before/after collector,
 source signature and immutable archive, a real four-phase staging campaign,
 and the wider provider, billing, storage, SLO, security and cutover gates all
 remain release blockers.
+
+## 2026-08-05 Runner And Status-Recovery Ceremony
+
+This ceremony supersedes any earlier instruction to submit an Operator or
+Invoker receipt directly to phase assembly.
+
+### Preconditions
+
+- The final artifact is plan v3. Plan v2 may be verified historically but must
+  not be used for status recovery.
+- Controller, Executor, PermitIssuer, Invoker, Operator, and Runner are exact
+  reviewed versions. All tracked configs are private and default false.
+- Invoker and Operator execution HMAC credentials differ from the
+  Operator-to-Invoker status HMAC credentials.
+- Approval trust retention covers the 24-hour recovery window. One status HMAC
+  credential remains frozen for the entire campaign and recovery window; the
+  current Invoker preparer has no previous status-key slot, so rotation is not
+  part of this ceremony.
+- Remote readback proves Runner binds only the named Operator entrypoint and no
+  public/default entrypoint exposes campaign RPC.
+- A separate private orchestration Worker binds to the named Runner. This
+  upstream caller is not implemented yet and is distinct from the missing
+  named-shard topology deployment/readback runner.
+- Plan v3 and create-only preparers freeze dark, status-only, and
+  execution-plus-status versions plus their allowed transition graph. This is
+  not implemented yet; current preparers emit only all-false or both gates true.
+
+### Deploy and arm (blocked; not executable)
+
+Do not run the following target sequence until the two preconditions above are
+implemented. Logical gate separation in Worker code is not deployment-state
+evidence.
+
+1. Deploy callee to caller: Controller, Executor, PermitIssuer, Invoker,
+   Operator, Runner. Leave execution and status gates false.
+2. Read back Version Metadata, canonical config digest, named exports, binding
+   targets, routes, and secret names without values. Prove both the Invoker DO
+   class migration and its runtime SQLite column upgrade, including v2 result
+   recovery and stable legacy `completed_receipt_unavailable` behavior.
+3. Enable status gates in callee-to-caller order: Invoker, Operator, Runner.
+   Verify a bounded signed query is accepted but cannot call execution methods.
+4. Enable execution in callee-to-caller order. Retain an explicit before-state
+   artifact after each change.
+5. Build one exact phase request, sign one Ed25519 approval, and invoke only the
+   named Runner once.
+
+### Ambiguous response
+
+Never replay `invokePhase`, mint another permit, change the command ID, or mark
+the phase failed merely because a response was lost. Submit a new Runner status
+wrapper using the original authorized phase request. The Operator revalidates
+the original Ed25519 approval and generates the fresh HMAC status query:
+
+- `completed`: validate the complete recovered chain and continue assembly;
+- `not_found`: stop and investigate the race; retry remains forbidden;
+- `active`: stop and query later with a fresh status HMAC; do not execute;
+- `failed`: terminal phase failure; do not create a replacement command;
+- `completed_receipt_unavailable`: quarantine the legacy row; do not execute;
+- RPC/parse/identity error: outcome unknown; stop and preserve artifacts.
+
+Each status call causes the Operator to use a fresh query ID and fresh 30-second
+HMAC envelope, and the Invoker uses a fresh DO stub. No layer retries an RPC
+automatically.
+
+### Evidence and closure
+
+Phase assembly consumes the raw Runner invocation receipt for a direct result,
+or the raw Runner status receipt for a recovered result. Only completed paths
+may produce packet v2. Four ordered packets produce source manifest v2; public
+evidence v1 binds its digest. Independently sign and archive the raw inputs,
+packet, manifest, config/version readback, and revocation state.
+
+After rollback, the future deployment-state contract must disable execution
+caller to callee while retaining the frozen status-only versions for the full
+recovery window. It must then disable status caller to callee and read back
+every gate false. Current config artifacts cannot perform this transition;
+failure to retain status access never authorizes an execution retry.
+
+Focused local evidence is 77 campaign tests with 290 expectations, 10 Runner
+Node tests, and two real workerd named Service Binding tests. The complete
+repository `bun run check` passed with exit code 0 in 1,434.3 seconds on
+2026-08-05. These steps have not run remotely and the activation sequence
+remains blocked. Go/VPS remains the source of production authority, and
+production remains **NO-GO**.

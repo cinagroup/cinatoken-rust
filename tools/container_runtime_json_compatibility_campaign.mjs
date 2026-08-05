@@ -4,6 +4,8 @@ import {
 } from "./preflight_container_controller_deploy.mjs";
 
 export const JSON_COMPATIBILITY_PLAN_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-plan-v3";
+export const JSON_COMPATIBILITY_PLAN_V2_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-plan-v2";
 export const JSON_COMPATIBILITY_EVIDENCE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-evidence-v1";
@@ -15,6 +17,17 @@ export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_AUDIENCE =
   "cinatoken-container-runtime-json-compatibility-operator-staging";
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_MAX_LIFETIME_SECONDS = 600;
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_MIN_REMAINING_SECONDS = 180;
+export const JSON_COMPATIBILITY_STATUS_RECOVERY_POLICY_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-status-recovery-policy-v1";
+export const JSON_COMPATIBILITY_STATUS_RECOVERY_WINDOW_SECONDS = 86_400;
+export const JSON_COMPATIBILITY_STATUS_QUERY_LIFETIME_SECONDS = 30;
+export const JSON_COMPATIBILITY_STATUS_CLOCK_SKEW_SECONDS = 5;
+export const JSON_COMPATIBILITY_OPERATOR_HMAC_ISSUER =
+  "cinatoken-json-compatibility-campaign-operator-staging";
+export const JSON_COMPATIBILITY_OPERATOR_STATUS_HMAC_ISSUER =
+  "cinatoken-json-compatibility-campaign-operator-status-staging";
+export const JSON_COMPATIBILITY_INVOKER_HMAC_AUDIENCE =
+  "cinatoken-container-runtime-json-compatibility-invoker-staging";
 export const JSON_COMPATIBILITY_SHARD_COUNT = 8;
 export const JSON_COMPATIBILITY_PHASE_IDS = Object.freeze([
   "baseline-n-minus-one",
@@ -213,6 +226,10 @@ export function buildJsonCompatibilityCampaignPlan({
   runnerConfigSha256,
   operatorVersionId,
   operatorConfigSha256,
+  operatorHmacKeyId,
+  operatorHmacCredentialIdSha256,
+  operatorStatusHmacKeyId,
+  operatorStatusHmacCredentialIdSha256,
   operatorApprovalKeyId,
   operatorApprovalSpkiSha256,
   invokerVersionId,
@@ -279,6 +296,32 @@ export function buildJsonCompatibilityCampaignPlan({
     operatorApprovalSpkiSha256,
     "[plan] operator approval SPKI digest",
   );
+  requireKeyId(operatorHmacKeyId, "[plan] operator HMAC key ID");
+  requireSha256(
+    operatorHmacCredentialIdSha256,
+    "[plan] operator HMAC credential digest",
+  );
+  requireKeyId(
+    operatorStatusHmacKeyId,
+    "[plan] operator status HMAC key ID",
+  );
+  requireSha256(
+    operatorStatusHmacCredentialIdSha256,
+    "[plan] operator status HMAC credential digest",
+  );
+  if (operatorHmacKeyId === operatorStatusHmacKeyId) {
+    throw new JsonCompatibilityCampaignError(
+      "[plan] execution and status HMAC key IDs must differ",
+    );
+  }
+  if (
+    operatorHmacCredentialIdSha256
+    === operatorStatusHmacCredentialIdSha256
+  ) {
+    throw new JsonCompatibilityCampaignError(
+      "[plan] execution and status HMAC credential digests must differ",
+    );
+  }
   const operatorApproval = {
     schemaVersion: 1,
     contract: JSON_COMPATIBILITY_OPERATOR_APPROVAL_POLICY_CONTRACT,
@@ -346,8 +389,39 @@ export function buildJsonCompatibilityCampaignPlan({
     topology: topologyForPhase(id, selectedCandidateShard),
     requiredChecks: [...REQUIRED_CHECKS],
   }));
-  const subject = {
+  const statusRecovery = {
     schemaVersion: 1,
+    contract: JSON_COMPATIBILITY_STATUS_RECOVERY_POLICY_CONTRACT,
+    mode: "read-only-status-recovery",
+    approvalRecoveryWindowSeconds:
+      JSON_COMPATIBILITY_STATUS_RECOVERY_WINDOW_SECONDS,
+    statusQueryLifetimeSeconds:
+      JSON_COMPATIBILITY_STATUS_QUERY_LIFETIME_SECONDS,
+    clockSkewSeconds: JSON_COMPATIBILITY_STATUS_CLOCK_SKEW_SECONDS,
+    executionRetryPermitted: false,
+    statusReadGates: {
+      runner: "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED",
+      operator: "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED",
+      invoker: "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED",
+    },
+    statusAuthority: {
+      algorithm: "HMAC-SHA-256",
+      execution: {
+        issuer: JSON_COMPATIBILITY_OPERATOR_HMAC_ISSUER,
+        audience: JSON_COMPATIBILITY_INVOKER_HMAC_AUDIENCE,
+        keyId: operatorHmacKeyId,
+        credentialIdSha256: operatorHmacCredentialIdSha256,
+      },
+      status: {
+        issuer: JSON_COMPATIBILITY_OPERATOR_STATUS_HMAC_ISSUER,
+        audience: JSON_COMPATIBILITY_INVOKER_HMAC_AUDIENCE,
+        keyId: operatorStatusHmacKeyId,
+        credentialIdSha256: operatorStatusHmacCredentialIdSha256,
+      },
+    },
+  };
+  const subject = {
+    schemaVersion: 2,
     contract: JSON_COMPATIBILITY_PLAN_CONTRACT,
     kind: "container-runtime-json-compatibility-plan",
     mode: "offline-dry-run",
@@ -368,6 +442,7 @@ export function buildJsonCompatibilityCampaignPlan({
     },
     privateServices,
     operatorApproval,
+    statusRecovery,
     runtimes: {
       n: runtimeN,
       nMinusOne: runtimeNMinusOne,
@@ -411,6 +486,15 @@ export function buildJsonCompatibilityCampaignPlan({
 
 export function validateJsonCompatibilityCampaignPlan(plan) {
   const value = requireRecord(plan, "[plan] document");
+  const isCurrentPlan = value.schemaVersion === 2
+    && value.contract === JSON_COMPATIBILITY_PLAN_CONTRACT;
+  const isLegacyPlan = value.schemaVersion === 1
+    && value.contract === JSON_COMPATIBILITY_PLAN_V2_CONTRACT;
+  if (!isCurrentPlan && !isLegacyPlan) {
+    throw new JsonCompatibilityCampaignError(
+      "[plan] schema version and contract are unsupported",
+    );
+  }
   requireExactKeys(value, [
     "schemaVersion",
     "contract",
@@ -421,6 +505,7 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
     "controller",
     "privateServices",
     "operatorApproval",
+    ...(isCurrentPlan ? ["statusRecovery"] : []),
     "runtimes",
     "ring",
     "constraints",
@@ -428,8 +513,6 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
     "executionBoundary",
     "planDigestSha256",
   ], "[plan] document");
-  requireEqual(value.schemaVersion, 1, "[plan] schema version");
-  requireEqual(value.contract, JSON_COMPATIBILITY_PLAN_CONTRACT, "[plan] contract");
   requireEqual(
     value.kind,
     "container-runtime-json-compatibility-plan",
@@ -449,6 +532,9 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
   validateControllerIdentity(value.controller, "[plan] Controller");
   validatePrivateServices(value.privateServices, "[plan] private services");
   validateOperatorApprovalPolicy(value.operatorApproval);
+  if (isCurrentPlan) {
+    validateStatusRecoveryPolicy(value.statusRecovery);
+  }
   const runtimes = validateRuntimeSet(value.runtimes, "[plan] runtimes");
   if (runtimes.n.buildIdSha256 === runtimes.nMinusOne.buildIdSha256) {
     throw new JsonCompatibilityCampaignError(
@@ -1259,6 +1345,115 @@ function validateOperatorApprovalPolicy(value) {
     "[plan] operator approval minimum remaining lifetime",
   );
   return policy;
+}
+
+function validateStatusRecoveryPolicy(value) {
+  const policy = requireRecord(value, "[plan] status recovery policy");
+  requireExactKeys(policy, [
+    "schemaVersion",
+    "contract",
+    "mode",
+    "approvalRecoveryWindowSeconds",
+    "statusQueryLifetimeSeconds",
+    "clockSkewSeconds",
+    "executionRetryPermitted",
+    "statusReadGates",
+    "statusAuthority",
+  ], "[plan] status recovery policy");
+  requireEqual(policy.schemaVersion, 1, "[plan] status recovery schema");
+  requireEqual(
+    policy.contract,
+    JSON_COMPATIBILITY_STATUS_RECOVERY_POLICY_CONTRACT,
+    "[plan] status recovery contract",
+  );
+  requireEqual(
+    policy.mode,
+    "read-only-status-recovery",
+    "[plan] status recovery mode",
+  );
+  requireEqual(
+    policy.approvalRecoveryWindowSeconds,
+    JSON_COMPATIBILITY_STATUS_RECOVERY_WINDOW_SECONDS,
+    "[plan] status recovery window",
+  );
+  requireEqual(
+    policy.statusQueryLifetimeSeconds,
+    JSON_COMPATIBILITY_STATUS_QUERY_LIFETIME_SECONDS,
+    "[plan] status query lifetime",
+  );
+  requireEqual(
+    policy.clockSkewSeconds,
+    JSON_COMPATIBILITY_STATUS_CLOCK_SKEW_SECONDS,
+    "[plan] status clock skew",
+  );
+  requireEqual(
+    policy.executionRetryPermitted,
+    false,
+    "[plan] status execution retry permission",
+  );
+  const gates = requireRecord(
+    policy.statusReadGates,
+    "[plan] status read gates",
+  );
+  requireExactKeys(
+    gates,
+    ["runner", "operator", "invoker"],
+    "[plan] status read gates",
+  );
+  for (const [role, gateName] of [
+    ["runner", "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED"],
+    ["operator", "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED"],
+    ["invoker", "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED"],
+  ]) requireEqual(gates[role], gateName, `[plan] ${role} status read gate`);
+  const authority = requireRecord(
+    policy.statusAuthority,
+    "[plan] status authority",
+  );
+  requireExactKeys(authority, [
+    "algorithm",
+    "execution",
+    "status",
+  ], "[plan] status authority");
+  requireEqual(authority.algorithm, "HMAC-SHA-256", "[plan] status HMAC");
+  const execution = validatePlannedHmacIdentity(
+    authority.execution,
+    JSON_COMPATIBILITY_OPERATOR_HMAC_ISSUER,
+    "[plan] execution HMAC authority",
+  );
+  const status = validatePlannedHmacIdentity(
+    authority.status,
+    JSON_COMPATIBILITY_OPERATOR_STATUS_HMAC_ISSUER,
+    "[plan] status HMAC authority",
+  );
+  if (execution.keyId === status.keyId) {
+    throw new JsonCompatibilityCampaignError(
+      "[plan] execution and status HMAC key IDs must differ",
+    );
+  }
+  if (execution.credentialIdSha256 === status.credentialIdSha256) {
+    throw new JsonCompatibilityCampaignError(
+      "[plan] execution and status HMAC credential digests must differ",
+    );
+  }
+  return policy;
+}
+
+function validatePlannedHmacIdentity(value, expectedIssuer, label) {
+  const identity = requireRecord(value, label);
+  requireExactKeys(
+    identity,
+    ["issuer", "audience", "keyId", "credentialIdSha256"],
+    label,
+  );
+  requireEqual(identity.issuer, expectedIssuer, `${label} issuer`);
+  requireEqual(
+    identity.audience,
+    JSON_COMPATIBILITY_INVOKER_HMAC_AUDIENCE,
+    `${label} audience`,
+  );
+  requireKeyId(identity.keyId, `${label} key ID`);
+  requireSha256(identity.credentialIdSha256, `${label} credential digest`);
+  return identity;
 }
 
 function validatePrivateServiceIdentity(value, definition, label) {

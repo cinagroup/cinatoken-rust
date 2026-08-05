@@ -1,9 +1,11 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 import {
+  getJsonCompatibilityOperatorPhaseStatus,
   invokeJsonCompatibilityOperatorPhase,
   type JsonCompatibilityOperatorEnv,
   type JsonCompatibilityOperatorInvocationReceiptV2,
+  type JsonCompatibilityOperatorPhaseStatusReceiptV1,
 } from "./operator";
 
 export class JsonCompatibilityCampaignOperatorEntrypoint
@@ -13,6 +15,13 @@ export class JsonCompatibilityCampaignOperatorEntrypoint
   ): Promise<JsonCompatibilityOperatorInvocationReceiptV2> {
     return await invokeJsonCompatibilityOperatorPhase(this.env, input);
   }
+
+  async getPhaseStatus(
+    input: unknown,
+  ): Promise<JsonCompatibilityOperatorPhaseStatusReceiptV1> {
+    return await getJsonCompatibilityOperatorPhaseStatus(this.env, input);
+  }
 }
 
-export default JsonCompatibilityCampaignOperatorEntrypoint;
+export default class JsonCompatibilityOperatorDefaultEntrypoint
+  extends WorkerEntrypoint<JsonCompatibilityOperatorEnv> {}

@@ -4605,6 +4605,10 @@ authoritative and production remains **NO-GO**.
 
 ## 2026-08-04 Signed Runner-To-Operator Authorization Addendum
 
+> **Historical checkpoint; do not execute.** Its missing-Runner and
+> missing-recovery rows are retained only as prior evidence and are superseded
+> by the 2026-08-05 addendum below.
+
 This addendum supersedes the preceding ceremony's statement that the private
 Operator lacks independently approved pre-execution authority. Campaign plan
 v2 now freezes the exact Runner, Operator, Invoker, PermitIssuer, and Executor
@@ -4681,5 +4685,84 @@ exit code 0 in 1,270.4 seconds. These are implementation and
 configuration-shape checks only. No Worker deployment, secret
 provisioning/read, remote binding call, DO migration, Container execution,
 provider/billing/storage mutation, traffic shift, or Go/VPS drain occurred.
-Every implemented gate remains false; the Runner gate does not exist yet.
+At that historical checkpoint every implemented gate remained false and the
+Runner gate did not exist yet.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-08-05 Runner And Recovery Execution Addendum
+
+This addendum supersedes the preceding implementation ledger. The private
+Runner, independent status gates/credentials, persisted Invoker completion,
+and offline recovered-result chain now exist locally. They remain undeployed.
+
+### Revised execution ledger
+
+| Unit | Local state | Required production evidence |
+| --- | --- | --- |
+| Plan v3 | Implemented; freezes 24-hour recovery, 30-second status HMAC, five-second skew, three status gates, and exact distinct execution/status issuer, audience, KID, credential digest, version, and config identities | Retained owner/security approval of exact final digest |
+| Plan v2 compatibility | Read-only direct verification retained | Must not authorize status recovery or new campaigns |
+| Named Runner | Private, secretless, inert default, exact Operator binding, deep nested-receipt validation, execution/status receipts, 10 Node and two workerd RPC tests | Upstream private caller plus remote version/config/export/binding/route readback and account caller inventory |
+| Operator recovery | Independent status gate/HMAC; one status RPC; no execution calls | Freeze one status credential across the full recovery window and run a live response-loss drill; previous status-key rotation is not implemented |
+| Invoker recovery | SQLite attempt/completion plus canonical successful body; v1 rows remain recognizable | Remote migration/readback, eviction, and old-row quarantine proof |
+| Offline evidence | Direct or recovered Runner receipt -> packet v2 -> manifest v2 -> evidence v1 | Source signature, revocation, immutable publish/readback |
+
+### Release stages (R2-R8 blocked)
+
+R2 through R8 are design targets, not executable production steps. Current
+preparers emit only all-false or execution-plus-status configs, while plan v3
+pins one version/config identity per private service. Before R2, add and approve
+dark, status-only, and execution-plus-status artifacts plus an allowed
+transition graph, implement the upstream private Runner caller/binding, and
+keep it distinct from the topology runner/context collector.
+
+| Stage | Required action | Pass evidence | Stop condition |
+| --- | --- | --- | --- |
+| R0 freeze | Keep Go/VPS authoritative; approve plan v3 and exact artifacts | Signed plan/config/version inventory | Unknown writer, caller, signer, or artifact |
+| R1 deploy dark | Deploy Controller, Executor, PermitIssuer, Invoker, Operator, Runner with all gates false | Authenticated versions, configs, bindings, routes, secrets-without-values, DO migrations | Any public/default RPC or config drift |
+| R2 status arm | **BLOCKED:** deploy frozen status-only Invoker, Operator, Runner versions | Read-only call proves zero PermitIssuer/Executor calls | Missing state artifact, or status call can execute, retry, or cross an unapproved identity |
+| R3 execution arm | Enable callee-to-caller execution gates for isolated cohort | Exact on/off readback and before-state snapshots | Overlapping Go/Rust authority or unbounded cohort |
+| R4 phase run | Sign one request and call named Runner once | Direct completed Runner chain or bounded status observation | Any automatic retry, command replacement, or side effect outside probe boundary |
+| R5 ambiguity drill | Lose completion response after DO commit, then query through Runner | Recovered exact private receipt; one Issuer and Executor call | Failed overwrite, replay, unavailable canonical body, or detached digest |
+| R6 packet/archive | Assemble packet v2 and four-phase manifest v2; independently sign and publish | Signature, revocation state, immutable archive and readback | Unsigned source label, mutable artifact, missing raw receipt |
+| R7 rollback | Complete mandatory N-1 rollback; disable execution caller-to-callee | All execution gates false and Go/VPS still authoritative | Ledger divergence, drain failure, or residual Rust writer |
+| R8 recovery closure | **BLOCKED:** retain frozen status-only versions, approval trust, and one status HMAC credential for 24 hours, then disable caller-to-callee | Final status/gate/key-retention readback | Lost status access is treated as permission to execute |
+
+### Non-retry invariant
+
+`not_found`, `active`, `failed`, `completed_receipt_unavailable`, malformed,
+unavailable, timeout, and unknown are all non-retryable execution outcomes.
+Only the read-only status query may be repeated, with a fresh query/HMAC and a
+fresh Durable Object stub. `completed` permits evidence assembly, never another
+execution. The system claims fail-closed at-most-once admission plus persisted
+completion recovery, not a distributed exactly-once transaction.
+
+### Operational commands
+
+```text
+bun run check:container-runtime:json-compatibility-campaign
+bun run check:container-runtime:json-compatibility-invoker
+bun run check:container-runtime:json-compatibility-operator
+bun run check:container-runtime:json-compatibility-runner
+
+bun run prepare:container-runtime:json-compatibility-invoker-config -- --help
+bun run prepare:container-runtime:json-compatibility-operator-config -- --help
+bun run prepare:container-runtime:json-compatibility-runner-config -- --help
+bun run plan:container-runtime:json-compatibility-campaign -- --help
+
+bun run assemble:container-runtime:json-compatibility-phase-source -- \
+  --plan <plan-v3.json> --receipt <runner-or-runner-status-receipt.json> \
+  --context <independent-context.json> --out <phase-v2.json>
+```
+
+Secret values are provisioned separately through secret-manager-to-stdin
+flows. They are never accepted in planner/preparer argv, plan artifacts,
+tracked configuration, logs, or retained receipts.
+
+Focused local campaign/config/source acceptance passes 77 tests with 290
+expectations; Runner acceptance adds 10 Node and two real workerd named RPC
+tests. Invoker, Operator, and Runner service checks and Wrangler dry-runs pass.
+The complete repository `bun run check` also passed with exit code 0 in 1,434.3
+seconds on 2026-08-05. This is not remote evidence. No deployment, secret
+provisioning,
+Cloudflare RPC, DO migration, Container run, provider/billing/storage mutation,
+traffic shift, VPS drain, or cutover occurred. Production remains **NO-GO**.

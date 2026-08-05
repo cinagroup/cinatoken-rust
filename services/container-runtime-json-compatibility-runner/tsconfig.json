@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "types": [
+      "./worker-configuration.d.ts",
+      "../container-runtime-json-compatibility-operator/worker-configuration.d.ts",
+      "../container-runtime-json-compatibility-invoker/worker-configuration.d.ts",
+      "../container-runtime-json-compatibility-executor/worker-configuration.d.ts",
+      "../container-runtime-json-compatibility-permit-issuer/worker-configuration.d.ts"
+    ]
+  },
+  "include": ["src/**/*.ts", "worker-configuration.d.ts"]
+}

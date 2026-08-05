@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   JsonCompatibilityInvokerAuthorizationError,
+  verifyJsonCompatibilityInvocationStatusQuery,
   verifyJsonCompatibilityInvokeCommand,
 } from "../src/authorization";
 import {
@@ -10,9 +11,13 @@ import {
   OPERATOR_CREDENTIAL_ID_SHA256,
   OPERATOR_KEY_ID,
   OPERATOR_SECRET,
+  STATUS_OPERATOR_CREDENTIAL_ID_SHA256,
+  STATUS_OPERATOR_KEY_ID,
   operatorEnv,
+  statusOperatorEnv,
   validIntent,
   validInvokeCommand,
+  validStatusQuery,
 } from "./fixtures";
 
 describe("JSON compatibility invoker operator authorization", () => {
@@ -74,14 +79,14 @@ describe("JSON compatibility invoker operator authorization", () => {
       },
     };
     await expect(verifyJsonCompatibilityInvokeCommand(
-      operatorEnv(),
+      statusOperatorEnv(),
       tampered,
       INVOKER_VERSION_ID,
       NOW_MS,
     )).rejects.toBeInstanceOf(JsonCompatibilityInvokerAuthorizationError);
 
     await expect(verifyJsonCompatibilityInvokeCommand(
-      operatorEnv(),
+      statusOperatorEnv(),
       command,
       "different-invoker-version",
       NOW_MS,
@@ -126,5 +131,46 @@ describe("JSON compatibility invoker operator authorization", () => {
       INVOKER_VERSION_ID,
       NOW_MS,
     )).rejects.toMatchObject({ code: "invalid_invoke_authority" });
+  });
+
+  test("uses a fresh digest-bound authority for read-only status queries", async () => {
+    const query = await validStatusQuery();
+    const verified = await verifyJsonCompatibilityInvocationStatusQuery(
+      statusOperatorEnv(),
+      query,
+      INVOKER_VERSION_ID,
+      NOW_MS,
+    );
+    expect(verified.query).toEqual(query);
+    expect(verified.authority).toMatchObject({
+      keyId: STATUS_OPERATOR_KEY_ID,
+      credentialIdSha256: STATUS_OPERATOR_CREDENTIAL_ID_SHA256,
+      statusQueryIdSha256: query.subject.statusQueryIdSha256,
+      issuedAt: query.authority.claims.issuedAt,
+      expiresAt: query.authority.claims.expiresAt,
+    });
+
+    const substituted = {
+      ...query,
+      subject: {
+        ...query.subject,
+        target: {
+          ...query.subject.target,
+          campaignIdSha256: "f1".repeat(32),
+        },
+      },
+    };
+    await expect(verifyJsonCompatibilityInvocationStatusQuery(
+      statusOperatorEnv(),
+      substituted,
+      INVOKER_VERSION_ID,
+      NOW_MS,
+    )).rejects.toMatchObject({ code: "status_authority_binding_mismatch" });
+    await expect(verifyJsonCompatibilityInvocationStatusQuery(
+      statusOperatorEnv(),
+      query,
+      INVOKER_VERSION_ID,
+      NOW_MS + 31_000,
+    )).rejects.toMatchObject({ code: "status_authority_time_window" });
   });
 });

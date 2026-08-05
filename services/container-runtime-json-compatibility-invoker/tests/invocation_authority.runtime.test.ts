@@ -63,14 +63,15 @@ function beginCommand(
   };
 }
 
-function completeCommand(
+async function completeCommand(
   begin: ReturnType<typeof beginCommand>,
   salt: string,
 ) {
+  const invocationBodyJson = canonicalJson({ salt });
   return {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     contract:
-      "cinatoken-container-runtime-json-compatibility-invocation-attempt-complete-v1" as const,
+      "cinatoken-container-runtime-json-compatibility-invocation-attempt-complete-v2" as const,
     campaignIdSha256: begin.campaignIdSha256,
     phaseOrdinal: begin.phaseOrdinal,
     phaseExecutionId: begin.phaseExecutionId,
@@ -79,7 +80,8 @@ function completeCommand(
     permitIdSha256: digest(salt),
     permitIssueReceiptSha256: digest(offsetHex(salt, 1)),
     executorReceiptSha256: digest(offsetHex(salt, 2)),
-    invocationBodySha256: digest(offsetHex(salt, 3)),
+    invocationBodySha256: await sha256Hex(invocationBodyJson),
+    invocationBodyJson,
     completedAt: BASE_TIME + 100 + begin.phaseOrdinal,
   };
 }
@@ -88,6 +90,21 @@ function stub(campaignIdSha256: string) {
   return env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY.getByName(
     campaignIdSha256,
   );
+}
+
+function statusQuery(begin: ReturnType<typeof beginCommand>) {
+  return {
+    schemaVersion: 1 as const,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-invocation-attempt-status-query-v1" as const,
+    campaignIdSha256: begin.campaignIdSha256,
+    planDigestSha256: begin.planDigestSha256,
+    phaseOrdinal: begin.phaseOrdinal,
+    phaseId: begin.phaseId,
+    phaseExecutionId: begin.phaseExecutionId,
+    commandIdSha256: begin.commandIdSha256,
+    invokerVersionId: begin.invokerVersionId,
+  };
 }
 
 describe("JSON compatibility invocation SQLite authority", () => {
@@ -149,8 +166,8 @@ describe("JSON compatibility invocation SQLite authority", () => {
       const command = beginCommand(campaign, ordinal, salts[index] as string);
       const started = await authority.beginAttempt(command);
       expect(started.ok).toBe(true);
-      const completed = await authority.completeAttempt(
-        completeCommand(command, completionSalts[index] as string),
+      const completed = await authority.completeAttemptV2(
+        await completeCommand(command, completionSalts[index] as string),
       );
       expect(completed.ok).toBe(true);
       if (!completed.ok || completed.receipt === undefined) {
@@ -191,6 +208,13 @@ describe("JSON compatibility invocation SQLite authority", () => {
       failureCode: "permit_issuer_unavailable",
       failedAt: BASE_TIME + 200,
     })).toEqual({ ok: true, status: "invocation_campaign_failed" });
+    await expect(authority.getAttemptStatus(statusQuery(first))).resolves
+      .toMatchObject({
+        ok: true,
+        status: "failed",
+        failureCode: "permit_issuer_unavailable",
+        failedAt: BASE_TIME + 200,
+      });
 
     await expect(authority.beginAttempt(
       beginCommand(campaign, 2, "2"),
@@ -198,5 +222,59 @@ describe("JSON compatibility invocation SQLite authority", () => {
       ok: false,
       error: { code: "invocation_campaign_terminal" },
     });
+  });
+
+  test("recovers active and completed status with the canonical body after eviction", async () => {
+    const campaign = digest("e");
+    let authority = stub(campaign);
+    const command = beginCommand(campaign, 1, "3");
+    expect((await authority.beginAttempt(command)).ok).toBe(true);
+    await expect(authority.getAttemptStatus(statusQuery(command))).resolves
+      .toMatchObject({ ok: true, status: "active" });
+
+    const completionCommand = await completeCommand(command, "4");
+    expect((await authority.completeAttemptV2(completionCommand)).ok).toBe(true);
+    await evictDurableObject(authority);
+    authority = stub(campaign);
+    const recovered = await authority.getAttemptStatus(statusQuery(command));
+    expect(recovered).toMatchObject({
+      ok: true,
+      status: "completed",
+      invocationBodyJson: completionCommand.invocationBodyJson,
+    });
+    if (!recovered.ok || recovered.status !== "completed") {
+      throw new Error("missing completed status");
+    }
+    expect(recovered.completion.invocationBodySha256).toBe(
+      completionCommand.invocationBodySha256,
+    );
+    await expect(authority.getAttemptStatus({
+      ...statusQuery(command),
+      planDigestSha256: digest("f"),
+    })).resolves.toEqual({
+      ok: false,
+      error: { code: "invocation_attempt_conflict" },
+    });
+  });
+
+  test("keeps v1 completion compatible and reports its receipt as unavailable", async () => {
+    const campaign = digest("f");
+    const authority = stub(campaign);
+    const command = beginCommand(campaign, 1, "4");
+    expect((await authority.beginAttempt(command)).ok).toBe(true);
+    const v2 = await completeCommand(command, "5");
+    const { invocationBodyJson: _invocationBodyJson, ...completionFields } = v2;
+    const legacy = {
+      ...completionFields,
+      schemaVersion: 1 as const,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-invocation-attempt-complete-v1" as const,
+    };
+    expect((await authority.completeAttempt(legacy)).ok).toBe(true);
+    await expect(authority.getAttemptStatus(statusQuery(command))).resolves
+      .toMatchObject({
+        ok: true,
+        status: "completed_receipt_unavailable",
+      });
   });
 });

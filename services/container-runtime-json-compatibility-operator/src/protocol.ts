@@ -23,6 +23,8 @@ export const JSON_COMPATIBILITY_OPERATOR_PHASE_APPROVAL_ENVELOPE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-phase-approval-envelope-v1" as const;
 export const JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-operator-invocation-receipt-v2" as const;
+export const JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-operator-phase-status-request-v1" as const;
 
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -98,6 +100,14 @@ export interface JsonCompatibilityOperatorAuthorizedPhaseRequestV1 {
     typeof JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT;
   readonly request: JsonCompatibilityOperatorPhaseRequestV1;
   readonly approval: JsonCompatibilityOperatorPhaseApprovalEnvelopeV1;
+}
+
+export interface JsonCompatibilityOperatorPhaseStatusRequestV1 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    typeof JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT;
+  readonly authorizedPhaseRequest:
+    JsonCompatibilityOperatorAuthorizedPhaseRequestV1;
 }
 
 export class JsonCompatibilityOperatorProtocolError extends Error {
@@ -177,6 +187,29 @@ export function parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1(
     approval: parseJsonCompatibilityOperatorPhaseApprovalEnvelopeV1(
       value.approval,
     ),
+  };
+}
+
+export function parseJsonCompatibilityOperatorPhaseStatusRequestV1(
+  input: unknown,
+): JsonCompatibilityOperatorPhaseStatusRequestV1 {
+  const value = exactRecord(input, [
+    "schemaVersion",
+    "contract",
+    "authorizedPhaseRequest",
+  ]);
+  literal(value.schemaVersion, 1);
+  literal(
+    value.contract,
+    JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT,
+  );
+  return {
+    schemaVersion: 1,
+    contract: JSON_COMPATIBILITY_OPERATOR_PHASE_STATUS_REQUEST_CONTRACT,
+    authorizedPhaseRequest:
+      parseJsonCompatibilityOperatorAuthorizedPhaseRequestV1(
+        value.authorizedPhaseRequest,
+      ),
   };
 }
 

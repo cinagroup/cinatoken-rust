@@ -15,7 +15,7 @@ import {
   JSON_COMPATIBILITY_CONTEXT_MAX_BYTES,
   JSON_COMPATIBILITY_PLAN_MAX_BYTES,
   JSON_COMPATIBILITY_PHASE_SOURCE_MAX_BYTES,
-  JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_MAX_BYTES,
+  JSON_COMPATIBILITY_RUNNER_RECEIPT_MAX_BYTES,
   readBoundedUtf8File,
 } from "./lib/bounded_json_file.mjs";
 
@@ -38,8 +38,8 @@ export async function runJsonCompatibilityPhaseSourceAssembler(options) {
     ),
     readBoundedUtf8File(
       inputs[1],
-      JSON_COMPATIBILITY_OPERATOR_INVOCATION_RECEIPT_MAX_BYTES,
-      "JSON compatibility operator invocation receipt",
+      JSON_COMPATIBILITY_RUNNER_RECEIPT_MAX_BYTES,
+      "JSON compatibility runner receipt",
     ),
     readBoundedUtf8File(
       inputs[2],
@@ -50,7 +50,7 @@ export async function runJsonCompatibilityPhaseSourceAssembler(options) {
   const plan = parseStrictJsonObject(planSource, "JSON compatibility plan");
   const receipt = parseStrictJsonObject(
     receiptSource,
-    "JSON compatibility operator invocation receipt",
+    "JSON compatibility runner receipt",
   );
   const context = parseStrictJsonObject(
     contextSource,
@@ -77,7 +77,8 @@ export async function runJsonCompatibilityPhaseSourceAssembler(options) {
     phaseId: packet.activity.id,
     phaseOrdinal: packet.activity.ordinal,
     packetSha256: packet.packetSha256,
-    receiptSha256: packet.operatorInvocation.receiptSha256,
+    receiptSha256: packet.runnerInvocation.receiptSha256,
+    operatorReceiptSha256: packet.operatorInvocation.receiptSha256,
     privateInvocationReceiptSha256:
       packet.privateInvocation.rawReceiptSha256,
     privateInvocationCanonicalSha256:
@@ -135,9 +136,9 @@ function requiredPath(value, option) {
 function usage() {
   return [
     "Usage:",
-    "  bun tools/assemble_container_runtime_json_compatibility_phase_source.mjs --plan <plan.json> --receipt <operator-invocation-receipt.json> --context <readback-context.json> --out <phase-source.json>",
+    "  bun tools/assemble_container_runtime_json_compatibility_phase_source.mjs --plan <plan.json> --receipt <runner-receipt.json> --context <readback-context.json> --out <phase-source.json>",
     "",
-    "Assembly is offline and create-only. The receipt retains the private operator caller and its nested invocation/probe chain; the independent context supplies deployment, ledger, and zero-mutation readback. Source authenticity still requires an external signature.",
+    "Assembly is offline and create-only. The Runner receipt retains the private caller, Operator, Invoker, and probe chain; completed read-only recovery receipts are accepted without re-execution. The independent context supplies deployment, ledger, and zero-mutation readback. Source authenticity still requires an external signature.",
   ].join("\n");
 }
 

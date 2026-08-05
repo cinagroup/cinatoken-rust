@@ -21,6 +21,11 @@ import {
   prepareJsonCompatibilityOperatorConfig,
   validateJsonCompatibilityOperatorConfig,
 } from "../tools/prepare_container_runtime_json_compatibility_operator_config.mjs";
+import {
+  parseJsonCompatibilityRunnerConfigArgs,
+  prepareJsonCompatibilityRunnerConfig,
+  validateJsonCompatibilityRunnerConfig,
+} from "../tools/prepare_container_runtime_json_compatibility_runner_config.mjs";
 
 const temporaryDirectories = [];
 const digest = (byte) => byte.repeat(64);
@@ -76,6 +81,8 @@ describe("JSON compatibility private service config preparers", () => {
       outPath,
       operatorCurrentKid: "operator-2026-08",
       operatorCurrentCredentialIdSha256: digest("3"),
+      statusOperatorCurrentKid: "operator-status-2026-08",
+      statusOperatorCurrentCredentialIdSha256: digest("8"),
       issuerHmacKid: "invoker-issuer-2026-08",
       issuerHmacCredentialIdSha256: digest("4"),
       permitKeyId: "permit-ed25519-2026-08",
@@ -90,10 +97,12 @@ describe("JSON compatibility private service config preparers", () => {
       privateServiceBindings: true,
     });
     expect(config.vars.JSON_COMPATIBILITY_INVOKER_ENABLED).toBe("true");
+    expect(config.vars.JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED).toBe("true");
     expect(source).not.toContain("CURRENT_SECRET");
     expect(source).not.toContain("HMAC_SECRET");
     expect(result.secretsRequired).toEqual([
       "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_SECRET",
+      "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_SECRET",
       "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_SECRET",
       "JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL",
     ]);
@@ -105,6 +114,8 @@ describe("JSON compatibility private service config preparers", () => {
       outPath,
       currentKid: "operator-2026-08",
       currentCredentialIdSha256: digest("5"),
+      statusCurrentKid: "operator-status-2026-08",
+      statusCurrentCredentialIdSha256: digest("8"),
       approvalCurrentKid: "operator-approval-2026-08",
       approvalCurrentSpkiSha256: digest("6"),
       approvalPreviousKid: "",
@@ -121,9 +132,14 @@ describe("JSON compatibility private service config preparers", () => {
     });
     expect(config.vars).toMatchObject({
       JSON_COMPATIBILITY_OPERATOR_ENABLED: "true",
+      JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED: "true",
       JSON_COMPATIBILITY_OPERATOR_CURRENT_KID: options.currentKid,
       JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
         options.currentCredentialIdSha256,
+      JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_KID:
+        options.statusCurrentKid,
+      JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_CREDENTIAL_ID_SHA256:
+        options.statusCurrentCredentialIdSha256,
       JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_KID:
         options.approvalCurrentKid,
       JSON_COMPATIBILITY_OPERATOR_APPROVAL_CURRENT_SPKI_SHA256:
@@ -136,6 +152,7 @@ describe("JSON compatibility private service config preparers", () => {
     expect(source).not.toContain("CURRENT_SECRET");
     expect(result.secretsRequired).toEqual([
       "JSON_COMPATIBILITY_OPERATOR_CURRENT_SECRET",
+      "JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_SECRET",
     ]);
   });
 
@@ -143,6 +160,8 @@ describe("JSON compatibility private service config preparers", () => {
     const options = {
       currentKid: "operator-2026-08",
       currentCredentialIdSha256: digest("5"),
+      statusCurrentKid: "operator-status-2026-08",
+      statusCurrentCredentialIdSha256: digest("8"),
       approvalCurrentKid: "operator-approval-2026-08",
       approvalCurrentSpkiSha256: digest("6"),
       approvalPreviousKid: "operator-approval-2026-07",
@@ -178,6 +197,31 @@ describe("JSON compatibility private service config preparers", () => {
     })).rejects.toThrow(/must differ/u);
   });
 
+  test("creates a secretless Runner config pinned to one Operator version", async () => {
+    const outPath = await temporaryFile("runner.jsonc");
+    const options = {
+      outPath,
+      operatorVersionId: "operator-version-001",
+    };
+    const result = await prepareJsonCompatibilityRunnerConfig(options);
+    const source = await readFile(outPath, "utf8");
+    const config = parseStrictJsonObject(source, "prepared runner config");
+    expect(source).toBe(canonicalJson(config));
+    expect(validateJsonCompatibilityRunnerConfig(config, options)).toMatchObject({
+      enabled: true,
+      privateServiceBinding: true,
+    });
+    expect(config.vars).toEqual({
+      ENVIRONMENT: "staging",
+      JSON_COMPATIBILITY_RUNNER_ENABLED: "true",
+      JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED: "true",
+      JSON_COMPATIBILITY_RUNNER_OPERATOR_VERSION_ID:
+        options.operatorVersionId,
+    });
+    expect(result.secretsRequired).toEqual([]);
+    expect(source).not.toContain("SECRET");
+  });
+
   test("is create-only and rejects secret-shaped CLI options", async () => {
     const outPath = await temporaryFile("existing.jsonc");
     await writeFile(outPath, "sentinel", "utf8");
@@ -201,6 +245,10 @@ describe("JSON compatibility private service config preparers", () => {
     ])).toThrow(/unknown option/);
     expect(() => parseJsonCompatibilityOperatorConfigArgs([
       "--hmac-secret",
+      "not-accepted",
+    ])).toThrow(/unknown option/);
+    expect(() => parseJsonCompatibilityRunnerConfigArgs([
+      "--operator-secret",
       "not-accepted",
     ])).toThrow(/unknown option/);
   });

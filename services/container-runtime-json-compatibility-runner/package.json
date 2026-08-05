@@ -1,0 +1,11 @@
+{
+  "name": "@cinatoken/container-runtime-json-compatibility-runner",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p tsconfig.json --noEmit && bun run test",
+    "test": "vitest run --config vitest.config.ts && vitest run --config vitest.runtime.config.ts",
+    "test:runtime": "vitest run --config vitest.runtime.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

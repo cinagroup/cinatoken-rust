@@ -73,6 +73,7 @@ export function validateJsonCompatibilityPrivateInvocationReceipt(plan, input) {
     command,
     label,
   );
+  bindCommandAuthorityToPlan(commandAuthority, plan, label);
   const invoker = validateInvoker(value.invoker, label);
   const privateTransport = validatePrivateTransport(value.privateTransport, label);
   const invocationAuthority = validateInvocationAuthority(
@@ -354,6 +355,18 @@ function validateVerifiedCommandAuthority(input, command, label) {
   equal(value.issuedAt, claims.issuedAt, `${label} verified issuedAt`);
   equal(value.expiresAt, claims.expiresAt, `${label} verified expiresAt`);
   return value;
+}
+
+function bindCommandAuthorityToPlan(authority, plan, label) {
+  const planned = plan.statusRecovery?.statusAuthority?.execution;
+  if (planned === undefined) return;
+  for (const name of ["issuer", "audience", "keyId", "credentialIdSha256"]) {
+    equal(
+      authority[name],
+      planned[name],
+      `${label} planned execution authority ${name}`,
+    );
+  }
 }
 
 function validateInvoker(input, label) {

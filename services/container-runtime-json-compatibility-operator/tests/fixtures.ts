@@ -15,7 +15,14 @@ import {
   jsonCompatibilityIssuerCampaignBinding,
 } from "../../container-runtime-json-compatibility-permit-issuer/src/protocol";
 import {
+  JSON_COMPATIBILITY_INVOKE_AUTHORITY_CLAIMS_CONTRACT,
+  JSON_COMPATIBILITY_INVOKE_COMMAND_CONTRACT,
+  JSON_COMPATIBILITY_INVOKE_COMMAND_SUBJECT_CONTRACT,
+  JSON_COMPATIBILITY_INVOCATION_STATUS_QUERY_CONTRACT,
+  createInvokeAuthorityEnvelope,
+  parseJsonCompatibilityInvocationStatusQueryV1,
   parseJsonCompatibilityInvokeCommandV1,
+  type JsonCompatibilityInvocationStatusQueryV1,
 } from "../../container-runtime-json-compatibility-invoker/src/authorization";
 import {
   JSON_COMPATIBILITY_OPERATOR_AUTHORIZED_PHASE_REQUEST_CONTRACT,
@@ -48,6 +55,11 @@ export const OPERATOR_KEY_ID = "json-campaign-operator-current-2026-08";
 export const OPERATOR_CREDENTIAL_ID_SHA256 = "b1".repeat(32);
 export const OPERATOR_SECRET =
   "json-compatibility-operator-secret-32-byte-minimum";
+export const OPERATOR_STATUS_KEY_ID =
+  "json-campaign-status-operator-current-2026-08";
+export const OPERATOR_STATUS_CREDENTIAL_ID_SHA256 = "b3".repeat(32);
+export const OPERATOR_STATUS_SECRET =
+  "json-compatibility-status-operator-secret-minimum";
 export const OPERATOR_APPROVAL_KEY_ID = "json-campaign-approval-2026-08";
 export const OPERATOR_APPROVAL_SPKI_BASE64URL =
   "MCowBQYDK2VwAyEA9v8JyOln6PrPndR6_8lAUrEWIsD7_CP777cXWBor8C8";
@@ -194,10 +206,14 @@ export async function validAuthorizedOperatorRequest(
 export function operatorEnv(
   invokePhase: (input: unknown) => Promise<unknown>,
   enabled = true,
+  getPhaseStatus: (input: unknown) => Promise<unknown> = async () => {
+    throw new Error("status binding not configured in this fixture");
+  },
 ): JsonCompatibilityOperatorEnv {
   return {
     ENVIRONMENT: "staging",
     JSON_COMPATIBILITY_OPERATOR_ENABLED: enabled ? "true" : "false",
+    JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED: "true",
     JSON_COMPATIBILITY_OPERATOR_ISSUER: JSON_COMPATIBILITY_OPERATOR_ISSUER,
     JSON_COMPATIBILITY_OPERATOR_AUDIENCE:
       JSON_COMPATIBILITY_INVOKER_SERVICE_NAME,
@@ -214,10 +230,18 @@ export function operatorEnv(
     JSON_COMPATIBILITY_OPERATOR_CURRENT_KID: OPERATOR_KEY_ID,
     JSON_COMPATIBILITY_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
       OPERATOR_CREDENTIAL_ID_SHA256,
+    JSON_COMPATIBILITY_OPERATOR_STATUS_ISSUER:
+      "cinatoken-json-compatibility-campaign-operator-status-staging",
+    JSON_COMPATIBILITY_OPERATOR_STATUS_AUDIENCE:
+      JSON_COMPATIBILITY_INVOKER_SERVICE_NAME,
+    JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_KID: OPERATOR_STATUS_KEY_ID,
+    JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_CREDENTIAL_ID_SHA256:
+      OPERATOR_STATUS_CREDENTIAL_ID_SHA256,
     JSON_COMPATIBILITY_OPERATOR_INVOKER_VERSION_ID: INVOKER_VERSION_ID,
     JSON_COMPATIBILITY_OPERATOR_CURRENT_SECRET: OPERATOR_SECRET,
+    JSON_COMPATIBILITY_OPERATOR_STATUS_CURRENT_SECRET: OPERATOR_STATUS_SECRET,
     CF_VERSION_METADATA: { id: OPERATOR_VERSION_ID },
-    JSON_COMPATIBILITY_INVOKER_SERVICE: { invokePhase },
+    JSON_COMPATIBILITY_INVOKER_SERVICE: { invokePhase, getPhaseStatus },
   };
 }
 
@@ -442,6 +466,116 @@ export async function validPrivateInvocationReceipt(
     ...receiptBody,
     invocationAuthority: { attempt, completion },
     invocationBodySha256,
+  });
+}
+
+export async function validInvokeCommandForOperatorRequest(
+  request: JsonCompatibilityOperatorPhaseRequestV1,
+  issuedAt = NOW_SECONDS,
+) {
+  const commandIdSha256 = await sha256Hex(
+    `${COMMAND_ID_DOMAIN}${canonicalJson(request)}\n${OPERATOR_VERSION_ID}`,
+  );
+  const issueIntent = {
+    schemaVersion: 1 as const,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-permit-issue-intent-v1" as const,
+    execution: request.execution,
+    executor: request.executor,
+    invoker: request.invoker,
+    authorizationIdSha256: commandIdSha256,
+    topologyReadbackSha256: request.topologyReadbackSha256,
+    beforeContextSha256: request.beforeContextSha256,
+    issuedAt,
+    notBefore: issuedAt,
+    expiresAt: issuedAt + 300,
+  };
+  const subject = {
+    schemaVersion: 1 as const,
+    contract: JSON_COMPATIBILITY_INVOKE_COMMAND_SUBJECT_CONTRACT,
+    commandIdSha256,
+    issueIntent,
+  };
+  return {
+    schemaVersion: 1 as const,
+    contract: JSON_COMPATIBILITY_INVOKE_COMMAND_CONTRACT,
+    subject,
+    authority: await createInvokeAuthorityEnvelope(
+      OPERATOR_SECRET,
+      OPERATOR_KEY_ID,
+      {
+        schemaVersion: 1,
+        contract: JSON_COMPATIBILITY_INVOKE_AUTHORITY_CLAIMS_CONTRACT,
+        issuer: JSON_COMPATIBILITY_OPERATOR_ISSUER,
+        audience: JSON_COMPATIBILITY_INVOKER_SERVICE_NAME,
+        credentialIdSha256: OPERATOR_CREDENTIAL_ID_SHA256,
+        commandIdSha256,
+        commandSubjectSha256: await sha256Hex(canonicalJson(subject)),
+        issuedAt,
+        expiresAt: issuedAt + 60,
+      },
+    ),
+  };
+}
+
+export async function validPrivateInvocationStatusReceipt(
+  queryInput: unknown,
+  privateInvocationReceipt?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const query = parseJsonCompatibilityInvocationStatusQueryV1(queryInput);
+  let result: Record<string, unknown>;
+  if (privateInvocationReceipt === undefined) {
+    result = { status: "not_found", retryPermitted: false };
+  } else {
+    const invocationAuthority = record(
+      privateInvocationReceipt.invocationAuthority,
+    );
+    result = {
+      status: "completed",
+      attempt: invocationAuthority.attempt,
+      completion: invocationAuthority.completion,
+      privateInvocationReceipt,
+      privateInvocationReceiptSha256:
+        await sha256Hex(canonicalJson(privateInvocationReceipt)),
+      recoveredFromPersistedAuthority: true,
+      retryPermitted: false,
+      executionRpcRepeated: false,
+    };
+  }
+  const claims = query.authority.claims;
+  return await withReceiptDigest({
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-private-invocation-status-receipt-v1",
+    status: "private_invocation_status_resolved",
+    environment: "staging",
+    target: query.subject.target,
+    query,
+    queryAuthority: {
+      issuer: claims.issuer,
+      audience: claims.audience,
+      keyId: query.authority.keyId,
+      credentialIdSha256: claims.credentialIdSha256,
+      statusQueryIdSha256: claims.statusQueryIdSha256,
+      statusQuerySubjectSha256: await sha256Hex(canonicalJson(query.subject)),
+      claimsSha256: query.authority.claimsSha256,
+      authorityEnvelopeSha256: await sha256Hex(canonicalJson(query.authority)),
+      issuedAt: claims.issuedAt,
+      expiresAt: claims.expiresAt,
+    },
+    invoker: {
+      serviceName: JSON_COMPATIBILITY_INVOKER_SERVICE_NAME,
+      versionId: INVOKER_VERSION_ID,
+      gateName: "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED",
+    },
+    privateTransport: {
+      kind: "service-binding-rpc",
+      publicUrlUsed: false,
+      cloudflareRestUsed: false,
+      invocationAuthorityBinding: "JSON_COMPATIBILITY_INVOCATION_AUTHORITY",
+    },
+    result,
+    queriedAt: wholeSecondUtc(claims.issuedAt),
   });
 }
 

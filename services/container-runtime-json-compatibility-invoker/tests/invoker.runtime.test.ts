@@ -30,6 +30,7 @@ import type {
   JsonCompatibilityPermitIssuanceRecordV1,
 } from "../../container-runtime-json-compatibility-permit-issuer/src/issuance_authority";
 import {
+  getJsonCompatibilityPhaseStatus,
   invokeJsonCompatibilityPhase,
   type JsonCompatibilityInvokerEnv,
 } from "../src/invoker";
@@ -44,6 +45,10 @@ import {
   OPERATOR_ISSUER,
   OPERATOR_KEY_ID,
   OPERATOR_SECRET,
+  STATUS_OPERATOR_CREDENTIAL_ID_SHA256,
+  STATUS_OPERATOR_ISSUER,
+  STATUS_OPERATOR_KEY_ID,
+  STATUS_OPERATOR_SECRET,
   PERMIT_KEY_ID,
   PERMIT_PKCS8,
   PERMIT_SPKI,
@@ -51,6 +56,8 @@ import {
   encodeBase64url,
   validIntent,
   validInvokeCommand,
+  validStatusQuery,
+  validStatusTarget,
 } from "./fixtures";
 
 declare global {
@@ -132,16 +139,40 @@ interface RuntimeHarness {
   readonly executorCalls: unknown[];
   readonly probe: RecordingProbeBinding;
   readonly executorAuthority: RecordingCampaignAuthority;
+  readonly invocationAuthorityFailCalls: unknown[];
 }
 
 function createHarness(options: {
   issuerFailureCode?: string;
   invalidExecutorReceipt?: boolean;
+  completionResponseLost?: boolean;
 } = {}): RuntimeHarness {
   const issuerCalls: unknown[] = [];
   const executorCalls: unknown[] = [];
   const probe = new RecordingProbeBinding();
   const executorAuthority = new RecordingCampaignAuthority();
+  const invocationAuthorityFailCalls: unknown[] = [];
+  const invocationAuthorityNamespace = options.completionResponseLost === true
+    ? {
+        getByName(name: string) {
+          const authority = env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY
+            .getByName(name);
+          return {
+            beginAttempt: (input: unknown) => authority.beginAttempt(input),
+            async completeAttemptV2(input: unknown) {
+              await authority.completeAttemptV2(input);
+              throw new Error("simulated committed response loss");
+            },
+            failAttempt(input: unknown) {
+              invocationAuthorityFailCalls.push(input);
+              return authority.failAttempt(input);
+            },
+            getAttemptStatus: (input: unknown) =>
+              authority.getAttemptStatus(input),
+          };
+        },
+      } as unknown as DurableObjectNamespace<JsonCompatibilityInvocationAuthority>
+    : env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY;
   const issuerBinding = {
     async issuePhasePermit(input: unknown): Promise<unknown> {
       issuerCalls.push(input);
@@ -171,12 +202,14 @@ function createHarness(options: {
     executorCalls,
     probe,
     executorAuthority,
+    invocationAuthorityFailCalls,
     invokerEnv: {
       ENVIRONMENT: "staging",
       JSON_COMPATIBILITY_INVOKER_ENABLED: "true",
+      JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED: "true",
       CF_VERSION_METADATA: { id: INVOKER_VERSION_ID },
       JSON_COMPATIBILITY_INVOCATION_AUTHORITY:
-        env.JSON_COMPATIBILITY_INVOCATION_AUTHORITY,
+        invocationAuthorityNamespace,
       JSON_COMPATIBILITY_PERMIT_ISSUER_SERVICE: issuerBinding,
       JSON_COMPATIBILITY_EXECUTOR_SERVICE: executorBinding,
       JSON_COMPATIBILITY_INVOKER_OPERATOR_ISSUER: OPERATOR_ISSUER,
@@ -188,6 +221,19 @@ function createHarness(options: {
       JSON_COMPATIBILITY_INVOKER_OPERATOR_PREVIOUS_KID: "",
       JSON_COMPATIBILITY_INVOKER_OPERATOR_PREVIOUS_CREDENTIAL_ID_SHA256: "",
       JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_SECRET: OPERATOR_SECRET,
+      JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_ISSUER:
+        STATUS_OPERATOR_ISSUER,
+      JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_AUDIENCE:
+        "cinatoken-container-runtime-json-compatibility-invoker-staging",
+      JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_KID:
+        STATUS_OPERATOR_KEY_ID,
+      JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
+        STATUS_OPERATOR_CREDENTIAL_ID_SHA256,
+      JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_PREVIOUS_KID: "",
+      JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_PREVIOUS_CREDENTIAL_ID_SHA256:
+        "",
+      JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_SECRET:
+        STATUS_OPERATOR_SECRET,
       JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_ISSUER:
         "cinatoken-container-runtime-json-compatibility-invoker-staging",
       JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_AUDIENCE:
@@ -370,9 +416,8 @@ async function successfulProbeResult(
 describe("private JSON compatibility campaign invoker runtime", () => {
   test("authenticates, issues one permit, executes privately, and persists completion", async () => {
     const harness = createHarness();
-    const command = await validInvokeCommand(
-      validIntent("baseline-n-minus-one", "21".repeat(32)),
-    );
+    const intent = validIntent("baseline-n-minus-one", "21".repeat(32));
+    const command = await validInvokeCommand(intent);
     const receipt = await invokeJsonCompatibilityPhase(
       harness.invokerEnv,
       command,
@@ -400,6 +445,27 @@ describe("private JSON compatibility campaign invoker runtime", () => {
     const { receiptSha256, ...subject } = receipt;
     expect(receiptSha256).toBe(await sha256Hex(canonicalJson(subject)));
     expect(JSON.parse(JSON.stringify(receipt))).toEqual(receipt);
+
+    const status = await getJsonCompatibilityPhaseStatus(
+      harness.invokerEnv,
+      await validStatusQuery({
+        ...validStatusTarget(intent),
+        commandIdSha256: command.subject.commandIdSha256,
+      }),
+      { now: () => NOW_MS },
+    );
+    expect(status.result).toMatchObject({
+      status: "completed",
+      privateInvocationReceipt: receipt,
+      recoveredFromPersistedAuthority: true,
+      executionRpcRepeated: false,
+    });
+    expect(harness.issuerCalls).toHaveLength(1);
+    expect(harness.executorCalls).toHaveLength(1);
+    const { receiptSha256: statusReceiptSha256, ...statusSubject } = status;
+    expect(statusReceiptSha256).toBe(
+      await sha256Hex(canonicalJson(statusSubject)),
+    );
   });
 
   test("stops before all bindings while default-off", async () => {
@@ -461,6 +527,36 @@ describe("private JSON compatibility campaign invoker runtime", () => {
       command,
       { now: () => NOW_MS },
     )).rejects.toMatchObject({ code: "invocation_authority_conflict" });
+    expect(harness.executorCalls).toHaveLength(1);
+  });
+
+  test("never writes failed after a committed completion response is lost", async () => {
+    const harness = createHarness({ completionResponseLost: true });
+    const intent = validIntent("baseline-n-minus-one", "61".repeat(32));
+    const command = await validInvokeCommand(intent);
+    await expect(invokeJsonCompatibilityPhase(
+      harness.invokerEnv,
+      command,
+      { now: () => NOW_MS },
+    )).rejects.toMatchObject({ code: "invocation_authority_unavailable" });
+    expect(harness.invocationAuthorityFailCalls).toHaveLength(0);
+    expect(harness.issuerCalls).toHaveLength(1);
+    expect(harness.executorCalls).toHaveLength(1);
+
+    const status = await getJsonCompatibilityPhaseStatus(
+      harness.invokerEnv,
+      await validStatusQuery({
+        ...validStatusTarget(intent),
+        commandIdSha256: command.subject.commandIdSha256,
+      }),
+      { now: () => NOW_MS },
+    );
+    expect(status.result).toMatchObject({
+      status: "completed",
+      retryPermitted: false,
+      executionRpcRepeated: false,
+    });
+    expect(harness.issuerCalls).toHaveLength(1);
     expect(harness.executorCalls).toHaveLength(1);
   });
 });

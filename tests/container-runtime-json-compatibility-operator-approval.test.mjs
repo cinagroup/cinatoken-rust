@@ -49,6 +49,8 @@ async function fixture() {
     outPath: operatorConfigPath,
     currentKid: "operator-hmac-001",
     currentCredentialIdSha256: "c1".repeat(32),
+    statusCurrentKid: "operator-status-hmac-001",
+    statusCurrentCredentialIdSha256: "c2".repeat(32),
     approvalCurrentKid: "operator-approval-001",
     approvalCurrentSpkiSha256: TEST_SPKI_SHA256,
     approvalPreviousKid: "",
@@ -74,6 +76,10 @@ async function fixture() {
     runnerConfigSha256: "a1".repeat(32),
     operatorVersionId: "operator-version-001",
     operatorConfigSha256: sha256Canonical(operatorConfig),
+    operatorHmacKeyId: "operator-hmac-001",
+    operatorHmacCredentialIdSha256: "c1".repeat(32),
+    operatorStatusHmacKeyId: "operator-status-hmac-001",
+    operatorStatusHmacCredentialIdSha256: "c2".repeat(32),
     operatorApprovalKeyId: "operator-approval-001",
     operatorApprovalSpkiSha256: TEST_SPKI_SHA256,
     invokerVersionId: "invoker-version-001",
@@ -203,6 +209,21 @@ describe("offline JSON compatibility operator approval", () => {
       operatorConfig: configDrift,
       now: NOW,
     })).toThrow(/operator config digest|pinned invoker/u);
+
+    const hmacDrift = structuredClone(value.plan);
+    hmacDrift.statusRecovery.statusAuthority.status.keyId =
+      "operator-status-hmac-drift";
+    const hmacPlanSubject = structuredClone(hmacDrift);
+    delete hmacPlanSubject.planDigestSha256;
+    hmacDrift.planDigestSha256 = sha256Canonical(hmacPlanSubject);
+    const hmacDriftRequest = structuredClone(value.request);
+    hmacDriftRequest.execution.planDigestSha256 = hmacDrift.planDigestSha256;
+    expect(() => signJsonCompatibilityOperatorApproval({
+      ...value,
+      plan: hmacDrift,
+      request: hmacDriftRequest,
+      now: NOW,
+    })).toThrow(/planned status HMAC key ID/u);
 
     const trustDrift = structuredClone(value.plan);
     trustDrift.operatorApproval.signerSpkiSha256 = "ab".repeat(32);

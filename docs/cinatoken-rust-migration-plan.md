@@ -10696,6 +10696,166 @@ manifest, remote Queue/D1/DLQ and invoice reconciliation, fault/load/alert
 evidence, credential rotation, rollback, and signed G1-G8 approval remain open.
 Go/VPS remains authoritative and production remains **NO-GO**.
 
+## Production Recovery Design (2026-08-05)
+
+This checkpoint supersedes the preceding statements that the named Runner and
+committed-result recovery path do not exist. Both now exist in the local tree;
+neither has been deployed to Cloudflare. The approved active service chain is:
+
+```text
+Runner -> Operator -> Invoker -> PermitIssuer -> Executor -> Controller
+```
+
+The first five roles are exact `privateServices` identities. The Controller is
+the separately pinned shard and Container authority. The Runner has no route,
+Workers.dev URL, preview URL, storage binding, or secret. Its default export is
+inert. Only `JsonCompatibilityCampaignRunnerEntrypoint` exposes `invokePhase`
+and `getPhaseStatus`, and its sole Service Binding targets the exact named
+Operator entrypoint. Before either RPC, the Runner compares its Version
+Metadata ID and the pinned Operator version with the signed approval. The
+approval remains the application-level authority because a Service Binding
+does not by itself prove the business caller.
+
+The private Runner is not yet reachable from a production orchestration
+Worker. No deployed service currently declares an upstream binding to the
+named Runner. This campaign caller is separate from the still-missing
+named-shard topology deployment/readback runner; both are release blockers.
+
+New plans are `cinatoken-container-runtime-json-compatibility-plan-v3` with
+schema version 2. Plan v3 retains all plan-v2 identities and approval policy,
+then freezes the following recovery policy:
+
+- a 86,400-second read-only recovery window after approval expiry;
+- a 30-second status-query HMAC lifetime and five-second clock skew;
+- independent Runner, Operator, and Invoker status-read gates;
+- exact, distinct execution and status HMAC identities, each freezing issuer,
+  Invoker audience, KID, and credential-ID SHA-256 in the plan in addition to
+  the pinned Operator and Invoker config digests;
+- `executionRetryPermitted=false` for every observed state.
+
+The validator keeps plan v2 readable for historical direct receipts. Plan v2
+does not authorize status recovery and cannot be silently upgraded by an
+offline assembler. New campaign plans must be v3.
+
+The Invoker campaign Durable Object now stores the canonical successful
+private invocation body together with its existing attempt/completion
+digests. `completeAttempt` v1 remains available for rolling compatibility;
+new writes use `completeAttemptV2`. A completed legacy row without a retained
+body resolves to `completed_receipt_unavailable`, never to a retry. The status
+RPC returns exactly one of `not_found`, `active`, `failed`, `completed`, or
+`completed_receipt_unavailable`. Every state is non-retryable. Each query uses
+a fresh Durable Object stub and no automatic RPC retry.
+
+The completion state machine has an explicit uncertainty boundary. Before the
+completion RPC is attempted, a local failure may write the attempt as failed.
+After the completion RPC is attempted, loss of its response can mean that the
+transaction committed. The Invoker therefore never writes `failed` from that
+catch path and never repeats PermitIssuer or Executor work. A later read-only
+query may reconstruct the exact private receipt from persisted canonical
+bytes. It does not reconstruct the original Operator or Runner receipt.
+
+Execution and recovery use separate capabilities and credentials:
+
+```text
+execution:
+  JSON_COMPATIBILITY_RUNNER_ENABLED
+  JSON_COMPATIBILITY_OPERATOR_ENABLED
+  JSON_COMPATIBILITY_INVOKER_ENABLED
+
+status:
+  JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED
+  JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED
+  JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED
+```
+
+Operator execution HMAC and status HMAC KIDs, credential digests, and secrets
+are distinct. Status RPC exceptions are mapped to an unavailable result and
+never classified through custom `Error.code` fields, because callers must not
+depend on custom Error properties across RPC. The Runner also maps every
+Operator RPC exception to a local unavailable error and does not retry. Plan,
+approval-signing, direct-receipt, status-query, and manifest validators all
+bind the observed HMAC identity to the same plan fields.
+
+Capability separation is implemented, but independently deployable gate states
+are not. The three private config preparers currently emit only all-false or
+execution-plus-status configs, and plan v3 pins one version/config identity per
+service. A later contract must freeze dark, status-only, and
+execution-plus-status versions plus their allowed transition graph before any
+status-first activation or 24-hour status-only closure is executable.
+
+Offline evidence now starts from a Runner receipt. A direct completion retains
+the exact Runner invocation receipt. A response-loss recovery retains a new
+Runner status receipt, Operator status receipt, private status receipt, and the
+recovered exact private invocation receipt. Only a strictly validated
+`completed` status can enter evidence assembly. The phase packet and ordered
+source manifest are both v2 and bind:
+
+- Runner version/config/gate/entrypoint and raw receipt digest;
+- direct or recovered completion mode and explicit no-retry facts;
+- Operator request, approval, status-query, and raw receipt digests;
+- Invoker attempt/completion authority and recovered private receipt digest;
+- PermitIssuer, Executor, Controller, shard, transport, and zero-mutation
+  evidence already required by the prior chain.
+
+The public evidence contract remains v1 because `sourceManifestSha256` binds
+the complete v2 manifest. Canonical hashes provide integrity, not source
+authentication. Independent source signing, revocation policy, immutable
+archive publication, and authenticated archive readback remain blockers.
+
+### Production ceremony target (blocked; do not execute)
+
+The sequence below is a design target, not an executable runbook. It remains
+blocked on independently deployable gate-state artifacts, an upstream private
+Runner caller/binding, the topology runner/context collector, and authenticated
+remote readback. The current status HMAC preparers also have no previous-key
+rotation path; one status credential must remain frozen for the entire campaign
+and recovery window.
+
+1. Prepare create-only configs for Controller, Executor, PermitIssuer,
+   Invoker, Operator, and Runner. Status HMAC secrets must be provisioned by
+   secret-manager-to-stdin flow and must not appear in argv, tracked files, or
+   retained output.
+2. Deploy callee to caller with every execution and status gate false:
+   Controller, Executor, PermitIssuer, Invoker, Operator, Runner.
+3. Authenticated readback must prove exact Version Metadata IDs, config
+   digests, named entrypoints, binding targets, route absence, secret presence
+   without values, and all SQLite Durable Object migrations.
+4. After those blockers are implemented, enable status-read gates from Invoker
+   to Operator to Runner, then enable execution gates from Controller/Executor
+   toward Runner. Sign one exact
+   phase request and let the exact Runner invoke it once.
+5. On any ambiguous response, do not invoke again. Submit a new Runner status
+   wrapper containing the original authorized request. The Operator revalidates
+   its Ed25519 approval and creates the fresh 30-second HMAC status query.
+   `not_found`, `active`, `failed`, unavailable, and
+   legacy completed-without-body states all stop phase advancement.
+6. Advance only after direct or recovered `completed` evidence plus independent
+   topology and before/after context readback validate into one packet-v2.
+7. After mandatory rollback, disable execution caller to callee. Keep the three
+   status gates, the original approval trust path, and the frozen status HMAC
+   credential available for the complete recovery window, then disable status
+   caller to callee and prove all gates false.
+
+Focused local campaign/config/source acceptance passes 77 tests with 290
+expectations. Runner acceptance adds 10 Node tests and two real workerd named
+Service Binding tests for direct and recovered RPCs. Invoker, Operator, and
+Runner service checks, generated type checks, and local/staging Wrangler
+dry-runs pass in this worktree. The complete repository `bun run check` also
+passed with exit code 0 in 1,434.3 seconds on 2026-08-05. The Runner normalizes
+RPC runtime metadata to
+plain JSON before strict validation and hashing, then deeply validates the
+nested private receipt rather than trusting only its self-digest. This is
+local implementation evidence only. No Worker was deployed, no secret was
+provisioned or read, no remote RPC or Durable Object migration ran, and no
+Container/provider/billing/storage/traffic/Go-VPS state changed. Real staging,
+upstream caller/binding implementation, independent gate-state versions,
+topology/context collection, source authenticity, immutable retention,
+paid-path and failure drills, and the wider migration gates remain open.
+Remote DO acceptance must separately prove the Wrangler class migration and
+the runtime SQLite column upgrade, including v2 recovery and stable v1
+`completed_receipt_unavailable` behavior. Go/VPS remains authoritative and
+production remains **NO-GO**.
+
 ## 22.300 K7 Deterministic Container SBOM Gate (2026-07-26)
 
 The S1 supply-chain boundary is now executable and accepted for the frozen
@@ -28196,6 +28356,19 @@ real four-phase staging, and the wider production gates also remain open.
 
 No Worker was deployed, no secret was provisioned or read, no remote RPC or DO
 was invoked, and no Container/provider/billing/storage/traffic/Go-VPS state was
-changed. Every implemented campaign gate remains default false; the planned
-Runner Worker and its gate do not exist yet. Go/VPS remains authoritative and
+changed. The earlier claim that the Runner and recovery gates do not exist is
+superseded by the production recovery design above: they are implemented and
+default false locally, but remain undeployed. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-08-05 Current Superseding State
+
+The current local contract is plan-v3 -> private named Runner -> signed
+Operator request -> Invoker persisted completion/status -> PermitIssuer ->
+Executor -> Controller. Direct and completed read-only recovery paths assemble
+phase packet v2 and source manifest v2. Plan v2 remains readable but cannot
+authorize recovery. The full policy, state machine, deployment order, evidence
+chain, and remaining blockers are specified in **Production Recovery Design
+(2026-08-05)** above. Plan v2 compatibility does not imply packet-v1 or
+manifest-v1 compatibility; new source artifacts are v2 only. No remote staging
+or production authority is claimed.

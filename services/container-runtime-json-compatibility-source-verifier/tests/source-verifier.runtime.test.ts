@@ -102,7 +102,7 @@ async function putBundle(): Promise<void> {
       httpMetadata: { contentType: "application/json" },
       customMetadata: {
         contract:
-          "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v1",
+          "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v2",
         bundleSha256: runtimeEnv.TEST_SOURCE_AUTHENTICATION_BUNDLE_SHA256,
         sourceSignatureEnvelopeSha256:
           runtimeEnv.TEST_SOURCE_SIGNATURE_ENVELOPE_SHA256,

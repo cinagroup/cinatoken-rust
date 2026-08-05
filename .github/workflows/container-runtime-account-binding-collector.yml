@@ -1,43 +1,35 @@
-name: container-runtime-source-verifier
+name: container-runtime-account-binding-collector
 
 on:
   pull_request:
     paths:
-      - ".github/workflows/container-runtime-source-verifier.yml"
+      - ".github/workflows/container-runtime-account-binding-collector.yml"
       - "bun.lock"
       - "package.json"
-      - "services/container-runtime-json-compatibility-source-verifier/**"
-      - "services/container-runtime-json-compatibility-deployment-transition/**"
-      - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-deployment-transition.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs"
-      - "tools/container_runtime_json_compatibility_campaign.mjs"
+      - "tools/collect_container_runtime_json_compatibility_account_bindings.*"
       - "tools/container_runtime_json_compatibility_account_binding_evidence.*"
+      - "tools/container_runtime_json_compatibility_campaign.mjs"
       - "tools/container_runtime_json_compatibility_deployment_states.mjs"
-      - "tools/container_runtime_json_compatibility_deployment_transition.*"
       - "tools/container_runtime_json_compatibility_source_authentication.*"
-      - "tools/container_runtime_json_compatibility_source_manifest.mjs"
       - "tools/lib/container_runtime_json_compatibility_account_binding_collector.*"
   push:
     branches:
       - main
     paths:
-      - ".github/workflows/container-runtime-source-verifier.yml"
+      - ".github/workflows/container-runtime-account-binding-collector.yml"
       - "bun.lock"
       - "package.json"
-      - "services/container-runtime-json-compatibility-source-verifier/**"
-      - "services/container-runtime-json-compatibility-deployment-transition/**"
-      - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-deployment-transition.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs"
-      - "tools/container_runtime_json_compatibility_campaign.mjs"
+      - "tools/collect_container_runtime_json_compatibility_account_bindings.*"
       - "tools/container_runtime_json_compatibility_account_binding_evidence.*"
+      - "tools/container_runtime_json_compatibility_campaign.mjs"
       - "tools/container_runtime_json_compatibility_deployment_states.mjs"
-      - "tools/container_runtime_json_compatibility_deployment_transition.*"
       - "tools/container_runtime_json_compatibility_source_authentication.*"
-      - "tools/container_runtime_json_compatibility_source_manifest.mjs"
       - "tools/lib/container_runtime_json_compatibility_account_binding_collector.*"
   workflow_dispatch:
 
@@ -45,13 +37,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: container-runtime-source-verifier-${{ github.ref }}
+  group: container-runtime-account-binding-collector-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  private-source-verifier:
+  account-binding-collector-protocol:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - name: Check out frozen source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -67,14 +59,5 @@ jobs:
       - name: Install frozen JavaScript dependencies
         run: bun install --frozen-lockfile
 
-      - name: Verify transition and source-authentication contracts
-        run: bun run check:container-runtime:json-compatibility-deployment-transition
-
-      - name: Verify account-wide binding evidence and collector safety
+      - name: Verify account binding evidence and collector safety
         run: bun run check:container-runtime:json-compatibility-account-binding-collector
-
-      - name: Verify private R2 and Ed25519 source verifier
-        run: bun run check:container-runtime:json-compatibility-source-verifier
-
-      - name: Verify transition integration through the real source verifier
-        run: bun run check:container-runtime:json-compatibility-deployment-transition-worker

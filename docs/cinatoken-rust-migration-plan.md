@@ -28752,7 +28752,7 @@ two Workerd integration tests. The transition integration now executes the
 actual source verifier once against shared R2 and proves replay/status do not
 call it again. The deployment leaf remains mocked.
 
-The complete repository `bun run check` passes with exit code 0 in 1,452.7
+The complete repository `bun run check` passes with exit code 0 in 1,814.1
 seconds, covering the configured frontend, Workers/Workerd, supply-chain
 contracts, Rust workspace, and wasm32 checks. This remains local evidence.
 
@@ -28780,12 +28780,18 @@ Cloudflare or Go/VPS state changed. Production remains **NO-GO**.
 
 This section refines the first open item in the pre-R1 sequence. It does not
 supersede the private Source Verifier checkpoint and does not claim a remote
-Cloudflare run. The current local work is converging on a structured
-account-wide collector v2 and a source-authentication bundle v2 that must carry
-that evidence. An inventory containing only caller-supplied counts and set
+Cloudflare run. The current local implementation now includes a structured
+account-wide collector v2, three-mode CLI, and source-authentication bundle v2
+that carries and signs that evidence. An inventory containing only
+caller-supplied counts and set
 digests is no longer sufficient: the legacy inventory projection must be
 derived exactly from the retained structured evidence and any mismatch must
 fail closed.
+
+The external archive receipt v2 and Ed25519 signature subject/envelope v2 both
+bind the exact `accountBindingEvidenceSha256`; the signature uses a v2 domain
+separator. The legacy inventory digest alone is not treated as authorization
+for an unbound structured evidence attachment.
 
 The production evidence flow is:
 
@@ -28861,7 +28867,7 @@ zone count. The only accepted endpoint schedule is:
 | 4 | version detail for every active version | `V` |
 | 5 | workers.dev/preview status for every service | `S` |
 | 6 | account Workers custom domains | `1` |
-| 7 | account-filtered zones in stable ID order | `P`, contiguous pages |
+| 7 | account-filtered zones in stable name order | `P`, contiguous pages |
 | 8 | Workers routes for every returned zone | `Z` |
 
 One pass therefore contains exactly `3 + 2*S + V + P + Z` requests and page
@@ -28910,18 +28916,21 @@ Both passes and their terminal artifacts must be retained in an external
 compliance-mode WORM archive for at least 365 days. A separately authorized
 reader verifies version, retention mode/deadline, ETag, SHA-256, byte length,
 and manifest closure. Cloudflare R2 remains a digest-addressed retrieval cache
-for the Source Verifier and cannot satisfy the WORM requirement. The local
-`rawPageSink` function boundary is not itself create-once or WORM proof; the
-real archive adapter, write receipt, independent reader, and retention evidence
-remain open.
+for the Source Verifier and cannot satisfy the WORM requirement. The local CLI
+now creates a new capture directory, syncs a create-once manifest bound to
+mode/account/profile/collector identity, validates each raw body's exact length
+and SHA-256 against its receipt, and syncs receipt-digest-named body/receipt
+files through `wx`. This closes only the local overwrite-resistant capture
+boundary. The external-WORM adapter, write receipt, independent reader, and
+retention evidence remain open.
 
 ### Remaining P0 sequence
 
 | Gate | Required production evidence | Current boundary |
 | --- | --- | --- |
-| C0 collector contract | frozen identity, exact schedule, bounds, binding classifier, structured-evidence-to-inventory projection, negative/fault tests | local work in progress; no remote evidence |
+| C0 collector contract | frozen identity, exact schedule, bounds, binding classifier, structured-evidence-to-inventory projection, negative/fault tests | local protocol/library/CLI and dedicated CI implemented; no remote evidence |
 | C1 credential ceremony | two signed creation receipts, distinct IDs/custody, least privilege, verify-to-receipt match, revocation path | not completed |
-| C2 immutable raw source | create-once sink, external compliance WORM, 365-day retention, independent exact readback | not implemented |
+| C2 immutable raw source | create-once sink, external compliance WORM, 365-day retention, independent exact readback | local file capture implemented; external WORM and independent readback not implemented |
 | C3 stable account proof | two complete traversals 5-900 seconds apart with identical service/version/zone/route/edge sets | not run |
 | C4 source publication | isolated Ed25519 ceremony, signed bundle v2, create-once R2 upload and independent body/version/ETag/metadata readback | not completed |
 | D0 deployment leaf | private all-seven-service leaf, physical read/mutate separation, exact owner/operation/plan/transition/service/version binding, one send, no retry, stable target proof | deployment mutation remains mocked locally |

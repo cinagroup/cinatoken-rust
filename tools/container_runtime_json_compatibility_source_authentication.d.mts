@@ -1,87 +1,471 @@
 import type {
   JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2,
 } from "./container_runtime_json_compatibility_deployment_transition.mjs";
+import type {
+  JsonCompatibilityAccountBindingEvidenceV1,
+  JsonCompatibilityAccountBindingInventoryProjectionV1,
+} from "./container_runtime_json_compatibility_account_binding_evidence.mjs";
 
-export const JSON_COMPATIBILITY_SOURCE_AUTHENTICATION_BUNDLE_CONTRACT:
-  "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v1";
+export const JSON_COMPATIBILITY_SOURCE_ARTIFACT_INVENTORY_CONTRACT:
+  "cinatoken-container-runtime-json-compatibility-source-artifact-inventory-readback-v1";
+export const JSON_COMPATIBILITY_TRANSITION_SOURCE_MANIFEST_CONTRACT:
+  "cinatoken-container-runtime-json-compatibility-transition-source-manifest-v1";
+export const JSON_COMPATIBILITY_SOURCE_ACCOUNT_BINDING_INVENTORY_CONTRACT:
+  "cinatoken-container-runtime-json-compatibility-source-account-binding-inventory-v1";
+export const JSON_COMPATIBILITY_SOURCE_ARCHIVE_RECEIPT_CONTRACT:
+  "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v2";
+export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_SUBJECT_CONTRACT:
+  "cinatoken-container-runtime-json-compatibility-source-signature-subject-v2";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_ENVELOPE_CONTRACT:
-  "cinatoken-container-runtime-json-compatibility-source-signature-envelope-v1";
+  "cinatoken-container-runtime-json-compatibility-source-signature-envelope-v2";
+export const JSON_COMPATIBILITY_SOURCE_AUTHENTICATION_BUNDLE_CONTRACT:
+  "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v2";
+export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_DOMAIN:
+  "cinatoken-container-runtime-json-compatibility-source-signature-v2\n";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER:
   "cinatoken-json-compatibility-source-archive-authority-staging";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE:
   "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+export const JSON_COMPATIBILITY_SOURCE_VERIFIER_IDENTITY_CONTRACT:
+  "cinatoken-container-runtime-json-compatibility-source-verifier-identity-v1";
+export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_MAX_LIFETIME_SECONDS: 604800;
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_MIN_REMAINING_SECONDS: 900;
+export const JSON_COMPATIBILITY_SOURCE_MAX_OBSERVATION_AGE_SECONDS: 3600;
+export const JSON_COMPATIBILITY_SOURCE_MIN_ARCHIVE_RETENTION_SECONDS: 31536000;
 
-export interface JsonCompatibilitySourceSignatureSubjectV1
+export type JsonCompatibilitySourceProfile =
+  | "release-v1"
+  | "campaign-closure-v1";
+
+export type JsonCompatibilityDeploymentState =
+  | "dark"
+  | "statusOnly"
+  | "execution";
+
+export interface JsonCompatibilityCampaignPlanV5
   extends Readonly<Record<string, unknown>> {
+  readonly schemaVersion: 4;
+  readonly contract: "cinatoken-container-runtime-json-compatibility-plan-v5";
+  readonly campaignIdSha256: string;
+  readonly planDigestSha256: string;
+  readonly deploymentStateBinding: Readonly<Record<string, unknown>> & {
+    readonly planDigestSha256: string;
+  };
+}
+
+export interface JsonCompatibilityDeploymentStateArtifactV2 {
+  readonly deploymentState: "dark" | "status-only" | "execution";
+  readonly versionId: string;
+  readonly configSha256: string;
+  readonly gates: Readonly<Record<string, boolean>>;
+}
+
+export interface JsonCompatibilityDeploymentStateServiceV2 {
+  readonly serviceName: string;
+  readonly entrypoint: string;
+  readonly privateRpcOnly: true;
+  readonly workersDev: false;
+  readonly previewUrls: false;
+  readonly artifacts: Readonly<
+    Record<string, JsonCompatibilityDeploymentStateArtifactV2>
+  >;
+}
+
+export interface JsonCompatibilityDeploymentStatePlanV2
+  extends Readonly<Record<string, unknown>> {
+  readonly schemaVersion: 2;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v2";
+  readonly kind: "container-runtime-json-compatibility-deployment-state-plan";
+  readonly mode: "offline-version-freeze";
+  readonly environment: "staging";
+  readonly services: Readonly<
+    Record<string, JsonCompatibilityDeploymentStateServiceV2>
+  >;
+  readonly planDigestSha256: string;
+}
+
+export interface JsonCompatibilityPhaseSourceManifestV3
+  extends Readonly<Record<string, unknown>> {
+  readonly schemaVersion: 3;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-manifest-v3";
+  readonly sourceManifestSha256: string;
+}
+
+export interface JsonCompatibilitySourceVerifierTrustKeyV1 {
   readonly keyId: string;
+  readonly spkiSha256: string;
+}
+
+export interface JsonCompatibilitySourceVerifierPreviousTrustKeyV1
+  extends JsonCompatibilitySourceVerifierTrustKeyV1 {
+  readonly acceptUntil: number;
+}
+
+export interface JsonCompatibilitySourceVerifierPolicyV1 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-verifier-policy-v1";
+  readonly environment: "staging";
+  readonly serviceName:
+    "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+  readonly profileVersion: 1;
+  readonly keyPrefix: string;
+  readonly issuer:
+    "cinatoken-json-compatibility-source-archive-authority-staging";
+  readonly audience:
+    "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+  readonly current: JsonCompatibilitySourceVerifierTrustKeyV1;
+  readonly previous: JsonCompatibilitySourceVerifierPreviousTrustKeyV1 | null;
+  readonly sourceVerifierPolicySha256: string;
+}
+
+export interface JsonCompatibilitySourceVerifierIdentityV1 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-verifier-identity-v1";
+  readonly environment: "staging";
+  readonly serviceName:
+    "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+  readonly versionId: string;
+  readonly sourceVerifierPolicySha256: string;
+  readonly sourceVerifierIdentitySha256: string;
+}
+
+export interface JsonCompatibilityTransitionSourceManifestV1 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-transition-source-manifest-v1";
+  readonly kind:
+    "container-runtime-json-compatibility-transition-source-manifest";
+  readonly environment: "staging";
+  readonly accountIdSha256: string;
+  readonly campaignIdSha256: string;
+  readonly campaignPlanDigestSha256: string;
+  readonly statePlanDigestSha256: string;
+  readonly sourceRevisionSha256: string;
+  readonly sourceTreeSha256: string;
+  readonly workerBundleSetSha256: string;
+  readonly containerImageSetSha256: string;
+  readonly d1MigrationSetSha256: string;
+  readonly contractSetSha256: string;
+  readonly serviceArtifactSetSha256: string;
+  readonly serviceCount: number;
+  readonly artifactCount: number;
+  readonly createdAt: number;
+  readonly transitionSourceManifestSha256: string;
+}
+
+export interface JsonCompatibilitySourceArtifactObservationV1 {
+  readonly role: string;
+  readonly artifact: string;
+  readonly serviceName: string;
+  readonly entrypoint: string;
+  readonly deploymentState: "dark" | "status-only" | "execution";
+  readonly versionId: string;
+  readonly configSha256: string;
+  readonly gates: Readonly<Record<string, boolean>>;
+  readonly privateRpcOnly: true;
+  readonly workersDev: false;
+  readonly previewUrls: false;
+  readonly bindingSetSha256: string;
+  readonly routeSetSha256: string;
+  readonly secretNameSetSha256: string;
+  readonly durableObjectMigrationSetSha256: string;
+}
+
+export interface JsonCompatibilitySourceArtifactInventoryReadbackV1 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-artifact-inventory-readback-v1";
+  readonly kind:
+    "container-runtime-json-compatibility-source-artifact-inventory";
+  readonly environment: "staging";
+  readonly accountIdSha256: string;
+  readonly campaignPlanDigestSha256: string;
+  readonly statePlanDigestSha256: string;
+  readonly artifacts: readonly JsonCompatibilitySourceArtifactObservationV1[];
+  readonly artifactCount: number;
+  readonly observedAt: number;
+  readonly artifactInventoryReadbackSha256: string;
+}
+
+export interface JsonCompatibilitySourceAccountBindingInventoryV1 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-account-binding-inventory-v1";
+  readonly kind:
+    "container-runtime-json-compatibility-source-account-binding-inventory";
+  readonly environment: "staging";
+  readonly scope: "account-wide-workers-bindings";
+  readonly accountIdSha256: string;
+  readonly campaignPlanDigestSha256: string;
+  readonly statePlanDigestSha256: string;
+  readonly campaignServiceNames: readonly string[];
+  readonly campaignPrivateRpcOnly: true;
+  readonly campaignPublicRouteCount: 0;
+  readonly campaignWorkersDevEnabledCount: 0;
+  readonly campaignPreviewUrlEnabledCount: 0;
+  readonly campaignUnexpectedCallerBindingCount: 0;
+  readonly accountServiceNameSetSha256: string;
+  readonly accountRouteSetSha256: string;
+  readonly accountServiceBindingEdgeSetSha256: string;
+  readonly accountServiceCount: number;
+  readonly accountRouteCount: number;
+  readonly accountServiceBindingEdgeCount: number;
+  readonly cloudflareApiRequestCount: number;
+  readonly cloudflareApiPageCount: number;
+  readonly paginationComplete: true;
+  readonly collectorIdentitySha256: string;
+  readonly authenticationIdentitySha256: string;
+  readonly pageChainHeadSha256: string;
+  readonly readbackEvidenceSha256: string;
+  readonly observedAt: number;
+  readonly accountBindingInventorySha256: string;
+}
+
+export interface JsonCompatibilitySourceImmutableArchiveReceiptV2 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v2";
+  readonly kind:
+    "container-runtime-json-compatibility-source-immutable-archive-receipt";
+  readonly environment: "staging";
+  readonly archiveBackend: "external-worm";
+  readonly retentionMode: "compliance";
+  readonly accountIdSha256: string;
+  readonly transitionSourceManifestSha256: string;
+  readonly phaseSourceManifestSha256: string | null;
+  readonly artifactInventoryReadbackSha256: string;
+  readonly accountBindingEvidenceSha256: string;
+  readonly accountBindingInventorySha256: string;
+  readonly immutableSourceArchiveSha256: string;
+  readonly archiveObjectVersionSha256: string;
+  readonly archiveObjectEtagSha256: string;
+  readonly archiveByteLength: number;
+  readonly lockedAt: number;
+  readonly retainUntil: number;
+  readonly independentlyReadBackAt: number;
+  readonly retentionEvidenceSha256: string;
+  readonly immutableSourceArchiveReceiptSha256: string;
+}
+
+export type JsonCompatibilitySourceImmutableArchiveReceiptV1 =
+  JsonCompatibilitySourceImmutableArchiveReceiptV2;
+
+export interface JsonCompatibilitySourceSignatureSubjectV2 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-signature-subject-v2";
+  readonly environment: "staging";
+  readonly issuer:
+    "cinatoken-json-compatibility-source-archive-authority-staging";
+  readonly audience:
+    "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+  readonly keyId: string;
+  readonly profile: JsonCompatibilitySourceProfile;
+  readonly operationIdSha256: string;
+  readonly campaignPlanDigestSha256: string;
+  readonly statePlanDigestSha256: string;
+  readonly transitionId: string;
+  readonly transitionOrdinal: number;
+  readonly fromState: JsonCompatibilityDeploymentState;
+  readonly toState: JsonCompatibilityDeploymentState;
+  readonly transitionSha256: string;
+  readonly accountIdSha256: string;
+  readonly sourceVerifierPolicySha256: string;
+  readonly sourceVerifierIdentitySha256: string;
+  readonly transitionSourceManifestSha256: string;
+  readonly phaseSourceManifestSha256: string | null;
+  readonly artifactInventoryReadbackSha256: string;
+  readonly accountBindingEvidenceSha256: string;
+  readonly accountBindingInventorySha256: string;
+  readonly immutableSourceArchiveReceiptSha256: string;
   readonly issuedAt: number;
   readonly notBefore: number;
   readonly expiresAt: number;
 }
 
-export interface JsonCompatibilitySourceSignatureEnvelopeV1
-  extends Readonly<Record<string, unknown>> {
-  readonly subject: JsonCompatibilitySourceSignatureSubjectV1;
+export type JsonCompatibilitySourceSignatureSubjectV1 =
+  JsonCompatibilitySourceSignatureSubjectV2;
+
+export interface JsonCompatibilitySourceSignatureEnvelopeV2 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-signature-envelope-v2";
+  readonly algorithm: "Ed25519";
+  readonly subject: JsonCompatibilitySourceSignatureSubjectV2;
   readonly subjectSha256: string;
   readonly signerSpkiBase64url: string;
   readonly signatureBase64url: string;
 }
 
-export interface JsonCompatibilitySourceAuthenticationBundleV1
-  extends Readonly<Record<string, unknown>> {
-  readonly sourceSignatureEnvelope:
-    JsonCompatibilitySourceSignatureEnvelopeV1;
+export type JsonCompatibilitySourceSignatureEnvelopeV1 =
+  JsonCompatibilitySourceSignatureEnvelopeV2;
+
+export interface JsonCompatibilitySourceAuthenticationBundleV2 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v2";
+  readonly kind:
+    "container-runtime-json-compatibility-source-authentication-bundle";
+  readonly environment: "staging";
+  readonly campaignPlan: JsonCompatibilityCampaignPlanV5;
+  readonly statePlan: JsonCompatibilityDeploymentStatePlanV2;
+  readonly transitionSourceManifest: JsonCompatibilityTransitionSourceManifestV1;
+  readonly phaseSourceManifest: JsonCompatibilityPhaseSourceManifestV3 | null;
+  readonly artifactInventoryReadback: JsonCompatibilitySourceArtifactInventoryReadbackV1;
+  readonly accountBindingEvidence: JsonCompatibilityAccountBindingEvidenceV1;
+  readonly accountBindingInventory: JsonCompatibilitySourceAccountBindingInventoryV1;
+  readonly immutableSourceArchiveReceipt: JsonCompatibilitySourceImmutableArchiveReceiptV2;
+  readonly sourceSignatureEnvelope: JsonCompatibilitySourceSignatureEnvelopeV2;
   readonly bundleSha256: string;
 }
 
-export class JsonCompatibilitySourceAuthenticationProtocolError
-  extends Error {
+export type JsonCompatibilitySourceAuthenticationBundleV1 =
+  JsonCompatibilitySourceAuthenticationBundleV2;
+
+export class JsonCompatibilitySourceAuthenticationProtocolError extends Error {
+  constructor(code: string, message?: string);
   readonly code: string;
 }
 
 export function buildJsonCompatibilitySourceVerifierPolicy(input: {
-  readonly serviceName: string;
-  readonly profileVersion: number;
+  readonly serviceName:
+    "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+  readonly profileVersion: 1;
   readonly keyPrefix: string;
-  readonly issuer: string;
-  readonly audience: string;
-  readonly current: {
-    readonly keyId: string;
-    readonly spkiSha256: string;
-  };
-  readonly previous: {
-    readonly keyId: string;
-    readonly spkiSha256: string;
-    readonly acceptUntil: number;
-  } | null;
-}): Readonly<Record<string, unknown>> & {
-  readonly sourceVerifierPolicySha256: string;
-};
+  readonly issuer:
+    "cinatoken-json-compatibility-source-archive-authority-staging";
+  readonly audience:
+    "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+  readonly current: JsonCompatibilitySourceVerifierTrustKeyV1;
+  readonly previous: JsonCompatibilitySourceVerifierPreviousTrustKeyV1 | null;
+}): JsonCompatibilitySourceVerifierPolicyV1;
 
 export function buildJsonCompatibilitySourceVerifierIdentity(input: {
   readonly versionId: string;
   readonly sourceVerifierPolicySha256: string;
-}): Readonly<Record<string, unknown>> & {
-  readonly sourceVerifierIdentitySha256: string;
-};
+}): JsonCompatibilitySourceVerifierIdentityV1;
+
+export function buildJsonCompatibilityTransitionSourceManifest(input: {
+  readonly campaignPlan: unknown;
+  readonly statePlan: unknown;
+  readonly accountIdSha256: string;
+  readonly sourceRevisionSha256: string;
+  readonly sourceTreeSha256: string;
+  readonly workerBundleSetSha256: string;
+  readonly containerImageSetSha256: string;
+  readonly d1MigrationSetSha256: string;
+  readonly contractSetSha256: string;
+  readonly createdAt: number;
+}): JsonCompatibilityTransitionSourceManifestV1;
+
+export function validateJsonCompatibilityTransitionSourceManifest(
+  campaignPlan: unknown,
+  statePlan: unknown,
+  input: unknown,
+): JsonCompatibilityTransitionSourceManifestV1;
+
+export function buildJsonCompatibilitySourceArtifactInventoryReadback(input: {
+  readonly campaignPlan: unknown;
+  readonly statePlan: unknown;
+  readonly accountIdSha256: string;
+  readonly artifacts: readonly JsonCompatibilitySourceArtifactObservationV1[];
+  readonly observedAt: number;
+}): JsonCompatibilitySourceArtifactInventoryReadbackV1;
+
+export function validateJsonCompatibilitySourceArtifactInventoryReadback(
+  campaignPlan: unknown,
+  statePlan: unknown,
+  input: unknown,
+): JsonCompatibilitySourceArtifactInventoryReadbackV1;
+
+export function buildJsonCompatibilitySourceAccountBindingInventory(
+  input: {
+    readonly campaignPlan: unknown;
+    readonly statePlan: unknown;
+  } & JsonCompatibilityAccountBindingInventoryProjectionV1,
+): JsonCompatibilitySourceAccountBindingInventoryV1;
+
+export function validateJsonCompatibilitySourceAccountBindingInventory(
+  campaignPlan: unknown,
+  statePlan: unknown,
+  input: unknown,
+): JsonCompatibilitySourceAccountBindingInventoryV1;
+
+export function buildJsonCompatibilitySourceImmutableArchiveReceipt(input: {
+  readonly accountIdSha256: string;
+  readonly transitionSourceManifestSha256: string;
+  readonly phaseSourceManifestSha256: string | null;
+  readonly artifactInventoryReadbackSha256: string;
+  readonly accountBindingEvidenceSha256: string;
+  readonly accountBindingInventorySha256: string;
+  readonly immutableSourceArchiveSha256: string;
+  readonly archiveObjectVersionSha256: string;
+  readonly archiveObjectEtagSha256: string;
+  readonly archiveByteLength: number;
+  readonly lockedAt: number;
+  readonly retainUntil: number;
+  readonly independentlyReadBackAt: number;
+  readonly retentionEvidenceSha256: string;
+}): JsonCompatibilitySourceImmutableArchiveReceiptV2;
+
+export function validateJsonCompatibilitySourceImmutableArchiveReceipt(
+  input: unknown,
+): JsonCompatibilitySourceImmutableArchiveReceiptV2;
+
+export function buildJsonCompatibilitySourceSignatureSubject(input: {
+  readonly sourceAuthenticationRequest:
+    JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2;
+  readonly accountBindingEvidenceSha256: string;
+  readonly immutableSourceArchiveReceiptSha256: string;
+  readonly issuer?:
+    "cinatoken-json-compatibility-source-archive-authority-staging";
+  readonly audience?:
+    "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+  readonly keyId: string;
+  readonly issuedAt: number;
+  readonly notBefore: number;
+  readonly expiresAt: number;
+}): JsonCompatibilitySourceSignatureSubjectV2;
+
+export function buildJsonCompatibilitySourceSignatureEnvelope(input: {
+  readonly subject: JsonCompatibilitySourceSignatureSubjectV2;
+  readonly signerSpkiBase64url: string;
+  readonly signatureBase64url: string;
+}): JsonCompatibilitySourceSignatureEnvelopeV2;
+
+export function validateJsonCompatibilitySourceSignatureEnvelope(
+  input: unknown,
+): JsonCompatibilitySourceSignatureEnvelopeV2;
+
+export function sourceSignatureSigningPayload(subject: unknown): Uint8Array;
+
+export function buildJsonCompatibilitySourceAuthenticationBundle(input: {
+  readonly sourceAuthenticationRequest:
+    JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2;
+  readonly campaignPlan: JsonCompatibilityCampaignPlanV5;
+  readonly statePlan: JsonCompatibilityDeploymentStatePlanV2;
+  readonly transitionSourceManifest: JsonCompatibilityTransitionSourceManifestV1;
+  readonly phaseSourceManifest: JsonCompatibilityPhaseSourceManifestV3 | null;
+  readonly artifactInventoryReadback: JsonCompatibilitySourceArtifactInventoryReadbackV1;
+  readonly accountBindingEvidence: JsonCompatibilityAccountBindingEvidenceV1;
+  readonly accountBindingInventory: JsonCompatibilitySourceAccountBindingInventoryV1;
+  readonly immutableSourceArchiveReceipt: JsonCompatibilitySourceImmutableArchiveReceiptV2;
+  readonly sourceSignatureEnvelope: JsonCompatibilitySourceSignatureEnvelopeV2;
+}): JsonCompatibilitySourceAuthenticationBundleV2;
 
 export function validateJsonCompatibilitySourceAuthenticationBundle(
-  request: JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2,
+  sourceAuthenticationRequest:
+    JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2,
   input: unknown,
   options?: {
     readonly now?: number | null;
     readonly requireUsableWindow?: boolean;
   },
-): JsonCompatibilitySourceAuthenticationBundleV1;
-
-export function validateJsonCompatibilitySourceSignatureEnvelope(
-  input: unknown,
-): JsonCompatibilitySourceSignatureEnvelopeV1;
-
-export function sourceSignatureSigningPayload(
-  subject: unknown,
-): Uint8Array;
+): JsonCompatibilitySourceAuthenticationBundleV2;
 
 export function sourceAuthenticationBundleKey(
   sourceSignatureEnvelopeSha256: string,

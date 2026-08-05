@@ -194,7 +194,7 @@ class MemorySourceBucket {
       httpMetadata: { contentType: "application/json" },
       customMetadata: {
         contract:
-          "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v1",
+          "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v2",
         bundleSha256: this.fixture.bundle.bundleSha256,
         sourceSignatureEnvelopeSha256:
           this.fixture.sourceSignatureEnvelopeSha256,

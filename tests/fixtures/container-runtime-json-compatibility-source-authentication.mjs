@@ -32,6 +32,17 @@ import {
   sourceSignatureSigningPayload,
 } from "../../tools/container_runtime_json_compatibility_source_authentication.mjs";
 import {
+  JSON_COMPATIBILITY_ACCOUNT_BINDING_RESOURCE_FAMILIES,
+  accountBindingInventoryInputFromEvidence,
+  buildJsonCompatibilityAccountBindingAuthenticationIdentity,
+  buildJsonCompatibilityAccountBindingCollectionArtifact,
+  buildJsonCompatibilityAccountBindingCollectionProfile,
+  buildJsonCompatibilityAccountBindingCollectorIdentity,
+  buildJsonCompatibilityAccountBindingEvidence,
+  buildJsonCompatibilityAccountBindingPageReceipt,
+  buildJsonCompatibilityAccountBindingSnapshot,
+} from "../../tools/container_runtime_json_compatibility_account_binding_evidence.mjs";
+import {
   createSyntheticJsonCompatibilitySourceManifest,
 } from "../../tools/container_runtime_json_compatibility_source_manifest.mjs";
 import {
@@ -124,34 +135,17 @@ export async function createSourceAuthenticationFixture({
         artifacts,
         observedAt,
       });
-    const campaignServiceNames = Object.values(statePlan.services)
-      .map((service) => service.serviceName)
-      .sort();
+    const accountBindingEvidence = buildAccountBindingEvidenceFixture({
+      campaignPlan,
+      statePlan,
+      accountIdSha256,
+      observedAt,
+    });
     const accountBindingInventory =
       buildJsonCompatibilitySourceAccountBindingInventory({
         campaignPlan,
         statePlan,
-        accountIdSha256,
-        accountServiceNameSetSha256: sha256Canonical(campaignServiceNames),
-        accountRouteSetSha256: sha256Canonical([]),
-        accountServiceBindingEdgeSetSha256: sha256Canonical([
-          "caller->runner",
-          "invoker->operator",
-          "operator->runner",
-          "runner->caller",
-        ]),
-        accountServiceCount: campaignServiceNames.length + 3,
-        accountRouteCount: 0,
-        accountServiceBindingEdgeCount: 4,
-        cloudflareApiRequestCount: 4,
-        cloudflareApiPageCount: 4,
-        paginationComplete: true,
-        collectorIdentitySha256: digest("source-inventory-collector"),
-        authenticationIdentitySha256:
-          digest("source-inventory-authentication"),
-        pageChainHeadSha256: digest("source-inventory-page-chain"),
-        readbackEvidenceSha256: digest("source-inventory-readback"),
-        observedAt,
+        ...accountBindingInventoryInputFromEvidence(accountBindingEvidence),
       });
     const immutableSourceArchiveSha256 = sha256Canonical({
       transitionSourceManifestSha256:
@@ -160,6 +154,8 @@ export async function createSourceAuthenticationFixture({
         phaseSourceManifest?.sourceManifestSha256 ?? null,
       artifactInventoryReadbackSha256:
         artifactInventoryReadback.artifactInventoryReadbackSha256,
+      accountBindingEvidenceSha256:
+        accountBindingEvidence.accountBindingEvidenceSha256,
       accountBindingInventorySha256:
         accountBindingInventory.accountBindingInventorySha256,
       archiveFormat: "tar.zst",
@@ -173,6 +169,8 @@ export async function createSourceAuthenticationFixture({
           phaseSourceManifest?.sourceManifestSha256 ?? null,
         artifactInventoryReadbackSha256:
           artifactInventoryReadback.artifactInventoryReadbackSha256,
+        accountBindingEvidenceSha256:
+          accountBindingEvidence.accountBindingEvidenceSha256,
         accountBindingInventorySha256:
           accountBindingInventory.accountBindingInventorySha256,
         immutableSourceArchiveSha256,
@@ -267,6 +265,8 @@ export async function createSourceAuthenticationFixture({
       });
     const sourceSignatureSubject = buildJsonCompatibilitySourceSignatureSubject({
       sourceAuthenticationRequest: requestWithoutEnvelope,
+      accountBindingEvidenceSha256:
+        accountBindingEvidence.accountBindingEvidenceSha256,
       immutableSourceArchiveReceiptSha256:
         immutableSourceArchiveReceipt.immutableSourceArchiveReceiptSha256,
       keyId: SOURCE_SIGNATURE_KEY_ID,
@@ -332,6 +332,7 @@ export async function createSourceAuthenticationFixture({
       transitionSourceManifest,
       phaseSourceManifest,
       artifactInventoryReadback,
+      accountBindingEvidence,
       accountBindingInventory,
       immutableSourceArchiveReceipt,
       sourceSignatureEnvelope,
@@ -361,6 +362,309 @@ export async function createSourceAuthenticationFixture({
     sourcePrivateKey?.fill(0);
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function buildAccountBindingEvidenceFixture({
+  campaignPlan,
+  statePlan,
+  accountIdSha256,
+  observedAt,
+}) {
+  const collectorIdentity =
+    buildJsonCompatibilityAccountBindingCollectorIdentity({
+      sourceRevisionSha256: digest("account-binding-collector-revision"),
+      sourceTreeSha256: digest("account-binding-collector-tree"),
+      executableSha256: digest("account-binding-collector-executable"),
+      dependencyLockSha256: digest("account-binding-collector-lock"),
+    });
+  const collectionPermissionSetSha256 =
+    digest("account-binding-collection-read-permissions");
+  const readbackPermissionSetSha256 =
+    digest("account-binding-readback-read-permissions");
+  const roleServices = Object.fromEntries(
+    Object.entries(statePlan.services).map(([role, service]) => [
+      role,
+      service.serviceName,
+    ]),
+  );
+  const extraServices = [
+    "cinatoken-rust-api-staging",
+    "cinatoken-container-egress-staging",
+    "cinatoken-container-runtime-json-compatibility-transition-staging",
+  ];
+  const serviceNames = [
+    ...Object.values(roleServices),
+    ...extraServices,
+  ].sort();
+  const versionByService = new Map(
+    serviceNames.map((name, index) => [name, `fixture-version-${index + 1}`]),
+  );
+  const edge = (
+    callerServiceName,
+    bindingName,
+    targetServiceName,
+    targetEntrypoint,
+  ) => ({
+    bindingType: "service",
+    callerServiceName,
+    callerVersionId: versionByService.get(callerServiceName),
+    bindingName,
+    targetServiceName,
+    targetEnvironment: null,
+    targetEntrypoint,
+  });
+  const serviceBindingEdges = [
+    edge(
+      "cinatoken-rust-api-staging",
+      "CONTAINER_CONTROLLER",
+      roleServices.controller,
+      statePlan.services.controller.entrypoint,
+    ),
+    edge(
+      roleServices.controller,
+      "PROVIDER_EGRESS",
+      "cinatoken-container-egress-staging",
+      null,
+    ),
+    edge(
+      roleServices.executor,
+      "CONTAINER_CONTROLLER_JSON_PROBE",
+      roleServices.controller,
+      statePlan.services.controller.entrypoint,
+    ),
+    edge(
+      roleServices.invoker,
+      "JSON_COMPATIBILITY_PERMIT_ISSUER_SERVICE",
+      roleServices.permitIssuer,
+      statePlan.services.permitIssuer.entrypoint,
+    ),
+    edge(
+      roleServices.invoker,
+      "JSON_COMPATIBILITY_EXECUTOR_SERVICE",
+      roleServices.executor,
+      statePlan.services.executor.entrypoint,
+    ),
+    edge(
+      roleServices.operator,
+      "JSON_COMPATIBILITY_INVOKER_SERVICE",
+      roleServices.invoker,
+      statePlan.services.invoker.entrypoint,
+    ),
+    edge(
+      roleServices.runner,
+      "JSON_COMPATIBILITY_OPERATOR_SERVICE",
+      roleServices.operator,
+      statePlan.services.operator.entrypoint,
+    ),
+    edge(
+      roleServices.caller,
+      "JSON_COMPATIBILITY_RUNNER_SERVICE",
+      roleServices.runner,
+      statePlan.services.runner.entrypoint,
+    ),
+  ];
+  const campaignServiceNames = new Set(Object.values(roleServices));
+  const allowedCampaignBindingEdges = serviceBindingEdges
+    .filter((value) =>
+      campaignServiceNames.has(value.callerServiceName)
+      || campaignServiceNames.has(value.targetServiceName))
+    .map(({ callerVersionId: _ignored, ...value }) => value);
+  const collectionProfile =
+    buildJsonCompatibilityAccountBindingCollectionProfile({
+      campaignPlan,
+      statePlan,
+      accountIdSha256,
+      collectorIdentitySha256: collectorIdentity.collectorIdentitySha256,
+      collectionPermissionSetSha256,
+      readbackPermissionSetSha256,
+      allowedCampaignBindingEdges,
+    });
+  const services = serviceNames.map((serviceName) => ({
+    serviceName,
+    activeVersionIds: [versionByService.get(serviceName)],
+    workersDev: false,
+    previewUrls: false,
+    deploymentSetSha256: digest(`deployment-set:${serviceName}`),
+    versionBindingSetSha256: sha256Canonical(
+      serviceBindingEdges.filter(
+        (value) => value.callerServiceName === serviceName,
+      ).sort((left, right) => {
+        const leftValue = canonicalJson(left);
+        const rightValue = canonicalJson(right);
+        return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+      }),
+    ),
+  }));
+  const zoneIdSha256s = [digest("account-zone:cinatoken.com")];
+  const collectionObservedAt = observedAt - 5;
+  const collectionSnapshot = buildJsonCompatibilityAccountBindingSnapshot({
+    accountIdSha256,
+    services,
+    zoneIdSha256s,
+    routes: [],
+    serviceBindingEdges,
+    pageReceipts: accountBindingPageReceipts(
+      "collection",
+      collectionObservedAt,
+      { accountIdSha256, services, zoneIdSha256s },
+    ),
+    observedAt: collectionObservedAt,
+  });
+  const readbackSnapshot = buildJsonCompatibilityAccountBindingSnapshot({
+    accountIdSha256,
+    services,
+    zoneIdSha256s,
+    routes: [],
+    serviceBindingEdges,
+    pageReceipts: accountBindingPageReceipts(
+      "readback",
+      observedAt,
+      { accountIdSha256, services, zoneIdSha256s },
+    ),
+    observedAt,
+  });
+  const collectionAuthentication =
+    buildJsonCompatibilityAccountBindingAuthenticationIdentity({
+      accountIdSha256,
+      credentialIdSha256: digest("account-binding-collection-credential"),
+      permissionSetSha256: collectionPermissionSetSha256,
+      verifiedAt: collectionObservedAt - 1,
+    });
+  const readbackAuthentication =
+    buildJsonCompatibilityAccountBindingAuthenticationIdentity({
+      accountIdSha256,
+      credentialIdSha256: digest("account-binding-readback-credential"),
+      permissionSetSha256: readbackPermissionSetSha256,
+      verifiedAt: observedAt - 1,
+    });
+  const collection =
+    buildJsonCompatibilityAccountBindingCollectionArtifact({
+      campaignPlan,
+      statePlan,
+      collectionProfile,
+      mode: "collection",
+      collectorIdentity,
+      authenticationIdentity: collectionAuthentication,
+      snapshot: collectionSnapshot,
+    });
+  const independentReadback =
+    buildJsonCompatibilityAccountBindingCollectionArtifact({
+      campaignPlan,
+      statePlan,
+      collectionProfile,
+      mode: "independent-readback",
+      collectorIdentity,
+      authenticationIdentity: readbackAuthentication,
+      snapshot: readbackSnapshot,
+    });
+  return buildJsonCompatibilityAccountBindingEvidence({
+    campaignPlan,
+    statePlan,
+    collectionProfile,
+    collection,
+    independentReadback,
+  });
+}
+
+function accountBindingPageReceipts(
+  seed,
+  observedAt,
+  { accountIdSha256, services, zoneIdSha256s },
+) {
+  const accountIdentitySha256 = sha256Canonical({ accountIdSha256 });
+  const schedule = [
+    {
+      resourceFamily: "credential-verification",
+      resourceIdentitySha256: accountIdentitySha256,
+      resultCount: 1,
+      pageNumber: null,
+      totalPages: null,
+    },
+    {
+      resourceFamily: "workers-scripts",
+      resourceIdentitySha256: accountIdentitySha256,
+      resultCount: services.length,
+      pageNumber: null,
+      totalPages: null,
+    },
+    ...services.map((service) => ({
+      resourceFamily: "worker-deployments",
+      resourceIdentitySha256: sha256Canonical({
+        serviceName: service.serviceName,
+      }),
+      resultCount: 1,
+      pageNumber: null,
+      totalPages: null,
+    })),
+    ...services.flatMap((service) => service.activeVersionIds.map(
+      (versionId) => ({
+        resourceFamily: "worker-version",
+        resourceIdentitySha256: sha256Canonical({
+          serviceName: service.serviceName,
+          versionId,
+        }),
+        resultCount: 1,
+        pageNumber: null,
+        totalPages: null,
+      }),
+    )),
+    ...services.map((service) => ({
+      resourceFamily: "worker-subdomain",
+      resourceIdentitySha256: sha256Canonical({
+        serviceName: service.serviceName,
+      }),
+      resultCount: 1,
+      pageNumber: null,
+      totalPages: null,
+    })),
+    {
+      resourceFamily: "account-worker-domains",
+      resourceIdentitySha256: accountIdentitySha256,
+      resultCount: 0,
+      pageNumber: 1,
+      totalPages: 1,
+    },
+    {
+      resourceFamily: "account-zones",
+      resourceIdentitySha256: accountIdentitySha256,
+      resultCount: zoneIdSha256s.length,
+      pageNumber: 1,
+      totalPages: 1,
+    },
+    ...zoneIdSha256s.map((zoneIdSha256) => ({
+      resourceFamily: "zone-worker-routes",
+      resourceIdentitySha256: sha256Canonical({ zoneIdSha256 }),
+      resultCount: 0,
+      pageNumber: null,
+      totalPages: null,
+    })),
+  ];
+  const receipts = [];
+  for (let index = 0; index < schedule.length; index += 1) {
+    const page = schedule[index];
+    receipts.push(buildJsonCompatibilityAccountBindingPageReceipt({
+      sequence: index + 1,
+      resourceFamily: page.resourceFamily,
+      resourceIdentitySha256: page.resourceIdentitySha256,
+      requestPathSha256: digest(`${seed}:path:${index}:${page.resourceFamily}`),
+      responseBodySha256: digest(`${seed}:body:${index}:${page.resourceFamily}`),
+      responseByteLength: 256 + index,
+      resultCount: page.resultCount,
+      pageNumber: page.pageNumber,
+      totalPages: page.totalPages,
+      requestIdSha256: digest(`${seed}:request:${index}:${page.resourceFamily}`),
+      predecessorSha256:
+        receipts.length === 0
+          ? null
+          : receipts[receipts.length - 1].pageReceiptSha256,
+      observedAt: observedAt - 1,
+    }));
+  }
+  if (
+    new Set(receipts.map((value) => value.resourceFamily)).size
+      !== JSON_COMPATIBILITY_ACCOUNT_BINDING_RESOURCE_FAMILIES.length
+  ) throw new Error("account binding fixture resource schedule drifted");
+  return receipts;
 }
 
 function sourceArtifactObservations(statePlan) {

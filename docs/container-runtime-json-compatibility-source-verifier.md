@@ -30,9 +30,11 @@ offline-approved collection profile and two credential-creation receipts
   -> private Deployment Transition Worker
 ```
 
-The account-wide collector v2 protocol and local implementation are being
-developed, but no production credential ceremony, remote collection,
-create-once raw-page archive, or independent archive readback has completed.
+The account-wide collector v2 protocol, bounded Cloudflare transport, three-mode
+CLI, local create-once capture directory, structured evidence, and exact legacy
+inventory projection are implemented and locally tested. No production
+credential ceremony, remote collection, external-WORM raw-page archive, or
+independent archive readback has completed.
 The isolated signer ceremony, external archive integration, create-once R2
 uploader, and remote verifier readback also remain open. The diagram is the
 required production topology, not a deployment claim.
@@ -48,7 +50,8 @@ proof v2. The canonical request binds:
 - transition ID, ordinal, from/to states, and transition digest;
 - account identity;
 - transition and optional phase source-manifest digests;
-- all-18-artifact and account-wide binding-inventory digests;
+- all-18-artifact, structured account-wide binding-evidence, and exact legacy
+  binding-inventory projection digests;
 - external immutable-archive receipt and source-signature-envelope digests;
 - the approved verifier-policy and exact Version Metadata identity digests; and
 - the canonical request digest itself.
@@ -89,22 +92,26 @@ The canonical UTF-8 JSON body ends in exactly one LF and contains:
    Container image, D1 migration, and contract sets;
 3. a phase source manifest v3 only for campaign-closure profiles;
 4. exact readback identities for all 18 dark/status/execution artifacts;
-5. an account-wide service, route, and Service Binding edge inventory;
-6. an external-WORM archive receipt;
-7. an Ed25519 source-signature envelope; and
-8. the canonical bundle digest.
+5. structured account-wide service, zone, route, cross-script edge, page-chain,
+   authentication, and independent-readback evidence;
+6. the exact legacy account-binding inventory projected from item 5;
+7. an external-WORM archive receipt;
+8. an Ed25519 source-signature envelope; and
+9. the canonical bundle digest.
 
 The account inventory explicitly binds a complete endpoint-schedule and
 pagination assertion, collector identity, two authentication identities,
 two page-chain heads, independent readback evidence, API request/page counts,
 complete service/zone/route/binding set digests, and the seven campaign
-service names. The in-progress v2 collector must obtain and retain the real
+service names. A production v2 collector run must obtain and retain the real
 values before the bundle is admissible; fixture or synthetic values are not
 remote evidence.
 
-The archive receipt requires `external-worm`, compliance mode, at least 365
-days of retention, object version and ETag digests, retention evidence, and an
-independent readback timestamp. Cloudflare R2 is only the verifier's bounded
+The archive receipt v2 requires `external-worm`, compliance mode, at least 365
+days of retention, object version and ETag digests, retention evidence, an
+independent readback timestamp, and the exact structured account-binding
+evidence digest. Signature subject/envelope v2 also directly bind that digest
+under the v2 domain separator. Cloudflare R2 is only the verifier's bounded
 retrieval cache. R2 is not represented as WORM, and an R2 object cannot satisfy
 the external immutable-retention requirement by itself.
 
@@ -147,6 +154,18 @@ signature/issuer validation, and the verify-to-receipt credential-ID check are
 still P0 integration work; a bare permission digest supplied by a test fixture
 does not close this gate.
 
+The command boundary is
+`bun run collect:container-runtime:json-compatibility-account-bindings`.
+Online modes
+accept canonical Plan, state-plan, profile, collector identity, account ID, a
+new raw-page directory, and a new artifact path. `collection` reads only
+`CLOUDFLARE_ACCOUNT_BINDING_COLLECTION_TOKEN`; `independent-readback` reads
+only `CLOUDFLARE_ACCOUNT_BINDING_READBACK_TOKEN`; each refuses the other token
+and generic `CLOUDFLARE_API_TOKEN`. `finalize` refuses all token environments
+and combines the two canonical artifacts offline into one create-once evidence
+plus inventory package. `--self-test` and each mode's `--dry-run` perform zero
+credential reads, network requests, or file writes.
+
 ### Exact endpoint schedule
 
 Let `S` be the number of all Workers services returned for the account, `V`
@@ -163,7 +182,7 @@ to `/client/v4`:
 | `worker-version` | `GET /accounts/{account_id}/workers/scripts/{service}/versions/{version_id}` | exactly `V`, one for every active version; bindings come from `resources.bindings` |
 | `worker-subdomain` | `GET /accounts/{account_id}/workers/scripts/{service}/subdomain` | exactly `S`; captures workers.dev and preview status |
 | `account-worker-domains` | `GET /accounts/{account_id}/workers/domains` | exactly 1; absent pagination metadata or exact page 1 of 1 only |
-| `account-zones` | `GET /zones?account.id=...&page=N&per_page=50&order=id&direction=asc&match=all` | exactly pages 1 through `P`, with stable totals and no gaps |
+| `account-zones` | `GET /zones?account.id=...&page=N&per_page=50&order=name&direction=asc&match=all` | exactly pages 1 through `P`, with stable totals and no gaps |
 | `zone-worker-routes` | `GET /zones/{zone_id}/workers/routes` | exactly `Z`, one for every returned zone |
 
 The exact request/page count for one traversal is therefore
@@ -211,14 +230,20 @@ digest/readback mismatch terminate that traversal. A retry starts a new
 operation and output prefix; it never overwrites or silently resumes the
 failed evidence chain.
 
+The CLI now creates a previously absent capture directory, syncs a canonical
+manifest binding mode/account/profile/collector identity, names each body and
+receipt pair by the full page-receipt digest, checks exact body length and
+SHA-256, uses create-once file opens, and syncs each file before returning to
+the collector. This is a local overwrite-resistant capture boundary, not WORM.
+
 Both traversals' raw pages, page receipts, collector/profile identities, and
 terminal artifacts must then be placed in an external compliance-mode WORM
 archive with at least 365 days retention. A separately authorized reader must
 verify object version, retention mode/deadline, ETag and SHA-256, byte length,
 and canonical manifest closure before source signing. The collector library's
-`rawPageSink` callback is only an integration boundary. Until a reviewed
-create-once sink, external WORM implementation, and independent readback
-receipt exist, it is not immutable-storage evidence.
+`rawPageSink` callback remains an integration boundary. Until the local capture
+is transferred through a reviewed external-WORM adapter and independently read
+back under retention, it is not production immutable-storage evidence.
 
 ## Verification Pipeline
 
@@ -265,6 +290,7 @@ Run:
 
 ```text
 bun run check:container-runtime:json-compatibility-deployment-transition
+bun run check:container-runtime:json-compatibility-account-binding-collector
 bun run check:container-runtime:json-compatibility-source-verifier
 bun run check:container-runtime:json-compatibility-deployment-transition-worker
 ```
@@ -273,14 +299,15 @@ Current focused evidence on 2026-08-05 is:
 
 | Gate | Result |
 | --- | --- |
+| Account-binding evidence/collector/CLI | 20 tests, 75 expectations; strict declaration check; four credential-free self-test/dry-run plans |
 | Transition protocol | 13 tests, 150 expectations; includes exact v2 request/proof replay, cross-operation/plan binding, and proof-time rejection |
 | Generated types and TypeScript | pass |
-| Source verifier dry-runs | local and staging pass; 301.25 KiB upload / 49.37 KiB gzip; both gates false |
+| Source verifier dry-runs | local and staging pass; 349.65 KiB upload / 57.27 KiB gzip; both gates false |
 | Source verifier Node tests | 3 files, 13 tests |
 | Source verifier Workerd/R2 tests | 1 file, 3 tests; canonical read-only verification, missing object, and revocation |
 | Transition Worker Node tests | 2 files, 8 tests |
 | Transition Worker Workerd integration | 1 file, 2 tests; real secondary verifier Worker plus shared R2 and real D1 |
-| Complete repository | `bun run check` passed with exit code 0 in 1,452.7 seconds |
+| Complete repository | `bun run check` passed with exit code 0 in 1,814.1 seconds |
 
 The integrated Workerd test seeds a canonical R2 bundle, routes the transition
 through the actual verifier named entrypoint, proves exactly one verifier call,
@@ -288,9 +315,10 @@ executes four deployment-leaf mutations and 16 stable reads, and proves exact
 replay/status add no verifier or leaf calls. The deployment leaf remains a
 mock; the source verifier does not.
 
-A dedicated least-privilege GitHub workflow runs the three focused gates on
-relevant changes using pinned checkout and Bun actions, frozen dependencies,
-`contents: read`, no deployment credential, and no remote mutation.
+Dedicated least-privilege GitHub workflows run the collector and three verifier/
+transition focused gates on relevant changes using pinned checkout and Bun
+actions, frozen dependencies, `contents: read`, no deployment credential, and
+no remote mutation.
 
 These results are local protocol, Wrangler dry-run, R2 emulator, D1 emulator,
 Workerd, frontend, supply-chain, Rust workspace, and wasm32 evidence. They are
@@ -346,8 +374,8 @@ Before any isolated staging transition:
     readbacks, D1 creation/migration evidence, and deployment receipts for
     independent offline replay.
 
-The source verifier closes one local P0 implementation gap. Collector v2 is
-still local work in progress and has not produced admissible remote evidence.
+The source verifier and collector v2 close local implementation gaps but have
+not produced admissible remote evidence.
 The signed credential receipts, create-once raw-page/WORM sink, independent
 archive reader, signer, R2 uploader, remote bucket/verifier readback,
 deployment leaf, D1 create-once provisioner and immutable remote schema,

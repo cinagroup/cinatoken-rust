@@ -12,6 +12,10 @@ import {
 import {
   validateJsonCompatibilitySourceManifest,
 } from "./container_runtime_json_compatibility_source_manifest.mjs";
+import {
+  accountBindingInventoryInputFromEvidence,
+  validateJsonCompatibilityAccountBindingEvidence,
+} from "./container_runtime_json_compatibility_account_binding_evidence.mjs";
 
 export const JSON_COMPATIBILITY_SOURCE_ARTIFACT_INVENTORY_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-source-artifact-inventory-readback-v1";
@@ -20,15 +24,15 @@ export const JSON_COMPATIBILITY_TRANSITION_SOURCE_MANIFEST_CONTRACT =
 export const JSON_COMPATIBILITY_SOURCE_ACCOUNT_BINDING_INVENTORY_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-source-account-binding-inventory-v1";
 export const JSON_COMPATIBILITY_SOURCE_ARCHIVE_RECEIPT_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v1";
+  "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v2";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_SUBJECT_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-source-signature-subject-v1";
+  "cinatoken-container-runtime-json-compatibility-source-signature-subject-v2";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_ENVELOPE_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-source-signature-envelope-v1";
+  "cinatoken-container-runtime-json-compatibility-source-signature-envelope-v2";
 export const JSON_COMPATIBILITY_SOURCE_AUTHENTICATION_BUNDLE_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v1";
+  "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v2";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_DOMAIN =
-  "cinatoken-container-runtime-json-compatibility-source-signature-v1\n";
+  "cinatoken-container-runtime-json-compatibility-source-signature-v2\n";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER =
   "cinatoken-json-compatibility-source-archive-authority-staging";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE =
@@ -424,6 +428,7 @@ export function buildJsonCompatibilitySourceImmutableArchiveReceipt({
   transitionSourceManifestSha256,
   phaseSourceManifestSha256,
   artifactInventoryReadbackSha256,
+  accountBindingEvidenceSha256,
   accountBindingInventorySha256,
   immutableSourceArchiveSha256,
   archiveObjectVersionSha256,
@@ -438,6 +443,7 @@ export function buildJsonCompatibilitySourceImmutableArchiveReceipt({
     ["account ID", accountIdSha256],
     ["transition source manifest", transitionSourceManifestSha256],
     ["artifact inventory", artifactInventoryReadbackSha256],
+    ["account binding evidence", accountBindingEvidenceSha256],
     ["account binding inventory", accountBindingInventorySha256],
     ["immutable source archive", immutableSourceArchiveSha256],
     ["archive object version", archiveObjectVersionSha256],
@@ -469,6 +475,7 @@ export function buildJsonCompatibilitySourceImmutableArchiveReceipt({
     transitionSourceManifestSha256,
     phaseSourceManifestSha256,
     artifactInventoryReadbackSha256,
+    accountBindingEvidenceSha256,
     accountBindingInventorySha256,
     immutableSourceArchiveSha256,
     archiveObjectVersionSha256,
@@ -491,7 +498,8 @@ export function validateJsonCompatibilitySourceImmutableArchiveReceipt(input) {
     "schemaVersion", "contract", "kind", "environment", "archiveBackend",
     "retentionMode", "accountIdSha256", "transitionSourceManifestSha256",
     "phaseSourceManifestSha256",
-    "artifactInventoryReadbackSha256", "accountBindingInventorySha256",
+    "artifactInventoryReadbackSha256", "accountBindingEvidenceSha256",
+    "accountBindingInventorySha256",
     "immutableSourceArchiveSha256", "archiveObjectVersionSha256",
     "archiveObjectEtagSha256", "archiveByteLength", "lockedAt",
     "retainUntil", "independentlyReadBackAt", "retentionEvidenceSha256",
@@ -504,6 +512,7 @@ export function validateJsonCompatibilitySourceImmutableArchiveReceipt(input) {
 
 export function buildJsonCompatibilitySourceSignatureSubject({
   sourceAuthenticationRequest: requestInput,
+  accountBindingEvidenceSha256,
   immutableSourceArchiveReceiptSha256,
   issuer = JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER,
   audience = JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE,
@@ -523,6 +532,10 @@ export function buildJsonCompatibilitySourceSignatureSubject({
     "source audience",
   );
   safeToken(keyId, "source signature key ID");
+  sha256(
+    accountBindingEvidenceSha256,
+    "source account binding evidence",
+  );
   sha256(
     immutableSourceArchiveReceiptSha256,
     "source immutable archive receipt",
@@ -564,6 +577,7 @@ export function buildJsonCompatibilitySourceSignatureSubject({
     artifactInventoryReadbackSha256:
       source.artifactInventoryReadbackSha256,
     accountBindingInventorySha256: source.accountBindingInventorySha256,
+    accountBindingEvidenceSha256,
     immutableSourceArchiveReceiptSha256,
     issuedAt,
     notBefore,
@@ -626,6 +640,7 @@ export function buildJsonCompatibilitySourceAuthenticationBundle({
   transitionSourceManifest,
   phaseSourceManifest,
   artifactInventoryReadback,
+  accountBindingEvidence,
   accountBindingInventory,
   immutableSourceArchiveReceipt,
   sourceSignatureEnvelope,
@@ -637,6 +652,7 @@ export function buildJsonCompatibilitySourceAuthenticationBundle({
     transitionSourceManifest,
     phaseSourceManifest,
     artifactInventoryReadback,
+    accountBindingEvidence,
     accountBindingInventory,
     immutableSourceArchiveReceipt,
     sourceSignatureEnvelope,
@@ -661,7 +677,8 @@ export function validateJsonCompatibilitySourceAuthenticationBundle(
     "schemaVersion", "contract", "kind", "environment", "campaignPlan",
     "statePlan", "transitionSourceManifest", "phaseSourceManifest",
     "artifactInventoryReadback",
-    "accountBindingInventory", "immutableSourceArchiveReceipt",
+    "accountBindingEvidence", "accountBindingInventory",
+    "immutableSourceArchiveReceipt",
     "sourceSignatureEnvelope", "bundleSha256",
   ], "source authentication bundle");
   const rebuilt = buildJsonCompatibilitySourceAuthenticationBundle({
@@ -671,6 +688,7 @@ export function validateJsonCompatibilitySourceAuthenticationBundle(
     transitionSourceManifest: value.transitionSourceManifest,
     phaseSourceManifest: value.phaseSourceManifest,
     artifactInventoryReadback: value.artifactInventoryReadback,
+    accountBindingEvidence: value.accountBindingEvidence,
     accountBindingInventory: value.accountBindingInventory,
     immutableSourceArchiveReceipt: value.immutableSourceArchiveReceipt,
     sourceSignatureEnvelope: value.sourceSignatureEnvelope,
@@ -759,12 +777,29 @@ function validateBundleContent(input) {
       statePlan,
       input.artifactInventoryReadback,
     );
+  const accountBindingEvidence =
+    validateJsonCompatibilityAccountBindingEvidence(
+      campaignPlan,
+      statePlan,
+      input.accountBindingEvidence,
+    );
   const accountBindingInventory =
     validateJsonCompatibilitySourceAccountBindingInventory(
       campaignPlan,
       statePlan,
       input.accountBindingInventory,
     );
+  const projectedAccountBindingInventory =
+    buildJsonCompatibilitySourceAccountBindingInventory({
+      campaignPlan,
+      statePlan,
+      ...accountBindingInventoryInputFromEvidence(accountBindingEvidence),
+    });
+  canonicalEqual(
+    projectedAccountBindingInventory,
+    accountBindingInventory,
+    "source account binding evidence projection",
+  );
   const archiveReceipt =
     validateJsonCompatibilitySourceImmutableArchiveReceipt(
       input.immutableSourceArchiveReceipt,
@@ -796,6 +831,8 @@ function validateBundleContent(input) {
       source.accountIdSha256],
     ["account inventory account", accountBindingInventory.accountIdSha256,
       source.accountIdSha256],
+    ["account binding evidence account", accountBindingEvidence.accountIdSha256,
+      source.accountIdSha256],
     ["archive account", archiveReceipt.accountIdSha256,
       source.accountIdSha256],
     ["transition manifest account", transitionSourceManifest.accountIdSha256,
@@ -809,12 +846,17 @@ function validateBundleContent(input) {
     ["archive artifact inventory",
       archiveReceipt.artifactInventoryReadbackSha256,
       source.artifactInventoryReadbackSha256],
+    ["archive account binding evidence",
+      archiveReceipt.accountBindingEvidenceSha256,
+      accountBindingEvidence.accountBindingEvidenceSha256],
     ["archive account inventory",
       archiveReceipt.accountBindingInventorySha256,
       source.accountBindingInventorySha256],
   ]) equal(actual, expected, `source bundle ${label}`);
   const expectedSubject = buildJsonCompatibilitySourceSignatureSubject({
     sourceAuthenticationRequest: request,
+    accountBindingEvidenceSha256:
+      accountBindingEvidence.accountBindingEvidenceSha256,
     immutableSourceArchiveReceiptSha256:
       archiveReceipt.immutableSourceArchiveReceiptSha256,
     issuer: envelope.subject.issuer,
@@ -859,6 +901,7 @@ function validateBundleContent(input) {
     transitionSourceManifest: cloneJson(transitionSourceManifest),
     phaseSourceManifest: cloneJson(phaseSourceManifest),
     artifactInventoryReadback: cloneJson(artifactInventoryReadback),
+    accountBindingEvidence: cloneJson(accountBindingEvidence),
     accountBindingInventory: cloneJson(accountBindingInventory),
     immutableSourceArchiveReceipt: cloneJson(archiveReceipt),
     sourceSignatureEnvelope: cloneJson(envelope),
@@ -948,7 +991,8 @@ function validateSignatureSubject(input) {
     "fromState", "toState", "transitionSha256", "accountIdSha256",
     "transitionSourceManifestSha256", "phaseSourceManifestSha256",
     "sourceVerifierPolicySha256", "sourceVerifierIdentitySha256",
-    "artifactInventoryReadbackSha256", "accountBindingInventorySha256",
+    "artifactInventoryReadbackSha256", "accountBindingEvidenceSha256",
+    "accountBindingInventorySha256",
     "immutableSourceArchiveReceiptSha256", "issuedAt", "notBefore",
     "expiresAt",
   ], "source signature subject");
@@ -990,6 +1034,7 @@ function buildJsonCompatibilitySourceSignatureSubjectFromFields(value) {
     ["source verifier identity", value.sourceVerifierIdentitySha256],
     ["transition source manifest", value.transitionSourceManifestSha256],
     ["artifact inventory", value.artifactInventoryReadbackSha256],
+    ["account binding evidence", value.accountBindingEvidenceSha256],
     ["account binding inventory", value.accountBindingInventorySha256],
     ["archive receipt", value.immutableSourceArchiveReceiptSha256],
   ]) sha256(digest, `source signature ${label}`);

@@ -8,10 +8,15 @@ import {
   buildJsonCompatibilityCampaignPlan,
   canonicalJson,
   parseStrictJsonObject,
+  sha256Canonical,
   validateJsonCompatibilityCampaignPlan,
 } from "./container_runtime_json_compatibility_campaign.mjs";
 import {
+  validateJsonCompatibilityDeploymentStatePlan,
+} from "./container_runtime_json_compatibility_deployment_states.mjs";
+import {
   JSON_COMPATIBILITY_CONFIG_MAX_BYTES,
+  JSON_COMPATIBILITY_PLAN_MAX_BYTES,
   readBoundedUtf8File,
 } from "./lib/bounded_json_file.mjs";
 
@@ -39,6 +44,7 @@ export async function runJsonCompatibilityCampaignPlanner(options) {
   const inputs = options.selfTest
     ? {
         campaignIdSha256: "11".repeat(32),
+        deploymentStatePlanDigestSha256: "dd".repeat(32),
         controllerVersionId: "controller-version-self-test",
         runnerVersionId: "runner-version-self-test",
         runnerConfigSha256: "aa".repeat(32),
@@ -62,12 +68,15 @@ export async function runJsonCompatibilityCampaignPlanner(options) {
         runtimeNMinusOneImageDigest: `sha256:${"55".repeat(32)}`,
         candidateShardIndex: 3,
       }
-    : options;
+    : await bindDeploymentStatePlan(config, options);
   const plan = buildJsonCompatibilityCampaignPlan({ config, ...inputs });
   validateJsonCompatibilityCampaignPlan(plan);
   if (!options.selfTest && options.outPath !== undefined) {
     const output = path.resolve(options.outPath);
     if (output === configPath) throw new Error("--out must not replace --config");
+    if (output === path.resolve(options.deploymentStatePlanPath)) {
+      throw new Error("--out must not replace --deployment-state-plan");
+    }
     await writeFile(output, canonicalJson(plan), {
       encoding: "utf8",
       flag: "wx",
@@ -102,6 +111,70 @@ export async function runJsonCompatibilityCampaignPlanner(options) {
   };
 }
 
+async function bindDeploymentStatePlan(config, options) {
+  if (
+    typeof options.deploymentStatePlanPath !== "string" ||
+    options.deploymentStatePlanPath.length === 0
+  ) {
+    throw new Error("--deployment-state-plan is required");
+  }
+  const deploymentStatePlanPath = path.resolve(options.deploymentStatePlanPath);
+  const deploymentStatePlan = validateJsonCompatibilityDeploymentStatePlan(
+    parseStrictJsonObject(
+      await readBoundedUtf8File(
+        deploymentStatePlanPath,
+        JSON_COMPATIBILITY_PLAN_MAX_BYTES,
+        "deployment state plan",
+      ),
+      "deployment state plan",
+    ),
+  );
+  const expected = {
+    controller: {
+      versionId: options.controllerVersionId,
+      configSha256: sha256Canonical(config),
+    },
+    runner: {
+      versionId: options.runnerVersionId,
+      configSha256: options.runnerConfigSha256,
+    },
+    operator: {
+      versionId: options.operatorVersionId,
+      configSha256: options.operatorConfigSha256,
+    },
+    invoker: {
+      versionId: options.invokerVersionId,
+      configSha256: options.invokerConfigSha256,
+    },
+    permitIssuer: {
+      versionId: options.permitIssuerVersionId,
+      configSha256: options.permitIssuerConfigSha256,
+    },
+    executor: {
+      versionId: options.executorVersionId,
+      configSha256: options.executorConfigSha256,
+    },
+  };
+  for (const [role, identity] of Object.entries(expected)) {
+    const artifact = deploymentStatePlan.services[role].artifacts.execution;
+    if (artifact.versionId !== identity.versionId) {
+      throw new Error(
+        `${role} execution version does not match --deployment-state-plan`,
+      );
+    }
+    if (artifact.configSha256 !== identity.configSha256) {
+      throw new Error(
+        `${role} execution config digest does not match --deployment-state-plan`,
+      );
+    }
+  }
+  return {
+    ...options,
+    deploymentStatePlanDigestSha256:
+      deploymentStatePlan.planDigestSha256,
+  };
+}
+
 function parseArgs(argv) {
   const values = new Map();
   const flags = new Set();
@@ -109,6 +182,7 @@ function parseArgs(argv) {
     "--config",
     "--out",
     "--campaign-id-sha256",
+    "--deployment-state-plan",
     "--controller-version-id",
     "--runner-version-id",
     "--runner-config-sha256",
@@ -154,6 +228,7 @@ function parseArgs(argv) {
   const selfTest = flags.has("--self-test");
   const liveInputOptions = [
     "--campaign-id-sha256",
+    "--deployment-state-plan",
     "--controller-version-id",
     "--runner-version-id",
     "--runner-config-sha256",
@@ -199,6 +274,7 @@ function parseArgs(argv) {
     configPath: values.get("--config"),
     outPath: values.get("--out"),
     campaignIdSha256: values.get("--campaign-id-sha256"),
+    deploymentStatePlanPath: values.get("--deployment-state-plan"),
     controllerVersionId: values.get("--controller-version-id"),
     runnerVersionId: values.get("--runner-version-id"),
     runnerConfigSha256: values.get("--runner-config-sha256"),
@@ -230,10 +306,10 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --campaign-id-sha256 <sha256> --controller-version-id <id> --runner-version-id <id> --runner-config-sha256 <sha256> --operator-version-id <id> --operator-config-sha256 <sha256> --operator-hmac-kid <kid> --operator-hmac-credential-id-sha256 <sha256> --operator-status-hmac-kid <kid> --operator-status-hmac-credential-id-sha256 <sha256> --operator-approval-key-id <kid> --operator-approval-spki-sha256 <sha256> --invoker-version-id <id> --invoker-config-sha256 <sha256> --permit-issuer-version-id <id> --permit-issuer-config-sha256 <sha256> --executor-version-id <id> --executor-config-sha256 <sha256> --runtime-n-build-id <sha256> --runtime-n-image-digest <sha256:...> --runtime-n-minus-one-build-id <sha256> --runtime-n-minus-one-image-digest <sha256:...> [--candidate-shard-index <index>] [--config <path>] [--out <create-only-plan.json>] [--json]",
+    "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --campaign-id-sha256 <sha256> --deployment-state-plan <validated-state-plan.json> --controller-version-id <id> --runner-version-id <id> --runner-config-sha256 <sha256> --operator-version-id <id> --operator-config-sha256 <sha256> --operator-hmac-kid <kid> --operator-hmac-credential-id-sha256 <sha256> --operator-status-hmac-kid <kid> --operator-status-hmac-credential-id-sha256 <sha256> --operator-approval-key-id <kid> --operator-approval-spki-sha256 <sha256> --invoker-version-id <id> --invoker-config-sha256 <sha256> --permit-issuer-version-id <id> --permit-issuer-config-sha256 <sha256> --executor-version-id <id> --executor-config-sha256 <sha256> --runtime-n-build-id <sha256> --runtime-n-image-digest <sha256:...> --runtime-n-minus-one-build-id <sha256> --runtime-n-minus-one-image-digest <sha256:...> [--candidate-shard-index <index>] [--config <path>] [--out <create-only-plan.json>] [--json]",
     "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --self-test [--config <path>] [--json]",
     "",
-    "This planner requires a staging campaign config with only CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED=true. It accepts only non-secret version IDs and config SHA-256 readbacks; secret options and values are not accepted. It performs no network request, credential read, deployment, gate change, provider call, or traffic mutation.",
+    "This planner requires a staging campaign config with only CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED=true plus a validated deployment-state plan. Every supplied execution version/config identity must equal that plan's execution artifact. It accepts no secret options or values and performs no network request, credential read, deployment, gate change, provider call, or traffic mutation.",
     "When --out is supplied, the local plan artifact is create-only. The resulting plan requires a private Service Binding probe executor; public Controller URLs are forbidden.",
   ].join("\n");
 }

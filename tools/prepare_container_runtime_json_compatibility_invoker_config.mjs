@@ -33,6 +33,66 @@ const STATUS_OPERATOR_ISSUER =
 const PERMIT_ISSUER = "cinatoken-json-compatibility-permit-issuer-staging";
 const SHA256 = /^[0-9a-f]{64}$/;
 const KEY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const DEPLOYMENT_STATES = ["dark", "status-only", "execution"];
+
+const IDENTITY_OPTIONS = [
+  {
+    apiName: "operatorCurrentKid",
+    cliName: "--operator-current-kid",
+    label: "operator current KID",
+    validate: keyId,
+    requiredIn: ["execution"],
+  },
+  {
+    apiName: "operatorCurrentCredentialIdSha256",
+    cliName: "--operator-current-credential-id-sha256",
+    label: "operator credential digest",
+    validate: sha256,
+    requiredIn: ["execution"],
+  },
+  {
+    apiName: "statusOperatorCurrentKid",
+    cliName: "--status-operator-current-kid",
+    label: "status operator current KID",
+    validate: keyId,
+    requiredIn: ["status-only", "execution"],
+  },
+  {
+    apiName: "statusOperatorCurrentCredentialIdSha256",
+    cliName: "--status-operator-current-credential-id-sha256",
+    label: "status operator credential digest",
+    validate: sha256,
+    requiredIn: ["status-only", "execution"],
+  },
+  {
+    apiName: "issuerHmacKid",
+    cliName: "--issuer-hmac-kid",
+    label: "issuer HMAC KID",
+    validate: keyId,
+    requiredIn: ["execution"],
+  },
+  {
+    apiName: "issuerHmacCredentialIdSha256",
+    cliName: "--issuer-hmac-credential-id-sha256",
+    label: "issuer HMAC credential digest",
+    validate: sha256,
+    requiredIn: ["execution"],
+  },
+  {
+    apiName: "permitKeyId",
+    cliName: "--permit-key-id",
+    label: "permit key ID",
+    validate: keyId,
+    requiredIn: ["execution"],
+  },
+  {
+    apiName: "permitSpkiSha256",
+    cliName: "--permit-spki-sha256",
+    label: "permit SPKI digest",
+    validate: sha256,
+    requiredIn: ["execution"],
+  },
+];
 
 export function validateJsonCompatibilityInvokerConfig(input, campaign = null) {
   const config = record(input, "invoker config");
@@ -71,60 +131,80 @@ export function validateJsonCompatibilityInvokerConfig(input, campaign = null) {
     tag: "v1",
     new_sqlite_classes: ["JsonCompatibilityInvocationAuthority"],
   }], "invoker migration");
-  const enabled = campaign !== null;
-  if (enabled) {
-    keyId(campaign.operatorCurrentKid, "operator current KID");
-    sha256(campaign.operatorCurrentCredentialIdSha256, "operator credential digest");
-    keyId(campaign.statusOperatorCurrentKid, "status operator current KID");
-    sha256(
-      campaign.statusOperatorCurrentCredentialIdSha256,
-      "status operator credential digest",
-    );
-    keyId(campaign.issuerHmacKid, "issuer HMAC KID");
-    sha256(campaign.issuerHmacCredentialIdSha256, "issuer HMAC credential digest");
-    keyId(campaign.permitKeyId, "permit key ID");
-    sha256(campaign.permitSpkiSha256, "permit SPKI digest");
-  }
+  const deploymentState = campaign === null
+    ? "dark"
+    : normalizeDeploymentState(campaign.deploymentState);
+  const identities = campaign === null
+    ? {}
+    : validateDeploymentIdentities(campaign, deploymentState);
+  const executionEnabled = deploymentState === "execution";
+  const statusReadEnabled = deploymentState !== "dark";
   canonicalEqual(config.vars, {
     ENVIRONMENT: "staging",
-    JSON_COMPATIBILITY_INVOKER_ENABLED: enabled ? "true" : "false",
-    JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED: enabled ? "true" : "false",
+    JSON_COMPATIBILITY_INVOKER_ENABLED:
+      executionEnabled ? "true" : "false",
+    JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED:
+      statusReadEnabled ? "true" : "false",
     JSON_COMPATIBILITY_INVOKER_OPERATOR_ISSUER: OPERATOR_ISSUER,
     JSON_COMPATIBILITY_INVOKER_OPERATOR_AUDIENCE: INVOKER_SERVICE,
     JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_KID:
-      enabled ? campaign.operatorCurrentKid : "",
+      executionEnabled ? identities.operatorCurrentKid : "",
     JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
-      enabled ? campaign.operatorCurrentCredentialIdSha256 : "",
+      executionEnabled ? identities.operatorCurrentCredentialIdSha256 : "",
     JSON_COMPATIBILITY_INVOKER_OPERATOR_PREVIOUS_KID: "",
     JSON_COMPATIBILITY_INVOKER_OPERATOR_PREVIOUS_CREDENTIAL_ID_SHA256: "",
     JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_ISSUER: STATUS_OPERATOR_ISSUER,
     JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_AUDIENCE: INVOKER_SERVICE,
     JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_KID:
-      enabled ? campaign.statusOperatorCurrentKid : "",
+      statusReadEnabled ? identities.statusOperatorCurrentKid : "",
     JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256:
-      enabled ? campaign.statusOperatorCurrentCredentialIdSha256 : "",
+      statusReadEnabled
+        ? identities.statusOperatorCurrentCredentialIdSha256
+        : "",
     JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_PREVIOUS_KID: "",
     JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_PREVIOUS_CREDENTIAL_ID_SHA256:
       "",
     JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_ISSUER: INVOKER_SERVICE,
     JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_AUDIENCE: ISSUER_SERVICE,
     JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_KID:
-      enabled ? campaign.issuerHmacKid : "",
+      executionEnabled ? identities.issuerHmacKid : "",
     JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_CREDENTIAL_ID_SHA256:
-      enabled ? campaign.issuerHmacCredentialIdSha256 : "",
+      executionEnabled ? identities.issuerHmacCredentialIdSha256 : "",
     JSON_COMPATIBILITY_PERMIT_ISSUER: PERMIT_ISSUER,
     JSON_COMPATIBILITY_PERMIT_AUDIENCE: EXECUTOR_SERVICE,
-    JSON_COMPATIBILITY_PERMIT_KEY_ID: enabled ? campaign.permitKeyId : "",
+    JSON_COMPATIBILITY_PERMIT_KEY_ID:
+      executionEnabled ? identities.permitKeyId : "",
     JSON_COMPATIBILITY_PERMIT_SPKI_SHA256:
-      enabled ? campaign.permitSpkiSha256 : "",
+      executionEnabled ? identities.permitSpkiSha256 : "",
   }, "invoker vars");
-  return { serviceName: config.name, enabled, privateServiceBindings: true };
+  return {
+    serviceName: config.name,
+    deploymentState,
+    enabled: executionEnabled,
+    executionEnabled,
+    statusReadEnabled,
+    privateServiceBindings: true,
+  };
 }
 
 export async function prepareJsonCompatibilityInvokerConfig(options) {
   const basePath = path.resolve(options?.basePath ?? defaultBasePath);
   const outPath = path.resolve(requiredPath(options?.outPath, "--out"));
   if (basePath === outPath) throw new Error("--out must not replace the base config");
+  const deploymentState = normalizeDeploymentState(options?.deploymentState);
+  const values = validateDeploymentIdentities({
+    deploymentState,
+    operatorCurrentKid: options?.operatorCurrentKid,
+    operatorCurrentCredentialIdSha256:
+      options?.operatorCurrentCredentialIdSha256,
+    statusOperatorCurrentKid: options?.statusOperatorCurrentKid,
+    statusOperatorCurrentCredentialIdSha256:
+      options?.statusOperatorCurrentCredentialIdSha256,
+    issuerHmacKid: options?.issuerHmacKid,
+    issuerHmacCredentialIdSha256: options?.issuerHmacCredentialIdSha256,
+    permitKeyId: options?.permitKeyId,
+    permitSpkiSha256: options?.permitSpkiSha256,
+  }, deploymentState);
   const base = parseStrictJsonObject(
     await readBoundedUtf8File(
       basePath,
@@ -135,35 +215,34 @@ export async function prepareJsonCompatibilityInvokerConfig(options) {
   );
   validateJsonCompatibilityInvokerConfig(base);
   const campaign = structuredClone(base);
-  const values = {
-    operatorCurrentKid: options.operatorCurrentKid,
-    operatorCurrentCredentialIdSha256:
-      options.operatorCurrentCredentialIdSha256,
-    statusOperatorCurrentKid: options.statusOperatorCurrentKid,
-    statusOperatorCurrentCredentialIdSha256:
-      options.statusOperatorCurrentCredentialIdSha256,
-    issuerHmacKid: options.issuerHmacKid,
-    issuerHmacCredentialIdSha256: options.issuerHmacCredentialIdSha256,
-    permitKeyId: options.permitKeyId,
-    permitSpkiSha256: options.permitSpkiSha256,
-  };
-  campaign.vars.JSON_COMPATIBILITY_INVOKER_ENABLED = "true";
+  const executionEnabled = deploymentState === "execution";
+  const statusReadEnabled = deploymentState !== "dark";
+  campaign.vars.JSON_COMPATIBILITY_INVOKER_ENABLED =
+    executionEnabled ? "true" : "false";
   campaign.vars.JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_KID =
-    values.operatorCurrentKid;
+    executionEnabled ? values.operatorCurrentKid : "";
   campaign.vars.JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256 =
-    values.operatorCurrentCredentialIdSha256;
-  campaign.vars.JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED = "true";
+    executionEnabled ? values.operatorCurrentCredentialIdSha256 : "";
+  campaign.vars.JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED =
+    statusReadEnabled ? "true" : "false";
   campaign.vars.JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_KID =
-    values.statusOperatorCurrentKid;
+    statusReadEnabled ? values.statusOperatorCurrentKid : "";
   campaign.vars.JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256 =
-    values.statusOperatorCurrentCredentialIdSha256;
+    statusReadEnabled
+      ? values.statusOperatorCurrentCredentialIdSha256
+      : "";
   campaign.vars.JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_KID =
-    values.issuerHmacKid;
+    executionEnabled ? values.issuerHmacKid : "";
   campaign.vars.JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_CREDENTIAL_ID_SHA256 =
-    values.issuerHmacCredentialIdSha256;
-  campaign.vars.JSON_COMPATIBILITY_PERMIT_KEY_ID = values.permitKeyId;
-  campaign.vars.JSON_COMPATIBILITY_PERMIT_SPKI_SHA256 = values.permitSpkiSha256;
-  const validation = validateJsonCompatibilityInvokerConfig(campaign, values);
+    executionEnabled ? values.issuerHmacCredentialIdSha256 : "";
+  campaign.vars.JSON_COMPATIBILITY_PERMIT_KEY_ID =
+    executionEnabled ? values.permitKeyId : "";
+  campaign.vars.JSON_COMPATIBILITY_PERMIT_SPKI_SHA256 =
+    executionEnabled ? values.permitSpkiSha256 : "";
+  const validation = validateJsonCompatibilityInvokerConfig(campaign, {
+    ...values,
+    deploymentState,
+  });
   await writeFile(outPath, canonicalJson(campaign), { encoding: "utf8", flag: "wx" });
   return {
     ok: true,
@@ -171,25 +250,12 @@ export async function prepareJsonCompatibilityInvokerConfig(options) {
     mode: "offline-private-invoker-campaign-config-preparation",
     environment: "staging",
     serviceName: validation.serviceName,
+    deploymentState,
+    executionEnabled,
+    statusReadEnabled,
     configSha256: sha256Canonical(campaign),
-    changedVars: [
-      "JSON_COMPATIBILITY_INVOKER_ENABLED",
-      "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED",
-      "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_KID",
-      "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256",
-      "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_KID",
-      "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256",
-      "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_KID",
-      "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_CREDENTIAL_ID_SHA256",
-      "JSON_COMPATIBILITY_PERMIT_KEY_ID",
-      "JSON_COMPATIBILITY_PERMIT_SPKI_SHA256",
-    ],
-    secretsRequired: [
-      "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_SECRET",
-      "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_SECRET",
-      "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_SECRET",
-      "JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL",
-    ],
+    changedVars: changedVarsForDeploymentState(deploymentState),
+    secretsRequired: secretsRequiredForDeploymentState(deploymentState),
     credentialsRead: false,
     networkRequestsPerformed: false,
     deploymentMutationPerformed: false,
@@ -198,7 +264,7 @@ export async function prepareJsonCompatibilityInvokerConfig(options) {
 
 export function parseJsonCompatibilityInvokerConfigArgs(argv) {
   const names = [
-    "--base", "--out", "--operator-current-kid",
+    "--base", "--out", "--deployment-state", "--operator-current-kid",
     "--operator-current-credential-id-sha256", "--issuer-hmac-kid",
     "--status-operator-current-kid",
     "--status-operator-current-credential-id-sha256",
@@ -207,25 +273,26 @@ export function parseJsonCompatibilityInvokerConfigArgs(argv) {
   ];
   const values = parseArgs(argv, names);
   if (values.help) return values;
-  for (const name of names.slice(1)) requiredValue(values.map, name);
-  for (const name of [
-    "--operator-current-kid",
-    "--status-operator-current-kid",
-    "--issuer-hmac-kid",
-    "--permit-key-id",
-  ]) {
-    keyId(values.map.get(name), name);
+  requiredValue(values.map, "--out");
+  const deploymentState = normalizeDeploymentState(
+    values.map.get("--deployment-state"),
+    "--deployment-state",
+  );
+  for (const identity of IDENTITY_OPTIONS) {
+    if (identity.requiredIn.includes(deploymentState)) {
+      requiredValue(values.map, identity.cliName);
+      identity.validate(values.map.get(identity.cliName), identity.cliName);
+    } else if (values.map.has(identity.cliName)) {
+      throw new Error(
+        `${identity.cliName} is forbidden for deployment state ${deploymentState}`,
+      );
+    }
   }
-  for (const name of [
-    "--operator-current-credential-id-sha256",
-    "--status-operator-current-credential-id-sha256",
-    "--issuer-hmac-credential-id-sha256",
-    "--permit-spki-sha256",
-  ]) sha256(values.map.get(name), name);
   return {
     json: values.json,
     basePath: values.map.get("--base"),
     outPath: values.map.get("--out"),
+    deploymentState,
     operatorCurrentKid: values.map.get("--operator-current-kid"),
     operatorCurrentCredentialIdSha256:
       values.map.get("--operator-current-credential-id-sha256"),
@@ -244,10 +311,71 @@ export function parseJsonCompatibilityInvokerConfigArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  bun tools/prepare_container_runtime_json_compatibility_invoker_config.mjs --out <campaign-wrangler.jsonc> --operator-current-kid <kid> --operator-current-credential-id-sha256 <sha256> --status-operator-current-kid <kid> --status-operator-current-credential-id-sha256 <sha256> --issuer-hmac-kid <kid> --issuer-hmac-credential-id-sha256 <sha256> --permit-key-id <kid> --permit-spki-sha256 <sha256> [--base <tracked-staging.jsonc>] [--json]",
+    "  bun tools/prepare_container_runtime_json_compatibility_invoker_config.mjs --out <wrangler.jsonc> --deployment-state dark [--base <tracked-staging.jsonc>] [--json]",
+    "  bun tools/prepare_container_runtime_json_compatibility_invoker_config.mjs --out <wrangler.jsonc> --deployment-state status-only --status-operator-current-kid <kid> --status-operator-current-credential-id-sha256 <sha256> [--base <tracked-staging.jsonc>] [--json]",
+    "  bun tools/prepare_container_runtime_json_compatibility_invoker_config.mjs --out <wrangler.jsonc> [--deployment-state execution] --operator-current-kid <kid> --operator-current-credential-id-sha256 <sha256> --status-operator-current-kid <kid> --status-operator-current-credential-id-sha256 <sha256> --issuer-hmac-kid <kid> --issuer-hmac-credential-id-sha256 <sha256> --permit-key-id <kid> --permit-spki-sha256 <sha256> [--base <tracked-staging.jsonc>] [--json]",
     "",
-    "The output is create-only and contains no secret material. Provision the execution, status, and issuer HMAC secrets plus the Ed25519 public SPKI separately as Worker secrets.",
+    "--deployment-state accepts exactly dark, status-only, or execution; omission defaults to execution.",
+    "The output is create-only and contains no secret material. Provision only the secrets required by the selected deployment state separately as Worker secrets.",
   ].join("\n");
+}
+
+function normalizeDeploymentState(value, label = "deploymentState") {
+  const state = value === undefined ? "execution" : value;
+  if (!DEPLOYMENT_STATES.includes(state)) {
+    throw new Error(
+      `${label} must be one of: ${DEPLOYMENT_STATES.join(", ")}`,
+    );
+  }
+  return state;
+}
+
+function validateDeploymentIdentities(input, deploymentState) {
+  const identities = record(input, "invoker deployment identities");
+  for (const identity of IDENTITY_OPTIONS) {
+    const value = identities[identity.apiName];
+    if (identity.requiredIn.includes(deploymentState)) {
+      identity.validate(value, identity.label);
+    } else if (value !== undefined) {
+      throw new Error(
+        `${identity.apiName} is forbidden for deployment state ${deploymentState}`,
+      );
+    }
+  }
+  return identities;
+}
+
+function changedVarsForDeploymentState(deploymentState) {
+  if (deploymentState === "dark") return [];
+  const statusVars = [
+    "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED",
+    "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_KID",
+    "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256",
+  ];
+  if (deploymentState === "status-only") return statusVars;
+  return [
+    "JSON_COMPATIBILITY_INVOKER_ENABLED",
+    ...statusVars,
+    "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_KID",
+    "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_CREDENTIAL_ID_SHA256",
+    "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_KID",
+    "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_CREDENTIAL_ID_SHA256",
+    "JSON_COMPATIBILITY_PERMIT_KEY_ID",
+    "JSON_COMPATIBILITY_PERMIT_SPKI_SHA256",
+  ];
+}
+
+function secretsRequiredForDeploymentState(deploymentState) {
+  if (deploymentState === "dark") return [];
+  const statusSecret =
+    "JSON_COMPATIBILITY_INVOKER_STATUS_OPERATOR_CURRENT_SECRET";
+  if (deploymentState === "status-only") return [statusSecret];
+  return [
+    "JSON_COMPATIBILITY_INVOKER_OPERATOR_CURRENT_SECRET",
+    statusSecret,
+    "JSON_COMPATIBILITY_INVOKER_ISSUER_HMAC_SECRET",
+    "JSON_COMPATIBILITY_PERMIT_SPKI_BASE64URL",
+  ];
 }
 
 function parseArgs(argv, options) {

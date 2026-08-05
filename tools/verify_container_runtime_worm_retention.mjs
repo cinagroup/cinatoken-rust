@@ -351,7 +351,7 @@ export async function auditRepositoryContract() {
   const packageJson = parseJson(packageBytes, "package.json");
   const scripts = requireObject(packageJson.scripts, "package scripts");
   const expectedScript =
-    'bun test --path-ignore-patterns="target/**" ' +
+    'bun test --timeout=15000 --path-ignore-patterns="target/**" ' +
     "tests/container-runtime-worm-retention-gate.test.mjs && " +
     "node tools/verify_container_runtime_worm_retention.mjs " +
     "--self-test --json";

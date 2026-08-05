@@ -13681,7 +13681,8 @@ PermitIssuer, and Executor. Controller remains a separate pinned identity.
 
 | Evidence surface | Current result | What it does not prove |
 | --- | --- | --- |
-| Plan v3 and v2 compatibility | Plan v3 recovery fields, exact execution/status issuer/audience/KID/credential-digest identities, digest tamper, exact gates/config binding, and v2 read-only compatibility pass | Owner approval or remote config readback; packet/manifest v1 are not backward-readable |
+| Plan v4 with v3/v2 compatibility | Plan v4 binds the validated deployment-state-plan digest and six execution artifacts; v3 recovery and v2 historical validation remain readable but cannot authorize a new campaign | Owner approval, uploaded version identity, or remote config readback; packet/manifest v1 are not backward-readable |
+| Deployable state plan | 15 actual Wrangler configs are strictly validated and frozen as dark/status-only/execution artifacts; four ordered transitions prohibit direct dark/execution changes and automatic retry | Cloudflare upload/deployment, transition execution, or authenticated readback |
 | Invoker completion/status | Node and Workerd tests cover persisted canonical body, old rows, all statuses, fresh DO stubs, and committed-response loss without fail/replay | Deployed DO migration or live eviction behavior |
 | Operator status | Tests cover independent gate/HMAC, approval recovery window, exact status target, one status RPC, zero execution calls, and completed receipt validation | Live cross-Worker identity or secret rotation |
 | Runner capability | 10 Node tests and two workerd tests cover inert default export, exact named identity/version, real named Runner -> named Operator RPC, direct/status receipts, no retry, RPC metadata normalization, and rejection of self-consistent but detached nested receipts | Account-level binding inventory, an upstream Runner caller, or remote Version Metadata/config readback |
@@ -13691,18 +13692,29 @@ The focused repository gate is:
 
 ```text
 bun run check:container-runtime:json-compatibility-campaign
+bun run check:container-runtime:json-compatibility-deployment-states
 bun run check:container-runtime:json-compatibility-invoker
 bun run check:container-runtime:json-compatibility-operator
 bun run check:container-runtime:json-compatibility-runner
 ```
 
-The campaign gate currently passes 77 tests with 290 expectations, including
-plan v3, legacy v2 denial of status recovery, direct Runner completion,
+The campaign gate currently passes 105 tests with 457 expectations, including
+plan v4, legacy v3/v2 denial of new execution, direct Runner completion,
 committed-response recovery, packet v2, manifest v2, config preparers, and
 bounded file handling. The three service gates include generated type drift,
 TypeScript, Node/Workerd tests where configured, and local/staging Wrangler
-dry-runs. The complete repository `bun run check` passed with exit code 0 in
-1,434.3 seconds on 2026-08-05.
+dry-runs. The deployment-state gate adds 11 tests with 70 expectations for
+actual-config validation, 15 immutable artifacts, exact transition order,
+create-only output, campaign binding, and tamper rejection. The complete
+integrated repository `bun run check` passed with exit code 0 in 1,481.5
+seconds on 2026-08-05.
+
+The WORM retention contract keeps all 11 tests and 278 expectations but gives
+that crypto/archive-heavy file a 15-second per-test ceiling. Repeated Windows
+runs showed semantic passes taking 4.7-5.1 seconds under load, so the former
+five-second default produced non-deterministic timeouts. The package command
+remains pinned by the credential-free repository audit and passes unchanged
+policy/self-test validation.
 
 Offline validation checks canonical envelope shape, identity, digest, target,
 and timing bindings. It does not possess the HMAC secret and therefore cannot
@@ -13712,12 +13724,14 @@ negative tests.
 
 Required remote acceptance remains separate:
 
-1. First implement and freeze dark, status-only, and execution-plus-status
-   versions plus their allowed transition graph. Current preparers cannot emit
-   status-only artifacts, so deployment stages are not yet executable.
+1. Upload all 15 frozen configs without activating them, record the returned
+   Worker version IDs, regenerate the deployment-state plan, and independently
+   verify its digest and four permitted transitions. Local fixture version IDs
+   are not remote evidence.
 2. Implement the private orchestration Worker/binding that calls the named
    Runner; keep it separate from the topology deployment/readback runner.
-3. Deploy all six exact versions with execution and status gates false.
+3. Implement a fail-closed transition executor that accepts only the four
+   frozen plan transitions, then deploy all six exact dark versions.
 4. Read back versions, config digests, named entrypoints, Service Bindings,
    route absence, secret presence without values, and DO migrations. For the
    Invoker, separately prove the Wrangler class migration and runtime SQLite

@@ -21,6 +21,7 @@ config.vars.CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED = "true";
 
 const validInputs = Object.freeze({
   campaignIdSha256: "11".repeat(32),
+  deploymentStatePlanDigestSha256: "dd".repeat(32),
   controllerVersionId: "controller-version-001",
   runnerVersionId: "runner-version-001",
   runnerConfigSha256: "aa".repeat(32),
@@ -148,8 +149,8 @@ describe("container runtime JSON compatibility campaign plan", () => {
 
     expect(validateJsonCompatibilityCampaignPlan(plan)).toEqual(plan);
     expect(plan).toMatchObject({
-      schemaVersion: 2,
-      contract: "cinatoken-container-runtime-json-compatibility-plan-v3",
+      schemaVersion: 3,
+      contract: "cinatoken-container-runtime-json-compatibility-plan-v4",
     });
     expect(plan.environment).toBe("staging");
     expect(plan.controller).toMatchObject({
@@ -257,6 +258,46 @@ describe("container runtime JSON compatibility campaign plan", () => {
         },
       },
     });
+    expect(plan.deploymentStateBinding).toEqual({
+      schemaVersion: 1,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-deployment-state-binding-v1",
+      deploymentStatePlanContract:
+        "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1",
+      planDigestSha256: "dd".repeat(32),
+      initialState: "dark",
+      executionState: "execution",
+      recoveryState: "statusOnly",
+      finalState: "dark",
+      directDarkToExecutionAllowed: false,
+      directExecutionToDarkAllowed: false,
+      executionArtifacts: {
+        controller: {
+          versionId: "controller-version-001",
+          configSha256: sha256Canonical(config),
+        },
+        runner: {
+          versionId: "runner-version-001",
+          configSha256: "aa".repeat(32),
+        },
+        operator: {
+          versionId: "operator-version-001",
+          configSha256: "66".repeat(32),
+        },
+        invoker: {
+          versionId: "invoker-version-001",
+          configSha256: "77".repeat(32),
+        },
+        permitIssuer: {
+          versionId: "permit-issuer-version-001",
+          configSha256: "88".repeat(32),
+        },
+        executor: {
+          versionId: "executor-version-001",
+          configSha256: "99".repeat(32),
+        },
+      },
+    });
     expect(plan.ring).toEqual({
       generation: 1,
       shardCount: 8,
@@ -331,6 +372,7 @@ describe("container runtime JSON compatibility campaign plan", () => {
 
   test("requires strict version and config identities for every private service", () => {
     const missingInputs = [
+      ["deploymentStatePlanDigestSha256", /deployment state plan digest/],
       ["runnerVersionId", /runner version ID/],
       ["runnerConfigSha256", /runner config digest/],
       ["operatorVersionId", /operator version ID/],
@@ -427,17 +469,45 @@ describe("container runtime JSON compatibility campaign plan", () => {
     );
   });
 
-  test("keeps plan v2 readable while reserving status recovery for plan v3", () => {
-    const legacy = structuredClone(buildPlan());
-    legacy.schemaVersion = 1;
-    legacy.contract =
-      "cinatoken-container-runtime-json-compatibility-plan-v2";
-    delete legacy.statusRecovery;
-
-    expect(validateJsonCompatibilityCampaignPlan(resignPlan(legacy))).toEqual(
-      legacy,
+  test("keeps plan v3/v2 readable while reserving deployment binding for v4", () => {
+    const planV3 = structuredClone(buildPlan());
+    planV3.schemaVersion = 2;
+    planV3.contract =
+      "cinatoken-container-runtime-json-compatibility-plan-v3";
+    delete planV3.deploymentStateBinding;
+    expect(validateJsonCompatibilityCampaignPlan(resignPlan(planV3))).toEqual(
+      planV3,
     );
-    expect(legacy.statusRecovery).toBeUndefined();
+    expect(planV3.statusRecovery).toBeDefined();
+
+    const planV2 = structuredClone(planV3);
+    planV2.schemaVersion = 1;
+    planV2.contract =
+      "cinatoken-container-runtime-json-compatibility-plan-v2";
+    delete planV2.statusRecovery;
+
+    expect(validateJsonCompatibilityCampaignPlan(resignPlan(planV2))).toEqual(
+      planV2,
+    );
+    expect(planV2.statusRecovery).toBeUndefined();
+  });
+
+  test("rejects deployment state binding and execution artifact drift", () => {
+    const direct = structuredClone(buildPlan());
+    direct.deploymentStateBinding.directDarkToExecutionAllowed = true;
+    expect(() => validateJsonCompatibilityCampaignPlan(resignPlan(direct)))
+      .toThrow(/direct dark-to-execution/);
+
+    const digest = structuredClone(buildPlan());
+    digest.deploymentStateBinding.planDigestSha256 = "AA".repeat(32);
+    expect(() => validateJsonCompatibilityCampaignPlan(resignPlan(digest)))
+      .toThrow(/deployment state plan digest/);
+
+    const artifact = structuredClone(buildPlan());
+    artifact.deploymentStateBinding.executionArtifacts.runner.versionId =
+      "runner-other-version";
+    expect(() => validateJsonCompatibilityCampaignPlan(resignPlan(artifact)))
+      .toThrow(/runner deployment execution artifact/);
   });
 
   test("rejects status recovery policy, gate, and authority drift", () => {
@@ -700,6 +770,20 @@ test("package scripts keep the planner and verifier in the repository gate", asy
   expect(packageJson.scripts["check:container-runtime:json-compatibility-operator"]).toContain(
     "build:container-runtime:json-compatibility-operator",
   );
+  expect(
+    packageJson.scripts[
+      "check:container-runtime:json-compatibility-deployment-states"
+    ],
+  ).toContain(
+    "container-runtime-json-compatibility-deployment-states.test.mjs",
+  );
+  expect(
+    packageJson.scripts[
+      "check:container-runtime:json-compatibility-deployment-states"
+    ],
+  ).toContain(
+    "plan_container_runtime_json_compatibility_deployment_states.mjs --help",
+  );
   expect(packageJson.scripts["build:all"]).toContain(
     "build:container-runtime:json-compatibility-runner",
   );
@@ -708,5 +792,8 @@ test("package scripts keep the planner and verifier in the repository gate", asy
   );
   expect(packageJson.scripts.check).toContain(
     "check:container-runtime:json-compatibility-operator",
+  );
+  expect(packageJson.scripts.check).toContain(
+    "check:container-runtime:json-compatibility-deployment-states",
   );
 });

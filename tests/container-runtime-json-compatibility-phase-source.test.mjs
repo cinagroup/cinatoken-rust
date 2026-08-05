@@ -76,6 +76,7 @@ function buildPlan() {
   return buildJsonCompatibilityCampaignPlan({
     config: structuredClone(config),
     campaignIdSha256: "11".repeat(32),
+    deploymentStatePlanDigestSha256: "d2".repeat(32),
     controllerVersionId: "controller-version-phase-source-001",
     runnerVersionId: "runner-version-phase-source-001",
     runnerConfigSha256: "a1".repeat(32),
@@ -1105,6 +1106,17 @@ function downgradeToLegacyPlan(plan) {
   plan.contract =
     "cinatoken-container-runtime-json-compatibility-plan-v2";
   delete plan.statusRecovery;
+  delete plan.deploymentStateBinding;
+  const { planDigestSha256: _ignored, ...subject } = plan;
+  plan.planDigestSha256 = sha256Canonical(subject);
+  return plan;
+}
+
+function downgradeToPlanV3(plan) {
+  plan.schemaVersion = 2;
+  plan.contract =
+    "cinatoken-container-runtime-json-compatibility-plan-v3";
+  delete plan.deploymentStateBinding;
   const { planDigestSha256: _ignored, ...subject } = plan;
   plan.planDigestSha256 = sha256Canonical(subject);
   return plan;
@@ -1213,6 +1225,29 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     expect(packet.privateInvocation.rawReceiptSha256).toBe(
       sha256Canonical(operatorReceipt.privateInvocationReceipt),
     );
+  });
+
+  test("keeps completed plan v3 status receipts readable as historical evidence", async () => {
+    const plan = downgradeToPlanV3(structuredClone(buildPlan()));
+    const executorReceipt = await buildReceipt(plan, 0);
+    const operatorReceipt = await buildOperatorInvocationReceipt(
+      plan,
+      executorReceipt,
+      0,
+    );
+    const runnerStatusReceipt = buildRunnerStatusReceipt(plan, operatorReceipt);
+
+    const packet = await buildJsonCompatibilityPhaseSourcePacket(
+      plan,
+      runnerStatusReceipt,
+      buildContext(plan, executorReceipt, 0),
+    );
+
+    expect(packet.runnerInvocation).toMatchObject({
+      mode: "recovered-status",
+      phaseStatus: "completed",
+      completion: { executionRetryPermitted: false },
+    });
   });
 
   test("rejects a recovered status receipt with a detached query authority", async () => {

@@ -10721,9 +10721,10 @@ Worker. No deployed service currently declares an upstream binding to the
 named Runner. This campaign caller is separate from the still-missing
 named-shard topology deployment/readback runner; both are release blockers.
 
-New plans are `cinatoken-container-runtime-json-compatibility-plan-v3` with
-schema version 2. Plan v3 retains all plan-v2 identities and approval policy,
-then freezes the following recovery policy:
+New plans are `cinatoken-container-runtime-json-compatibility-plan-v4` with
+schema version 3. Plan v4 retains the recovery identities and approval policy,
+binds the validated deployment-state-plan digest and all six execution
+version/config artifacts, then freezes the following recovery policy:
 
 - a 86,400-second read-only recovery window after approval expiry;
 - a 30-second status-query HMAC lifetime and five-second clock skew;
@@ -10733,9 +10734,10 @@ then freezes the following recovery policy:
   the pinned Operator and Invoker config digests;
 - `executionRetryPermitted=false` for every observed state.
 
-The validator keeps plan v2 readable for historical direct receipts. Plan v2
-does not authorize status recovery and cannot be silently upgraded by an
-offline assembler. New campaign plans must be v3.
+The validator keeps plan v3 and v2 readable for historical receipts. Neither
+older contract authorizes a new campaign; plan v2 also does not authorize
+status recovery. An offline assembler cannot silently upgrade either format.
+New campaign plans must be v4.
 
 The Invoker campaign Durable Object now stores the canonical successful
 private invocation body together with its existing attempt/completion
@@ -10776,12 +10778,14 @@ Operator RPC exception to a local unavailable error and does not retry. Plan,
 approval-signing, direct-receipt, status-query, and manifest validators all
 bind the observed HMAC identity to the same plan fields.
 
-Capability separation is implemented, but independently deployable gate states
-are not. The three private config preparers currently emit only all-false or
-execution-plus-status configs, and plan v3 pins one version/config identity per
-service. A later contract must freeze dark, status-only, and
-execution-plus-status versions plus their allowed transition graph before any
-status-first activation or 24-hour status-only closure is executable.
+Capability separation and independently deployable gate states are implemented
+locally. Invoker, Operator, and Runner preparers emit strict `dark`,
+`status-only`, and `execution` configs. The deployment-state planner validates
+15 actual configs and freezes their distinct Worker version IDs, canonical
+config digests, and four allowed transitions. Plan v4 binds that state plan and
+its six execution artifacts. Remote upload, authenticated readback, and a
+fail-closed transition executor are still missing, so no transition is remotely
+executable yet.
 
 Offline evidence now starts from a Runner receipt. A direct completion retains
 the exact Runner invocation receipt. A response-loss recovery retains a new
@@ -10805,9 +10809,10 @@ archive publication, and authenticated archive readback remain blockers.
 ### Production ceremony target (blocked; do not execute)
 
 The sequence below is a design target, not an executable runbook. It remains
-blocked on independently deployable gate-state artifacts, an upstream private
-Runner caller/binding, the topology runner/context collector, and authenticated
-remote readback. The current status HMAC preparers also have no previous-key
+blocked on an upstream private Runner caller/binding, a fail-closed remote
+transition executor, authenticated upload/readback and account binding
+inventory, and the topology runner/context collector. The current status HMAC
+preparers also have no previous-key
 rotation path; one status credential must remain frozen for the entire campaign
 and recovery window.
 
@@ -10820,9 +10825,10 @@ and recovery window.
 3. Authenticated readback must prove exact Version Metadata IDs, config
    digests, named entrypoints, binding targets, route absence, secret presence
    without values, and all SQLite Durable Object migrations.
-4. After those blockers are implemented, enable status-read gates from Invoker
-   to Operator to Runner, then enable execution gates from Controller/Executor
-   toward Runner. Sign one exact
+4. After those blockers are implemented, execute only the frozen
+   `dark -> statusOnly` transition from Invoker to Operator to Runner, then the
+   frozen `statusOnly -> execution` transition from Controller through Runner.
+   Sign one exact
    phase request and let the exact Runner invoke it once.
 5. On any ambiguous response, do not invoke again. Submit a new Runner status
    wrapper containing the original authorized request. The Operator revalidates
@@ -10831,25 +10837,29 @@ and recovery window.
    legacy completed-without-body states all stop phase advancement.
 6. Advance only after direct or recovered `completed` evidence plus independent
    topology and before/after context readback validate into one packet-v2.
-7. After mandatory rollback, disable execution caller to callee. Keep the three
-   status gates, the original approval trust path, and the frozen status HMAC
-   credential available for the complete recovery window, then disable status
-   caller to callee and prove all gates false.
+7. After mandatory rollback, execute only `execution -> statusOnly` from Runner
+   through Controller. Keep the three status gates, the original approval trust
+   path, and the frozen status HMAC credential available for the complete
+   recovery window, then execute `statusOnly -> dark` from Runner to Invoker and
+   prove all gates false.
 
-Focused local campaign/config/source acceptance passes 77 tests with 290
-expectations. Runner acceptance adds 10 Node tests and two real workerd named
+Focused local campaign/config/source acceptance passes 105 tests with 457
+expectations. Deployment-state acceptance adds 11 tests with 70 expectations.
+Runner acceptance adds 10 Node tests and two real workerd named
 Service Binding tests for direct and recovered RPCs. Invoker, Operator, and
 Runner service checks, generated type checks, and local/staging Wrangler
-dry-runs pass in this worktree. The complete repository `bun run check` also
-passed with exit code 0 in 1,434.3 seconds on 2026-08-05. The Runner normalizes
+dry-runs pass in this worktree. The complete integrated repository
+`bun run check` passed with exit code 0 in 1,481.5 seconds on 2026-08-05. The
+Runner normalizes
 RPC runtime metadata to
 plain JSON before strict validation and hashing, then deeply validates the
 nested private receipt rather than trusting only its self-digest. This is
 local implementation evidence only. No Worker was deployed, no secret was
 provisioned or read, no remote RPC or Durable Object migration ran, and no
 Container/provider/billing/storage/traffic/Go-VPS state changed. Real staging,
-upstream caller/binding implementation, independent gate-state versions,
-topology/context collection, source authenticity, immutable retention,
+upstream caller/binding implementation, remote transition execution and
+authenticated state readback, topology/context collection, source
+authenticity, immutable retention,
 paid-path and failure drills, and the wider migration gates remain open.
 Remote DO acceptance must separately prove the Wrangler class migration and
 the runtime SQLite column upgrade, including v2 recovery and stable v1
@@ -28363,12 +28373,61 @@ production remains **NO-GO**.
 
 ## 2026-08-05 Current Superseding State
 
-The current local contract is plan-v3 -> private named Runner -> signed
+The current local contract is plan-v4 plus its bound deployment-state plan ->
+private named Runner -> signed
 Operator request -> Invoker persisted completion/status -> PermitIssuer ->
 Executor -> Controller. Direct and completed read-only recovery paths assemble
 phase packet v2 and source manifest v2. Plan v2 remains readable but cannot
 authorize recovery. The full policy, state machine, deployment order, evidence
 chain, and remaining blockers are specified in **Production Recovery Design
-(2026-08-05)** above. Plan v2 compatibility does not imply packet-v1 or
+(2026-08-05)** above. Plan v3/v2 compatibility does not imply packet-v1 or
 manifest-v1 compatibility; new source artifacts are v2 only. No remote staging
 or production authority is claimed.
+
+## 2026-08-05 Deployable State Freeze Superseding Update
+
+The current campaign contract is now plan v4. Plan v3 remains readable for
+historical direct/status receipts and plan v2 remains readable for historical
+direct receipts, but neither older contract can authorize a new campaign.
+Plan v4 binds the canonical digest of a separately validated deployment-state
+plan and the exact Controller, Executor, PermitIssuer, Invoker, Operator, and
+Runner execution version/config artifacts.
+
+Invoker, Operator, and Runner config preparers now emit three strict,
+create-only profiles:
+
+- `dark`: execution and status reads false, with state-specific identities
+  empty and forbidden as CLI/API inputs;
+- `status-only`: execution false and status reads true, retaining only the
+  status HMAC, approval trust, and downstream version identities needed for
+  read-only recovery; and
+- `execution`: execution and status reads true, retaining the complete current
+  execution identity set. Omitting the new option preserves this historical
+  default for compatibility.
+
+`plan:container-runtime:json-compatibility-deployment-states` reads an exact
+non-secret upload inventory and the 15 actual Wrangler configs. It runs each
+service's strict validator, rejects routes and reused version/config
+identities, removes local paths, and freezes four owner-approved transitions:
+
+```text
+dark -> statusOnly             Invoker, Operator, Runner
+statusOnly -> execution        Controller to Runner
+execution -> statusOnly        Runner to Controller
+statusOnly -> dark             Runner, Operator, Invoker after 24 hours
+```
+
+Direct dark-to-execution and execution-to-dark transitions, automatic
+transition, and execution retry are all forbidden. The campaign planner now
+requires this state plan and rejects any execution version/config argument
+that differs from its immutable execution artifact.
+
+Focused local acceptance passes 105 campaign/config/source tests with 457
+expectations and 11 deployment-state tests with 70 expectations. This closes
+the local missing-status-profile and unbound-transition-plan blockers. It does
+not provide the upstream private Runner caller, a remote transition executor,
+authenticated upload/deployment/readback, account binding inventory,
+topology/context collectors, source signing, immutable archive, or a real
+four-phase staging campaign. Go/VPS remains authoritative and production
+remains **NO-GO**. The complete integrated repository `bun run check` passed
+with exit code 0 in 1,481.5 seconds on 2026-08-05.

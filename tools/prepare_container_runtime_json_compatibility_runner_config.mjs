@@ -25,6 +25,23 @@ const RUNNER_SERVICE =
 const OPERATOR_SERVICE =
   "cinatoken-container-runtime-json-compatibility-operator-staging";
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const DEPLOYMENT_PROFILES = Object.freeze({
+  dark: Object.freeze({
+    executionGateEnabled: false,
+    statusGateEnabled: false,
+    operatorVersionRequired: false,
+  }),
+  "status-only": Object.freeze({
+    executionGateEnabled: false,
+    statusGateEnabled: true,
+    operatorVersionRequired: true,
+  }),
+  execution: Object.freeze({
+    executionGateEnabled: true,
+    statusGateEnabled: true,
+    operatorVersionRequired: true,
+  }),
+});
 
 export function validateJsonCompatibilityRunnerConfig(input, campaign = null) {
   const config = record(input, "runner config");
@@ -53,19 +70,47 @@ export function validateJsonCompatibilityRunnerConfig(input, campaign = null) {
     service: OPERATOR_SERVICE,
     entrypoint: "JsonCompatibilityCampaignOperatorEntrypoint",
   }], "runner Operator binding");
-  const enabled = campaign !== null;
-  if (enabled) safeToken(campaign.operatorVersionId, "operator version ID");
+  const deploymentState = campaign === null
+    ? "dark"
+    : deploymentStateValue(campaign.deploymentState, "deploymentState");
+  const profile = DEPLOYMENT_PROFILES[deploymentState];
+  const operatorVersionId = campaign?.operatorVersionId;
+  if (profile.operatorVersionRequired) {
+    requiredOperatorVersionId(operatorVersionId, deploymentState);
+  } else if (operatorVersionId !== undefined) {
+    throw new Error("operatorVersionId is not allowed when deploymentState is dark");
+  }
   canonicalEqual(config.vars, {
     ENVIRONMENT: "staging",
-    JSON_COMPATIBILITY_RUNNER_ENABLED: enabled ? "true" : "false",
-    JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED: enabled ? "true" : "false",
+    JSON_COMPATIBILITY_RUNNER_ENABLED:
+      profile.executionGateEnabled ? "true" : "false",
+    JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED:
+      profile.statusGateEnabled ? "true" : "false",
     JSON_COMPATIBILITY_RUNNER_OPERATOR_VERSION_ID:
-      enabled ? campaign.operatorVersionId : "",
+      profile.operatorVersionRequired ? operatorVersionId : "",
   }, "runner vars");
-  return { serviceName: config.name, enabled, privateServiceBinding: true };
+  return {
+    serviceName: config.name,
+    enabled: profile.executionGateEnabled,
+    deploymentState,
+    executionEnabled: profile.executionGateEnabled,
+    statusReadEnabled: profile.statusGateEnabled,
+    privateServiceBinding: true,
+  };
 }
 
 export async function prepareJsonCompatibilityRunnerConfig(options) {
+  const deploymentState = deploymentStateValue(
+    options?.deploymentState,
+    "deploymentState",
+  );
+  const profile = DEPLOYMENT_PROFILES[deploymentState];
+  const operatorVersionId = options?.operatorVersionId;
+  if (profile.operatorVersionRequired) {
+    requiredOperatorVersionId(operatorVersionId, deploymentState);
+  } else if (operatorVersionId !== undefined) {
+    throw new Error("operatorVersionId is not allowed when deploymentState is dark");
+  }
   const basePath = path.resolve(options?.basePath ?? defaultBasePath);
   const outPath = path.resolve(requiredPath(options?.outPath, "--out"));
   if (basePath === outPath) throw new Error("--out must not replace the base config");
@@ -78,13 +123,16 @@ export async function prepareJsonCompatibilityRunnerConfig(options) {
     "base staging runner config",
   );
   validateJsonCompatibilityRunnerConfig(base);
-  const values = { operatorVersionId: options.operatorVersionId };
-  safeToken(values.operatorVersionId, "operator version ID");
+  const values = profile.operatorVersionRequired
+    ? { deploymentState, operatorVersionId }
+    : { deploymentState };
   const campaign = structuredClone(base);
-  campaign.vars.JSON_COMPATIBILITY_RUNNER_ENABLED = "true";
-  campaign.vars.JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED = "true";
+  campaign.vars.JSON_COMPATIBILITY_RUNNER_ENABLED =
+    profile.executionGateEnabled ? "true" : "false";
+  campaign.vars.JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED =
+    profile.statusGateEnabled ? "true" : "false";
   campaign.vars.JSON_COMPATIBILITY_RUNNER_OPERATOR_VERSION_ID =
-    values.operatorVersionId;
+    profile.operatorVersionRequired ? operatorVersionId : "";
   const validation = validateJsonCompatibilityRunnerConfig(campaign, values);
   await writeFile(outPath, canonicalJson(campaign), {
     encoding: "utf8",
@@ -96,12 +144,11 @@ export async function prepareJsonCompatibilityRunnerConfig(options) {
     mode: "offline-private-runner-campaign-config-preparation",
     environment: "staging",
     serviceName: validation.serviceName,
+    deploymentState: validation.deploymentState,
+    executionEnabled: validation.executionEnabled,
+    statusReadEnabled: validation.statusReadEnabled,
     configSha256: sha256Canonical(campaign),
-    changedVars: [
-      "JSON_COMPATIBILITY_RUNNER_ENABLED",
-      "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED",
-      "JSON_COMPATIBILITY_RUNNER_OPERATOR_VERSION_ID",
-    ],
+    changedVars: changedVarsForDeploymentState(deploymentState),
     secretsRequired: [],
     credentialsRead: false,
     networkRequestsPerformed: false,
@@ -110,25 +157,49 @@ export async function prepareJsonCompatibilityRunnerConfig(options) {
 }
 
 export function parseJsonCompatibilityRunnerConfigArgs(argv) {
-  const values = parseArgs(argv, ["--base", "--out", "--operator-version-id"]);
+  const values = parseArgs(argv, [
+    "--base", "--out", "--deployment-state", "--operator-version-id",
+  ]);
   if (values.help) return values;
   requiredValue(values.map, "--out");
-  requiredValue(values.map, "--operator-version-id");
-  safeToken(values.map.get("--operator-version-id"), "--operator-version-id");
-  return {
+  const deploymentState = deploymentStateValue(
+    values.map.get("--deployment-state"),
+    "--deployment-state",
+  );
+  const operatorVersionId = values.map.get("--operator-version-id");
+  if (DEPLOYMENT_PROFILES[deploymentState].operatorVersionRequired) {
+    if (operatorVersionId === undefined) {
+      throw new Error(
+        `--operator-version-id is required when --deployment-state is ${deploymentState}`,
+      );
+    }
+    safeToken(operatorVersionId, "--operator-version-id");
+  } else if (operatorVersionId !== undefined) {
+    throw new Error(
+      "--operator-version-id is not allowed when --deployment-state is dark",
+    );
+  }
+  const options = {
     json: values.json,
     basePath: values.map.get("--base"),
     outPath: values.map.get("--out"),
-    operatorVersionId: values.map.get("--operator-version-id"),
+    deploymentState,
   };
+  if (operatorVersionId !== undefined) options.operatorVersionId = operatorVersionId;
+  return options;
 }
 
 function usage() {
   return [
     "Usage:",
-    "  bun tools/prepare_container_runtime_json_compatibility_runner_config.mjs --out <campaign-wrangler.jsonc> --operator-version-id <id> [--base <tracked-staging.jsonc>] [--json]",
+    "  bun tools/prepare_container_runtime_json_compatibility_runner_config.mjs --out <campaign-wrangler.jsonc> [--deployment-state <dark|status-only|execution>] [--operator-version-id <id>] [--base <tracked-staging.jsonc>] [--json]",
     "",
-    "The create-only output contains no secret material and enables only private named-entrypoint RPC.",
+    "Deployment states:",
+    "  dark         Disable execution and status reads; forbids --operator-version-id.",
+    "  status-only  Enable status reads only; requires --operator-version-id.",
+    "  execution    Enable execution and status reads; requires --operator-version-id (default).",
+    "",
+    "The create-only output contains no secret material and configures only private named-entrypoint RPC.",
   ].join("\n");
 }
 
@@ -193,6 +264,35 @@ function safeToken(value, label) {
   if (typeof value !== "string" || !SAFE_TOKEN.test(value)) {
     throw new Error(`${label} must be a safe token`);
   }
+}
+
+function deploymentStateValue(value, label) {
+  const state = value === undefined ? "execution" : value;
+  if (typeof state !== "string" || !Object.hasOwn(DEPLOYMENT_PROFILES, state)) {
+    throw new Error(`${label} must be one of: dark, status-only, execution`);
+  }
+  return state;
+}
+
+function requiredOperatorVersionId(value, deploymentState) {
+  if (value === undefined) {
+    throw new Error(
+      `operatorVersionId is required when deploymentState is ${deploymentState}`,
+    );
+  }
+  safeToken(value, "operator version ID");
+}
+
+function changedVarsForDeploymentState(deploymentState) {
+  if (deploymentState === "dark") return [];
+  const changed = [
+    "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED",
+    "JSON_COMPATIBILITY_RUNNER_OPERATOR_VERSION_ID",
+  ];
+  if (deploymentState === "execution") {
+    changed.unshift("JSON_COMPATIBILITY_RUNNER_ENABLED");
+  }
+  return changed;
 }
 
 async function cliMain(argv = process.argv.slice(2)) {

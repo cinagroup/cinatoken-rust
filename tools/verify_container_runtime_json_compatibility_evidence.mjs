@@ -44,6 +44,7 @@ export async function runJsonCompatibilityEvidenceVerifier(options) {
     const plan = buildJsonCompatibilityCampaignPlan({
       config,
       campaignIdSha256: "11".repeat(32),
+      deploymentStatePlanDigestSha256: "d4".repeat(32),
       controllerVersionId: "controller-version-self-test",
       runnerVersionId: "runner-version-self-test",
       runnerConfigSha256: "aa".repeat(32),

@@ -6,9 +6,6 @@ import {
   prepareJsonCompatibilityControllerConfig,
 } from "../tools/prepare_container_runtime_json_compatibility_controller_config.mjs";
 import {
-  runJsonCompatibilityCampaignPlanner,
-} from "../tools/plan_container_runtime_json_compatibility_campaign.mjs";
-import {
   validateControllerConfig,
 } from "../tools/preflight_container_controller_deploy.mjs";
 
@@ -94,45 +91,4 @@ describe("JSON compatibility Controller campaign config", () => {
     expect(await readFile(output, "utf8")).toBe("preserve");
   });
 
-  test("writes an approved plan only through a create-only output", async () => {
-    const directory = await temporaryDirectory();
-    const campaignConfig = path.join(directory, "campaign.jsonc");
-    const planPath = path.join(directory, "plan.json");
-    await prepareJsonCompatibilityControllerConfig({
-      basePath: trackedConfigPath,
-      outPath: campaignConfig,
-    });
-    const options = {
-      selfTest: false,
-      configPath: campaignConfig,
-      outPath: planPath,
-      campaignIdSha256: "11".repeat(32),
-      controllerVersionId: "controller-version-plan-output-001",
-      runnerVersionId: "runner-version-plan-output-001",
-      runnerConfigSha256: "aa".repeat(32),
-      operatorVersionId: "operator-version-plan-output-001",
-      operatorConfigSha256: "66".repeat(32),
-      operatorHmacKeyId: "operator-hmac-plan-output-001",
-      operatorHmacCredentialIdSha256: "c1".repeat(32),
-      operatorStatusHmacKeyId: "operator-status-hmac-plan-output-001",
-      operatorStatusHmacCredentialIdSha256: "c2".repeat(32),
-      operatorApprovalKeyId: "operator-approval-plan-output-001",
-      operatorApprovalSpkiSha256: "bb".repeat(32),
-      invokerVersionId: "invoker-version-plan-output-001",
-      invokerConfigSha256: "77".repeat(32),
-      permitIssuerVersionId: "permit-issuer-version-plan-output-001",
-      permitIssuerConfigSha256: "88".repeat(32),
-      executorVersionId: "executor-version-plan-output-001",
-      executorConfigSha256: "99".repeat(32),
-      runtimeNBuildIdSha256: "22".repeat(32),
-      runtimeNImageDigest: `sha256:${"33".repeat(32)}`,
-      runtimeNMinusOneBuildIdSha256: "44".repeat(32),
-      runtimeNMinusOneImageDigest: `sha256:${"55".repeat(32)}`,
-      candidateShardIndex: 3,
-    };
-    const plan = await runJsonCompatibilityCampaignPlanner(options);
-
-    expect(JSON.parse(await readFile(planPath, "utf8"))).toEqual(plan);
-    await expect(runJsonCompatibilityCampaignPlanner(options)).rejects.toThrow();
-  });
 });

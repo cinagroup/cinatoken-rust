@@ -5636,7 +5636,8 @@ The named private Runner and ambiguous-result status path are now implemented
 locally. The old paragraph above remains historical evidence and is superseded
 for implementation status, not for remote readiness.
 
-New campaigns write plan v3. It binds a 24-hour read-only recovery window,
+At this historical recovery checkpoint, new campaigns wrote plan v3. It binds a
+24-hour read-only recovery window,
 30-second status HMAC, five-second skew, three independent status-read gates,
 and exact, distinct execution/status issuer, audience, KID, and credential-ID
 digests. Plan v2 remains readable for direct historical receipts but cannot
@@ -5654,14 +5655,38 @@ Phase source assembly now accepts only a direct Runner receipt or a completed
 Runner status receipt. It emits packet v2; four ordered packets emit source
 manifest v2. The public evidence remains v1 and binds the v2 manifest digest.
 
-Focused campaign/config/source checks pass 77 tests with 290 expectations.
+At that checkpoint, focused campaign/config/source checks passed 77 tests with
+290 expectations.
 Runner checks add 10 Node tests and two real workerd named Service Binding
 tests, including direct and recovered RPCs plus deep nested-receipt validation.
 The complete repository `bun run check` also passed with exit code 0 in 1,434.3
-seconds on 2026-08-05. This is still local evidence. Runtime gates are logically
-separated, but the
-preparers and plan do not yet freeze independent dark, status-only, and
-execution-plus-status deployment versions. The upstream Runner caller/binding,
+seconds on 2026-08-05. This is still local evidence. Runtime gates were
+logically separated, but independent dark, status-only, and execution deployment
+versions were still missing at that checkpoint; the next section supersedes
+that local implementation status. The upstream Runner caller/binding,
 topology runner, context collector, remote migration/readback, source signing,
 immutable retention, and real four-phase staging also remain open. Go/VPS
 remains authoritative and production is **NO-GO**.
+
+## 2026-08-05 Phase 1 Deployment-State Boundary
+
+The missing local deployment-state artifacts called out above are now
+implemented. Invoker, Operator, and Runner preparers emit strict `dark`,
+`status-only`, and `execution` configs. A create-only deployment-state planner
+validates 15 actual Wrangler configs, freezes their Worker version IDs and
+canonical config digests, and permits only callee-to-caller activation plus
+caller-to-callee closure. Direct dark/execution transitions and automatic
+retry are rejected.
+
+New campaigns use plan v4. It binds the deployment-state-plan digest and all
+six execution artifacts. Plan v3/v2 remain read-only compatibility formats and
+cannot authorize new execution. Focused gates pass 105 campaign tests with 457
+expectations and 11 deployment-state tests with 70 expectations. The complete
+integrated repository `bun run check` passes with exit code 0 in 1,481.5
+seconds.
+
+This moves the blocker from local artifact shape to remote orchestration. The
+upstream private Runner caller, transition executor, authenticated upload and
+readback, account binding inventory, topology/context collectors, signing and
+retention, and real four-phase staging remain absent. Go/VPS remains
+authoritative and production remains **NO-GO**.

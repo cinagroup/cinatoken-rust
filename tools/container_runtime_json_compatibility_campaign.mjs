@@ -4,9 +4,15 @@ import {
 } from "./preflight_container_controller_deploy.mjs";
 
 export const JSON_COMPATIBILITY_PLAN_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-plan-v4";
+export const JSON_COMPATIBILITY_PLAN_V3_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-plan-v3";
 export const JSON_COMPATIBILITY_PLAN_V2_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-plan-v2";
+export const JSON_COMPATIBILITY_DEPLOYMENT_STATE_BINDING_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-state-binding-v1";
+export const JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1";
 export const JSON_COMPATIBILITY_EVIDENCE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-evidence-v1";
 export const JSON_COMPATIBILITY_OPERATOR_APPROVAL_POLICY_CONTRACT =
@@ -221,6 +227,7 @@ export function createJsonHealthProbeDigestRecord(requestBytes, responseBytes) {
 export function buildJsonCompatibilityCampaignPlan({
   config,
   campaignIdSha256,
+  deploymentStatePlanDigestSha256,
   controllerVersionId,
   runnerVersionId,
   runnerConfigSha256,
@@ -258,6 +265,10 @@ export function buildJsonCompatibilityCampaignPlan({
     "[config] staging observability sampling rate",
   );
   requireSha256(campaignIdSha256, "[plan] campaign ID");
+  requireSha256(
+    deploymentStatePlanDigestSha256,
+    "[plan] deployment state plan digest",
+  );
   requireToken(controllerVersionId, "[plan] Controller version ID");
   const privateServices = {
     runner: normalizePrivateServiceIdentity(
@@ -420,8 +431,32 @@ export function buildJsonCompatibilityCampaignPlan({
       },
     },
   };
+  const deploymentStateBinding = {
+    schemaVersion: 1,
+    contract: JSON_COMPATIBILITY_DEPLOYMENT_STATE_BINDING_CONTRACT,
+    deploymentStatePlanContract:
+      JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
+    planDigestSha256: deploymentStatePlanDigestSha256,
+    initialState: "dark",
+    executionState: "execution",
+    recoveryState: "statusOnly",
+    finalState: "dark",
+    directDarkToExecutionAllowed: false,
+    directExecutionToDarkAllowed: false,
+    executionArtifacts: {
+      controller: {
+        versionId: controllerVersionId,
+        configSha256: sha256Canonical(config),
+      },
+      runner: executionArtifact(privateServices.runner),
+      operator: executionArtifact(privateServices.operator),
+      invoker: executionArtifact(privateServices.invoker),
+      permitIssuer: executionArtifact(privateServices.permitIssuer),
+      executor: executionArtifact(privateServices.executor),
+    },
+  };
   const subject = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     contract: JSON_COMPATIBILITY_PLAN_CONTRACT,
     kind: "container-runtime-json-compatibility-plan",
     mode: "offline-dry-run",
@@ -443,6 +478,7 @@ export function buildJsonCompatibilityCampaignPlan({
     privateServices,
     operatorApproval,
     statusRecovery,
+    deploymentStateBinding,
     runtimes: {
       n: runtimeN,
       nMinusOne: runtimeNMinusOne,
@@ -486,11 +522,13 @@ export function buildJsonCompatibilityCampaignPlan({
 
 export function validateJsonCompatibilityCampaignPlan(plan) {
   const value = requireRecord(plan, "[plan] document");
-  const isCurrentPlan = value.schemaVersion === 2
+  const isCurrentPlan = value.schemaVersion === 3
     && value.contract === JSON_COMPATIBILITY_PLAN_CONTRACT;
-  const isLegacyPlan = value.schemaVersion === 1
+  const isPlanV3 = value.schemaVersion === 2
+    && value.contract === JSON_COMPATIBILITY_PLAN_V3_CONTRACT;
+  const isPlanV2 = value.schemaVersion === 1
     && value.contract === JSON_COMPATIBILITY_PLAN_V2_CONTRACT;
-  if (!isCurrentPlan && !isLegacyPlan) {
+  if (!isCurrentPlan && !isPlanV3 && !isPlanV2) {
     throw new JsonCompatibilityCampaignError(
       "[plan] schema version and contract are unsupported",
     );
@@ -505,7 +543,8 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
     "controller",
     "privateServices",
     "operatorApproval",
-    ...(isCurrentPlan ? ["statusRecovery"] : []),
+    ...(isCurrentPlan || isPlanV3 ? ["statusRecovery"] : []),
+    ...(isCurrentPlan ? ["deploymentStateBinding"] : []),
     "runtimes",
     "ring",
     "constraints",
@@ -532,8 +571,15 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
   validateControllerIdentity(value.controller, "[plan] Controller");
   validatePrivateServices(value.privateServices, "[plan] private services");
   validateOperatorApprovalPolicy(value.operatorApproval);
-  if (isCurrentPlan) {
+  if (isCurrentPlan || isPlanV3) {
     validateStatusRecoveryPolicy(value.statusRecovery);
+  }
+  if (isCurrentPlan) {
+    validateDeploymentStateBinding(
+      value.deploymentStateBinding,
+      value.controller,
+      value.privateServices,
+    );
   }
   const runtimes = validateRuntimeSet(value.runtimes, "[plan] runtimes");
   if (runtimes.n.buildIdSha256 === runtimes.nMinusOne.buildIdSha256) {
@@ -1438,6 +1484,98 @@ function validateStatusRecoveryPolicy(value) {
   return policy;
 }
 
+function validateDeploymentStateBinding(value, controller, privateServices) {
+  const binding = requireRecord(value, "[plan] deployment state binding");
+  requireExactKeys(binding, [
+    "schemaVersion",
+    "contract",
+    "deploymentStatePlanContract",
+    "planDigestSha256",
+    "initialState",
+    "executionState",
+    "recoveryState",
+    "finalState",
+    "directDarkToExecutionAllowed",
+    "directExecutionToDarkAllowed",
+    "executionArtifacts",
+  ], "[plan] deployment state binding");
+  requireEqual(
+    binding.schemaVersion,
+    1,
+    "[plan] deployment state binding schema",
+  );
+  requireEqual(
+    binding.contract,
+    JSON_COMPATIBILITY_DEPLOYMENT_STATE_BINDING_CONTRACT,
+    "[plan] deployment state binding contract",
+  );
+  requireEqual(
+    binding.deploymentStatePlanContract,
+    JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
+    "[plan] deployment state plan contract",
+  );
+  requireSha256(
+    binding.planDigestSha256,
+    "[plan] deployment state plan digest",
+  );
+  requireEqual(binding.initialState, "dark", "[plan] deployment initial state");
+  requireEqual(
+    binding.executionState,
+    "execution",
+    "[plan] deployment execution state",
+  );
+  requireEqual(
+    binding.recoveryState,
+    "statusOnly",
+    "[plan] deployment recovery state",
+  );
+  requireEqual(binding.finalState, "dark", "[plan] deployment final state");
+  requireEqual(
+    binding.directDarkToExecutionAllowed,
+    false,
+    "[plan] direct dark-to-execution transition",
+  );
+  requireEqual(
+    binding.directExecutionToDarkAllowed,
+    false,
+    "[plan] direct execution-to-dark transition",
+  );
+  const artifacts = requireRecord(
+    binding.executionArtifacts,
+    "[plan] deployment execution artifacts",
+  );
+  requireExactKeys(artifacts, [
+    "controller",
+    "runner",
+    "operator",
+    "invoker",
+    "permitIssuer",
+    "executor",
+  ], "[plan] deployment execution artifacts");
+  requireCanonicalEqual(
+    artifacts.controller,
+    {
+      versionId: controller.versionId,
+      configSha256: controller.configSha256,
+    },
+    "[plan] Controller deployment execution artifact",
+  );
+  for (const role of [
+    "runner",
+    "operator",
+    "invoker",
+    "permitIssuer",
+    "executor",
+  ]) {
+    requireCanonicalEqual(
+      artifacts[role],
+      executionArtifact(privateServices[role]),
+      `[plan] ${role} deployment execution artifact`,
+    );
+  }
+  return binding;
+}
+
 function validatePlannedHmacIdentity(value, expectedIssuer, label) {
   const identity = requireRecord(value, label);
   requireExactKeys(
@@ -1490,6 +1628,13 @@ function normalizePrivateServiceIdentity(
     configSha256,
     gateName: definition.gateName,
     privateRpcOnly: true,
+  };
+}
+
+function executionArtifact(service) {
+  return {
+    versionId: service.versionId,
+    configSha256: service.configSha256,
   };
 }
 

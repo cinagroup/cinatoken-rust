@@ -8,6 +8,7 @@ import {
 
 import {
   JSON_COMPATIBILITY_OPERATOR_APPROVAL_MAX_LIFETIME_SECONDS,
+  JSON_COMPATIBILITY_PLAN_CONTRACT,
   canonicalJson,
   sha256Canonical,
   validateJsonCompatibilityCampaignPlan,
@@ -38,6 +39,12 @@ export function signJsonCompatibilityOperatorApproval({
   now = new Date(),
 }) {
   const plan = validateJsonCompatibilityCampaignPlan(planInput);
+  if (
+    plan.schemaVersion !== 3
+    || plan.contract !== JSON_COMPATIBILITY_PLAN_CONTRACT
+  ) {
+    throw new Error("operator approval signing requires the current plan contract");
+  }
   const request = validateJsonCompatibilityOperatorPhaseRequest(
     plan,
     requestInput,

@@ -2172,7 +2172,8 @@ supplies private transport. Version Metadata and config digests are evidence
 anchors, but config digest still requires deployment readback because it is not
 available as a trusted runtime property.
 
-Plan v3 freezes status behavior instead of leaving it as Worker-local policy.
+Plan v4 freezes status behavior and the deployment-state-plan digest instead
+of leaving either as Worker-local policy. Plan v3 remains historical/read-only.
 Execution and status use separate gates and exact plan-bound HMAC identities:
 issuer, audience, KID, and credential-ID digest are frozen independently. The Invoker DO
 persists enough canonical result data to recover a completion after an RPC
@@ -2193,20 +2194,23 @@ Three orchestration roles must not be conflated:
 3. The per-shard topology deployment/readback runner and independent context
    collector are also not implemented.
 
-Runtime execution/status gates are logically separated, but deployable state
-artifacts are not. Current preparers produce only all-false or
-execution-plus-status configs, while plan v3 pins one version/config per
-service. A production ceremony needs frozen dark, status-only, and
-execution-plus-status identities plus an allowed transition graph. Until then,
-status-first activation and 24-hour status-only closure are design targets, not
-executable steps.
+Runtime execution/status gates and deployable state artifacts are now both
+separated locally. Invoker, Operator, and Runner preparers emit strict dark,
+status-only, and execution configs. A state planner validates 15 actual
+Wrangler configs, freezes version/config identities, and defines only
+callee-to-caller activation and caller-to-callee closure. Plan v4 binds that
+state-plan digest and all six execution artifacts. This follows the
+cinaVibeSDK capability-boundary approach while keeping orchestration in
+TypeScript and Rust in the Linux Container compute layer.
 
 Local implementation, tests, generated types, dry-runs, and direct/status
-workerd Runner RPCs pass. The complete repository `bun run check` also passed
-with exit code 0 in 1,434.3 seconds on 2026-08-05. The Runner receipt's config
+workerd Runner RPCs pass. Focused acceptance now includes 105 campaign tests
+with 457 expectations and 11 deployment-state tests with 70 expectations. The
+complete integrated repository `bun run check` passed with exit code 0 in
+1,481.5 seconds on 2026-08-05. The Runner receipt's config
 digest remains an approved claim, not a trusted runtime property, so
 authenticated deployment readback is still mandatory. Cloudflare deployment,
-upstream caller, gate-state artifacts,
+upstream caller, transition executor,
 remote binding inventory, real Version Metadata/config readback, source
 signing, immutable archive, and real staging recovery remain unverified.
 The mapping changes no production authority: Go/VPS remains authoritative and

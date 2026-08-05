@@ -2860,12 +2860,12 @@ label is an untrusted claim until a cryptographic source signature is verified.
 Synthetic `--self-test` evidence is explicitly marked and rejected by normal
 mode. The
 current repository provides the named private Controller entrypoint, bounded
-executor, permit issuer, private invoker, default-off
-`JsonCompatibilityCampaignOperatorEntrypoint`, five create-only campaign config
-preparers, create-only plan and evidence projector, receipt/context phase
+executor, permit issuer, private invoker, default-off Operator and Runner named
+entrypoints, six create-only campaign config preparers, create-only deployment
+state/campaign plans and evidence projector, receipt/context phase
 assembler, source-manifest collector, offline verifier, signed-permit consumer,
-and per-campaign SQLite replay/lease authorities. The plan freezes each
-operator, invoker, permit issuer, and executor `serviceName`, named
+and per-campaign SQLite replay/lease authorities. Plan v4 freezes each Runner,
+Operator, Invoker, PermitIssuer, and Executor `serviceName`, named
 `entrypoint`, `versionId`, `configSha256`, `gateName`, and
 `privateRpcOnly=true` identity while retaining the Controller separately. It
 does not yet provide an exact per-shard topology runner, an automated independent
@@ -2905,8 +2905,9 @@ Invoker receipt directly to phase assembly.
 
 ### Preconditions
 
-- The final artifact is plan v3. Plan v2 may be verified historically but must
-  not be used for status recovery.
+- The final artifact is plan v4 and binds a validated deployment-state plan.
+  Plan v3/v2 may be verified historically but must not authorize a new
+  campaign.
 - Controller, Executor, PermitIssuer, Invoker, Operator, and Runner are exact
   reviewed versions. All tracked configs are private and default false.
 - Invoker and Operator execution HMAC credentials differ from the
@@ -2920,15 +2921,36 @@ Invoker receipt directly to phase assembly.
 - A separate private orchestration Worker binds to the named Runner. This
   upstream caller is not implemented yet and is distinct from the missing
   named-shard topology deployment/readback runner.
-- Plan v3 and create-only preparers freeze dark, status-only, and
-  execution-plus-status versions plus their allowed transition graph. This is
-  not implemented yet; current preparers emit only all-false or both gates true.
+- Create-only preparers produce exact dark, status-only, and execution configs
+  for Invoker, Operator, and Runner. The deployment-state plan validates 15
+  configs, freezes their version/config identities, and permits only four
+  ordered transitions. Its local or fixture version IDs are not remote upload
+  evidence.
 
-### Deploy and arm (blocked; not executable)
+### Deploy and arm (locally specified; remotely blocked)
 
-Do not run the following target sequence until the two preconditions above are
-implemented. Logical gate separation in Worker code is not deployment-state
+Do not run the following target sequence until the upstream private Runner
+caller, fail-closed transition executor, authenticated upload/readback, and
+account binding inventory exist. A valid local state plan is not deployment
 evidence.
+
+The local freeze workflow is create-only and non-mutating:
+
+```text
+bun run prepare:container-runtime:json-compatibility-invoker-config -- --deployment-state <dark|status-only|execution> ...
+bun run prepare:container-runtime:json-compatibility-operator-config -- --deployment-state <dark|status-only|execution> ...
+bun run prepare:container-runtime:json-compatibility-runner-config -- --deployment-state <dark|status-only|execution> ...
+bun run plan:container-runtime:json-compatibility-deployment-states -- --inventory <uploaded-version-inventory.json> --out <deployment-state-plan.json>
+bun run plan:container-runtime:json-compatibility-campaign -- --deployment-state-plan <deployment-state-plan.json> ...
+```
+
+The inventory contract is schema v1 for staging. Its exact `services` keys are
+`controller`, `executor`, `permitIssuer`, `invoker`, `operator`, and `runner`.
+Controller, Executor, and PermitIssuer each contain `dark` and `execution`;
+Invoker, Operator, and Runner also contain `statusOnly`. Every artifact contains
+only a remote `versionId` and a `configPath` relative to the inventory. Config
+paths are consumed locally and never retained in the state plan. Use each
+command's `--help` output for the complete required non-secret arguments.
 
 1. Deploy callee to caller: Controller, Executor, PermitIssuer, Invoker,
    Operator, Runner. Leave execution and status gates false.
@@ -2969,15 +2991,17 @@ may produce packet v2. Four ordered packets produce source manifest v2; public
 evidence v1 binds its digest. Independently sign and archive the raw inputs,
 packet, manifest, config/version readback, and revocation state.
 
-After rollback, the future deployment-state contract must disable execution
-caller to callee while retaining the frozen status-only versions for the full
-recovery window. It must then disable status caller to callee and read back
-every gate false. Current config artifacts cannot perform this transition;
-failure to retain status access never authorizes an execution retry.
+After rollback, transition `execution -> statusOnly` disables execution caller
+to callee while retaining the frozen status-only versions for the full
+recovery window. After 24 hours, `statusOnly -> dark` disables status caller to
+callee and requires every gate to read back false. The local plan defines and
+validates this order; a remote executor/readback implementation is still
+missing. Failure to retain status access never authorizes an execution retry.
 
-Focused local evidence is 77 campaign tests with 290 expectations, 10 Runner
-Node tests, and two real workerd named Service Binding tests. The complete
-repository `bun run check` passed with exit code 0 in 1,434.3 seconds on
-2026-08-05. These steps have not run remotely and the activation sequence
-remains blocked. Go/VPS remains the source of production authority, and
-production remains **NO-GO**.
+Focused local evidence is 105 campaign tests with 457 expectations, 11
+deployment-state tests with 70 expectations, 10 Runner Node tests, and two
+real workerd named Service Binding tests. The complete integrated repository
+`bun run check` passed with exit code 0 in 1,481.5 seconds on 2026-08-05. These
+steps have not run remotely and activation remains blocked.
+Go/VPS remains the source of production authority, and production remains
+**NO-GO**.

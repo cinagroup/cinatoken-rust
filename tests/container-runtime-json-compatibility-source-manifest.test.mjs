@@ -50,6 +50,7 @@ function buildPlan() {
   return buildJsonCompatibilityCampaignPlan({
     config: structuredClone(config),
     campaignIdSha256: "11".repeat(32),
+    deploymentStatePlanDigestSha256: "d3".repeat(32),
     controllerVersionId: "controller-version-source-manifest-001",
     runnerVersionId: "runner-version-source-manifest-001",
     runnerConfigSha256: "a1".repeat(32),

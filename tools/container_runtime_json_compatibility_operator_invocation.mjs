@@ -3,6 +3,7 @@ import { createHash, createPublicKey, verify as verifySignature } from "node:cry
 import {
   JsonCompatibilityCampaignError,
   JSON_COMPATIBILITY_PLAN_CONTRACT,
+  JSON_COMPATIBILITY_PLAN_V3_CONTRACT,
   canonicalJson,
   sha256Canonical,
   validateJsonCompatibilityCampaignPlan,
@@ -250,7 +251,10 @@ export function projectJsonCompatibilityOperatorInvocation(receipt) {
 export function validateJsonCompatibilityOperatorStatusReceipt(plan, input) {
   const validatedPlan = validateJsonCompatibilityCampaignPlan(plan);
   if (
-    validatedPlan.contract !== JSON_COMPATIBILITY_PLAN_CONTRACT
+    ![
+      JSON_COMPATIBILITY_PLAN_CONTRACT,
+      JSON_COMPATIBILITY_PLAN_V3_CONTRACT,
+    ].includes(validatedPlan.contract)
     || validatedPlan.statusRecovery?.mode !== "read-only-status-recovery"
   ) {
     failure("[operator-status] plan does not authorize status recovery");

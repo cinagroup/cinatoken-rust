@@ -71,6 +71,7 @@ async function fixture() {
   const plan = buildJsonCompatibilityCampaignPlan({
     config: controllerConfig,
     campaignIdSha256: "11".repeat(32),
+    deploymentStatePlanDigestSha256: "d1".repeat(32),
     controllerVersionId: "controller-version-001",
     runnerVersionId: "runner-version-001",
     runnerConfigSha256: "a1".repeat(32),
@@ -238,6 +239,43 @@ describe("offline JSON compatibility operator approval", () => {
       request: trustDriftRequest,
       now: NOW,
     })).toThrow(/SPKI digest/u);
+  });
+
+  test("keeps historical plans readable but refuses to sign new execution approval", async () => {
+    const value = await fixture();
+    const planV3 = structuredClone(value.plan);
+    planV3.schemaVersion = 2;
+    planV3.contract =
+      "cinatoken-container-runtime-json-compatibility-plan-v3";
+    delete planV3.deploymentStateBinding;
+    delete planV3.planDigestSha256;
+    planV3.planDigestSha256 = sha256Canonical(planV3);
+    const requestV3 = structuredClone(value.request);
+    requestV3.execution.planDigestSha256 = planV3.planDigestSha256;
+
+    expect(() => signJsonCompatibilityOperatorApproval({
+      ...value,
+      plan: planV3,
+      request: requestV3,
+      now: NOW,
+    })).toThrow(/current plan contract/u);
+
+    const planV2 = structuredClone(planV3);
+    planV2.schemaVersion = 1;
+    planV2.contract =
+      "cinatoken-container-runtime-json-compatibility-plan-v2";
+    delete planV2.statusRecovery;
+    delete planV2.planDigestSha256;
+    planV2.planDigestSha256 = sha256Canonical(planV2);
+    const requestV2 = structuredClone(value.request);
+    requestV2.execution.planDigestSha256 = planV2.planDigestSha256;
+
+    expect(() => signJsonCompatibilityOperatorApproval({
+      ...value,
+      plan: planV2,
+      request: requestV2,
+      now: NOW,
+    })).toThrow(/current plan contract/u);
   });
 
   test("writes create-only canonical output and never accepts a key argv option", async () => {

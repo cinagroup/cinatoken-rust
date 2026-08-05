@@ -28431,3 +28431,35 @@ topology/context collectors, source signing, immutable archive, or a real
 four-phase staging campaign. Go/VPS remains authoritative and production
 remains **NO-GO**. The complete integrated repository `bun run check` passed
 with exit code 0 in 1,481.5 seconds on 2026-08-05.
+
+## 2026-08-05 Private Caller And Plan v5 Boundary
+
+This section supersedes the preceding statement that the upstream private
+Runner caller is absent. The local Caller Worker, named Runner Service Binding,
+three-state configs, Plan v5, deployment-state plan v2, Caller-first packet v3,
+and source manifest v3 are now implemented. The complete design and current
+acceptance boundary are recorded in
+`docs/container-runtime-json-compatibility-caller.md`.
+
+The current call chain is Caller -> Runner -> Operator -> Invoker DO ->
+PermitIssuer DO -> Executor DO -> Controller DO -> Rust Container shards.
+Controller plus six private services are frozen in Plan v5; 18 dark,
+status-only, and execution artifacts are frozen in state-plan v2. Activation
+is callee-to-caller and closure is caller-to-callee. A Plan v5 phase source
+requires the Caller receipt and separately retains the raw nested Runner digest
+and Runner-claimed receipt digest. Plan v4/v3 historical evidence remains
+Runner-first packet/manifest v2, and current creation CLIs reject historical
+inventory/state-plan inputs.
+
+Focused acceptance passes 126 campaign/source/config tests with 538
+expectations, 14 deployment-state tests with 82 expectations, and the Caller
+service's 11 Node plus 2 workerd tests and two Wrangler dry-runs. The complete
+root `bun run check` passes with exit code 0 in 1,381.4 seconds.
+
+This closes the local missing-Caller and unbound-Caller-evidence blockers. It
+does not authorize Cloudflare deployment. Approval subject/envelope v2 with an
+explicit Plan v5/schema 4 runtime signature, the remote transition executor,
+authenticated version/config/binding readback, account binding inventory,
+topology/context collectors, source signing, immutable archive, and a real
+four-phase staging campaign remain hard gates. No remote or production state
+changed; Go/VPS remains authoritative and production remains **NO-GO**.

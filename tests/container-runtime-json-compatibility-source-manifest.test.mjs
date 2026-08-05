@@ -12,7 +12,9 @@ import {
 } from "../tools/container_runtime_json_compatibility_campaign.mjs";
 import {
   JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
+  JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT,
   JSON_COMPATIBILITY_SOURCE_MANIFEST_CONTRACT,
+  JSON_COMPATIBILITY_SOURCE_MANIFEST_V2_CONTRACT,
   buildJsonCompatibilityEvidenceFromSourceManifest,
   buildJsonCompatibilitySourceManifest,
   createSyntheticJsonCompatibilitySourceManifest,
@@ -52,6 +54,8 @@ function buildPlan() {
     campaignIdSha256: "11".repeat(32),
     deploymentStatePlanDigestSha256: "d3".repeat(32),
     controllerVersionId: "controller-version-source-manifest-001",
+    callerVersionId: "caller-version-source-manifest-001",
+    callerConfigSha256: "a0".repeat(32),
     runnerVersionId: "runner-version-source-manifest-001",
     runnerConfigSha256: "a1".repeat(32),
     operatorVersionId: "operator-version-source-manifest-001",
@@ -74,6 +78,21 @@ function buildPlan() {
     runtimeNMinusOneImageDigest: `sha256:${"55".repeat(32)}`,
     candidateShardIndex: 3,
   });
+}
+
+function downgradeToPlanV4(plan) {
+  plan.schemaVersion = 3;
+  plan.contract =
+    "cinatoken-container-runtime-json-compatibility-plan-v4";
+  delete plan.privateServices.caller;
+  delete plan.statusRecovery.statusReadGates.caller;
+  delete plan.deploymentStateBinding.executionArtifacts.caller;
+  plan.deploymentStateBinding.deploymentStatePlanContract =
+    "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1";
+  const subject = structuredClone(plan);
+  delete subject.planDigestSha256;
+  plan.planDigestSha256 = sha256Canonical(subject);
+  return plan;
 }
 
 function buildPhasePackets(plan) {
@@ -290,7 +309,7 @@ function buildPhasePackets(plan) {
       },
     };
     const packetSubject = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
       kind: "container-runtime-json-compatibility-phase-source-packet",
       environment: "staging",
@@ -316,6 +335,12 @@ function buildPhasePackets(plan) {
         phaseIndex,
         deployment: "container",
       }),
+      callerInvocation: {
+        ...structuredClone(syntheticPhases[phaseIndex].callerInvocation),
+        phaseExecutionId: `phase-execution-${phaseIndex + 1}`,
+        startedAt: `2026-08-04T00:0${phaseIndex * 2}:00Z`,
+        completedAt: `2026-08-04T00:0${phaseIndex * 2 + 1}:00Z`,
+      },
       runnerInvocation: {
         ...structuredClone(syntheticPhases[phaseIndex].runnerInvocation),
         operatorReceiptSha256: sha256Canonical({
@@ -438,7 +463,7 @@ describe("container runtime JSON compatibility source manifest", () => {
 
     expect(validateJsonCompatibilitySourceManifest(plan, manifest)).toEqual(manifest);
     expect(manifest).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       contract: JSON_COMPATIBILITY_SOURCE_MANIFEST_CONTRACT,
       environment: "staging",
       campaignIdSha256: plan.campaignIdSha256,
@@ -460,7 +485,46 @@ describe("container runtime JSON compatibility source manifest", () => {
     expect(manifest.phases[2].shards[5].rawRequest).toBe(
       packets[2].shards[5].rawRequest,
     );
+    expect(manifest.phases[0].callerInvocation).toMatchObject({
+      mode: "direct",
+      phaseStatus: "completed",
+      completion: { executionRetryPermitted: false },
+    });
     expect(manifest.sourceManifestSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test("pairs Plan v4 only with the historical packet and manifest v2", () => {
+    const plan = downgradeToPlanV4(structuredClone(buildPlan()));
+    const manifest = createSyntheticJsonCompatibilitySourceManifest(plan);
+
+    expect(validateJsonCompatibilitySourceManifest(plan, manifest)).toEqual(
+      manifest,
+    );
+    expect(manifest).toMatchObject({
+      schemaVersion: 2,
+      contract: JSON_COMPATIBILITY_SOURCE_MANIFEST_V2_CONTRACT,
+    });
+    expect(manifest.phases[0]).toMatchObject({
+      schemaVersion: 2,
+      contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT,
+    });
+    expect(manifest.phases[0].callerInvocation).toBeUndefined();
+  });
+
+  test("rejects a Plan v5 packet downgraded to v2 even when resealed", () => {
+    const plan = buildPlan();
+    const packet = structuredClone(buildPhasePackets(plan)[0]);
+    packet.schemaVersion = 2;
+    packet.contract = JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT;
+    delete packet.callerInvocation;
+    const subject = structuredClone(packet);
+    delete subject.packetSha256;
+    packet.packetSha256 = sha256Canonical(subject);
+
+    expect(() => buildJsonCompatibilitySourceManifest(plan, [
+      packet,
+      ...buildPhasePackets(plan).slice(1),
+    ])).toThrow(/callerInvocation|fields must be exactly/);
   });
 
   test("rejects phase packets outside the fixed four-phase order", () => {

@@ -1,0 +1,15 @@
+{
+  "name": "@cinatoken/container-runtime-json-compatibility-caller",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "bun run types:check && bun run typecheck && bun run test && bun run dry-run",
+    "dry-run": "wrangler deploy --config wrangler.local.toml --dry-run --outdir .wrangler/local-build && wrangler deploy --config wrangler.staging.toml --dry-run --outdir .wrangler/staging-build",
+    "test": "vitest run --config vitest.config.ts && vitest run --config vitest.runtime.config.ts",
+    "test:node": "vitest run --config vitest.config.ts",
+    "test:runtime": "vitest run --config vitest.runtime.config.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "types": "wrangler types worker-configuration.d.ts --config wrangler.local.toml --env-interface JsonCompatibilityCallerGeneratedEnv",
+    "types:check": "wrangler types worker-configuration.d.ts --config wrangler.local.toml --env-interface JsonCompatibilityCallerGeneratedEnv --check"
+  }
+}

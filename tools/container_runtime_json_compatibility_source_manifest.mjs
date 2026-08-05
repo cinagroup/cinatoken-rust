@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  JSON_COMPATIBILITY_PLAN_CONTRACT,
   JSON_COMPATIBILITY_PHASE_IDS,
   JSON_COMPATIBILITY_SHARD_COUNT,
   JsonCompatibilityCampaignError,
@@ -10,8 +11,12 @@ import {
 } from "./container_runtime_json_compatibility_campaign.mjs";
 
 export const JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-phase-source-packet-v3";
+export const JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-phase-source-packet-v2";
 export const JSON_COMPATIBILITY_SOURCE_MANIFEST_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-source-manifest-v3";
+export const JSON_COMPATIBILITY_SOURCE_MANIFEST_V2_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-source-manifest-v2";
 
 const EXPECTED_SHARD_COUNT = JSON_COMPATIBILITY_SHARD_COUNT;
@@ -26,9 +31,12 @@ const MAX_RAW_RESPONSE_BYTES = 4 * 1024;
 export function buildJsonCompatibilitySourceManifest(plan, phasePackets) {
   const validatedPlan = validateManifestPlan(plan);
   const packets = validatePhasePacketSet(validatedPlan, phasePackets);
+  const current = isCurrentPlan(validatedPlan);
   const subject = {
-    schemaVersion: 2,
-    contract: JSON_COMPATIBILITY_SOURCE_MANIFEST_CONTRACT,
+    schemaVersion: current ? 3 : 2,
+    contract: current
+      ? JSON_COMPATIBILITY_SOURCE_MANIFEST_CONTRACT
+      : JSON_COMPATIBILITY_SOURCE_MANIFEST_V2_CONTRACT,
     kind: "container-runtime-json-compatibility-source-manifest",
     environment: "staging",
     campaignIdSha256: validatedPlan.campaignIdSha256,
@@ -49,6 +57,7 @@ export function buildJsonCompatibilitySourceManifest(plan, phasePackets) {
 
 export function validateJsonCompatibilitySourceManifest(plan, manifest) {
   const validatedPlan = validateManifestPlan(plan);
+  const current = isCurrentPlan(validatedPlan);
   const value = requireRecord(manifest, "[source-manifest] document");
   requireExactKeys(value, [
     "schemaVersion",
@@ -64,10 +73,16 @@ export function validateJsonCompatibilitySourceManifest(plan, manifest) {
     "aggregate",
     "sourceManifestSha256",
   ], "[source-manifest] document");
-  requireEqual(value.schemaVersion, 2, "[source-manifest] schema version");
+  requireEqual(
+    value.schemaVersion,
+    current ? 3 : 2,
+    "[source-manifest] schema version",
+  );
   requireEqual(
     value.contract,
-    JSON_COMPATIBILITY_SOURCE_MANIFEST_CONTRACT,
+    current
+      ? JSON_COMPATIBILITY_SOURCE_MANIFEST_CONTRACT
+      : JSON_COMPATIBILITY_SOURCE_MANIFEST_V2_CONTRACT,
     "[source-manifest] contract",
   );
   requireEqual(
@@ -473,9 +488,29 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
       startedAt: startedAt.toISOString().replace(".000Z", "Z"),
       completedAt: completedAt.toISOString().replace(".000Z", "Z"),
     });
+    const runnerInvocation = createSyntheticRunnerInvocationReference({
+      plan: validatedPlan,
+      phase,
+      phaseIndex,
+      operatorInvocation,
+      startedAt: startedAt.toISOString().replace(".000Z", "Z"),
+      completedAt: completedAt.toISOString().replace(".000Z", "Z"),
+    });
+    const callerInvocation = isCurrentPlan(validatedPlan)
+      ? createSyntheticCallerInvocationReference({
+          plan: validatedPlan,
+          phase,
+          phaseIndex,
+          runnerInvocation,
+          startedAt: startedAt.toISOString().replace(".000Z", "Z"),
+          completedAt: completedAt.toISOString().replace(".000Z", "Z"),
+        })
+      : null;
     const packetSubject = {
-      schemaVersion: 2,
-      contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
+      schemaVersion: isCurrentPlan(validatedPlan) ? 3 : 2,
+      contract: isCurrentPlan(validatedPlan)
+        ? JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT
+        : JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT,
       kind: "container-runtime-json-compatibility-phase-source-packet",
       environment: "staging",
       campaignIdSha256: validatedPlan.campaignIdSha256,
@@ -500,14 +535,8 @@ export function createSyntheticJsonCompatibilitySourceManifest(plan) {
         domain: "synthetic-container-deployment-set",
         phaseIndex,
       }),
-      runnerInvocation: createSyntheticRunnerInvocationReference({
-        plan: validatedPlan,
-        phase,
-        phaseIndex,
-        operatorInvocation,
-        startedAt: startedAt.toISOString().replace(".000Z", "Z"),
-        completedAt: completedAt.toISOString().replace(".000Z", "Z"),
-      }),
+      ...(callerInvocation === null ? {} : { callerInvocation }),
+      runnerInvocation,
       operatorInvocation,
       privateInvocation,
       executorReceipt: {
@@ -593,6 +622,11 @@ function validateManifestPlan(plan) {
   return validatedPlan;
 }
 
+function isCurrentPlan(plan) {
+  return plan.schemaVersion === 4
+    && plan.contract === JSON_COMPATIBILITY_PLAN_CONTRACT;
+}
+
 function validatePhasePacketSet(plan, phasePackets) {
   if (!Array.isArray(phasePackets) || phasePackets.length !== JSON_COMPATIBILITY_PHASE_IDS.length) {
     throw new JsonCompatibilityCampaignError(
@@ -642,6 +676,7 @@ function validatePhasePacket(plan, packet, expectedOrdinal, crossPhase) {
   const expectedPhaseId = JSON_COMPATIBILITY_PHASE_IDS[expectedOrdinal - 1];
   const label = `[phase-source] ${expectedPhaseId}`;
   const value = requireRecord(packet, `${label} packet`);
+  const current = isCurrentPlan(plan);
   requireExactKeys(value, [
     "schemaVersion",
     "contract",
@@ -655,6 +690,7 @@ function validatePhasePacket(plan, packet, expectedOrdinal, crossPhase) {
     "ring",
     "topology",
     "containerDeploymentSetSha256",
+    ...(current ? ["callerInvocation"] : []),
     "runnerInvocation",
     "operatorInvocation",
     "privateInvocation",
@@ -665,10 +701,12 @@ function validatePhasePacket(plan, packet, expectedOrdinal, crossPhase) {
     "noMutationFacts",
     "packetSha256",
   ], `${label} packet`);
-  requireEqual(value.schemaVersion, 2, `${label} schema version`);
+  requireEqual(value.schemaVersion, current ? 3 : 2, `${label} schema version`);
   requireEqual(
     value.contract,
-    JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
+    current
+      ? JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT
+      : JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT,
     `${label} contract`,
   );
   requireEqual(
@@ -686,6 +724,15 @@ function validatePhasePacket(plan, packet, expectedOrdinal, crossPhase) {
   requireCanonicalEqual(value.ring, plan.ring, `${label} ring topology`);
   requireCanonicalEqual(value.topology, expectedPlanPhase.topology, `${label} topology`);
   requireSha256(value.containerDeploymentSetSha256, `${label} container deployment set`);
+  if (current) {
+    validateCallerInvocationReference(
+      value.callerInvocation,
+      value.runnerInvocation,
+      expectedPlanPhase,
+      plan,
+      label,
+    );
+  }
   validateRunnerInvocationReference(
     value.runnerInvocation,
     value.operatorInvocation,
@@ -908,6 +955,67 @@ function createSyntheticRunnerInvocationReference({
   };
 }
 
+function createSyntheticCallerInvocationReference({
+  plan,
+  phase,
+  phaseIndex,
+  runnerInvocation,
+  startedAt,
+  completedAt,
+}) {
+  const digest = (domain) => sha256Canonical({ domain, phaseIndex });
+  return {
+    contract:
+      "cinatoken-container-runtime-json-compatibility-caller-invocation-receipt-v1",
+    mode: "direct",
+    receiptSha256: digest("synthetic-caller-invocation-receipt"),
+    callerBodySha256: digest("synthetic-caller-invocation-body"),
+    runnerRawReceiptSha256:
+      digest("synthetic-runner-invocation-raw-receipt"),
+    runnerClaimedReceiptSha256: runnerInvocation.receiptSha256,
+    requestPayloadSha256: runnerInvocation.authorizedPhaseRequestSha256,
+    campaignIdSha256: plan.campaignIdSha256,
+    planDigestSha256: plan.planDigestSha256,
+    phaseExecutionId: `synthetic-phase-execution-${phaseIndex + 1}`,
+    phaseOrdinal: phase.ordinal,
+    phaseId: phase.id,
+    phaseStatus: "completed",
+    caller: {
+      serviceName: plan.privateServices.caller.serviceName,
+      entrypoint: plan.privateServices.caller.entrypoint,
+      versionId: plan.privateServices.caller.versionId,
+      gateName: "JSON_COMPATIBILITY_CALLER_ENABLED",
+      privateRpcOnly: true,
+    },
+    callerPlanBinding: {
+      versionId: plan.privateServices.caller.versionId,
+      configSha256: plan.privateServices.caller.configSha256,
+    },
+    runner: {
+      serviceName: plan.privateServices.runner.serviceName,
+      entrypoint: plan.privateServices.runner.entrypoint,
+      versionId: plan.privateServices.runner.versionId,
+      configSha256: plan.privateServices.runner.configSha256,
+    },
+    privateTransport: {
+      kind: "service-binding-rpc",
+      publicUrlUsed: false,
+      cloudflareRestUsed: false,
+      runnerBinding: "JSON_COMPATIBILITY_RUNNER_SERVICE",
+      rpcMethod: "invokePhase",
+    },
+    completion: {
+      mode: "direct",
+      executionRetryPermitted: false,
+      runnerInvokePhaseCalled: true,
+      runnerGetPhaseStatusCalled: false,
+      originalCallerReceiptAvailable: true,
+    },
+    startedAt,
+    completedAt,
+  };
+}
+
 function createSyntheticPrivateInvocationReference({
   plan,
   phase,
@@ -1002,6 +1110,195 @@ function createSyntheticPrivateInvocationReference({
     startedAt,
     completedAt,
   };
+}
+
+function validateCallerInvocationReference(
+  value,
+  runnerInvocationValue,
+  expectedPhase,
+  plan,
+  label,
+) {
+  const invocation = requireRecord(value, `${label} caller invocation`);
+  requireExactKeys(invocation, [
+    "contract", "mode", "receiptSha256", "callerBodySha256",
+    "runnerRawReceiptSha256", "runnerClaimedReceiptSha256",
+    "requestPayloadSha256",
+    "campaignIdSha256",
+    "planDigestSha256", "phaseExecutionId", "phaseOrdinal", "phaseId",
+    "phaseStatus", "caller", "callerPlanBinding", "runner",
+    "privateTransport", "completion", "startedAt", "completedAt",
+  ], `${label} caller invocation`);
+  const mode = invocation.mode;
+  if (mode !== "direct" && mode !== "recovered-status") {
+    throw new JsonCompatibilityCampaignError(
+      `${label} caller completion mode is invalid`,
+    );
+  }
+  requireEqual(
+    invocation.contract,
+    mode === "direct"
+      ? "cinatoken-container-runtime-json-compatibility-caller-invocation-receipt-v1"
+      : "cinatoken-container-runtime-json-compatibility-caller-status-receipt-v1",
+    `${label} caller invocation contract`,
+  );
+  for (const name of [
+    "receiptSha256", "callerBodySha256", "runnerRawReceiptSha256",
+    "runnerClaimedReceiptSha256", "requestPayloadSha256",
+  ]) requireSha256(invocation[name], `${label} caller invocation ${name}`);
+  requireEqual(
+    invocation.campaignIdSha256,
+    plan.campaignIdSha256,
+    `${label} caller campaign ID`,
+  );
+  requireEqual(
+    invocation.planDigestSha256,
+    plan.planDigestSha256,
+    `${label} caller plan digest`,
+  );
+  requireSafeToken(
+    invocation.phaseExecutionId,
+    `${label} caller invocation execution ID`,
+  );
+  requireEqual(
+    invocation.phaseOrdinal,
+    expectedPhase.ordinal,
+    `${label} caller invocation phase ordinal`,
+  );
+  requireEqual(
+    invocation.phaseId,
+    expectedPhase.id,
+    `${label} caller invocation phase ID`,
+  );
+  requireEqual(invocation.phaseStatus, "completed", `${label} caller status`);
+
+  const plannedCaller = plan.privateServices.caller;
+  requireCanonicalEqual(invocation.caller, {
+    serviceName: plannedCaller.serviceName,
+    entrypoint: plannedCaller.entrypoint,
+    versionId: plannedCaller.versionId,
+    gateName: mode === "direct"
+      ? "JSON_COMPATIBILITY_CALLER_ENABLED"
+      : "JSON_COMPATIBILITY_CALLER_STATUS_READ_ENABLED",
+    privateRpcOnly: true,
+  }, `${label} caller identity`);
+  requireCanonicalEqual(invocation.callerPlanBinding, {
+    versionId: plannedCaller.versionId,
+    configSha256: plannedCaller.configSha256,
+  }, `${label} caller plan binding`);
+  const plannedRunner = plan.privateServices.runner;
+  requireCanonicalEqual(invocation.runner, {
+    serviceName: plannedRunner.serviceName,
+    entrypoint: plannedRunner.entrypoint,
+    versionId: plannedRunner.versionId,
+    configSha256: plannedRunner.configSha256,
+  }, `${label} caller Runner target`);
+
+  const transport = requireRecord(
+    invocation.privateTransport,
+    `${label} caller private transport`,
+  );
+  requireExactKeys(transport, [
+    "kind", "publicUrlUsed", "cloudflareRestUsed", "runnerBinding",
+    "rpcMethod",
+  ], `${label} caller private transport`);
+  requireEqual(transport.kind, "service-binding-rpc", `${label} caller transport`);
+  requireEqual(transport.publicUrlUsed, false, `${label} caller public URL`);
+  requireEqual(transport.cloudflareRestUsed, false, `${label} caller REST`);
+  requireEqual(
+    transport.runnerBinding,
+    "JSON_COMPATIBILITY_RUNNER_SERVICE",
+    `${label} caller Runner binding`,
+  );
+  requireEqual(
+    transport.rpcMethod,
+    mode === "direct" ? "invokePhase" : "getPhaseStatus",
+    `${label} caller RPC method`,
+  );
+
+  const completion = requireRecord(
+    invocation.completion,
+    `${label} caller completion`,
+  );
+  requireExactKeys(completion, [
+    "mode", "executionRetryPermitted", "runnerInvokePhaseCalled",
+    "runnerGetPhaseStatusCalled", "originalCallerReceiptAvailable",
+  ], `${label} caller completion`);
+  requireEqual(completion.mode, mode, `${label} caller completion mode`);
+  requireEqual(
+    completion.executionRetryPermitted,
+    false,
+    `${label} caller retry permission`,
+  );
+  requireEqual(
+    completion.runnerInvokePhaseCalled,
+    mode === "direct",
+    `${label} caller Runner execution observation`,
+  );
+  requireEqual(
+    completion.runnerGetPhaseStatusCalled,
+    mode === "recovered-status",
+    `${label} caller Runner status observation`,
+  );
+  requireEqual(
+    completion.originalCallerReceiptAvailable,
+    mode === "direct",
+    `${label} caller original receipt availability`,
+  );
+
+  const runnerInvocation = requireRecord(
+    runnerInvocationValue,
+    `${label} runner invocation`,
+  );
+  requireEqual(
+    invocation.runnerClaimedReceiptSha256,
+    runnerInvocation.receiptSha256,
+    `${label} caller/Runner self receipt binding`,
+  );
+  if (mode === "direct") {
+    requireEqual(
+      invocation.requestPayloadSha256,
+      runnerInvocation.authorizedPhaseRequestSha256,
+      `${label} caller/Runner request binding`,
+    );
+  }
+  requireEqual(
+    mode,
+    runnerInvocation.mode,
+    `${label} caller/Runner completion mode`,
+  );
+  for (const name of ["phaseExecutionId", "phaseOrdinal", "phaseId", "phaseStatus"]) {
+    requireEqual(
+      invocation[name],
+      runnerInvocation[name],
+      `${label} caller/Runner ${name} binding`,
+    );
+  }
+  const startedAtMs = parseWholeSecondUtc(
+    invocation.startedAt,
+    `${label} caller invocation start`,
+  );
+  const completedAtMs = parseWholeSecondUtc(
+    invocation.completedAt,
+    `${label} caller invocation completion`,
+  );
+  const runnerStartedAtMs = parseWholeSecondUtc(
+    runnerInvocation.startedAt,
+    `${label} runner invocation start`,
+  );
+  const runnerCompletedAtMs = parseWholeSecondUtc(
+    runnerInvocation.completedAt,
+    `${label} runner invocation completion`,
+  );
+  if (
+    completedAtMs < startedAtMs
+    || startedAtMs > runnerStartedAtMs + 5_000
+    || completedAtMs + 5_000 < runnerCompletedAtMs
+  ) {
+    throw new JsonCompatibilityCampaignError(
+      `${label} caller invocation must enclose the Runner RPC`,
+    );
+  }
 }
 
 function validateRunnerInvocationReference(

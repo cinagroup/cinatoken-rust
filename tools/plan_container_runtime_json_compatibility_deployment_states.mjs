@@ -9,6 +9,7 @@ import {
   parseStrictJsonObject,
 } from "./container_runtime_json_compatibility_campaign.mjs";
 import {
+  JSON_COMPATIBILITY_DEPLOYMENT_STATE_INVENTORY_CONTRACT,
   buildJsonCompatibilityDeploymentStatePlan,
   validateJsonCompatibilityDeploymentStateInventory,
   validateJsonCompatibilityDeploymentStatePlan,
@@ -38,6 +39,13 @@ export async function runJsonCompatibilityDeploymentStatePlanner(options) {
       "deployment state inventory",
     ),
   );
+  if (
+    inventory.schemaVersion !== 2
+    || inventory.contract
+      !== JSON_COMPATIBILITY_DEPLOYMENT_STATE_INVENTORY_CONTRACT
+  ) {
+    throw new Error("deployment state planning requires the current inventory contract");
+  }
   const baseDirectory = path.dirname(inventoryPath);
   const configPaths = new Set();
   const services = {};

@@ -23,6 +23,8 @@ const validInputs = Object.freeze({
   campaignIdSha256: "11".repeat(32),
   deploymentStatePlanDigestSha256: "dd".repeat(32),
   controllerVersionId: "controller-version-001",
+  callerVersionId: "caller-version-001",
+  callerConfigSha256: "a1".repeat(32),
   runnerVersionId: "runner-version-001",
   runnerConfigSha256: "aa".repeat(32),
   operatorVersionId: "operator-version-001",
@@ -149,8 +151,8 @@ describe("container runtime JSON compatibility campaign plan", () => {
 
     expect(validateJsonCompatibilityCampaignPlan(plan)).toEqual(plan);
     expect(plan).toMatchObject({
-      schemaVersion: 3,
-      contract: "cinatoken-container-runtime-json-compatibility-plan-v4",
+      schemaVersion: 4,
+      contract: "cinatoken-container-runtime-json-compatibility-plan-v5",
     });
     expect(plan.environment).toBe("staging");
     expect(plan.controller).toMatchObject({
@@ -165,6 +167,15 @@ describe("container runtime JSON compatibility campaign plan", () => {
       allActionGatesDisabled: true,
     });
     expect(plan.privateServices).toEqual({
+      caller: {
+        serviceName:
+          "cinatoken-container-runtime-json-compatibility-caller-staging",
+        entrypoint: "JsonCompatibilityCampaignCallerEntrypoint",
+        versionId: "caller-version-001",
+        configSha256: "a1".repeat(32),
+        gateName: "JSON_COMPATIBILITY_CALLER_ENABLED",
+        privateRpcOnly: true,
+      },
       runner: {
         serviceName:
           "cinatoken-container-runtime-json-compatibility-runner-staging",
@@ -235,6 +246,7 @@ describe("container runtime JSON compatibility campaign plan", () => {
       clockSkewSeconds: 5,
       executionRetryPermitted: false,
       statusReadGates: {
+        caller: "JSON_COMPATIBILITY_CALLER_STATUS_READ_ENABLED",
         runner: "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED",
         operator: "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED",
         invoker: "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED",
@@ -263,7 +275,7 @@ describe("container runtime JSON compatibility campaign plan", () => {
       contract:
         "cinatoken-container-runtime-json-compatibility-deployment-state-binding-v1",
       deploymentStatePlanContract:
-        "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1",
+        "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v2",
       planDigestSha256: "dd".repeat(32),
       initialState: "dark",
       executionState: "execution",
@@ -275,6 +287,10 @@ describe("container runtime JSON compatibility campaign plan", () => {
         controller: {
           versionId: "controller-version-001",
           configSha256: sha256Canonical(config),
+        },
+        caller: {
+          versionId: "caller-version-001",
+          configSha256: "a1".repeat(32),
         },
         runner: {
           versionId: "runner-version-001",
@@ -373,6 +389,8 @@ describe("container runtime JSON compatibility campaign plan", () => {
   test("requires strict version and config identities for every private service", () => {
     const missingInputs = [
       ["deploymentStatePlanDigestSha256", /deployment state plan digest/],
+      ["callerVersionId", /caller version ID/],
+      ["callerConfigSha256", /caller config digest/],
       ["runnerVersionId", /runner version ID/],
       ["runnerConfigSha256", /runner config digest/],
       ["operatorVersionId", /operator version ID/],
@@ -414,6 +432,12 @@ describe("container runtime JSON compatibility campaign plan", () => {
 
   test("rejects private service name, entrypoint, gate, or public RPC drift", () => {
     const drifts = [
+      [
+        "caller",
+        "entrypoint",
+        "JsonCompatibilityCampaignCallerOtherEntrypoint",
+        /caller entrypoint/,
+      ],
       [
         "runner",
         "entrypoint",
@@ -469,8 +493,21 @@ describe("container runtime JSON compatibility campaign plan", () => {
     );
   });
 
-  test("keeps plan v3/v2 readable while reserving deployment binding for v4", () => {
-    const planV3 = structuredClone(buildPlan());
+  test("keeps plan v4/v3/v2 readable while reserving Caller for v5", () => {
+    const planV4 = structuredClone(buildPlan());
+    planV4.schemaVersion = 3;
+    planV4.contract =
+      "cinatoken-container-runtime-json-compatibility-plan-v4";
+    delete planV4.privateServices.caller;
+    delete planV4.statusRecovery.statusReadGates.caller;
+    delete planV4.deploymentStateBinding.executionArtifacts.caller;
+    planV4.deploymentStateBinding.deploymentStatePlanContract =
+      "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1";
+    expect(validateJsonCompatibilityCampaignPlan(resignPlan(planV4))).toEqual(
+      planV4,
+    );
+
+    const planV3 = structuredClone(planV4);
     planV3.schemaVersion = 2;
     planV3.contract =
       "cinatoken-container-runtime-json-compatibility-plan-v3";
@@ -504,10 +541,10 @@ describe("container runtime JSON compatibility campaign plan", () => {
       .toThrow(/deployment state plan digest/);
 
     const artifact = structuredClone(buildPlan());
-    artifact.deploymentStateBinding.executionArtifacts.runner.versionId =
-      "runner-other-version";
+    artifact.deploymentStateBinding.executionArtifacts.caller.versionId =
+      "caller-other-version";
     expect(() => validateJsonCompatibilityCampaignPlan(resignPlan(artifact)))
-      .toThrow(/runner deployment execution artifact/);
+      .toThrow(/caller deployment execution artifact/);
   });
 
   test("rejects status recovery policy, gate, and authority drift", () => {
@@ -787,11 +824,17 @@ test("package scripts keep the planner and verifier in the repository gate", asy
   expect(packageJson.scripts["build:all"]).toContain(
     "build:container-runtime:json-compatibility-runner",
   );
+  expect(packageJson.scripts["build:all"]).toContain(
+    "build:container-runtime:json-compatibility-caller",
+  );
   expect(packageJson.scripts.check).toContain(
     "check:container-runtime:json-compatibility-campaign",
   );
   expect(packageJson.scripts.check).toContain(
     "check:container-runtime:json-compatibility-operator",
+  );
+  expect(packageJson.scripts.check).toContain(
+    "check:container-runtime:json-compatibility-caller",
   );
   expect(packageJson.scripts.check).toContain(
     "check:container-runtime:json-compatibility-deployment-states",

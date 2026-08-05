@@ -40,7 +40,7 @@ export function signJsonCompatibilityOperatorApproval({
 }) {
   const plan = validateJsonCompatibilityCampaignPlan(planInput);
   if (
-    plan.schemaVersion !== 3
+    plan.schemaVersion !== 4
     || plan.contract !== JSON_COMPATIBILITY_PLAN_CONTRACT
   ) {
     throw new Error("operator approval signing requires the current plan contract");

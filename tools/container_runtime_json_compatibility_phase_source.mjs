@@ -1,11 +1,13 @@
 import {
   JsonCompatibilityCampaignError,
+  JSON_COMPATIBILITY_PLAN_CONTRACT,
   JSON_COMPATIBILITY_SHARD_COUNT,
   canonicalJson,
   sha256Canonical,
   validateJsonCompatibilityCampaignPlan,
 } from "./container_runtime_json_compatibility_campaign.mjs";
 import {
+  JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT,
   JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
   validateJsonCompatibilityPhaseSourcePacket,
 } from "./container_runtime_json_compatibility_source_manifest.mjs";
@@ -21,6 +23,11 @@ import {
   projectJsonCompatibilityRunnerCompletion,
   resolveJsonCompatibilityRunnerCompletion,
 } from "./container_runtime_json_compatibility_runner_invocation.mjs";
+import {
+  projectJsonCompatibilityCallerCompletion,
+  projectJsonCompatibilityResolvedRunner,
+  resolveJsonCompatibilityCallerCompletion,
+} from "./container_runtime_json_compatibility_caller_invocation.mjs";
 
 export const JSON_COMPATIBILITY_PHASE_SOURCE_CONTEXT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-phase-source-context-v1";
@@ -45,13 +52,20 @@ export async function buildJsonCompatibilityPhaseSourcePacket(
   if (validatedPlan.ring.shardCount !== SHARD_COUNT) {
     throw failure("[phase-assembly] plan shard count must equal 8");
   }
-  const resolvedRunner = resolveJsonCompatibilityRunnerCompletion(
-    validatedPlan,
-    receipt,
-  );
-  const runnerInvocation = projectJsonCompatibilityRunnerCompletion(
-    resolvedRunner,
-  );
+  const current = validatedPlan.schemaVersion === 4
+    && validatedPlan.contract === JSON_COMPATIBILITY_PLAN_CONTRACT;
+  const resolvedCaller = current
+    ? resolveJsonCompatibilityCallerCompletion(validatedPlan, receipt)
+    : null;
+  const resolvedRunner = current
+    ? resolvedCaller.runnerCompletion
+    : resolveJsonCompatibilityRunnerCompletion(validatedPlan, receipt);
+  const callerInvocation = current
+    ? projectJsonCompatibilityCallerCompletion(resolvedCaller)
+    : null;
+  const runnerInvocation = current
+    ? projectJsonCompatibilityResolvedRunner(resolvedCaller)
+    : projectJsonCompatibilityRunnerCompletion(resolvedRunner);
   const operatorInvocation = projectJsonCompatibilityResolvedOperator(
     resolvedRunner,
   );
@@ -131,8 +145,10 @@ export async function buildJsonCompatibilityPhaseSourcePacket(
       verifiedReceipt.transportTotals.recoveryRequiredCount,
   };
   const packetSubject = {
-    schemaVersion: 2,
-    contract: JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT,
+    schemaVersion: current ? 3 : 2,
+    contract: current
+      ? JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_CONTRACT
+      : JSON_COMPATIBILITY_PHASE_SOURCE_PACKET_V2_CONTRACT,
     kind: "container-runtime-json-compatibility-phase-source-packet",
     environment: "staging",
     campaignIdSha256: validatedPlan.campaignIdSha256,
@@ -153,6 +169,7 @@ export async function buildJsonCompatibilityPhaseSourcePacket(
     topology: clone(phase.topology),
     containerDeploymentSetSha256:
       verifiedContext.containerDeploymentSetSha256,
+    ...(callerInvocation === null ? {} : { callerInvocation }),
     runnerInvocation,
     operatorInvocation,
     privateInvocation,

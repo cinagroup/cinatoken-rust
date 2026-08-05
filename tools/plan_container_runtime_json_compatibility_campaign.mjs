@@ -12,6 +12,7 @@ import {
   validateJsonCompatibilityCampaignPlan,
 } from "./container_runtime_json_compatibility_campaign.mjs";
 import {
+  JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
   validateJsonCompatibilityDeploymentStatePlan,
 } from "./container_runtime_json_compatibility_deployment_states.mjs";
 import {
@@ -46,6 +47,8 @@ export async function runJsonCompatibilityCampaignPlanner(options) {
         campaignIdSha256: "11".repeat(32),
         deploymentStatePlanDigestSha256: "dd".repeat(32),
         controllerVersionId: "controller-version-self-test",
+        callerVersionId: "caller-version-self-test",
+        callerConfigSha256: "a1".repeat(32),
         runnerVersionId: "runner-version-self-test",
         runnerConfigSha256: "aa".repeat(32),
         operatorVersionId: "operator-version-self-test",
@@ -129,10 +132,21 @@ async function bindDeploymentStatePlan(config, options) {
       "deployment state plan",
     ),
   );
+  if (
+    deploymentStatePlan.schemaVersion !== 2
+    || deploymentStatePlan.contract
+      !== JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT
+  ) {
+    throw new Error("campaign planning requires the current deployment state plan contract");
+  }
   const expected = {
     controller: {
       versionId: options.controllerVersionId,
       configSha256: sha256Canonical(config),
+    },
+    caller: {
+      versionId: options.callerVersionId,
+      configSha256: options.callerConfigSha256,
     },
     runner: {
       versionId: options.runnerVersionId,
@@ -184,6 +198,8 @@ function parseArgs(argv) {
     "--campaign-id-sha256",
     "--deployment-state-plan",
     "--controller-version-id",
+    "--caller-version-id",
+    "--caller-config-sha256",
     "--runner-version-id",
     "--runner-config-sha256",
     "--operator-version-id",
@@ -230,6 +246,8 @@ function parseArgs(argv) {
     "--campaign-id-sha256",
     "--deployment-state-plan",
     "--controller-version-id",
+    "--caller-version-id",
+    "--caller-config-sha256",
     "--runner-version-id",
     "--runner-config-sha256",
     "--operator-version-id",
@@ -276,6 +294,8 @@ function parseArgs(argv) {
     campaignIdSha256: values.get("--campaign-id-sha256"),
     deploymentStatePlanPath: values.get("--deployment-state-plan"),
     controllerVersionId: values.get("--controller-version-id"),
+    callerVersionId: values.get("--caller-version-id"),
+    callerConfigSha256: values.get("--caller-config-sha256"),
     runnerVersionId: values.get("--runner-version-id"),
     runnerConfigSha256: values.get("--runner-config-sha256"),
     operatorVersionId: values.get("--operator-version-id"),
@@ -306,7 +326,7 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --campaign-id-sha256 <sha256> --deployment-state-plan <validated-state-plan.json> --controller-version-id <id> --runner-version-id <id> --runner-config-sha256 <sha256> --operator-version-id <id> --operator-config-sha256 <sha256> --operator-hmac-kid <kid> --operator-hmac-credential-id-sha256 <sha256> --operator-status-hmac-kid <kid> --operator-status-hmac-credential-id-sha256 <sha256> --operator-approval-key-id <kid> --operator-approval-spki-sha256 <sha256> --invoker-version-id <id> --invoker-config-sha256 <sha256> --permit-issuer-version-id <id> --permit-issuer-config-sha256 <sha256> --executor-version-id <id> --executor-config-sha256 <sha256> --runtime-n-build-id <sha256> --runtime-n-image-digest <sha256:...> --runtime-n-minus-one-build-id <sha256> --runtime-n-minus-one-image-digest <sha256:...> [--candidate-shard-index <index>] [--config <path>] [--out <create-only-plan.json>] [--json]",
+    "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --campaign-id-sha256 <sha256> --deployment-state-plan <validated-state-plan.json> --controller-version-id <id> --caller-version-id <id> --caller-config-sha256 <sha256> --runner-version-id <id> --runner-config-sha256 <sha256> --operator-version-id <id> --operator-config-sha256 <sha256> --operator-hmac-kid <kid> --operator-hmac-credential-id-sha256 <sha256> --operator-status-hmac-kid <kid> --operator-status-hmac-credential-id-sha256 <sha256> --operator-approval-key-id <kid> --operator-approval-spki-sha256 <sha256> --invoker-version-id <id> --invoker-config-sha256 <sha256> --permit-issuer-version-id <id> --permit-issuer-config-sha256 <sha256> --executor-version-id <id> --executor-config-sha256 <sha256> --runtime-n-build-id <sha256> --runtime-n-image-digest <sha256:...> --runtime-n-minus-one-build-id <sha256> --runtime-n-minus-one-image-digest <sha256:...> [--candidate-shard-index <index>] [--config <path>] [--out <create-only-plan.json>] [--json]",
     "  bun tools/plan_container_runtime_json_compatibility_campaign.mjs --self-test [--config <path>] [--json]",
     "",
     "This planner requires a staging campaign config with only CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED=true plus a validated deployment-state plan. Every supplied execution version/config identity must equal that plan's execution artifact. It accepts no secret options or values and performs no network request, credential read, deployment, gate change, provider call, or traffic mutation.",

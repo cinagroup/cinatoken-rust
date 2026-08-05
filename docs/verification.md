@@ -13753,3 +13753,33 @@ status-key slot, so live status-key rotation is not yet an accepted ceremony.
 No remote step in this list has run in this checkpoint. Local pass, self-test,
 and dry-run output must not be labeled Cloudflare staging evidence. Production
 remains **NO-GO**.
+
+## Private Caller And Plan v5 Verification (2026-08-05)
+
+This checkpoint supersedes the missing-upstream-Runner-caller item above. The
+local private Caller, Plan v5, deployment-state plan v2, packet v3, and source
+manifest v3 are implemented. Historical Plan v4/v3 remains Runner-first
+packet/manifest v2 and is read only.
+
+| Gate | Result |
+| --- | --- |
+| `bun run check:container-runtime:json-compatibility-caller` | PASS: generated types, TypeScript, local/staging Wrangler dry-runs, 11 Node tests, and 2 real workerd named RPC tests |
+| `bun run check:container-runtime:json-compatibility-campaign` | PASS: 126 tests, 538 expectations; Caller config/receipt, Plan v5, v4/v3/v2 history, packet/manifest v3/v2 pairing, bounded files, signer, source chain, and self-tests |
+| `bun run check:container-runtime:json-compatibility-deployment-states` | PASS: 14 tests, 82 expectations; 18 artifacts, exact transitions, v1 read compatibility, current-only creation, and campaign binding |
+| `bun run check` | PASS: exit code 0 in 1,381.4 seconds; complete configured frontend, Worker, supply-chain, Rust workspace, and wasm32 gates |
+
+The Caller uses an inert default export and one named RPC entrypoint, pins the
+exact Runner version/config, calls each requested Runner method once, never
+retries an unknown result, and deeply validates the nested receipt. The source
+projection keeps the raw nested Runner digest distinct from the Runner's own
+claimed receipt digest. Plan v5 rejects a bare Runner receipt and a resealed
+v2 packet. Historical Plan v4 status recovery remains readable through the v2
+chain. Inventory/state-plan validators remain historical readers, while their
+creation CLIs explicitly reject historical inputs.
+
+No Cloudflare upload/deploy, secret read/write, remote RPC, Durable Object or
+Container mutation, provider/billing/storage request, traffic change, or
+Go/VPS cutover occurred. Approval subject/envelope v2 with explicit Plan
+v5/schema 4 runtime binding, remote transition execution/readback, account
+binding inventory, source signing/archive, and real isolated staging remain
+blocking. Production remains **NO-GO**.

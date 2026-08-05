@@ -50,6 +50,9 @@ import {
 import {
   prepareJsonCompatibilityRunnerConfig,
 } from "../tools/prepare_container_runtime_json_compatibility_runner_config.mjs";
+import {
+  prepareJsonCompatibilityCallerConfig,
+} from "../tools/prepare_container_runtime_json_compatibility_caller_config.mjs";
 
 const DIGEST = (character) => character.repeat(64);
 const STATUS_AUTHORITY = Object.freeze({
@@ -91,13 +94,13 @@ afterAll(async () => {
 });
 
 describe("JSON compatibility deployment state plan", () => {
-  test("freezes 15 exact version/config artifacts and four safe transitions", () => {
+  test("freezes 18 exact version/config artifacts and four safe transitions", () => {
     const plan = buildJsonCompatibilityDeploymentStatePlan({
       services: fixture.services,
     });
     expect(validateJsonCompatibilityDeploymentStatePlan(plan)).toEqual(plan);
     expect(plan).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       contract: JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
       mode: "offline-version-freeze",
       environment: "staging",
@@ -124,7 +127,7 @@ describe("JSON compatibility deployment state plan", () => {
     expect(Object.values(plan.services).reduce(
       (count, service) => count + Object.keys(service.artifacts).length,
       0,
-    )).toBe(15);
+    )).toBe(18);
     expect(plan.transitions.map((transition) => transition.id)).toEqual([
       "arm-status-callee-to-caller",
       "arm-execution-callee-to-caller",
@@ -132,14 +135,14 @@ describe("JSON compatibility deployment state plan", () => {
       "close-status-caller-to-callee",
     ]);
     expect(plan.transitions[0].steps.map((step) => step.role)).toEqual([
-      "invoker", "operator", "runner",
+      "invoker", "operator", "runner", "caller",
     ]);
     expect(plan.transitions[1].steps.map((step) => step.role)).toEqual([
       "controller", "executor", "permitIssuer", "invoker", "operator",
-      "runner",
+      "runner", "caller",
     ]);
     expect(plan.transitions[2].steps.map((step) => step.role)).toEqual([
-      "runner", "operator", "invoker", "permitIssuer", "executor",
+      "caller", "runner", "operator", "invoker", "permitIssuer", "executor",
       "controller",
     ]);
     expect(plan.transitions[3]).toMatchObject({
@@ -227,6 +230,27 @@ describe("JSON compatibility deployment state plan", () => {
     expect(() => validateJsonCompatibilityDeploymentStatePlan(plan))
       .toThrow(/canonical digest/);
   });
+
+  test("keeps the six-service deployment state plan v1 readable", () => {
+    const plan = buildJsonCompatibilityDeploymentStatePlan({
+      services: fixture.services,
+    });
+    plan.schemaVersion = 1;
+    plan.contract =
+      "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1";
+    delete plan.services.caller;
+    for (const state of Object.values(plan.states)) delete state.caller;
+    for (const transition of plan.transitions) {
+      transition.steps = transition.steps.filter((step) => step.role !== "caller");
+      transition.steps.forEach((step, index) => {
+        step.ordinal = index + 1;
+      });
+    }
+    const historical = resign(plan);
+    expect(validateJsonCompatibilityDeploymentStatePlan(historical)).toEqual(
+      historical,
+    );
+  });
 });
 
 describe("JSON compatibility deployment state inventory planner", () => {
@@ -274,6 +298,21 @@ describe("JSON compatibility deployment state inventory planner", () => {
     })).rejects.toThrow(/must not replace --inventory/);
   });
 
+  test("refuses to create a new state plan from a historical inventory", async () => {
+    const historical = structuredClone(fixture.inventory);
+    historical.schemaVersion = 1;
+    historical.contract =
+      "cinatoken-container-runtime-json-compatibility-deployment-state-inventory-v1";
+    delete historical.services.caller;
+    const inventoryPath = path.join(directory, "inventory-v1.json");
+    await writeFile(inventoryPath, canonicalJson(historical), "utf8");
+
+    await expect(runJsonCompatibilityDeploymentStatePlanner({
+      inventoryPath,
+      outPath: path.join(directory, "state-plan-from-v1.json"),
+    })).rejects.toThrow(/current inventory contract/);
+  });
+
   test("binds a campaign plan to the validated execution artifacts", async () => {
     const deploymentPlan = buildJsonCompatibilityDeploymentStatePlan({
       services: fixture.services,
@@ -293,12 +332,12 @@ describe("JSON compatibility deployment state inventory planner", () => {
       deploymentPlan,
       deploymentPlanPath,
       controllerConfigPath,
-      path.join(directory, "campaign-plan-v4.json"),
+      path.join(directory, "campaign-plan-v5.json"),
     );
     const campaign = await runJsonCompatibilityCampaignPlanner(options);
     expect(campaign).toMatchObject({
-      schemaVersion: 3,
-      contract: "cinatoken-container-runtime-json-compatibility-plan-v4",
+      schemaVersion: 4,
+      contract: "cinatoken-container-runtime-json-compatibility-plan-v5",
       deploymentStateBinding: {
         planDigestSha256: deploymentPlan.planDigestSha256,
         initialState: "dark",
@@ -312,6 +351,11 @@ describe("JSON compatibility deployment state inventory planner", () => {
       configSha256:
         deploymentPlan.services.runner.artifacts.execution.configSha256,
     });
+    expect(campaign.deploymentStateBinding.executionArtifacts.caller).toEqual({
+      versionId: deploymentPlan.services.caller.artifacts.execution.versionId,
+      configSha256:
+        deploymentPlan.services.caller.artifacts.execution.configSha256,
+    });
     await expect(runJsonCompatibilityCampaignPlanner(options)).rejects.toThrow();
 
     await expect(runJsonCompatibilityCampaignPlanner({
@@ -319,6 +363,42 @@ describe("JSON compatibility deployment state inventory planner", () => {
       outPath: path.join(directory, "campaign-plan-drift.json"),
       runnerVersionId: "runner-unapproved-version",
     })).rejects.toThrow(/runner execution version does not match/);
+  });
+
+  test("refuses to create a campaign from a historical state plan", async () => {
+    const current = buildJsonCompatibilityDeploymentStatePlan({
+      services: fixture.services,
+    });
+    const historical = structuredClone(current);
+    historical.schemaVersion = 1;
+    historical.contract =
+      "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1";
+    delete historical.services.caller;
+    for (const state of Object.values(historical.states)) delete state.caller;
+    for (const transition of historical.transitions) {
+      transition.steps = transition.steps.filter((step) => step.role !== "caller");
+      transition.steps.forEach((step, index) => {
+        step.ordinal = index + 1;
+      });
+    }
+    const historicalPlan = resign(historical);
+    const deploymentPlanPath = path.join(directory, "state-plan-v1.json");
+    const controllerConfigPath = path.join(directory, "controller-for-v1.jsonc");
+    await writeFile(deploymentPlanPath, canonicalJson(historicalPlan), "utf8");
+    await writeFile(
+      controllerConfigPath,
+      canonicalJson(fixture.services.controller.execution.config),
+      "utf8",
+    );
+    const options = campaignPlannerOptions(
+      current,
+      deploymentPlanPath,
+      controllerConfigPath,
+      path.join(directory, "campaign-from-v1.json"),
+    );
+
+    await expect(runJsonCompatibilityCampaignPlanner(options))
+      .rejects.toThrow(/current deployment state plan contract/);
   });
 
   test("parses a narrow CLI and rejects missing, duplicate, or unknown options", () => {
@@ -473,6 +553,34 @@ async function buildFixture(root) {
       },
     ),
   };
+  artifacts.caller = {
+    dark: await prepareConfig(
+      root,
+      "caller-dark.jsonc",
+      prepareJsonCompatibilityCallerConfig,
+      { deploymentState: "dark" },
+    ),
+    statusOnly: await prepareConfig(
+      root,
+      "caller-status.jsonc",
+      prepareJsonCompatibilityCallerConfig,
+      {
+        deploymentState: "status-only",
+        runnerVersionId: "runner-status-version-2026-08",
+        runnerConfigSha256: DIGEST("a"),
+      },
+    ),
+    execution: await prepareConfig(
+      root,
+      "caller-execution.jsonc",
+      prepareJsonCompatibilityCallerConfig,
+      {
+        deploymentState: "execution",
+        runnerVersionId: "runner-execution-version-2026-08",
+        runnerConfigSha256: DIGEST("b"),
+      },
+    ),
+  };
 
   const services = {};
   const inventoryServices = {};
@@ -494,7 +602,7 @@ async function buildFixture(root) {
   return {
     services,
     inventory: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       contract: JSON_COMPATIBILITY_DEPLOYMENT_STATE_INVENTORY_CONTRACT,
       environment: "staging",
       services: inventoryServices,
@@ -544,6 +652,8 @@ function campaignPlannerOptions(
     outPath,
     campaignIdSha256: DIGEST("b"),
     controllerVersionId: execution.controller.versionId,
+    callerVersionId: execution.caller.versionId,
+    callerConfigSha256: execution.caller.configSha256,
     runnerVersionId: execution.runner.versionId,
     runnerConfigSha256: execution.runner.configSha256,
     operatorVersionId: execution.operator.versionId,

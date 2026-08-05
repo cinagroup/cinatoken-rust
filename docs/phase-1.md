@@ -5690,3 +5690,28 @@ upstream private Runner caller, transition executor, authenticated upload and
 readback, account binding inventory, topology/context collectors, signing and
 retention, and real four-phase staging remain absent. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-08-05 Phase 1 Private Caller Boundary
+
+The upstream private Runner caller identified above is now implemented
+locally. Plan v5 binds Caller plus the five downstream private services;
+deployment-state plan v2 freezes 18 exact artifacts; and current evidence is
+Caller-first packet/source-manifest v3. Historical Plan v4/v3 remains
+Runner-first v2 and cannot authorize a new campaign.
+
+The Caller is a stateless TypeScript named `WorkerEntrypoint` with an inert
+default export, exact Runner version/config pins, independent execution and
+status-read gates, bounded strict JSON, one awaited RPC, deep nested-receipt
+validation, and no retry. Invoker DO remains the durable attempt/order
+authority, while Rust remains confined to the Linux Container compute layer.
+
+See `docs/container-runtime-json-compatibility-caller.md` for the compatibility
+matrix, transition order, receipt model, commands, and remote acceptance list.
+Focused acceptance passes 126 campaign/source/config tests with 538
+expectations, 14 deployment-state tests with 82 expectations, and the Caller
+service's 11 Node plus 2 workerd tests. The complete root `bun run check`
+passes with exit code 0 in 1,381.4 seconds.
+The next hardening item is approval subject/envelope v2 with explicit Plan
+v5/schema 4 runtime binding, followed by the remote transition/readback and
+source-authenticity work. No deployment occurred; Phase 1 remote staging and
+production remain **NO-GO**.

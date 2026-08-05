@@ -73,6 +73,8 @@ async function fixture() {
     campaignIdSha256: "11".repeat(32),
     deploymentStatePlanDigestSha256: "d1".repeat(32),
     controllerVersionId: "controller-version-001",
+    callerVersionId: "caller-version-001",
+    callerConfigSha256: "a0".repeat(32),
     runnerVersionId: "runner-version-001",
     runnerConfigSha256: "a1".repeat(32),
     operatorVersionId: "operator-version-001",
@@ -243,7 +245,28 @@ describe("offline JSON compatibility operator approval", () => {
 
   test("keeps historical plans readable but refuses to sign new execution approval", async () => {
     const value = await fixture();
-    const planV3 = structuredClone(value.plan);
+    const planV4 = structuredClone(value.plan);
+    planV4.schemaVersion = 3;
+    planV4.contract =
+      "cinatoken-container-runtime-json-compatibility-plan-v4";
+    delete planV4.privateServices.caller;
+    delete planV4.statusRecovery.statusReadGates.caller;
+    delete planV4.deploymentStateBinding.executionArtifacts.caller;
+    planV4.deploymentStateBinding.deploymentStatePlanContract =
+      "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1";
+    delete planV4.planDigestSha256;
+    planV4.planDigestSha256 = sha256Canonical(planV4);
+    const requestV4 = structuredClone(value.request);
+    requestV4.execution.planDigestSha256 = planV4.planDigestSha256;
+
+    expect(() => signJsonCompatibilityOperatorApproval({
+      ...value,
+      plan: planV4,
+      request: requestV4,
+      now: NOW,
+    })).toThrow(/current plan contract/u);
+
+    const planV3 = structuredClone(planV4);
     planV3.schemaVersion = 2;
     planV3.contract =
       "cinatoken-container-runtime-json-compatibility-plan-v3";

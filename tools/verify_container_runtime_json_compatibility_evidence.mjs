@@ -46,6 +46,8 @@ export async function runJsonCompatibilityEvidenceVerifier(options) {
       campaignIdSha256: "11".repeat(32),
       deploymentStatePlanDigestSha256: "d4".repeat(32),
       controllerVersionId: "controller-version-self-test",
+      callerVersionId: "caller-version-self-test",
+      callerConfigSha256: "a0".repeat(32),
       runnerVersionId: "runner-version-self-test",
       runnerConfigSha256: "aa".repeat(32),
       operatorVersionId: "operator-version-self-test",

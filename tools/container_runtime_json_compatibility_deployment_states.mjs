@@ -21,16 +21,23 @@ import {
 import {
   validateJsonCompatibilityRunnerConfig,
 } from "./prepare_container_runtime_json_compatibility_runner_config.mjs";
+import {
+  validateJsonCompatibilityCallerConfig,
+} from "./prepare_container_runtime_json_compatibility_caller_config.mjs";
 
 export const JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v2";
+export const JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_V1_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1";
 export const JSON_COMPATIBILITY_DEPLOYMENT_STATE_INVENTORY_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-state-inventory-v2";
+export const JSON_COMPATIBILITY_DEPLOYMENT_STATE_INVENTORY_V1_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-state-inventory-v1";
 export const JSON_COMPATIBILITY_DEPLOYMENT_STATUS_HOLD_SECONDS = 86_400;
 
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-const ROLE_ORDER = Object.freeze([
+const ROLE_ORDER_V1 = Object.freeze([
   "controller",
   "executor",
   "permitIssuer",
@@ -38,6 +45,7 @@ const ROLE_ORDER = Object.freeze([
   "operator",
   "runner",
 ]);
+const ROLE_ORDER = Object.freeze([...ROLE_ORDER_V1, "caller"]);
 const SERVICE_DEFINITIONS = Object.freeze({
   controller: Object.freeze({
     serviceName: "cinatoken-container-controller-staging",
@@ -89,8 +97,18 @@ const SERVICE_DEFINITIONS = Object.freeze({
       "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED",
     ]),
   }),
+  caller: Object.freeze({
+    serviceName:
+      "cinatoken-container-runtime-json-compatibility-caller-staging",
+    entrypoint: "JsonCompatibilityCampaignCallerEntrypoint",
+    artifactStates: Object.freeze(["dark", "statusOnly", "execution"]),
+    gateNames: Object.freeze([
+      "JSON_COMPATIBILITY_CALLER_ENABLED",
+      "JSON_COMPATIBILITY_CALLER_STATUS_READ_ENABLED",
+    ]),
+  }),
 });
-const GLOBAL_STATES = Object.freeze({
+const GLOBAL_STATES_V1 = Object.freeze({
   dark: Object.freeze({
     controller: "dark",
     executor: "dark",
@@ -116,7 +134,18 @@ const GLOBAL_STATES = Object.freeze({
     runner: "execution",
   }),
 });
-const TRANSITION_DEFINITIONS = Object.freeze([
+const GLOBAL_STATES = Object.freeze({
+  dark: Object.freeze({ ...GLOBAL_STATES_V1.dark, caller: "dark" }),
+  statusOnly: Object.freeze({
+    ...GLOBAL_STATES_V1.statusOnly,
+    caller: "statusOnly",
+  }),
+  execution: Object.freeze({
+    ...GLOBAL_STATES_V1.execution,
+    caller: "execution",
+  }),
+});
+const TRANSITION_DEFINITIONS_V1 = Object.freeze([
   Object.freeze({
     id: "arm-status-callee-to-caller",
     fromState: "dark",
@@ -130,7 +159,7 @@ const TRANSITION_DEFINITIONS = Object.freeze([
     fromState: "statusOnly",
     toState: "execution",
     direction: "callee-to-caller",
-    roles: ROLE_ORDER,
+    roles: ROLE_ORDER_V1,
     minimumHoldSeconds: 0,
   }),
   Object.freeze({
@@ -155,6 +184,27 @@ const TRANSITION_DEFINITIONS = Object.freeze([
     direction: "caller-to-callee",
     roles: Object.freeze(["runner", "operator", "invoker"]),
     minimumHoldSeconds: JSON_COMPATIBILITY_DEPLOYMENT_STATUS_HOLD_SECONDS,
+  }),
+]);
+const TRANSITION_DEFINITIONS = Object.freeze([
+  Object.freeze({
+    ...TRANSITION_DEFINITIONS_V1[0],
+    roles: Object.freeze(["invoker", "operator", "runner", "caller"]),
+  }),
+  Object.freeze({
+    ...TRANSITION_DEFINITIONS_V1[1],
+    roles: ROLE_ORDER,
+  }),
+  Object.freeze({
+    ...TRANSITION_DEFINITIONS_V1[2],
+    roles: Object.freeze([
+      "caller", "runner", "operator", "invoker", "permitIssuer",
+      "executor", "controller",
+    ]),
+  }),
+  Object.freeze({
+    ...TRANSITION_DEFINITIONS_V1[3],
+    roles: Object.freeze(["caller", "runner", "operator", "invoker"]),
   }),
 ]);
 
@@ -226,7 +276,7 @@ export function buildJsonCompatibilityDeploymentStatePlan(input) {
   }
 
   const subject = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     contract: JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
     kind: "container-runtime-json-compatibility-deployment-state-plan",
     mode: "offline-version-freeze",
@@ -264,6 +314,20 @@ export function buildJsonCompatibilityDeploymentStatePlan(input) {
 
 export function validateJsonCompatibilityDeploymentStatePlan(input) {
   const plan = record(input, "deployment state plan");
+  const current = plan.schemaVersion === 2
+    && plan.contract === JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT;
+  const historicalV1 = plan.schemaVersion === 1
+    && plan.contract === JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_V1_CONTRACT;
+  if (!current && !historicalV1) {
+    throw new JsonCompatibilityCampaignError(
+      "deployment state plan schema version and contract are unsupported",
+    );
+  }
+  const roleOrder = current ? ROLE_ORDER : ROLE_ORDER_V1;
+  const states = current ? GLOBAL_STATES : GLOBAL_STATES_V1;
+  const transitions = current
+    ? TRANSITION_DEFINITIONS
+    : TRANSITION_DEFINITIONS_V1;
   exactKeys(plan, [
     "schemaVersion",
     "contract",
@@ -277,12 +341,6 @@ export function validateJsonCompatibilityDeploymentStatePlan(input) {
     "executionBoundary",
     "planDigestSha256",
   ], "deployment state plan");
-  equal(plan.schemaVersion, 1, "deployment state plan schema version");
-  equal(
-    plan.contract,
-    JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
-    "deployment state plan contract",
-  );
   equal(
     plan.kind,
     "container-runtime-json-compatibility-deployment-state-plan",
@@ -299,15 +357,15 @@ export function validateJsonCompatibilityDeploymentStatePlan(input) {
   );
 
   const services = record(plan.services, "deployment state plan services");
-  exactKeys(services, ROLE_ORDER, "deployment state plan services");
+  exactKeys(services, roleOrder, "deployment state plan services");
   const seenVersionIds = new Set();
-  for (const role of ROLE_ORDER) {
+  for (const role of roleOrder) {
     validatePlannedService(role, services[role], seenVersionIds);
   }
-  canonicalEqual(plan.states, GLOBAL_STATES, "deployment global states");
+  canonicalEqual(plan.states, states, "deployment global states");
   canonicalEqual(
     plan.transitions,
-    buildTransitions(services),
+    buildTransitions(services, transitions, states),
     "deployment transitions",
   );
   canonicalEqual(plan.constraints, {
@@ -336,22 +394,26 @@ export function validateJsonCompatibilityDeploymentStatePlan(input) {
 
 export function validateJsonCompatibilityDeploymentStateInventory(input) {
   const inventory = record(input, "deployment state inventory");
+  const current = inventory.schemaVersion === 2
+    && inventory.contract === JSON_COMPATIBILITY_DEPLOYMENT_STATE_INVENTORY_CONTRACT;
+  const historicalV1 = inventory.schemaVersion === 1
+    && inventory.contract === JSON_COMPATIBILITY_DEPLOYMENT_STATE_INVENTORY_V1_CONTRACT;
+  if (!current && !historicalV1) {
+    throw new JsonCompatibilityCampaignError(
+      "deployment state inventory schema version and contract are unsupported",
+    );
+  }
+  const roleOrder = current ? ROLE_ORDER : ROLE_ORDER_V1;
   exactKeys(inventory, [
     "schemaVersion",
     "contract",
     "environment",
     "services",
   ], "deployment state inventory");
-  equal(inventory.schemaVersion, 1, "deployment state inventory schema version");
-  equal(
-    inventory.contract,
-    JSON_COMPATIBILITY_DEPLOYMENT_STATE_INVENTORY_CONTRACT,
-    "deployment state inventory contract",
-  );
   equal(inventory.environment, "staging", "deployment state inventory environment");
   const services = record(inventory.services, "deployment state inventory services");
-  exactKeys(services, ROLE_ORDER, "deployment state inventory services");
-  for (const role of ROLE_ORDER) {
+  exactKeys(services, roleOrder, "deployment state inventory services");
+  for (const role of roleOrder) {
     const definition = SERVICE_DEFINITIONS[role];
     const artifacts = record(
       services[role],
@@ -441,9 +503,16 @@ function validateConfigForState(role, state, config) {
     );
     return;
   }
-  validateJsonCompatibilityRunnerConfig(
+  if (role === "runner") {
+    validateJsonCompatibilityRunnerConfig(
+      config,
+      runnerValidationInput(state, vars),
+    );
+    return;
+  }
+  validateJsonCompatibilityCallerConfig(
     config,
-    runnerValidationInput(state, vars),
+    callerValidationInput(state, vars),
   );
 }
 
@@ -505,6 +574,17 @@ function runnerValidationInput(state, vars) {
     deploymentState: externalStateName(state),
     operatorVersionId:
       vars.JSON_COMPATIBILITY_RUNNER_OPERATOR_VERSION_ID,
+  };
+}
+
+function callerValidationInput(state, vars) {
+  if (state === "dark") return { deploymentState: "dark" };
+  return {
+    deploymentState: externalStateName(state),
+    runnerVersionId:
+      vars.JSON_COMPATIBILITY_CALLER_RUNNER_VERSION_ID,
+    runnerConfigSha256:
+      vars.JSON_COMPATIBILITY_CALLER_RUNNER_CONFIG_SHA256,
   };
 }
 
@@ -575,8 +655,12 @@ function expectedGates(role, state) {
   return gates;
 }
 
-function buildTransitions(services) {
-  return TRANSITION_DEFINITIONS.map((definition, index) => ({
+function buildTransitions(
+  services,
+  definitions = TRANSITION_DEFINITIONS,
+  states = GLOBAL_STATES,
+) {
+  return definitions.map((definition, index) => ({
     ordinal: index + 1,
     id: definition.id,
     fromState: definition.fromState,
@@ -586,8 +670,8 @@ function buildTransitions(services) {
     ownerApprovalRequired: true,
     automaticRetryAllowed: false,
     steps: definition.roles.map((role, stepIndex) => {
-      const fromArtifact = GLOBAL_STATES[definition.fromState][role];
-      const toArtifact = GLOBAL_STATES[definition.toState][role];
+      const fromArtifact = states[definition.fromState][role];
+      const toArtifact = states[definition.toState][role];
       const target = services[role].artifacts[toArtifact];
       return {
         ordinal: stepIndex + 1,

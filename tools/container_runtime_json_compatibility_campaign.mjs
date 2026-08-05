@@ -4,6 +4,8 @@ import {
 } from "./preflight_container_controller_deploy.mjs";
 
 export const JSON_COMPATIBILITY_PLAN_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-plan-v5";
+export const JSON_COMPATIBILITY_PLAN_V4_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-plan-v4";
 export const JSON_COMPATIBILITY_PLAN_V3_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-plan-v3";
@@ -12,6 +14,8 @@ export const JSON_COMPATIBILITY_PLAN_V2_CONTRACT =
 export const JSON_COMPATIBILITY_DEPLOYMENT_STATE_BINDING_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-state-binding-v1";
 export const JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v2";
+export const JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_V1_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1";
 export const JSON_COMPATIBILITY_EVIDENCE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-evidence-v1";
@@ -62,6 +66,12 @@ const REQUIRED_CHECKS = Object.freeze([
   "ledger-convergence",
 ]);
 const PRIVATE_SERVICE_DEFINITIONS = Object.freeze({
+  caller: Object.freeze({
+    serviceName:
+      "cinatoken-container-runtime-json-compatibility-caller-staging",
+    entrypoint: "JsonCompatibilityCampaignCallerEntrypoint",
+    gateName: "JSON_COMPATIBILITY_CALLER_ENABLED",
+  }),
   runner: Object.freeze({
     serviceName:
       "cinatoken-container-runtime-json-compatibility-runner-staging",
@@ -229,6 +239,8 @@ export function buildJsonCompatibilityCampaignPlan({
   campaignIdSha256,
   deploymentStatePlanDigestSha256,
   controllerVersionId,
+  callerVersionId,
+  callerConfigSha256,
   runnerVersionId,
   runnerConfigSha256,
   operatorVersionId,
@@ -271,6 +283,12 @@ export function buildJsonCompatibilityCampaignPlan({
   );
   requireToken(controllerVersionId, "[plan] Controller version ID");
   const privateServices = {
+    caller: normalizePrivateServiceIdentity(
+      PRIVATE_SERVICE_DEFINITIONS.caller,
+      callerVersionId,
+      callerConfigSha256,
+      "[plan] caller",
+    ),
     runner: normalizePrivateServiceIdentity(
       PRIVATE_SERVICE_DEFINITIONS.runner,
       runnerVersionId,
@@ -411,6 +429,7 @@ export function buildJsonCompatibilityCampaignPlan({
     clockSkewSeconds: JSON_COMPATIBILITY_STATUS_CLOCK_SKEW_SECONDS,
     executionRetryPermitted: false,
     statusReadGates: {
+      caller: "JSON_COMPATIBILITY_CALLER_STATUS_READ_ENABLED",
       runner: "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED",
       operator: "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED",
       invoker: "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED",
@@ -448,6 +467,7 @@ export function buildJsonCompatibilityCampaignPlan({
         versionId: controllerVersionId,
         configSha256: sha256Canonical(config),
       },
+      caller: executionArtifact(privateServices.caller),
       runner: executionArtifact(privateServices.runner),
       operator: executionArtifact(privateServices.operator),
       invoker: executionArtifact(privateServices.invoker),
@@ -456,7 +476,7 @@ export function buildJsonCompatibilityCampaignPlan({
     },
   };
   const subject = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     contract: JSON_COMPATIBILITY_PLAN_CONTRACT,
     kind: "container-runtime-json-compatibility-plan",
     mode: "offline-dry-run",
@@ -522,13 +542,15 @@ export function buildJsonCompatibilityCampaignPlan({
 
 export function validateJsonCompatibilityCampaignPlan(plan) {
   const value = requireRecord(plan, "[plan] document");
-  const isCurrentPlan = value.schemaVersion === 3
+  const isCurrentPlan = value.schemaVersion === 4
     && value.contract === JSON_COMPATIBILITY_PLAN_CONTRACT;
+  const isPlanV4 = value.schemaVersion === 3
+    && value.contract === JSON_COMPATIBILITY_PLAN_V4_CONTRACT;
   const isPlanV3 = value.schemaVersion === 2
     && value.contract === JSON_COMPATIBILITY_PLAN_V3_CONTRACT;
   const isPlanV2 = value.schemaVersion === 1
     && value.contract === JSON_COMPATIBILITY_PLAN_V2_CONTRACT;
-  if (!isCurrentPlan && !isPlanV3 && !isPlanV2) {
+  if (!isCurrentPlan && !isPlanV4 && !isPlanV3 && !isPlanV2) {
     throw new JsonCompatibilityCampaignError(
       "[plan] schema version and contract are unsupported",
     );
@@ -543,8 +565,8 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
     "controller",
     "privateServices",
     "operatorApproval",
-    ...(isCurrentPlan || isPlanV3 ? ["statusRecovery"] : []),
-    ...(isCurrentPlan ? ["deploymentStateBinding"] : []),
+    ...(isCurrentPlan || isPlanV4 || isPlanV3 ? ["statusRecovery"] : []),
+    ...(isCurrentPlan || isPlanV4 ? ["deploymentStateBinding"] : []),
     "runtimes",
     "ring",
     "constraints",
@@ -569,16 +591,21 @@ export function validateJsonCompatibilityCampaignPlan(plan) {
   );
 
   validateControllerIdentity(value.controller, "[plan] Controller");
-  validatePrivateServices(value.privateServices, "[plan] private services");
+  validatePrivateServices(
+    value.privateServices,
+    "[plan] private services",
+    isCurrentPlan,
+  );
   validateOperatorApprovalPolicy(value.operatorApproval);
-  if (isCurrentPlan || isPlanV3) {
-    validateStatusRecoveryPolicy(value.statusRecovery);
+  if (isCurrentPlan || isPlanV4 || isPlanV3) {
+    validateStatusRecoveryPolicy(value.statusRecovery, isCurrentPlan);
   }
-  if (isCurrentPlan) {
+  if (isCurrentPlan || isPlanV4) {
     validateDeploymentStateBinding(
       value.deploymentStateBinding,
       value.controller,
       value.privateServices,
+      isCurrentPlan,
     );
   }
   const runtimes = validateRuntimeSet(value.runtimes, "[plan] runtimes");
@@ -1326,16 +1353,18 @@ function validateRuntimeSet(value, label) {
   };
 }
 
-function validatePrivateServices(value, label) {
+function validatePrivateServices(value, label, includeCaller) {
   const services = requireRecord(value, label);
+  const roles = includeCaller
+    ? ["caller", "runner", "operator", "invoker", "permitIssuer", "executor"]
+    : ["runner", "operator", "invoker", "permitIssuer", "executor"];
   requireExactKeys(
     services,
-    ["runner", "operator", "invoker", "permitIssuer", "executor"],
+    roles,
     label,
   );
-  for (const [role, definition] of Object.entries(
-    PRIVATE_SERVICE_DEFINITIONS,
-  )) {
+  for (const role of roles) {
+    const definition = PRIVATE_SERVICE_DEFINITIONS[role];
     validatePrivateServiceIdentity(
       services[role],
       definition,
@@ -1393,7 +1422,7 @@ function validateOperatorApprovalPolicy(value) {
   return policy;
 }
 
-function validateStatusRecoveryPolicy(value) {
+function validateStatusRecoveryPolicy(value, includeCaller) {
   const policy = requireRecord(value, "[plan] status recovery policy");
   requireExactKeys(policy, [
     "schemaVersion",
@@ -1441,16 +1470,22 @@ function validateStatusRecoveryPolicy(value) {
     policy.statusReadGates,
     "[plan] status read gates",
   );
-  requireExactKeys(
-    gates,
-    ["runner", "operator", "invoker"],
-    "[plan] status read gates",
-  );
-  for (const [role, gateName] of [
+  const expectedGates = [
+    ...(includeCaller
+      ? [["caller", "JSON_COMPATIBILITY_CALLER_STATUS_READ_ENABLED"]]
+      : []),
     ["runner", "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED"],
     ["operator", "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED"],
     ["invoker", "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED"],
-  ]) requireEqual(gates[role], gateName, `[plan] ${role} status read gate`);
+  ];
+  requireExactKeys(
+    gates,
+    expectedGates.map(([role]) => role),
+    "[plan] status read gates",
+  );
+  for (const [role, gateName] of expectedGates) {
+    requireEqual(gates[role], gateName, `[plan] ${role} status read gate`);
+  }
   const authority = requireRecord(
     policy.statusAuthority,
     "[plan] status authority",
@@ -1484,7 +1519,12 @@ function validateStatusRecoveryPolicy(value) {
   return policy;
 }
 
-function validateDeploymentStateBinding(value, controller, privateServices) {
+function validateDeploymentStateBinding(
+  value,
+  controller,
+  privateServices,
+  includeCaller,
+) {
   const binding = requireRecord(value, "[plan] deployment state binding");
   requireExactKeys(binding, [
     "schemaVersion",
@@ -1511,7 +1551,9 @@ function validateDeploymentStateBinding(value, controller, privateServices) {
   );
   requireEqual(
     binding.deploymentStatePlanContract,
-    JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
+    includeCaller
+      ? JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT
+      : JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_V1_CONTRACT,
     "[plan] deployment state plan contract",
   );
   requireSha256(
@@ -1544,14 +1586,20 @@ function validateDeploymentStateBinding(value, controller, privateServices) {
     binding.executionArtifacts,
     "[plan] deployment execution artifacts",
   );
-  requireExactKeys(artifacts, [
+  const roles = [
     "controller",
+    ...(includeCaller ? ["caller"] : []),
     "runner",
     "operator",
     "invoker",
     "permitIssuer",
     "executor",
-  ], "[plan] deployment execution artifacts");
+  ];
+  requireExactKeys(
+    artifacts,
+    roles,
+    "[plan] deployment execution artifacts",
+  );
   requireCanonicalEqual(
     artifacts.controller,
     {
@@ -1561,6 +1609,7 @@ function validateDeploymentStateBinding(value, controller, privateServices) {
     "[plan] Controller deployment execution artifact",
   );
   for (const role of [
+    ...(includeCaller ? ["caller"] : []),
     "runner",
     "operator",
     "invoker",

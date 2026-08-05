@@ -78,6 +78,8 @@ function buildPlan() {
     campaignIdSha256: "11".repeat(32),
     deploymentStatePlanDigestSha256: "d2".repeat(32),
     controllerVersionId: "controller-version-phase-source-001",
+    callerVersionId: "caller-version-phase-source-001",
+    callerConfigSha256: "a0".repeat(32),
     runnerVersionId: "runner-version-phase-source-001",
     runnerConfigSha256: "a1".repeat(32),
     operatorVersionId: "operator-version-001",
@@ -993,6 +995,113 @@ function buildRunnerStatusReceipt(plan, operatorReceipt) {
   };
 }
 
+function buildCallerInvocationReceipt(plan, runnerReceipt) {
+  const body = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-caller-invocation-receipt-v1",
+    status: "caller_phase_invocation_completed",
+    environment: "staging",
+    campaignIdSha256: runnerReceipt.campaignIdSha256,
+    planDigestSha256: runnerReceipt.planDigestSha256,
+    phaseExecutionId: runnerReceipt.phaseExecutionId,
+    phaseOrdinal: runnerReceipt.phaseOrdinal,
+    phaseId: runnerReceipt.phaseId,
+    caller: {
+      serviceName: plan.privateServices.caller.serviceName,
+      entrypoint: plan.privateServices.caller.entrypoint,
+      versionId: plan.privateServices.caller.versionId,
+      gateName: "JSON_COMPATIBILITY_CALLER_ENABLED",
+      privateRpcOnly: true,
+    },
+    runner: {
+      serviceName: plan.privateServices.runner.serviceName,
+      entrypoint: plan.privateServices.runner.entrypoint,
+      versionId: plan.privateServices.runner.versionId,
+      configSha256: plan.privateServices.runner.configSha256,
+    },
+    authorizedPhaseRequestSha256:
+      runnerReceipt.authorizedPhaseRequestSha256,
+    privateTransport: {
+      kind: "service-binding-rpc",
+      publicUrlUsed: false,
+      cloudflareRestUsed: false,
+      runnerBinding: "JSON_COMPATIBILITY_RUNNER_SERVICE",
+      rpcMethod: "invokePhase",
+    },
+    runnerReceipt,
+    runnerReceiptSha256: sha256Canonical(runnerReceipt),
+    startedAt: runnerReceipt.startedAt,
+    completedAt: runnerReceipt.completedAt,
+  };
+  const subject = { ...body, callerBodySha256: sha256Canonical(body) };
+  return { ...subject, receiptSha256: sha256Canonical(subject) };
+}
+
+function buildCallerStatusReceipt(plan, runnerStatusReceipt) {
+  const callerStatusRequest = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-caller-phase-status-request-v1",
+    authorizedPhaseRequest: structuredClone(
+      runnerStatusReceipt.authorizedPhaseRequest,
+    ),
+  };
+  const body = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-caller-status-receipt-v1",
+    status: "caller_phase_status_observed",
+    phaseStatus: runnerStatusReceipt.phaseStatus,
+    environment: "staging",
+    campaignIdSha256: runnerStatusReceipt.campaignIdSha256,
+    planDigestSha256: runnerStatusReceipt.planDigestSha256,
+    phaseExecutionId: runnerStatusReceipt.phaseExecutionId,
+    phaseOrdinal: runnerStatusReceipt.phaseOrdinal,
+    phaseId: runnerStatusReceipt.phaseId,
+    caller: {
+      serviceName: plan.privateServices.caller.serviceName,
+      entrypoint: plan.privateServices.caller.entrypoint,
+      versionId: plan.privateServices.caller.versionId,
+      gateName: "JSON_COMPATIBILITY_CALLER_STATUS_READ_ENABLED",
+      privateRpcOnly: true,
+    },
+    runner: {
+      serviceName: plan.privateServices.runner.serviceName,
+      entrypoint: plan.privateServices.runner.entrypoint,
+      versionId: plan.privateServices.runner.versionId,
+      configSha256: plan.privateServices.runner.configSha256,
+    },
+    callerStatusRequestSha256: sha256Canonical(callerStatusRequest),
+    privateTransport: {
+      kind: "service-binding-rpc",
+      publicUrlUsed: false,
+      cloudflareRestUsed: false,
+      runnerBinding: "JSON_COMPATIBILITY_RUNNER_SERVICE",
+      rpcMethod: "getPhaseStatus",
+    },
+    runnerStatusReceipt,
+    runnerStatusReceiptSha256: sha256Canonical(runnerStatusReceipt),
+    recovery: {
+      mode: "read-only-status-recovery",
+      executionRetryPermitted: false,
+      runnerInvokePhaseCalled: false,
+      originalCallerReceiptReconstructed: false,
+    },
+    startedAt: runnerStatusReceipt.startedAt,
+    completedAt: runnerStatusReceipt.completedAt,
+  };
+  const subject = { ...body, callerBodySha256: sha256Canonical(body) };
+  return { ...subject, receiptSha256: sha256Canonical(subject) };
+}
+
+function wrapRunnerReceiptForPlan(plan, runnerReceipt) {
+  if (plan.privateServices.caller === undefined) return runnerReceipt;
+  return runnerReceipt.contract.endsWith("runner-invocation-receipt-v1")
+    ? buildCallerInvocationReceipt(plan, runnerReceipt)
+    : buildCallerStatusReceipt(plan, runnerReceipt);
+}
+
 function buildContext(plan, receipt, phaseIndex) {
   const providerSnapshot = sha256Canonical({ phaseIndex, source: "provider" });
   const billingSnapshot = sha256Canonical({ phaseIndex, source: "billing" });
@@ -1107,6 +1216,7 @@ function downgradeToLegacyPlan(plan) {
     "cinatoken-container-runtime-json-compatibility-plan-v2";
   delete plan.statusRecovery;
   delete plan.deploymentStateBinding;
+  delete plan.privateServices.caller;
   const { planDigestSha256: _ignored, ...subject } = plan;
   plan.planDigestSha256 = sha256Canonical(subject);
   return plan;
@@ -1117,6 +1227,22 @@ function downgradeToPlanV3(plan) {
   plan.contract =
     "cinatoken-container-runtime-json-compatibility-plan-v3";
   delete plan.deploymentStateBinding;
+  delete plan.privateServices.caller;
+  delete plan.statusRecovery.statusReadGates.caller;
+  const { planDigestSha256: _ignored, ...subject } = plan;
+  plan.planDigestSha256 = sha256Canonical(subject);
+  return plan;
+}
+
+function downgradeToPlanV4(plan) {
+  plan.schemaVersion = 3;
+  plan.contract =
+    "cinatoken-container-runtime-json-compatibility-plan-v4";
+  delete plan.privateServices.caller;
+  delete plan.statusRecovery.statusReadGates.caller;
+  delete plan.deploymentStateBinding.executionArtifacts.caller;
+  plan.deploymentStateBinding.deploymentStatePlanContract =
+    "cinatoken-container-runtime-json-compatibility-deployment-state-plan-v1";
   const { planDigestSha256: _ignored, ...subject } = plan;
   plan.planDigestSha256 = sha256Canonical(subject);
   return plan;
@@ -1152,7 +1278,10 @@ describe("container runtime JSON compatibility phase source assembly", () => {
       packets.push(
         await buildJsonCompatibilityPhaseSourcePacket(
           plan,
-          buildRunnerInvocationReceipt(plan, receipt),
+          wrapRunnerReceiptForPlan(
+            plan,
+            buildRunnerInvocationReceipt(plan, receipt),
+          ),
           context,
         ),
       );
@@ -1199,7 +1328,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
 
     const packet = await buildJsonCompatibilityPhaseSourcePacket(
       plan,
-      runnerStatusReceipt,
+      wrapRunnerReceiptForPlan(plan, runnerStatusReceipt),
       buildContext(plan, executorReceipt, 0),
     );
 
@@ -1239,7 +1368,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
 
     const packet = await buildJsonCompatibilityPhaseSourcePacket(
       plan,
-      runnerStatusReceipt,
+      wrapRunnerReceiptForPlan(plan, runnerStatusReceipt),
       buildContext(plan, executorReceipt, 0),
     );
 
@@ -1248,6 +1377,29 @@ describe("container runtime JSON compatibility phase source assembly", () => {
       phaseStatus: "completed",
       completion: { executionRetryPermitted: false },
     });
+  });
+
+  test("keeps completed plan v4 status receipts on the historical v2 packet", async () => {
+    const plan = downgradeToPlanV4(structuredClone(buildPlan()));
+    const executorReceipt = await buildReceipt(plan, 0);
+    const operatorReceipt = await buildOperatorInvocationReceipt(
+      plan,
+      executorReceipt,
+      0,
+    );
+    const packet = await buildJsonCompatibilityPhaseSourcePacket(
+      plan,
+      buildRunnerStatusReceipt(plan, operatorReceipt),
+      buildContext(plan, executorReceipt, 0),
+    );
+
+    expect(packet).toMatchObject({
+      schemaVersion: 2,
+      contract:
+        "cinatoken-container-runtime-json-compatibility-phase-source-packet-v2",
+    });
+    expect(packet.callerInvocation).toBeUndefined();
+    expect(packet.runnerInvocation.mode).toBe("recovered-status");
   });
 
   test("rejects a recovered status receipt with a detached query authority", async () => {
@@ -1266,7 +1418,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        runnerStatusReceipt,
+        wrapRunnerReceiptForPlan(plan, runnerStatusReceipt),
         buildContext(plan, executorReceipt, 0),
       ),
     ).rejects.toThrow(/private status authority credentialIdSha256/);
@@ -1291,7 +1443,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        runnerStatusReceipt,
+        wrapRunnerReceiptForPlan(plan, runnerStatusReceipt),
         buildContext(plan, executorReceipt, 0),
       ),
     ).rejects.toThrow(/planned status key ID/);
@@ -1310,7 +1462,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        runnerStatusReceipt,
+        wrapRunnerReceiptForPlan(plan, runnerStatusReceipt),
         buildContext(plan, executorReceipt, 0),
       ),
     ).rejects.toThrow(/plan does not authorize status recovery/);
@@ -1330,7 +1482,10 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        buildRunnerInvocationReceipt(plan, receipt),
+        wrapRunnerReceiptForPlan(
+          plan,
+          buildRunnerInvocationReceipt(plan, receipt),
+        ),
         buildContext(plan, receipt.privateInvocationReceipt.executorReceipt, 0),
       ),
     ).rejects.toThrow(/request canonical digest/);
@@ -1351,7 +1506,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
         operatorReceipt.privateInvocationReceipt,
         buildContext(plan, executorReceipt, 0),
       ),
-    ).rejects.toThrow(/runner/);
+    ).rejects.toThrow(/caller/);
 
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
@@ -1359,7 +1514,7 @@ describe("container runtime JSON compatibility phase source assembly", () => {
         executorReceipt,
         buildContext(plan, executorReceipt, 0),
       ),
-    ).rejects.toThrow(/runner/);
+    ).rejects.toThrow(/caller/);
   });
 
   test("binds the outer operator identity and deterministic command ID", async () => {
@@ -1375,7 +1530,10 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        buildRunnerInvocationReceipt(plan, operatorDrift),
+        wrapRunnerReceiptForPlan(
+          plan,
+          buildRunnerInvocationReceipt(plan, operatorDrift),
+        ),
         buildContext(plan, executorReceipt, 0),
       ),
     ).rejects.toThrow(/operator version/);
@@ -1391,7 +1549,10 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        buildRunnerInvocationReceipt(plan, commandDrift),
+        wrapRunnerReceiptForPlan(
+          plan,
+          buildRunnerInvocationReceipt(plan, commandDrift),
+        ),
         buildContext(plan, executorReceipt, 0),
       ),
     ).rejects.toThrow(/command ID/);
@@ -1417,7 +1578,10 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        buildRunnerInvocationReceipt(plan, operatorReceipt),
+        wrapRunnerReceiptForPlan(
+          plan,
+          buildRunnerInvocationReceipt(plan, operatorReceipt),
+        ),
         buildContext(plan, executorReceipt, 0),
       ),
     ).rejects.toThrow(/planned execution authority keyId/);
@@ -1440,7 +1604,10 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        buildRunnerInvocationReceipt(plan, receipt),
+        wrapRunnerReceiptForPlan(
+          plan,
+          buildRunnerInvocationReceipt(plan, receipt),
+        ),
         buildContext(plan, executorReceipt, 0),
       ),
     ).rejects.toThrow(/completion attempt ID/);
@@ -1459,7 +1626,10 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        buildRunnerInvocationReceipt(plan, receipt),
+        wrapRunnerReceiptForPlan(
+          plan,
+          buildRunnerInvocationReceipt(plan, receipt),
+        ),
         context,
       ),
     ).rejects.toThrow(/provider snapshot/);
@@ -1473,7 +1643,10 @@ describe("container runtime JSON compatibility phase source assembly", () => {
     await expect(
       buildJsonCompatibilityPhaseSourcePacket(
         plan,
-        buildRunnerInvocationReceipt(plan, receipt),
+        wrapRunnerReceiptForPlan(
+          plan,
+          buildRunnerInvocationReceipt(plan, receipt),
+        ),
         storageContext,
       ),
     ).rejects.toThrow(/storage gateway snapshot/);
@@ -1488,7 +1661,10 @@ describe("container runtime JSON compatibility phase source assembly", () => {
       executorReceipt,
       2,
     );
-    const receipt = buildRunnerInvocationReceipt(plan, operatorReceipt);
+    const receipt = wrapRunnerReceiptForPlan(
+      plan,
+      buildRunnerInvocationReceipt(plan, operatorReceipt),
+    );
     const context = buildContext(plan, executorReceipt, 2);
     const planPath = path.join(directory, "plan.json");
     const receiptPath = path.join(directory, "receipt.json");

@@ -1,0 +1,25 @@
+name = "cinatoken-container-runtime-json-compatibility-caller-staging"
+main = "src/index.ts"
+compatibility_date = "2026-08-05"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+preview_urls = false
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
+[[services]]
+binding = "JSON_COMPATIBILITY_RUNNER_SERVICE"
+service = "cinatoken-container-runtime-json-compatibility-runner-staging"
+entrypoint = "JsonCompatibilityCampaignRunnerEntrypoint"
+
+[vars]
+ENVIRONMENT = "staging"
+JSON_COMPATIBILITY_CALLER_ENABLED = "false"
+JSON_COMPATIBILITY_CALLER_STATUS_READ_ENABLED = "false"
+JSON_COMPATIBILITY_CALLER_RUNNER_VERSION_ID = ""
+JSON_COMPATIBILITY_CALLER_RUNNER_CONFIG_SHA256 = ""

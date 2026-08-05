@@ -2861,17 +2861,18 @@ Synthetic `--self-test` evidence is explicitly marked and rejected by normal
 mode. The
 current repository provides the named private Controller entrypoint, bounded
 executor, permit issuer, private invoker, default-off Operator and Runner named
-entrypoints, six create-only campaign config preparers, create-only deployment
-state/campaign plans and evidence projector, receipt/context phase
-assembler, source-manifest collector, offline verifier, signed-permit consumer,
-and per-campaign SQLite replay/lease authorities. Plan v4 freezes each Runner,
-Operator, Invoker, PermitIssuer, and Executor `serviceName`, named
-`entrypoint`, `versionId`, `configSha256`, `gateName`, and
-`privateRpcOnly=true` identity while retaining the Controller separately. It
-does not yet provide an exact per-shard topology runner, an automated independent
-context collector, cryptographic source signature, immutable archive, deployed
-versions, remote config/binding/DO-migration readback, or a real staging
-packet.
+entrypoints, the private Caller, seven create-only campaign config preparers,
+create-only deployment state/campaign plans and evidence projector,
+receipt/context phase assembler, source-manifest collector, offline verifier,
+signed-permit consumer, and per-campaign SQLite replay/lease authorities. Plan
+v5 freezes Controller, Executor, PermitIssuer, Invoker, Operator, Runner, and
+Caller `serviceName`, named `entrypoint`, `versionId`, `configSha256`, gate, and
+`privateRpcOnly=true` identities. A local transition coordinator freezes the
+four exact state orders, but it has no deployed private mutation/readback leaf
+or applied D1 journal. The repository also does not yet provide an exact
+per-shard topology runner, an automated independent context collector,
+cryptographic source signature, immutable archive, deployed versions, remote
+config/binding/DO-migration readback, or a real staging packet.
 Canonical digests detect mutation but do not authenticate the source.
 Therefore local success is not remote staging evidence and does not authorize
 image publication, rollout, Protobuf gates, production traffic, or DNS changes.
@@ -2880,7 +2881,7 @@ After structural verification, authenticate the source envelope and publish the
 approved immutable archive. Neither step exists yet. Never leave a campaign
 config as the normal staging deployment input.
 
-Abort immediately on permit/authentication/replay failure, any of the five
+Abort immediately on permit/authentication/replay failure, any of the seven
 service identities or configs drifting, public reachability, a missing or
 duplicate shard,
 wrong per-shard build/image identity, projection drift, any Protobuf
@@ -2898,41 +2899,42 @@ source signature and immutable archive, a real four-phase staging campaign,
 and the wider provider, billing, storage, SLO, security and cutover gates all
 remain release blockers.
 
-## 2026-08-05 Runner And Status-Recovery Ceremony
+## 2026-08-05 Caller And Status-Recovery Ceremony
 
 This ceremony supersedes any earlier instruction to submit an Operator or
 Invoker receipt directly to phase assembly.
 
 ### Preconditions
 
-- The final artifact is plan v4 and binds a validated deployment-state plan.
-  Plan v3/v2 may be verified historically but must not authorize a new
-  campaign.
-- Controller, Executor, PermitIssuer, Invoker, Operator, and Runner are exact
-  reviewed versions. All tracked configs are private and default false.
+- The final artifact is Plan v5 and binds a validated state-plan v2. Plan
+  v4/v3/v2 may be verified historically but must not authorize a new campaign.
+- Controller, Executor, PermitIssuer, Invoker, Operator, Runner, and Caller are
+  exact reviewed versions. All tracked configs are private and default false.
 - Invoker and Operator execution HMAC credentials differ from the
   Operator-to-Invoker status HMAC credentials.
 - Approval trust retention covers the 24-hour recovery window. One status HMAC
   credential remains frozen for the entire campaign and recovery window; the
   current Invoker preparer has no previous status-key slot, so rotation is not
   part of this ceremony.
-- Remote readback proves Runner binds only the named Operator entrypoint and no
-  public/default entrypoint exposes campaign RPC.
-- A separate private orchestration Worker binds to the named Runner. This
-  upstream caller is not implemented yet and is distinct from the missing
-  named-shard topology deployment/readback runner.
+- Remote readback proves Runner binds only the named Operator entrypoint,
+  Caller binds only the named Runner entrypoint, and no public/default
+  entrypoint exposes campaign RPC.
+- The private Caller binds to the named Runner and is implemented locally with
+  an inert default export. It remains distinct from the missing named-shard
+  topology deployment/readback runner.
 - Create-only preparers produce exact dark, status-only, and execution configs
-  for Invoker, Operator, and Runner. The deployment-state plan validates 15
-  configs, freezes their version/config identities, and permits only four
+  for Invoker, Operator, Runner, and Caller. The deployment-state plan validates
+  18 configs, freezes their version/config identities, and permits only four
   ordered transitions. Its local or fixture version IDs are not remote upload
   evidence.
 
 ### Deploy and arm (locally specified; remotely blocked)
 
-Do not run the following target sequence until the upstream private Runner
-caller, fail-closed transition executor, authenticated upload/readback, and
-account binding inventory exist. A valid local state plan is not deployment
-evidence.
+Do not run the following target sequence until the transition coordinator has
+a reviewed private Cloudflare leaf adapter, applied immutable D1 journal,
+readback-only crash recovery, authenticated upload/readback, and complete
+account binding inventory. The local coordinator contract and state plan are
+not deployment evidence.
 
 The local freeze workflow is create-only and non-mutating:
 
@@ -2940,35 +2942,39 @@ The local freeze workflow is create-only and non-mutating:
 bun run prepare:container-runtime:json-compatibility-invoker-config -- --deployment-state <dark|status-only|execution> ...
 bun run prepare:container-runtime:json-compatibility-operator-config -- --deployment-state <dark|status-only|execution> ...
 bun run prepare:container-runtime:json-compatibility-runner-config -- --deployment-state <dark|status-only|execution> ...
+bun run prepare:container-runtime:json-compatibility-caller-config -- --deployment-state <dark|status-only|execution> ...
 bun run plan:container-runtime:json-compatibility-deployment-states -- --inventory <uploaded-version-inventory.json> --out <deployment-state-plan.json>
 bun run plan:container-runtime:json-compatibility-campaign -- --deployment-state-plan <deployment-state-plan.json> ...
+bun run check:container-runtime:json-compatibility-deployment-transition
 ```
 
-The inventory contract is schema v1 for staging. Its exact `services` keys are
-`controller`, `executor`, `permitIssuer`, `invoker`, `operator`, and `runner`.
+The inventory contract is schema v2 for staging. Its exact `services` keys are
+`controller`, `executor`, `permitIssuer`, `invoker`, `operator`, `runner`, and
+`caller`.
 Controller, Executor, and PermitIssuer each contain `dark` and `execution`;
-Invoker, Operator, and Runner also contain `statusOnly`. Every artifact contains
-only a remote `versionId` and a `configPath` relative to the inventory. Config
-paths are consumed locally and never retained in the state plan. Use each
-command's `--help` output for the complete required non-secret arguments.
+Invoker, Operator, Runner, and Caller also contain `statusOnly`. Every artifact
+contains only a remote `versionId` and a `configPath` relative to the inventory.
+Config paths are consumed locally and never retained in the state plan. Use
+each command's `--help` output for the complete required non-secret arguments.
 
-1. Deploy callee to caller: Controller, Executor, PermitIssuer, Invoker,
-   Operator, Runner. Leave execution and status gates false.
+1. Upload and deploy callee to caller: Controller, Executor, PermitIssuer,
+   Invoker, Operator, Runner, Caller. Leave execution and status gates false.
 2. Read back Version Metadata, canonical config digest, named exports, binding
    targets, routes, and secret names without values. Prove both the Invoker DO
    class migration and its runtime SQLite column upgrade, including v2 result
    recovery and stable legacy `completed_receipt_unavailable` behavior.
-3. Enable status gates in callee-to-caller order: Invoker, Operator, Runner.
+3. Enable status gates only through the approved transition coordinator in
+   callee-to-caller order: Invoker, Operator, Runner, Caller.
    Verify a bounded signed query is accepted but cannot call execution methods.
 4. Enable execution in callee-to-caller order. Retain an explicit before-state
    artifact after each change.
 5. Build one exact phase request, sign one Ed25519 approval, and invoke only the
-   named Runner once.
+   named Caller once.
 
 ### Ambiguous response
 
 Never replay `invokePhase`, mint another permit, change the command ID, or mark
-the phase failed merely because a response was lost. Submit a new Runner status
+the phase failed merely because a response was lost. Submit a new Caller status
 wrapper using the original authorized phase request. The Operator revalidates
 the original Ed25519 approval and generates the fresh HMAC status query:
 
@@ -2985,23 +2991,26 @@ automatically.
 
 ### Evidence and closure
 
-Phase assembly consumes the raw Runner invocation receipt for a direct result,
-or the raw Runner status receipt for a recovered result. Only completed paths
-may produce packet v2. Four ordered packets produce source manifest v2; public
+Phase assembly consumes the raw Caller invocation receipt for a direct result,
+or the raw Caller status receipt for a recovered result. Only completed paths
+may produce packet v3. Four ordered packets produce source manifest v3; public
 evidence v1 binds its digest. Independently sign and archive the raw inputs,
 packet, manifest, config/version readback, and revocation state.
 
 After rollback, transition `execution -> statusOnly` disables execution caller
 to callee while retaining the frozen status-only versions for the full
 recovery window. After 24 hours, `statusOnly -> dark` disables status caller to
-callee and requires every gate to read back false. The local plan defines and
-validates this order; a remote executor/readback implementation is still
-missing. Failure to retain status access never authorizes an execution retry.
+callee and requires every gate to read back false. The local coordinator
+defines and validates this order, dedicated approval, stable readbacks,
+persist-before-send mutation intent, one-send ambiguity handling, and chained
+receipt. Its remote leaf adapter, D1 journal, readback-only crash recovery, and
+locked archive are still missing. Failure to retain status access never
+authorizes an execution retry.
 
-Focused local evidence is 105 campaign tests with 457 expectations, 11
-deployment-state tests with 70 expectations, 10 Runner Node tests, and two
-real workerd named Service Binding tests. The complete integrated repository
-`bun run check` passed with exit code 0 in 1,481.5 seconds on 2026-08-05. These
-steps have not run remotely and activation remains blocked.
+The focused transition coordinator gate passes 12 tests with 142 expectations,
+including all four exact orders, dedicated Plan v5/state-plan v2 approval,
+86,400-second hold, source authentication, independent stable readback,
+one-send ambiguity, replay, drift, journal conflict, and archive ambiguity.
+These steps have not run remotely and activation remains blocked.
 Go/VPS remains the source of production authority, and production remains
 **NO-GO**.

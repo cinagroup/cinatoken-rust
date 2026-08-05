@@ -166,6 +166,7 @@ The local acceptance surface is:
 bun run check:container-runtime:json-compatibility-operator
 bun run check:container-runtime:json-compatibility-campaign
 bun run check:container-runtime:json-compatibility-deployment-states
+bun run check:container-runtime:json-compatibility-deployment-transition
 bun run check
 ```
 
@@ -185,10 +186,17 @@ complete repository `bun run check` passes with exit code 0 in 1,403.6 seconds.
 ## Remaining NO-GO Gates
 
 Approval v2 closes only the local Plan-meaning ambiguity. Isolated staging
-still requires the fail-closed remote transition executor, authenticated
+now has a separate local transition coordinator contract, but still requires
+its private Cloudflare mutation/readback leaf, applied immutable D1 journal,
+status-only inflight recovery and locked receipt archive. Authenticated
 version/config/binding readback, account-wide binding inventory, exact
 topology and context collection, source signing and revocation evidence,
 immutable archive publication/readback, and the real four-phase campaign.
+
+The transition approval is deliberately not this phase approval. It uses a
+separate audience, subject/envelope contracts, and signature domain while
+binding the same current Plan trust root. See
+`docs/container-runtime-json-compatibility-deployment-transition.md`.
 
 No local test or Wrangler dry-run proves those remote properties. Go/VPS stays
 authoritative and production remains **NO-GO** until the complete migration

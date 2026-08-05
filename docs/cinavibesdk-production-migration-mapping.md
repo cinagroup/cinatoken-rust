@@ -2276,10 +2276,18 @@ and historical/current cross-pairing. The complete repository `bun run check`
 passes with exit code 0 in 1,403.6 seconds. This proves the local protocol and
 side-effect boundary only.
 
-The next architecture gap is remote orchestration: deploy all 18 dark
+The local transition coordinator now applies the same cinaVibeSDK-aligned
+ownership model to deployment control: TypeScript validates a dedicated
+Plan/state-bound approval, orders the four transitions, persists intent before
+one mutation, resolves ambiguity only through stable readback, and emits a
+chained receipt. It has no default network or credential capability and does
+not move orchestration into Rust Wasm.
+
+The next architecture gap is remote orchestration: deploy a private TypeScript
+coordinator and Service Binding leaf, apply its immutable D1 journal, add
+readback-only inflight recovery and locked archive, upload all 18 dark
 artifacts, independently read back versions/configs/entrypoints/bindings and
-route absence, execute only the four frozen state transitions, retain signed
-transition receipts, and prove the account binding inventory. Topology/context
-collection, source signing/revocation, immutable archive, the real campaign,
-provider/billing/storage convergence, and Go/VPS drain remain open. Production
-remains **NO-GO**.
+route absence, and prove the account binding inventory. Topology/context
+collection, source signing/revocation, the real campaign, provider/billing/
+storage convergence, and Go/VPS drain remain open. Production remains
+**NO-GO**.

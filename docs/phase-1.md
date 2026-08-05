@@ -5740,3 +5740,39 @@ the exact subject, signature payload, compatibility matrix, failure semantics,
 and acceptance commands. The next hard gate is the remote transition executor
 and authenticated readback chain. No deployment occurred; Phase 1 remote
 staging and production remain **NO-GO**.
+
+## 2026-08-05 Phase 1 Transition Coordinator Boundary
+
+The missing local transition protocol identified above is now implemented in
+`tools/container_runtime_json_compatibility_deployment_transition.mjs`. It
+requires current Plan v5/schema 4 plus state-plan v2/schema 2 and uses a
+dedicated Ed25519 transition subject, envelope, audience, and signature domain.
+The full frozen transition, prior-state evidence, account, source signature and
+archive, artifact and binding inventories, operation ID, and validity window
+are signed.
+
+Every step obtains two independent source observations at least five seconds
+apart, appends an intent binding the observed source state before the one
+mutation call, rechecks approval expiry immediately before send, and requires
+two stable target observations before advancing. Ambiguous responses are never
+resent. Exact terminal replay is side-effect free; inflight, journal conflict,
+and receipt-archive ambiguity stop as uncertain. Step receipts form a canonical
+predecessor chain and only a complete terminal receipt permits consideration
+of the next separately approved transition.
+
+The focused gate passes 12 tests with 142 expectations and is part of root
+`bun run check`. It proves all four `4/7/7/4` orders, the 86,400-second hold,
+source rejection, drift, readback independence, one-send ambiguity, replay,
+and zero implicit network access under injected dependencies.
+
+The complete repository `bun run check` passed with exit code 0 in 1,341.7
+seconds on 2026-08-05, covering the configured frontend, Worker/workerd,
+supply-chain, Rust workspace, and wasm32 gates. This remains local evidence.
+
+This remains a local coordinator foundation. A private TypeScript Worker and
+Service Binding leaf, all-seven-service Cloudflare mutation/readback adapter,
+append-only D1 journal, readback-only inflight recovery, deployed source/version
+proof, locked archive, and remote crash/fault campaign remain open. See
+`docs/container-runtime-json-compatibility-deployment-transition.md`. No
+Cloudflare state changed; Phase 1 remote staging and production remain
+**NO-GO**.

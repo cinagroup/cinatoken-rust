@@ -127,6 +127,7 @@ receipt validation, bounded files, create-only writes, and negative drift.
 bun run check:container-runtime:json-compatibility-caller
 bun run check:container-runtime:json-compatibility-campaign
 bun run check:container-runtime:json-compatibility-deployment-states
+bun run check:container-runtime:json-compatibility-deployment-transition
 ```
 
 Current results are 133 campaign/source/config tests with 578 expectations,
@@ -146,9 +147,12 @@ rejected, and historical Plan v4/v3/v2 approval v1 remains read only. See
 
 Before isolated staging execution:
 
-1. Implement the fail-closed remote transition executor for only the four
-   frozen state transitions, including owner approval, source authentication,
-   authenticated remote readback, and immutable transition receipts.
+1. Connect the locally implemented fail-closed transition coordinator to a
+   private create-once Cloudflare mutation/readback leaf, applied immutable D1
+   journal, status-only crash recovery, and locked receipt archive. The local
+   Plan v5/state-plan v2 approval, source authentication, `4/7/7/4` ordering,
+   stable readback, one-send, and chained receipt contracts are documented in
+   `docs/container-runtime-json-compatibility-deployment-transition.md`.
 2. Upload all 18 versions dark, then independently read back exact version,
    config, entrypoint, binding target, route absence, gate state, secret
    presence without values, and Durable Object migrations.

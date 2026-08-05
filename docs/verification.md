@@ -13834,3 +13834,32 @@ No policy exception or age increase was introduced.
 This is supply-chain freshness evidence, not Cloudflare deployment evidence.
 No remote runtime, financial, storage, traffic, or Go/VPS authority changed;
 production remains **NO-GO**.
+
+## Deployment Transition Coordinator Verification (2026-08-05)
+
+This checkpoint closes the local transition command/protocol gap only. The
+coordinator requires current Plan v5/schema 4 and state-plan v2/schema 2,
+verifies a dedicated Ed25519 deployment-transition approval, authenticates
+source evidence through an injected verifier, and executes only the four
+frozen `4/7/7/4` step orders.
+
+| Gate | Result |
+| --- | --- |
+| `bun run check:container-runtime:json-compatibility-deployment-transition` | PASS: 12 tests and 142 expectations |
+| Authorization | PASS: complete Plan/state-plan/request/transition/prior-state/account/source/time binding; phase-approval substitution and tampering rejected |
+| Stable readback | PASS: two different request IDs, stable authentication identity and semantic state, at least five seconds apart; drift or instability stops |
+| Mutation | PASS: source-state-bound intent appended before one call; expiry rechecked before send; rejected stops; ambiguous advances only after exact stable target proof; automatic retries remain zero |
+| Journal and receipt | PASS: exact terminal replay has zero side effects; inflight, append conflict, and archive ambiguity are uncertain; step receipts form a predecessor digest chain |
+| Implicit side effects | PASS: poisoned global `fetch` remains unused; no default credential, network, filesystem, or environment path exists |
+| `bun run check` | PASS: complete repository gate, exit code 0 in 1,341.7 seconds; configured frontend, Worker/workerd, supply-chain, Rust workspace, and wasm32 gates covered |
+
+The test plan uses production validators, generated Ed25519 keys, all 18
+artifact identities, and dependency-injected source/readback/mutation/journal
+fixtures. It is local deterministic evidence, not Cloudflare staging evidence.
+
+Remote acceptance still requires a private TypeScript Worker coordinator,
+Service Binding leaf for all seven services, authenticated full-config
+readback, applied append-only D1 journal, status-only inflight recovery, locked
+archive, source/version proof, and crash/response-loss/drift/concurrency faults.
+No credential or Cloudflare mutation was used. Go/VPS remains authoritative
+and production remains **NO-GO**.

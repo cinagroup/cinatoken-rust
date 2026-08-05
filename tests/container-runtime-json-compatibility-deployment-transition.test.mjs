@@ -1,0 +1,843 @@
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  test,
+} from "bun:test";
+import {
+  createHash,
+  generateKeyPairSync,
+} from "node:crypto";
+import {
+  mkdtemp,
+  readFile,
+  rm,
+} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import {
+  JSON_COMPATIBILITY_PLAN_CONTRACT,
+  buildJsonCompatibilityCampaignPlan,
+  canonicalJson,
+  sha256Canonical,
+} from "../tools/container_runtime_json_compatibility_campaign.mjs";
+import {
+  JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
+  JSON_COMPATIBILITY_DEPLOYMENT_STATUS_HOLD_SECONDS,
+  validateJsonCompatibilityDeploymentStatePlan,
+} from "../tools/container_runtime_json_compatibility_deployment_states.mjs";
+import {
+  JSON_COMPATIBILITY_AUTHORIZED_DEPLOYMENT_TRANSITION_CONTRACT,
+  JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_AUDIENCE,
+  JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_ENVELOPE_CONTRACT,
+  JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_SUBJECT_CONTRACT,
+  JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_RECEIPT_CONTRACT,
+  JsonCompatibilityDeploymentTransitionUncertainError,
+  buildJsonCompatibilityDeploymentTransitionMutationOutcome,
+  buildJsonCompatibilityDeploymentTransitionReadback,
+  buildJsonCompatibilityDeploymentTransitionSourceAuthentication,
+  executeJsonCompatibilityDeploymentTransition,
+  signJsonCompatibilityDeploymentTransition,
+  validateJsonCompatibilityDeploymentTransitionAuthorization,
+  validateJsonCompatibilityDeploymentTransitionReceipt,
+} from "../tools/container_runtime_json_compatibility_deployment_transition.mjs";
+import {
+  prepareJsonCompatibilityControllerConfig,
+} from "../tools/prepare_container_runtime_json_compatibility_controller_config.mjs";
+
+const NOW = 1_786_000_000;
+const ACCOUNT_ID_SHA256 = digest("cloudflare-account-staging");
+const SOURCE_EVIDENCE = Object.freeze({
+  accountIdSha256: ACCOUNT_ID_SHA256,
+  sourceManifestSha256: digest("source-manifest"),
+  sourceSignatureEnvelopeSha256: digest("source-signature"),
+  immutableSourceArchiveSha256: digest("source-archive"),
+  artifactInventoryReadbackSha256: digest("artifact-inventory-readback"),
+  accountBindingInventorySha256: digest("account-binding-inventory"),
+});
+const TRANSITION_IDS = Object.freeze([
+  "arm-status-callee-to-caller",
+  "arm-execution-callee-to-caller",
+  "disarm-execution-retain-status-caller-to-callee",
+  "close-status-caller-to-callee",
+]);
+const EXPECTED_ROLE_ORDERS = Object.freeze([
+  ["invoker", "operator", "runner", "caller"],
+  ["controller", "executor", "permitIssuer", "invoker", "operator", "runner", "caller"],
+  ["caller", "runner", "operator", "invoker", "permitIssuer", "executor", "controller"],
+  ["caller", "runner", "operator", "invoker"],
+]);
+
+let directory;
+let privateKeyBytes;
+let campaignPlan;
+let statePlan;
+
+beforeAll(async () => {
+  directory = await mkdtemp(path.join(os.tmpdir(), "cinatoken-transition-executor-"));
+  const configPath = path.join(directory, "controller-execution.jsonc");
+  await prepareJsonCompatibilityControllerConfig({ outPath: configPath });
+  const controllerConfig = JSON.parse(await readFile(configPath, "utf8"));
+  const keys = generateKeyPairSync("ed25519");
+  privateKeyBytes = keys.privateKey.export({ format: "der", type: "pkcs8" });
+  const approvalSpkiSha256 = createHash("sha256")
+    .update(keys.publicKey.export({ format: "der", type: "spki" }))
+    .digest("hex");
+  statePlan = buildStatePlan(sha256Canonical(controllerConfig));
+  campaignPlan = buildCampaignPlan(
+    controllerConfig,
+    statePlan,
+    approvalSpkiSha256,
+  );
+});
+
+afterAll(async () => {
+  privateKeyBytes.fill(0);
+  await rm(directory, { recursive: true, force: true });
+});
+
+describe("JSON compatibility deployment transition authorization", () => {
+  test("binds Plan v5, state-plan v2, exact frozen steps, source, and a dedicated signature domain", () => {
+    const authorized = authorize(TRANSITION_IDS[1]);
+    expect(validateJsonCompatibilityDeploymentTransitionAuthorization(
+      campaignPlan,
+      statePlan,
+      authorized,
+    )).toEqual(authorized);
+    expect(authorized).toMatchObject({
+      schemaVersion: 1,
+      contract: JSON_COMPATIBILITY_AUTHORIZED_DEPLOYMENT_TRANSITION_CONTRACT,
+      request: {
+        mode: "remote-create-once",
+        campaignPlan: {
+          schemaVersion: 4,
+          contract: JSON_COMPATIBILITY_PLAN_CONTRACT,
+          planDigestSha256: campaignPlan.planDigestSha256,
+        },
+        statePlan: {
+          schemaVersion: 2,
+          contract: JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
+          planDigestSha256: statePlan.planDigestSha256,
+        },
+        transition: {
+          id: TRANSITION_IDS[1],
+          steps: EXPECTED_ROLE_ORDERS[1].map((role) => ({ role })),
+        },
+        sourceEvidence: SOURCE_EVIDENCE,
+      },
+      approval: {
+        contract:
+          JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_ENVELOPE_CONTRACT,
+        subject: {
+          contract:
+            JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_SUBJECT_CONTRACT,
+          audience: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_AUDIENCE,
+          campaignPlanContract: JSON_COMPATIBILITY_PLAN_CONTRACT,
+          campaignPlanSchemaVersion: 4,
+          statePlanContract: JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
+          statePlanSchemaVersion: 2,
+        },
+      },
+    });
+    expect(Object.values(statePlan.services).reduce(
+      (count, service) => count + Object.keys(service.artifacts).length,
+      0,
+    )).toBe(18);
+  });
+
+  test("rejects phase-approval substitution and request tampering before dependencies", () => {
+    const substituted = structuredClone(authorize(TRANSITION_IDS[0]));
+    substituted.contract =
+      "cinatoken-container-runtime-json-compatibility-operator-authorized-phase-request-v1";
+    expect(() => validateJsonCompatibilityDeploymentTransitionAuthorization(
+      campaignPlan,
+      statePlan,
+      substituted,
+    )).toThrow(/authorized transition contract/);
+
+    const tampered = structuredClone(authorize(TRANSITION_IDS[0]));
+    tampered.request.transition.steps.reverse();
+    expect(() => validateJsonCompatibilityDeploymentTransitionAuthorization(
+      campaignPlan,
+      statePlan,
+      tampered,
+    )).toThrow(/request transition|request digest/);
+
+    const sourceDrift = structuredClone(authorize(TRANSITION_IDS[0]));
+    sourceDrift.request.sourceEvidence.immutableSourceArchiveSha256 = digest("other");
+    expect(() => validateJsonCompatibilityDeploymentTransitionAuthorization(
+      campaignPlan,
+      statePlan,
+      sourceDrift,
+    )).toThrow(/request digest|signature/);
+  });
+
+  test("enforces the status-only hold at the exact 86,400-second boundary", () => {
+    expect(() => authorize(TRANSITION_IDS[3], {
+      enteredAt: NOW - JSON_COMPATIBILITY_DEPLOYMENT_STATUS_HOLD_SECONDS + 1,
+    })).toThrow(/minimum state hold/);
+    expect(() => authorize(TRANSITION_IDS[3], {
+      enteredAt: NOW - JSON_COMPATIBILITY_DEPLOYMENT_STATUS_HOLD_SECONDS,
+    })).not.toThrow();
+  });
+});
+
+describe("JSON compatibility deterministic deployment transition executor", () => {
+  test("executes all four frozen transitions in exact order with one mutation per step", async () => {
+    const originalFetch = globalThis.fetch;
+    let implicitFetches = 0;
+    globalThis.fetch = async () => {
+      implicitFetches += 1;
+      throw new Error("implicit network access is forbidden");
+    };
+    try {
+      for (let index = 0; index < TRANSITION_IDS.length; index += 1) {
+        const authorized = authorize(TRANSITION_IDS[index]);
+        const harness = createHarness(authorized);
+        const receipt = await executeJsonCompatibilityDeploymentTransition({
+          campaignPlan,
+          statePlan,
+          authorizedTransition: authorized,
+          dependencies: harness.dependencies,
+        });
+        expect(receipt.contract)
+          .toBe(JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_RECEIPT_CONTRACT);
+        expect(receipt.result).toBe("completed");
+        expect(receipt.nextTransitionAllowed).toBe(true);
+        expect(receipt.automaticRetries).toBe(0);
+        expect(receipt.mutationAttempts).toBe(EXPECTED_ROLE_ORDERS[index].length);
+        expect(receipt.readbackAttempts)
+          .toBe(EXPECTED_ROLE_ORDERS[index].length * 4);
+        expect(harness.mutations.map((value) => value.role))
+          .toEqual(EXPECTED_ROLE_ORDERS[index]);
+        expect(receipt.steps.map((value) => value.role))
+          .toEqual(EXPECTED_ROLE_ORDERS[index]);
+        expect(validateJsonCompatibilityDeploymentTransitionReceipt(
+          campaignPlan,
+          statePlan,
+          authorized,
+          receipt,
+        )).toEqual(receipt);
+        for (const mutation of harness.mutations) {
+          const intentIndex = harness.events.findIndex(
+            (event) => event.kind === "mutation_intent"
+              && event.payload.mutationIntentSha256
+                === mutation.mutationIntentSha256,
+          );
+          const networkIndex = harness.timeline.indexOf(
+            `mutate:${mutation.mutationIntentSha256}`,
+          );
+          expect(intentIndex).toBeGreaterThanOrEqual(0);
+          expect(networkIndex).toBeGreaterThanOrEqual(0);
+          expect(harness.timeline.indexOf(
+            `append:${mutation.mutationIntentSha256}`,
+          )).toBeLessThan(networkIndex);
+        }
+      }
+      expect(implicitFetches).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("confirms an ambiguous mutation only through two stable target readbacks", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const harness = createHarness(authorized, {
+      mutationClassification: ({ role }) => role === "invoker"
+        ? "ambiguous"
+        : "accepted",
+    });
+    const receipt = await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: harness.dependencies,
+    });
+    expect(receipt.result).toBe("completed");
+    expect(receipt.steps[0].result)
+      .toBe("completed_after_ambiguous_mutation");
+    expect(harness.mutations.filter((value) => value.role === "invoker"))
+      .toHaveLength(1);
+    expect(receipt.automaticRetries).toBe(0);
+  });
+
+  test("stops after a rejected mutation and never touches later roles", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const harness = createHarness(authorized, {
+      mutationClassification: ({ role }) => role === "operator"
+        ? "rejected"
+        : "accepted",
+    });
+    const receipt = await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: harness.dependencies,
+    });
+    expect(receipt).toMatchObject({
+      result: "stopped",
+      stopReason: "mutation_rejected",
+      nextTransitionAllowed: false,
+      mutationAttempts: 2,
+      automaticRetries: 0,
+    });
+    expect(harness.mutations.map((value) => value.role))
+      .toEqual(["invoker", "operator"]);
+    expect(receipt.steps.at(-1).targetReadbacks).toEqual([]);
+  });
+
+  test("fails before mutation on source drift and after mutation on unstable target readback", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const sourceDrift = createHarness(authorized, {
+      readbackOverride: ({ phase, step, value }) => (
+        phase === "source" && step.role === "invoker"
+          ? { ...value, versionId: "unexpected-version" }
+          : value
+      ),
+    });
+    const sourceReceipt = await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: sourceDrift.dependencies,
+    });
+    expect(sourceReceipt.stopReason).toBe("source_state_drift");
+    expect(sourceDrift.mutations).toHaveLength(0);
+
+    const unstable = createHarness(authorized, {
+      readbackOverride: ({ phase, observationOrdinal, step, value }) => (
+        phase === "target"
+          && step.role === "invoker"
+          && observationOrdinal === 2
+          ? { ...value, bindingSetSha256: digest("unstable-binding-set") }
+          : value
+      ),
+    });
+    const targetReceipt = await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: unstable.dependencies,
+    });
+    expect(targetReceipt.stopReason).toBe("target_state_unstable");
+    expect(unstable.mutations).toHaveLength(1);
+    expect(unstable.mutations[0].role).toBe("invoker");
+  });
+
+  test("requires distinct, time-separated readbacks and rechecks approval immediately before mutation", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const repeatedRequest = createHarness(authorized, {
+      readbackOverride: ({ phase, observationOrdinal, step, value }) => (
+        phase === "source"
+          && step.role === "invoker"
+          && observationOrdinal === 2
+          ? {
+              ...value,
+              readbackRequestIdSha256: digest("readback-request:1"),
+            }
+          : value
+      ),
+    });
+    const unstableReceipt = await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: repeatedRequest.dependencies,
+    });
+    expect(unstableReceipt.stopReason).toBe("source_state_unstable");
+    expect(repeatedRequest.mutations).toHaveLength(0);
+
+    const clock = [NOW, NOW, NOW, NOW + 596, NOW + 596];
+    const expiring = createHarness(authorized, {
+      now: () => clock.shift() ?? NOW + 596,
+    });
+    const expiredReceipt = await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: expiring.dependencies,
+    });
+    expect(expiredReceipt).toMatchObject({
+      result: "stopped",
+      stopReason: "approval_expired",
+      mutationAttempts: 0,
+      automaticRetries: 0,
+    });
+    expect(expiredReceipt.steps[0].mutationIntent).not.toBeNull();
+    expect(expiredReceipt.steps[0].mutationOutcome).toBeNull();
+    expect(expiring.mutations).toHaveLength(0);
+  });
+
+  test("source rejection seals a zero-mutation receipt", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const harness = createHarness(authorized, {
+      sourceClassification: "rejected",
+    });
+    const receipt = await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: harness.dependencies,
+    });
+    expect(receipt).toMatchObject({
+      result: "stopped",
+      stopReason: "source_authentication_rejected",
+      nextTransitionAllowed: false,
+      steps: [],
+      mutationAttempts: 0,
+      readbackAttempts: 0,
+    });
+    expect(harness.mutations).toHaveLength(0);
+    expect(harness.readbacks).toHaveLength(0);
+  });
+
+  test("returns an exact archived replay without source, readback, or mutation effects", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const first = createHarness(authorized);
+    const receipt = await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: first.dependencies,
+    });
+    const replay = createHarness(authorized, {
+      reservation: { classification: "exact_replay", receipt },
+      failOnSideEffect: true,
+    });
+    await expect(executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: replay.dependencies,
+    })).resolves.toEqual(receipt);
+    expect(replay.mutations).toHaveLength(0);
+    expect(replay.readbacks).toHaveLength(0);
+  });
+
+  test("rejects a fully resealed receipt whose mutation intent is detached from its step", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const harness = createHarness(authorized);
+    const receipt = await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: harness.dependencies,
+    });
+    const detached = structuredClone(receipt);
+    detached.steps[0].mutationIntent.role = "caller";
+    resealReceipt(detached);
+    expect(() => validateJsonCompatibilityDeploymentTransitionReceipt(
+      campaignPlan,
+      statePlan,
+      authorized,
+      detached,
+    )).toThrow(/mutation intent role/);
+  });
+
+  test("treats inflight reservation and journal/archive ambiguity as uncertain without retry", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const inflight = createHarness(authorized, {
+      reservation: { classification: "inflight", receipt: null },
+      failOnSideEffect: true,
+    });
+    await expect(executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: inflight.dependencies,
+    })).rejects.toMatchObject({
+      name: "JsonCompatibilityDeploymentTransitionUncertainError",
+      code: "operation_inflight",
+    });
+    expect(inflight.mutations).toHaveLength(0);
+
+    const journalConflict = createHarness(authorized, {
+      appendClassification: ({ event }) => event.kind === "mutation_intent"
+        ? "conflict"
+        : "appended",
+    });
+    await expect(executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: journalConflict.dependencies,
+    })).rejects.toBeInstanceOf(
+      JsonCompatibilityDeploymentTransitionUncertainError,
+    );
+    expect(journalConflict.mutations).toHaveLength(0);
+
+    const archiveAmbiguous = createHarness(authorized, {
+      finalizeClassification: "ambiguous",
+    });
+    await expect(executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: archiveAmbiguous.dependencies,
+    })).rejects.toMatchObject({ code: "receipt_ambiguous" });
+    expect(archiveAmbiguous.mutations).toHaveLength(4);
+  });
+});
+
+function authorize(transitionId, { enteredAt = null } = {}) {
+  const transition = statePlan.transitions.find((value) => value.id === transitionId);
+  return signJsonCompatibilityDeploymentTransition({
+    campaignPlan,
+    statePlan,
+    transitionId,
+    operationIdSha256: digest(`operation:${transitionId}:${enteredAt ?? "default"}`),
+    priorStateEvidence: {
+      state: transition.fromState,
+      enteredAt: enteredAt
+        ?? NOW - transition.minimumHoldSeconds,
+      evidenceSha256: digest(`prior-state:${transitionId}`),
+    },
+    sourceEvidence: SOURCE_EVIDENCE,
+    privateKeyBytes,
+    now: new Date(NOW * 1000),
+  });
+}
+
+function createHarness(authorized, options = {}) {
+  const events = [];
+  const timeline = [];
+  const mutations = [];
+  const readbacks = [];
+  let readbackSequence = 0;
+  const sideEffectFailure = () => {
+    if (options.failOnSideEffect) throw new Error("unexpected side effect");
+  };
+  const dependencies = {
+    now: options.now ?? (() => NOW),
+    authenticateSource: async (sourceEvidence) => {
+      sideEffectFailure();
+      return buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
+        sourceEvidence,
+        classification: options.sourceClassification ?? "authenticated",
+        verifierIdentitySha256: digest("source-verifier"),
+        evidenceSha256: digest("source-authentication-evidence"),
+        verifiedAt: NOW,
+      });
+    },
+    readback: async (context) => {
+      sideEffectFailure();
+      readbacks.push(context);
+      readbackSequence += 1;
+      let value = {
+        ...context.expected,
+        classification: "observed",
+        bindingSetSha256: digest(`bindings:${context.step.role}`),
+        routeSetSha256: digest("[]"),
+        secretNameSetSha256: digest(`secrets:${context.step.role}`),
+        durableObjectMigrationSetSha256: digest(`migrations:${context.step.role}`),
+        authenticationIdentitySha256: digest("readback-credential"),
+        readbackRequestIdSha256: digest(`readback-request:${readbackSequence}`),
+        remoteEvidenceSha256: digest(`remote:${readbackSequence}`),
+        authenticationEvidenceSha256: digest(`auth:${readbackSequence}`),
+        observedAt: NOW + readbackSequence * 5,
+      };
+      if (options.readbackOverride !== undefined) {
+        value = options.readbackOverride({ ...context, value });
+      }
+      return buildJsonCompatibilityDeploymentTransitionReadback(value);
+    },
+    mutateOnce: async (intent) => {
+      sideEffectFailure();
+      mutations.push(intent);
+      timeline.push(`mutate:${intent.mutationIntentSha256}`);
+      const classification = options.mutationClassification?.(intent)
+        ?? "accepted";
+      return buildJsonCompatibilityDeploymentTransitionMutationOutcome({
+        mutationIntent: intent,
+        classification,
+        httpStatus: classification === "ambiguous"
+          ? null
+          : classification === "rejected" ? 400 : 200,
+        responseBodySha256: classification === "ambiguous"
+          ? null
+          : digest(`response:${intent.role}`),
+        responseRequestIdSha256: classification === "ambiguous"
+          ? null
+          : digest(`request:${intent.role}`),
+        responseBytes: classification === "ambiguous" ? null : 128,
+      });
+    },
+    journal: {
+      reserve: async () => options.reservation
+        ?? { classification: "reserved", receipt: null },
+      append: async (event) => {
+        sideEffectFailure();
+        events.push(event);
+        timeline.push(`append:${event.digestSha256}`);
+        return {
+          classification: options.appendClassification?.({ event })
+            ?? "appended",
+        };
+      },
+      finalize: async (receipt) => {
+        sideEffectFailure();
+        return {
+          classification: options.finalizeClassification ?? "created",
+          receipt,
+        };
+      },
+    },
+  };
+  return { dependencies, events, timeline, mutations, readbacks };
+}
+
+function buildStatePlan(controllerExecutionConfigSha256) {
+  const definitions = {
+    controller: {
+      serviceName: "cinatoken-container-controller-staging",
+      entrypoint: "JsonCompatibilityProbeEntrypoint",
+      states: ["dark", "execution"],
+      gates: ["CONTAINER_JSON_COMPATIBILITY_PROBE_ENABLED"],
+    },
+    executor: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-executor-staging",
+      entrypoint: "JsonCompatibilityCampaignExecutorEntrypoint",
+      states: ["dark", "execution"],
+      gates: ["JSON_COMPATIBILITY_EXECUTOR_ENABLED"],
+    },
+    permitIssuer: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-permit-issuer-staging",
+      entrypoint: "JsonCompatibilityPermitIssuerEntrypoint",
+      states: ["dark", "execution"],
+      gates: ["JSON_COMPATIBILITY_PERMIT_ISSUER_ENABLED"],
+    },
+    invoker: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-invoker-staging",
+      entrypoint: "JsonCompatibilityCampaignInvokerEntrypoint",
+      states: ["dark", "statusOnly", "execution"],
+      gates: [
+        "JSON_COMPATIBILITY_INVOKER_ENABLED",
+        "JSON_COMPATIBILITY_INVOKER_STATUS_READ_ENABLED",
+      ],
+    },
+    operator: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-operator-staging",
+      entrypoint: "JsonCompatibilityCampaignOperatorEntrypoint",
+      states: ["dark", "statusOnly", "execution"],
+      gates: [
+        "JSON_COMPATIBILITY_OPERATOR_ENABLED",
+        "JSON_COMPATIBILITY_OPERATOR_STATUS_READ_ENABLED",
+      ],
+    },
+    runner: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-runner-staging",
+      entrypoint: "JsonCompatibilityCampaignRunnerEntrypoint",
+      states: ["dark", "statusOnly", "execution"],
+      gates: [
+        "JSON_COMPATIBILITY_RUNNER_ENABLED",
+        "JSON_COMPATIBILITY_RUNNER_STATUS_READ_ENABLED",
+      ],
+    },
+    caller: {
+      serviceName:
+        "cinatoken-container-runtime-json-compatibility-caller-staging",
+      entrypoint: "JsonCompatibilityCampaignCallerEntrypoint",
+      states: ["dark", "statusOnly", "execution"],
+      gates: [
+        "JSON_COMPATIBILITY_CALLER_ENABLED",
+        "JSON_COMPATIBILITY_CALLER_STATUS_READ_ENABLED",
+      ],
+    },
+  };
+  const services = {};
+  for (const [role, definition] of Object.entries(definitions)) {
+    const artifacts = {};
+    for (const state of definition.states) {
+      const externalState = state === "statusOnly" ? "status-only" : state;
+      const gates = Object.fromEntries(definition.gates.map((gate) => [
+        gate,
+        gate.endsWith("STATUS_READ_ENABLED")
+          ? state === "statusOnly" || state === "execution"
+          : state === "execution",
+      ]));
+      artifacts[state] = {
+        deploymentState: externalState,
+        versionId: `${role}-${state}-version-2026-08`,
+        configSha256: role === "controller" && state === "execution"
+          ? controllerExecutionConfigSha256
+          : digest(`config:${role}:${state}`),
+        gates,
+      };
+    }
+    services[role] = {
+      serviceName: definition.serviceName,
+      entrypoint: definition.entrypoint,
+      privateRpcOnly: true,
+      workersDev: false,
+      previewUrls: false,
+      artifacts,
+    };
+  }
+  const states = {
+    dark: {
+      controller: "dark", executor: "dark", permitIssuer: "dark",
+      invoker: "dark", operator: "dark", runner: "dark", caller: "dark",
+    },
+    statusOnly: {
+      controller: "dark", executor: "dark", permitIssuer: "dark",
+      invoker: "statusOnly", operator: "statusOnly", runner: "statusOnly",
+      caller: "statusOnly",
+    },
+    execution: {
+      controller: "execution", executor: "execution", permitIssuer: "execution",
+      invoker: "execution", operator: "execution", runner: "execution",
+      caller: "execution",
+    },
+  };
+  const definitionsByTransition = [
+    {
+      id: TRANSITION_IDS[0], fromState: "dark", toState: "statusOnly",
+      direction: "callee-to-caller", roles: EXPECTED_ROLE_ORDERS[0], hold: 0,
+    },
+    {
+      id: TRANSITION_IDS[1], fromState: "statusOnly", toState: "execution",
+      direction: "callee-to-caller", roles: EXPECTED_ROLE_ORDERS[1], hold: 0,
+    },
+    {
+      id: TRANSITION_IDS[2], fromState: "execution", toState: "statusOnly",
+      direction: "caller-to-callee", roles: EXPECTED_ROLE_ORDERS[2], hold: 0,
+    },
+    {
+      id: TRANSITION_IDS[3], fromState: "statusOnly", toState: "dark",
+      direction: "caller-to-callee", roles: EXPECTED_ROLE_ORDERS[3],
+      hold: JSON_COMPATIBILITY_DEPLOYMENT_STATUS_HOLD_SECONDS,
+    },
+  ];
+  const transitions = definitionsByTransition.map((transition, index) => ({
+    ordinal: index + 1,
+    id: transition.id,
+    fromState: transition.fromState,
+    toState: transition.toState,
+    direction: transition.direction,
+    minimumHoldSeconds: transition.hold,
+    ownerApprovalRequired: true,
+    automaticRetryAllowed: false,
+    steps: transition.roles.map((role, stepIndex) => {
+      const fromKey = states[transition.fromState][role];
+      const toKey = states[transition.toState][role];
+      const target = services[role].artifacts[toKey];
+      return {
+        ordinal: stepIndex + 1,
+        role,
+        fromArtifact: fromKey === "statusOnly" ? "status-only" : fromKey,
+        toArtifact: toKey === "statusOnly" ? "status-only" : toKey,
+        targetVersionId: target.versionId,
+        targetConfigSha256: target.configSha256,
+      };
+    }),
+  }));
+  const subject = {
+    schemaVersion: 2,
+    contract: JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
+    kind: "container-runtime-json-compatibility-deployment-state-plan",
+    mode: "offline-version-freeze",
+    environment: "staging",
+    services,
+    states,
+    transitions,
+    constraints: {
+      statusRecoveryWindowSeconds:
+        JSON_COMPATIBILITY_DEPLOYMENT_STATUS_HOLD_SECONDS,
+      executionRetryPermitted: false,
+      directDarkToExecutionAllowed: false,
+      directExecutionToDarkAllowed: false,
+      automaticTransitionAllowed: false,
+      ownerApprovalRequired: true,
+      authenticatedRemoteReadbackRequired: true,
+      sourceAuthenticationRequired: true,
+      immutableArchiveRequired: true,
+    },
+    executionBoundary: {
+      credentialsRead: false,
+      networkRequestsPerformed: false,
+      filesWritten: false,
+      deploymentMutationAuthorized: false,
+      deploymentMutationPerformed: false,
+      activationGateChangeAuthorized: false,
+      remoteEvidenceCollected: false,
+    },
+  };
+  const plan = { ...subject, planDigestSha256: sha256Canonical(subject) };
+  return validateJsonCompatibilityDeploymentStatePlan(plan);
+}
+
+function buildCampaignPlan(config, deploymentPlan, approvalSpkiSha256) {
+  const execution = Object.fromEntries(
+    Object.entries(deploymentPlan.services).map(([role, service]) => [
+      role,
+      service.artifacts.execution,
+    ]),
+  );
+  return buildJsonCompatibilityCampaignPlan({
+    config,
+    campaignIdSha256: digest("campaign"),
+    deploymentStatePlanDigestSha256: deploymentPlan.planDigestSha256,
+    controllerVersionId: execution.controller.versionId,
+    callerVersionId: execution.caller.versionId,
+    callerConfigSha256: execution.caller.configSha256,
+    runnerVersionId: execution.runner.versionId,
+    runnerConfigSha256: execution.runner.configSha256,
+    operatorVersionId: execution.operator.versionId,
+    operatorConfigSha256: execution.operator.configSha256,
+    operatorHmacKeyId: "operator-execution-2026-08",
+    operatorHmacCredentialIdSha256: digest("operator-execution-credential"),
+    operatorStatusHmacKeyId: "operator-status-2026-08",
+    operatorStatusHmacCredentialIdSha256: digest("operator-status-credential"),
+    operatorApprovalKeyId: "transition-owner-approval-2026-08",
+    operatorApprovalSpkiSha256: approvalSpkiSha256,
+    invokerVersionId: execution.invoker.versionId,
+    invokerConfigSha256: execution.invoker.configSha256,
+    permitIssuerVersionId: execution.permitIssuer.versionId,
+    permitIssuerConfigSha256: execution.permitIssuer.configSha256,
+    executorVersionId: execution.executor.versionId,
+    executorConfigSha256: execution.executor.configSha256,
+    runtimeNBuildIdSha256: digest("runtime-n"),
+    runtimeNImageDigest: `sha256:${digest("runtime-n-image")}`,
+    runtimeNMinusOneBuildIdSha256: digest("runtime-n-minus-one"),
+    runtimeNMinusOneImageDigest:
+      `sha256:${digest("runtime-n-minus-one-image")}`,
+    candidateShardIndex: 3,
+  });
+}
+
+function digest(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function resealReceipt(receipt) {
+  let previousStepReceiptSha256 = null;
+  for (const step of receipt.steps) {
+    step.previousStepReceiptSha256 = previousStepReceiptSha256;
+    if (step.mutationIntent !== null) {
+      const { mutationIntentSha256: _intentDigest, ...intentSubject } =
+        step.mutationIntent;
+      step.mutationIntent.mutationIntentSha256 = sha256Canonical(intentSubject);
+    }
+    if (step.mutationOutcome !== null) {
+      step.mutationOutcome.mutationIntentSha256 =
+        step.mutationIntent.mutationIntentSha256;
+      const { outcomeDigestSha256: _outcomeDigest, ...outcomeSubject } =
+        step.mutationOutcome;
+      step.mutationOutcome.outcomeDigestSha256 = sha256Canonical(outcomeSubject);
+    }
+    const { stepReceiptDigestSha256: _stepDigest, ...stepSubject } = step;
+    step.stepReceiptDigestSha256 = sha256Canonical(stepSubject);
+    previousStepReceiptSha256 = step.stepReceiptDigestSha256;
+  }
+  receipt.stepChainHeadSha256 = previousStepReceiptSha256;
+  const { receiptDigestSha256: _receiptDigest, ...receiptSubject } = receipt;
+  receipt.receiptDigestSha256 = sha256Canonical(receiptSubject);
+  return receipt;
+}

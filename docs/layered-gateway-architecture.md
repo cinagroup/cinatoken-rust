@@ -1156,9 +1156,19 @@ the platform-native runtime. Rust stays in the Linux Container compute layer;
 there is no session-DO or campaign-DO Rust Wasm rewrite.
 
 Current local validation proves current-v2 and historical-v1 separation plus
-zero Invoker calls on malformed current authorization; the complete repository
-`bun run check` passes with exit code 0 in 1,403.6 seconds. It does not prove
-Cloudflare account reachability, an uploaded version, binding topology, secret
-presence, state transition, or customer traffic. The remote transition executor
-and authenticated readback chain are the next required control-plane components.
-Production remains **NO-GO**.
+zero Invoker calls on malformed current authorization. A separate local
+transition coordinator now binds Plan v5/state-plan v2, dedicated Ed25519
+transition approval, source authentication, exact ordered source/target stable
+readback, persist-before-send one-mutation intent, ambiguity recovery, and a
+chained terminal receipt. It remains a control-plane protocol with injected
+capabilities, not a deployed Worker.
+
+The next required architecture increment is a private TypeScript coordinator
+and Service Binding leaf, applied append-only D1 journal, status-only inflight
+recovery, full authenticated Cloudflare config readback, and locked archive.
+This follows the same ownership split: TypeScript owns orchestration and
+durable control state; Rust remains only in Linux Container compute. Local
+tests do not prove account reachability, uploaded versions, binding topology,
+secret presence, state transition, or customer traffic. Production remains
+**NO-GO**. See
+`docs/container-runtime-json-compatibility-deployment-transition.md`.

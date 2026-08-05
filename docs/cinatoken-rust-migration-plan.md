@@ -28569,3 +28569,86 @@ provider/billing/storage request, traffic change, or Go/VPS mutation. The
 remote transition executor, authenticated deployment readback, source archive,
 real four-phase staging campaign, and wider cutover matrix remain open;
 production remains **NO-GO**.
+
+## 2026-08-05 Deployment Transition Coordinator Foundation
+
+This section supersedes the preceding statement that no local transition
+executor contract exists. It does not supersede the remote deployment NO-GO.
+
+`tools/container_runtime_json_compatibility_deployment_transition.mjs` now
+implements a credential-free, dependency-injected coordinator for only the
+four transitions frozen by state-plan v2. New authorization requires the full
+current Plan v5/schema 4 and state-plan v2/schema 2 documents. Historical plan
+or state-plan contracts remain readable elsewhere but cannot enter this signer
+or coordinator.
+
+The coordinator uses a dedicated Ed25519 deployment-transition subject,
+envelope, audience, and signature domain. A valid Operator phase approval
+cannot be substituted. The signed request binds both plan contracts/schemas/
+digests, the complete ordered transition, operation ID, prior-state identity,
+state entry time and evidence, account identity, source manifest/signature/
+immutable archive, all-18-artifact readback, account binding inventory, and
+the bounded approval window. The `statusOnly -> dark` path rejects signing or
+execution before the exact 86,400-second hold has elapsed.
+
+Every service step is fail closed:
+
+1. obtain two authenticated source observations from different request IDs,
+   at least five seconds apart, with the same authentication identity and
+   semantic remote-state digest;
+2. verify account, service, named entrypoint, exact source version/config,
+   state, gates, private-only flags, and empty route set while retaining
+   binding, secret-name, and Durable Object migration set digests;
+3. append a mutation intent that binds the just-observed source-state digest,
+   target version/config, transition and step before any network authority;
+4. recheck approval expiry and call the injected mutation capability at most
+   once;
+5. stop on a rejected result; for an ambiguous result, never resend and use
+   only two stable exact target observations to establish application; and
+6. advance only after target proof, then seal predecessor-linked step receipts
+   and one canonical terminal receipt.
+
+The injected journal distinguishes `reserved`, terminal `exact_replay`,
+`inflight`, and `conflict`. Exact replay returns the archived receipt with zero
+source/readback/mutation calls. Inflight, append conflict, and receipt archive
+ambiguity raise an explicit uncertain result and never retry mutation. Stopped
+receipts set `nextTransitionAllowed=false`; only a complete transition sets it
+true, and a later transition still needs a new owner approval.
+
+The new root subgate
+`check:container-runtime:json-compatibility-deployment-transition` passes 12
+tests with 142 expectations. It covers all four `4/7/7/4` orders, dedicated
+authorization, phase-approval rejection, the hold boundary, source rejection,
+source/target drift, independent stability, expiry immediately before send,
+accepted/rejected/ambiguous outcomes, one-send and persist-before-send facts,
+exact replay, inflight refusal, journal conflict, archive ambiguity, receipt
+chain validation, and poisoned-global-fetch zero-network proof.
+
+The complete repository `bun run check` passed with exit code 0 in 1,341.7
+seconds on 2026-08-05. It covered the configured frontend, Worker/workerd,
+supply-chain, Rust workspace, and wasm32 gates, including the new transition
+suite. This is complete local repository evidence, not remote Cloudflare
+deployment evidence.
+
+This closes the local coordinator protocol only. The production topology is
+now explicitly:
+
+```text
+Transition Coordinator
+  -> private Service Binding
+     -> create-once Cloudflare deployment/readback leaf
+  -> append-only D1 transition journal
+  -> locked transition receipt archive
+```
+
+The private TypeScript Worker coordinator, all-seven-service leaf adapter,
+authenticated full-config remote readback, applied immutable D1 schema,
+readback-only inflight recovery, deployed coordinator source/version proof,
+locked archive, and crash/response-loss/drift/concurrency fault campaign remain
+unimplemented. All 18 versions still require dark upload and independent
+readback. Account binding inventory, topology/context collection, source
+publication, real four-phase campaign, wider provider/billing/storage/SLO/
+security/privacy gates, Go/VPS drain, and production cutover also remain open.
+No Cloudflare credential, upload, deployment, RPC, DO/Container, provider,
+financial, storage, traffic, or Go/VPS state changed. Go/VPS remains
+authoritative and production remains **NO-GO**.

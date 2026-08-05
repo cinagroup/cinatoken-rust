@@ -4699,32 +4699,33 @@ and offline recovered-result chain now exist locally. They remain undeployed.
 
 | Unit | Local state | Required production evidence |
 | --- | --- | --- |
-| Plan v4 | Implemented; binds the validated deployment-state-plan digest, six exact execution artifacts, 24-hour recovery, three status gates, and distinct execution/status HMAC identities | Retained owner/security approval plus authenticated remote state-plan and version/config readback |
-| Plan v3/v2 compatibility | Historical read-only verification retained | Must not authorize new execution; v2 also cannot authorize status recovery |
-| Deployment-state plan | 15 actual configs, immutable version/config identities, and four ordered dark/status/execution transitions validated locally | Upload IDs, transition executor, deployment/readback, and account binding inventory |
-| Named Runner | Private, secretless, inert default, exact Operator binding, deep nested-receipt validation, execution/status receipts, 10 Node and two workerd RPC tests | Upstream private caller plus remote version/config/export/binding/route readback and account caller inventory |
+| Plan v5 | Implemented; binds state-plan v2, seven exact execution artifacts, 24-hour recovery, four status gates, Caller-first evidence, and distinct execution/status HMAC identities | Retained owner/security approval plus authenticated remote state-plan and version/config readback |
+| Plan v4/v3/v2 compatibility | Historical read-only verification retained | Must not authorize new execution; v2 also cannot authorize status recovery |
+| Deployment-state plan | 18 actual configs, immutable version/config identities, and four ordered dark/status/execution transitions validated locally | Upload IDs, remote leaf adapter, deployment/readback, and account binding inventory |
+| Named Caller and Runner | Both are private, secretless, inert by default, pin exact downstream versions/configs, deeply validate nested receipts, and never retry unknown results | Remote version/config/export/binding/route readback and complete account caller inventory |
+| Transition coordinator | Dedicated Plan v5/state-plan v2 Ed25519 authorization, source authentication, stable source/target readback, persist-before-send intent, one mutation, ambiguity recovery, chained receipt, and injected append-only journal are implemented locally | Private Service Binding leaf adapter, applied immutable D1 journal, readback-only crash recovery, remote fault campaign, and locked archive |
 | Operator recovery | Independent status gate/HMAC; one status RPC; no execution calls | Freeze one status credential across the full recovery window and run a live response-loss drill; previous status-key rotation is not implemented |
 | Invoker recovery | SQLite attempt/completion plus canonical successful body; v1 rows remain recognizable | Remote migration/readback, eviction, and old-row quarantine proof |
-| Offline evidence | Direct or recovered Runner receipt -> packet v2 -> manifest v2 -> evidence v1 | Source signature, revocation, immutable publish/readback |
+| Offline evidence | Direct or recovered Caller receipt -> packet v3 -> manifest v3 -> evidence v1 | Source signature, revocation, immutable publish/readback |
 
 ### Release stages (locally specified; R1-R8 remotely blocked)
 
-The local artifacts and transition graph are now executable inputs, but no
-remote executor or caller exists. Before R1, upload all 15 configs without
-activation, replace fixture IDs with returned Worker version IDs, reproduce
-the exact state-plan digest, implement the upstream private Runner caller and
-fail-closed transition executor, and keep them distinct from the topology
-runner/context collector.
+The local Caller and deterministic transition coordinator now exist, but they
+have no Cloudflare mutation/readback leaf adapter or applied immutable journal.
+Before R1, upload all 18 configs without activation, replace fixture IDs with
+returned Worker version IDs, reproduce the exact state-plan digest, connect
+the coordinator to a private create-once leaf service and read-only recovery
+path, and keep that control plane distinct from the topology/context collector.
 
 | Stage | Required action | Pass evidence | Stop condition |
 | --- | --- | --- | --- |
-| R0 freeze | Keep Go/VPS authoritative; approve plan v4, state-plan digest, and exact artifacts | Signed plan/config/version inventory | Unknown writer, caller, signer, transition, or artifact |
-| R1 deploy dark | Deploy Controller, Executor, PermitIssuer, Invoker, Operator, Runner with all gates false | Authenticated versions, configs, bindings, routes, secrets-without-values, DO migrations | Any public/default RPC or config drift |
-| R2 status arm | Execute only `dark -> statusOnly`: Invoker, Operator, Runner | Read-only call proves zero PermitIssuer/Executor calls | Remote artifact/readback drift, or status call can execute, retry, or cross an unapproved identity |
+| R0 freeze | Keep Go/VPS authoritative; approve Plan v5, state-plan v2 digest, exact 18 artifacts, coordinator source, and account identity | Signed plan/config/version/source/account inventory | Unknown writer, caller, signer, transition, or artifact |
+| R1 deploy dark | Upload and deploy Controller, Executor, PermitIssuer, Invoker, Operator, Runner, and Caller with all gates false | Authenticated versions, configs, bindings, routes, secrets-without-values, DO migrations | Any public/default RPC or config drift |
+| R2 status arm | Execute only `dark -> statusOnly`: Invoker, Operator, Runner, Caller | Read-only call proves zero PermitIssuer/Executor calls | Remote artifact/readback drift, or status call can execute, retry, or cross an unapproved identity |
 | R3 execution arm | Enable callee-to-caller execution gates for isolated cohort | Exact on/off readback and before-state snapshots | Overlapping Go/Rust authority or unbounded cohort |
-| R4 phase run | Sign one request and call named Runner once | Direct completed Runner chain or bounded status observation | Any automatic retry, command replacement, or side effect outside probe boundary |
-| R5 ambiguity drill | Lose completion response after DO commit, then query through Runner | Recovered exact private receipt; one Issuer and Executor call | Failed overwrite, replay, unavailable canonical body, or detached digest |
-| R6 packet/archive | Assemble packet v2 and four-phase manifest v2; independently sign and publish | Signature, revocation state, immutable archive and readback | Unsigned source label, mutable artifact, missing raw receipt |
+| R4 phase run | Sign one request and call named Caller once | Direct completed Caller chain or bounded status observation | Any automatic retry, command replacement, or side effect outside probe boundary |
+| R5 ambiguity drill | Lose completion response after DO commit, then query through Caller | Recovered exact private receipt; one Issuer and Executor call | Failed overwrite, replay, unavailable canonical body, or detached digest |
+| R6 packet/archive | Assemble Caller-first packet v3 and four-phase manifest v3; independently sign and publish | Signature, revocation state, immutable archive and readback | Unsigned source label, mutable artifact, missing raw receipt |
 | R7 rollback | Complete mandatory N-1 rollback; disable execution caller-to-callee | All execution gates false and Go/VPS still authoritative | Ledger divergence, drain failure, or residual Rust writer |
 | R8 recovery closure | Retain frozen status-only versions, approval trust, and one status HMAC credential for 24 hours, then execute `statusOnly -> dark` caller-to-callee | Final status/gate/key-retention readback | Transition executor/readback absent, or lost status access is treated as permission to execute |
 
@@ -4742,9 +4743,11 @@ completion recovery, not a distributed exactly-once transaction.
 ```text
 bun run check:container-runtime:json-compatibility-campaign
 bun run check:container-runtime:json-compatibility-deployment-states
+bun run check:container-runtime:json-compatibility-deployment-transition
 bun run check:container-runtime:json-compatibility-invoker
 bun run check:container-runtime:json-compatibility-operator
 bun run check:container-runtime:json-compatibility-runner
+bun run check:container-runtime:json-compatibility-caller
 
 bun run prepare:container-runtime:json-compatibility-invoker-config -- --help
 bun run prepare:container-runtime:json-compatibility-operator-config -- --help
@@ -4753,15 +4756,15 @@ bun run plan:container-runtime:json-compatibility-deployment-states -- --help
 bun run plan:container-runtime:json-compatibility-campaign -- --help
 
 bun run assemble:container-runtime:json-compatibility-phase-source -- \
-  --plan <plan-v4.json> --receipt <runner-or-runner-status-receipt.json> \
-  --context <independent-context.json> --out <phase-v2.json>
+  --plan <plan-v5.json> --receipt <caller-or-caller-status-receipt.json> \
+  --context <independent-context.json> --out <phase-v3.json>
 ```
 
-Generate the three private service profiles with
+Generate the four three-state private service profiles with
 `--deployment-state dark|status-only|execution`. After upload, build the strict
-inventory-v1 artifact from returned version IDs and relative config paths, then
+inventory-v2 artifact from returned version IDs and relative config paths, then
 create the deployment-state plan. Pass that validated plan to the campaign
-planner; its six execution version/config arguments must match exactly. The
+planner; its seven execution version/config arguments must match exactly. The
 state planner removes local paths from output and neither planner performs a
 network request or deployment mutation.
 
@@ -4769,12 +4772,9 @@ Secret values are provisioned separately through secret-manager-to-stdin
 flows. They are never accepted in planner/preparer argv, plan artifacts,
 tracked configuration, logs, or retained receipts.
 
-Focused local campaign/config/source acceptance passes 105 tests with 457
-expectations; deployment-state acceptance adds 11 tests with 70 expectations;
-Runner acceptance adds 10 Node and two real workerd named RPC tests. Invoker,
-Operator, and Runner service checks and Wrangler dry-runs pass. The complete
-integrated repository `bun run check` passed with exit code 0 in 1,481.5
-seconds on 2026-08-05. This is not remote evidence. No deployment, secret
-provisioning,
+The current focused transition gate passes 12 tests with 142 expectations in
+addition to the Plan v5/state-plan v2 and Caller gates recorded in
+`docs/verification.md`. This is local dependency-injected evidence. No
+deployment, secret provisioning,
 Cloudflare RPC, DO migration, Container run, provider/billing/storage mutation,
 traffic shift, VPS drain, or cutover occurred. Production remains **NO-GO**.

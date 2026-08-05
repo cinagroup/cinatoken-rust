@@ -13812,3 +13812,25 @@ Container mutation, provider/billing/storage request, traffic change, or
 Go/VPS cutover occurred. Remote transition execution/readback, account binding
 inventory, source signing/archive, and real isolated staging remain blocking.
 Production remains **NO-GO**.
+
+## Approval v2 Supply-Chain Freshness Recovery (2026-08-05)
+
+The initial approval v2 source passed Linux but the OCI vulnerability step
+failed closed when the frozen Grype database crossed the unchanged 48-hour
+maximum age. Provenance was skipped because its exact source run did not pass.
+No policy exception or age increase was introduced.
+
+| Evidence | Result |
+| --- | --- |
+| Initial Linux | [run 30984728177](https://github.com/cinagroup/cinatoken-rust/actions/runs/30984728177) passed for commit `7dd61789eb1198e8ccfc1e49a489f71704a3f774` |
+| Initial OCI | [run 30984728190](https://github.com/cinagroup/cinatoken-rust/actions/runs/30984728190) failed at deterministic vulnerability generation because DB build `2026-08-03T07:21:25Z` exceeded 48 hours |
+| Review-only candidate | [run 30956611639](https://github.com/cinagroup/cinatoken-rust/actions/runs/30956611639) passed; [artifact 8911276939](https://github.com/cinagroup/cinatoken-rust/actions/runs/30956611639/artifacts/8911276939), 3,170 bytes, SHA-256 `671031edf41df1293183fa1b8a32f503cb0c25474c4ebffcf2a476389004c564` |
+| Candidate identity | Listing 249 bytes / SHA-256 `94031e11970478c20b200921d05f3362e8fcedc96e96601630bd469d031e3bac`; built `2026-08-04T07:02:51Z`; observed age 55,636 seconds |
+| Local contracts | OCI `8/61`, SBOM `9/131`, vulnerability `14/99`, provenance `9/39`; all passed |
+| Adopted identity | Commit `4bbae860c0b9b2a3f04bbf2c277dc5d7f8d08bdd`; Grype image and 48-hour/Unknown/High/Critical/zero-approval policy unchanged |
+| Recovered OCI | [run 30985482924](https://github.com/cinagroup/cinatoken-rust/actions/runs/30985482924) passed; [artifact 8921961429](https://github.com/cinagroup/cinatoken-rust/actions/runs/30985482924/artifacts/8921961429), 146,476,439 bytes, SHA-256 `406f7170169c462d45b105fb79581324bef367ceaccb501928c1b349020cf9df` |
+| Recovered provenance | [run 30985721564](https://github.com/cinagroup/cinatoken-rust/actions/runs/30985721564) passed; [artifact 8921974503](https://github.com/cinagroup/cinatoken-rust/actions/runs/30985721564/artifacts/8921974503), 23,969 bytes, SHA-256 `47c5cbe380d02d23dd54bc61a05592489a51f76ce60c938a588a2316899c90e5` |
+
+This is supply-chain freshness evidence, not Cloudflare deployment evidence.
+No remote runtime, financial, storage, traffic, or Go/VPS authority changed;
+production remains **NO-GO**.

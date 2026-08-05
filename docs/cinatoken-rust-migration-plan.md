@@ -28511,3 +28511,61 @@ account binding inventory, topology/context collection, source signing and
 immutable archive, or a real four-phase staging campaign. No Cloudflare or
 production state changed; Go/VPS remains authoritative and production remains
 **NO-GO**.
+
+## 2026-08-05 Approval v2 Supply-Chain Freshness Recovery
+
+Approval v2 commit `7dd61789eb1198e8ccfc1e49a489f71704a3f774`
+passed the complete 1,403.6-second local repository gate and Linux
+[run 30984728177](https://github.com/cinagroup/cinatoken-rust/actions/runs/30984728177),
+but OCI
+[run 30984728190](https://github.com/cinagroup/cinatoken-rust/actions/runs/30984728190)
+failed closed before scanning because the frozen Grype database built at
+`2026-08-03T07:21:25Z` had just crossed the preserved 48-hour maximum age.
+The downstream provenance run was correctly skipped. The age limit and
+vulnerability policy were not weakened.
+
+The latest independently collected review-only candidate was
+[run 30956611639](https://github.com/cinagroup/cinatoken-rust/actions/runs/30956611639).
+Its 3,170-byte
+[artifact 8911276939](https://github.com/cinagroup/cinatoken-rust/actions/runs/30956611639/artifacts/8911276939)
+has SHA-256
+`671031edf41df1293183fa1b8a32f503cb0c25474c4ebffcf2a476389004c564`.
+The public candidate report records scanner validation passed, a listing
+observed at `2026-08-04T22:30:07Z`, database build
+`2026-08-04T07:02:51Z`, and candidate age 55,636 seconds. A fresh HTTPS read
+of Anchore's 249-byte listing matched its SHA-256
+`94031e11970478c20b200921d05f3362e8fcedc96e96601630bd469d031e3bac`
+before adoption.
+
+Commit `4bbae860c0b9b2a3f04bbf2c277dc5d7f8d08bdd` atomically refreshed only
+the listing snapshot, metadata, OCI environment, verifier constants, and
+contract expectations. It freezes archive SHA-256
+`ba52a8506bd87694e01aa84c9cb90c86105de38b75a419791e6721ff72094946`,
+raw database SHA-256
+`69c1a03c7b71d0c977a877bbd1dfa521eca009b13b8481d99b2c68fcd05e2311`,
+database xxh64 `d6ef58dfc91909fc`, and import SHA-256
+`943438c131e455c6106a1900775f4fb6080ee8ac4c26a4432d91acb7f702d30a`.
+The pinned Grype image, 48-hour window, blocked Unknown/High/Critical policy,
+and empty approval set remain unchanged.
+
+Local OCI, SBOM, vulnerability, and provenance contracts pass with `8/61`,
+`9/131`, `14/99`, and `9/39` tests/expectations. The exact adopted commit then
+passed reproducible OCI/SBOM/dual-scan verification in
+[run 30985482924](https://github.com/cinagroup/cinatoken-rust/actions/runs/30985482924);
+its 146,476,439-byte
+[artifact 8921961429](https://github.com/cinagroup/cinatoken-rust/actions/runs/30985482924/artifacts/8921961429)
+has SHA-256
+`406f7170169c462d45b105fb79581324bef367ceaccb501928c1b349020cf9df`.
+Triggered signed provenance
+[run 30985721564](https://github.com/cinagroup/cinatoken-rust/actions/runs/30985721564)
+also passed; its 23,969-byte
+[artifact 8921974503](https://github.com/cinagroup/cinatoken-rust/actions/runs/30985721564/artifacts/8921974503)
+has SHA-256
+`47c5cbe380d02d23dd54bc61a05592489a51f76ce60c938a588a2316899c90e5`.
+
+This recovery restores release-supply-chain freshness for the approval v2
+source. It performs no Cloudflare upload, deployment, secret operation,
+provider/billing/storage request, traffic change, or Go/VPS mutation. The
+remote transition executor, authenticated deployment readback, source archive,
+real four-phase staging campaign, and wider cutover matrix remain open;
+production remains **NO-GO**.

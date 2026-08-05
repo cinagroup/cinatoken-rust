@@ -109,7 +109,7 @@ bun run check:container-runtime:json-compatibility-deployment-transition
 bun run check:container-runtime:json-compatibility-deployment-transition-worker
 ```
 
-The first command validates the pure protocol with 12 tests and 142
+The first command validates the current pure protocol with 13 tests and 147
 expectations. The Worker command verifies generated Wrangler types,
 TypeScript, private/default-off config, immutable migration shape, local and
 staging dry-run bundles, Node canonical/config tests, and real workerd named
@@ -123,15 +123,26 @@ Exact replay and status then add no downstream call. It also proves all three
 tables reject update/delete and that a disabled gate reaches neither D1 nor a
 Service Binding.
 
+The current local and staging transition dry-runs are 242.44 KiB upload /
+40.64 KiB gzip with all three tracked gates false.
+
+After the real source-verifier integration, the complete repository
+`bun run check` passed again with exit code 0 in 1,588.8 seconds on
+2026-08-05. This supersedes only the local root-gate timing below; it does not
+add remote evidence.
+
 The complete repository `bun run check` passed with exit code 0 in 1,310.7
 seconds on 2026-08-05 after this Worker was added to the root graph. That run
 covered the configured frontend, Workers/workerd, supply-chain contracts,
 Rust workspace tests, and wasm32 checks. It remains local evidence.
 
-This is local workerd/SQLite and Wrangler dry-run evidence. The leaf and source
-verifier in the test are mocks. No remote D1 database, Service Binding, Worker
-version, Cloudflare API, credential, route, traffic, or Go/VPS state is tested
-or changed.
+This is local Workerd/D1/R2 and Wrangler dry-run evidence. The integrated
+runtime now executes the actual private source-verifier Worker through a
+counting Service Binding proxy and shared R2; the deployment leaf remains a
+mock. No remote D1/R2 database, external WORM archive, managed signer, Service
+Binding, Worker version, Cloudflare API, credential, route, traffic, or Go/VPS
+state is tested or changed. See
+`docs/container-runtime-json-compatibility-source-verifier.md`.
 
 ## Staging Deployment Sequence
 
@@ -139,8 +150,10 @@ Do not deploy this Worker until the leaf and verifier protocols are implemented
 and independently reviewed. Then execute the following order without skipping
 or combining stages:
 
-1. Implement the source verifier as a private, read-only named Worker. Pin its
-   source-signature, archive, artifact-readback, and account-binding roots.
+1. Review the implemented private source verifier, then implement its
+   independent paginated collector, external-WORM archiver, isolated signer,
+   create-once R2 uploader, and remote readback. Pin the approved verifier
+   policy plus source-signature, archive, artifact, and account-binding roots.
 2. Implement an allowlisted all-seven-service leaf. Separate readback from
    mutation capability; enforce account, service, entrypoint, version/config,
    annotation, and create-once operation identity; retain bounded request and
@@ -170,7 +183,8 @@ or combining stages:
 Production remains **NO-GO** until all of these are remote evidence, not local
 claims:
 
-- real source verifier and all-seven-service deployment leaf;
+- deployed source verifier, independent collector/signer/create-once uploader,
+  external WORM evidence, and all-seven-service deployment leaf;
 - applied and independently read back D1 schema;
 - exact remote version/config/export/binding/route/secret-name/migration
   inventory for verifier, leaf, coordinator, and all 18 service artifacts;

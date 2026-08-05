@@ -13900,3 +13900,34 @@ inventory, all 18 dark uploads, readback-only inflight resolution, locked
 archive, crash/response-loss campaign, and real four-phase staging remain
 blocking. No credential, deployment, Cloudflare mutation, traffic change, or
 Go/VPS operation occurred. Production remains **NO-GO**.
+
+## Private Source Verifier Verification (2026-08-05)
+
+This checkpoint supersedes only the source-verifier mock statement in the
+preceding record. The deployment mutation/readback leaf remains mocked and all
+remote acceptance remains open.
+
+| Gate | Result |
+| --- | --- |
+| Transition source protocol | PASS: 13 tests, 150 expectations; request/proof v2 binds operation, authorization, plans, transition, evidence, verifier policy, and execution time |
+| Generated types and TypeScript | PASS: Wrangler generated-type drift and strict `tsc --noEmit` |
+| Wrangler builds | PASS: local and staging dry-runs; 300.16 KiB upload / 49.25 KiB gzip; private local R2 binding; both gates false |
+| Node verifier tests | PASS: 3 files, 13 tests; release/closure profiles, canonical keys, strict bundle validation, key rotation, revocation, policy gate, archive chronology/retention, and deterministic/ambiguous classification |
+| Workerd/R2 verifier tests | PASS: 1 file, 3 tests; actual named RPC reads but does not mutate a canonical R2 object, rejects absence, and honors revocation |
+| Transition Worker integration | PASS: 242.44 KiB / 40.64 KiB gzip dry-runs, 8 Node and 2 Workerd tests; actual secondary verifier Worker, shared R2, real D1, one verifier call, four leaf mutations, 16 reads, zero replay/status calls |
+| CI boundary | PASS locally: pinned checkout/Bun, frozen install, `contents: read`, no credential, and the three focused checks in a dedicated workflow |
+| `bun run check` | PASS: complete repository gate, exit code 0 in 1,588.8 seconds; configured frontend, Workers/Workerd, supply chain, Rust workspace, and wasm32 covered |
+
+The verifier accepts no public request and contains no R2 `put`, delete, list,
+multipart, direct `fetch`, or Cloudflare API credential path. It derives one
+fixed bundle key, requires stable head/get identity and canonical JSON, checks
+nested evidence/time/account/transition relationships, pins Ed25519 SPKI, and
+checks a digest-addressed revocation marker before and after signature
+verification. Policy mismatch is rejected before R2.
+
+The test fixture proves the protocol shape, not real evidence. No managed key,
+real account inventory, remote R2 object, external compliance-mode WORM object,
+remote Worker/Service Binding, deployment leaf, Cloudflare mutation, traffic
+change, or Go/VPS operation was used. Collector, signer, uploader, archive,
+remote deployment/readback, and the full fault campaign remain blocking.
+Production remains **NO-GO**.

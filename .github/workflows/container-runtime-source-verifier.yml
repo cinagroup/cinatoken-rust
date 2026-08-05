@@ -1,0 +1,71 @@
+name: container-runtime-source-verifier
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/container-runtime-source-verifier.yml"
+      - "bun.lock"
+      - "package.json"
+      - "services/container-runtime-json-compatibility-source-verifier/**"
+      - "services/container-runtime-json-compatibility-deployment-transition/**"
+      - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
+      - "tests/fixtures/container-runtime-json-compatibility-deployment-transition.mjs"
+      - "tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs"
+      - "tools/container_runtime_json_compatibility_campaign.mjs"
+      - "tools/container_runtime_json_compatibility_deployment_states.mjs"
+      - "tools/container_runtime_json_compatibility_deployment_transition.*"
+      - "tools/container_runtime_json_compatibility_source_authentication.*"
+      - "tools/container_runtime_json_compatibility_source_manifest.mjs"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/container-runtime-source-verifier.yml"
+      - "bun.lock"
+      - "package.json"
+      - "services/container-runtime-json-compatibility-source-verifier/**"
+      - "services/container-runtime-json-compatibility-deployment-transition/**"
+      - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
+      - "tests/fixtures/container-runtime-json-compatibility-deployment-transition.mjs"
+      - "tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs"
+      - "tools/container_runtime_json_compatibility_campaign.mjs"
+      - "tools/container_runtime_json_compatibility_deployment_states.mjs"
+      - "tools/container_runtime_json_compatibility_deployment_transition.*"
+      - "tools/container_runtime_json_compatibility_source_authentication.*"
+      - "tools/container_runtime_json_compatibility_source_manifest.mjs"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: container-runtime-source-verifier-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  private-source-verifier:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out frozen source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: 1.3.14
+
+      - name: Install frozen JavaScript dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Verify transition and source-authentication contracts
+        run: bun run check:container-runtime:json-compatibility-deployment-transition
+
+      - name: Verify private R2 and Ed25519 source verifier
+        run: bun run check:container-runtime:json-compatibility-source-verifier
+
+      - name: Verify transition integration through the real source verifier
+        run: bun run check:container-runtime:json-compatibility-deployment-transition-worker

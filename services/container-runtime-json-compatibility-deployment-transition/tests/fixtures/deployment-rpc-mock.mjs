@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 
 const SOURCE_AUTH_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-source-authentication-v1";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-source-authentication-v2";
 const READBACK_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-readback-v1";
 const MUTATION_OUTCOME_CONTRACT =
@@ -14,19 +14,20 @@ const observationBases = new Map();
 
 export class JsonCompatibilitySourceVerifierEntrypoint
   extends WorkerEntrypoint {
-  async authenticateTransitionSource(sourceEvidence) {
+  async authenticateTransitionSource(sourceAuthenticationRequest) {
     sourceAuthenticationCalls += 1;
     const subject = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       contract: SOURCE_AUTH_CONTRACT,
       classification: "authenticated",
-      sourceEvidence,
+      reasonCode: null,
+      request: sourceAuthenticationRequest,
       verifierIdentitySha256: await sha256Canonical({
         service: "runtime-source-verifier",
         version: 1,
       }),
       evidenceSha256: await sha256Canonical({
-        sourceEvidence,
+        sourceAuthenticationRequest,
         verification: "runtime-fixture",
       }),
       verifiedAt: Math.floor(Date.now() / 1000),

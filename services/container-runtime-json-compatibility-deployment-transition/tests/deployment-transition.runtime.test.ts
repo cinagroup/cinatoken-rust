@@ -27,13 +27,25 @@ interface MockControlBinding {
   }>;
 }
 
+interface SourceVerifierProxyControlBinding {
+  reset(): Promise<void>;
+  getCallCount(): Promise<number>;
+}
+
 interface RuntimeTestEnv extends DeploymentTransitionEnv {
   readonly TEST_D1_MIGRATIONS: D1Migration[];
   readonly TEST_TRANSITION_INVOCATION: string;
+  readonly TEST_SOURCE_AUTHENTICATION_BUCKET: R2Bucket;
+  readonly TEST_SOURCE_AUTHENTICATION_BUNDLE: string;
+  readonly TEST_SOURCE_AUTHENTICATION_BUNDLE_KEY: string;
+  readonly TEST_SOURCE_AUTHENTICATION_BUNDLE_SHA256: string;
+  readonly TEST_SOURCE_SIGNATURE_ENVELOPE_SHA256: string;
   readonly JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_NAMED:
     TransitionRpcBinding;
   readonly JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MOCK_CONTROL:
     MockControlBinding;
+  readonly JSON_COMPATIBILITY_SOURCE_VERIFIER_PROXY_CONTROL:
+    SourceVerifierProxyControlBinding;
 }
 
 const runtimeEnv = env as unknown as RuntimeTestEnv;
@@ -41,6 +53,21 @@ const runtimeEnv = env as unknown as RuntimeTestEnv;
 beforeEach(async () => {
   await applyD1Migrations(runtimeEnv.DB, runtimeEnv.TEST_D1_MIGRATIONS);
   await runtimeEnv.JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MOCK_CONTROL.reset();
+  await runtimeEnv.JSON_COMPATIBILITY_SOURCE_VERIFIER_PROXY_CONTROL.reset();
+  await runtimeEnv.TEST_SOURCE_AUTHENTICATION_BUCKET.put(
+    runtimeEnv.TEST_SOURCE_AUTHENTICATION_BUNDLE_KEY,
+    runtimeEnv.TEST_SOURCE_AUTHENTICATION_BUNDLE,
+    {
+      httpMetadata: { contentType: "application/json" },
+      customMetadata: {
+        contract:
+          "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v1",
+        bundleSha256: runtimeEnv.TEST_SOURCE_AUTHENTICATION_BUNDLE_SHA256,
+        sourceSignatureEnvelopeSha256:
+          runtimeEnv.TEST_SOURCE_SIGNATURE_ENVELOPE_SHA256,
+      },
+    },
+  );
 });
 
 afterEach(async () => {
@@ -80,10 +107,13 @@ describe("deployment transition named RPC with real D1", () => {
     const callsAfterExecution = await runtimeEnv
       .JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MOCK_CONTROL.getCallCounts();
     expect(callsAfterExecution).toEqual({
-      sourceAuthenticationCalls: 1,
+      sourceAuthenticationCalls: 0,
       readbackCalls: 16,
       mutationCalls: 4,
     });
+    expect(await runtimeEnv
+      .JSON_COMPATIBILITY_SOURCE_VERIFIER_PROXY_CONTROL.getCallCount())
+      .toBe(1);
 
     const counts = await runtimeEnv.DB.prepare(
       `SELECT
@@ -108,6 +138,9 @@ describe("deployment transition named RPC with real D1", () => {
     expect(await runtimeEnv
       .JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MOCK_CONTROL.getCallCounts())
       .toEqual(callsAfterExecution);
+    expect(await runtimeEnv
+      .JSON_COMPATIBILITY_SOURCE_VERIFIER_PROXY_CONTROL.getCallCount())
+      .toBe(1);
 
     const status = await runtimeEnv
       .JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_NAMED
@@ -133,6 +166,9 @@ describe("deployment transition named RPC with real D1", () => {
     expect(await runtimeEnv
       .JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MOCK_CONTROL.getCallCounts())
       .toEqual(callsAfterExecution);
+    expect(await runtimeEnv
+      .JSON_COMPATIBILITY_SOURCE_VERIFIER_PROXY_CONTROL.getCallCount())
+      .toBe(1);
 
     for (const table of ["operations", "events", "receipts"]) {
       const qualified =
@@ -167,5 +203,8 @@ describe("deployment transition named RPC with real D1", () => {
         readbackCalls: 0,
         mutationCalls: 0,
       });
+    expect(await runtimeEnv
+      .JSON_COMPATIBILITY_SOURCE_VERIFIER_PROXY_CONTROL.getCallCount())
+      .toBe(0);
   });
 });

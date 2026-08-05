@@ -5805,3 +5805,40 @@ Workers, remote D1 create/apply/readback, 18 dark uploads and independent
 config/version readback, account-wide binding inventory, inflight resolution,
 locked archive, and remote fault/recovery evidence. No Cloudflare deployment
 or Go/VPS cutover occurred; remote staging and production remain **NO-GO**.
+
+## 2026-08-05 Phase 1 Private Source Verifier Boundary
+
+The private source-verifier Worker and transition integration now exist
+locally, superseding only the source-verifier mock item above. The verifier is
+a named, route-free, credential-free TypeScript `WorkerEntrypoint` with an
+inert default export, R2 `head/get` only, Version Metadata identity, exact
+current/previous Ed25519 trust, and independent default-false master/read
+gates. It returns strict source-authentication proof v2 bound to the complete
+operation, owner-approved transition, Plan v5, state-plan v2, source roots,
+and approved verifier-policy digest.
+
+Release transitions use a transition-source manifest and require no phase
+manifest. The two closure transitions require phase source-manifest v3 because
+that artifact exists only after the campaign. The canonical bundle also binds
+all 18 artifact readbacks, a pagination-complete account-wide binding
+inventory, and an external compliance-mode WORM receipt with at least 365 days
+of retention. R2 is only a read cache and is not claimed to be WORM.
+
+Focused acceptance passes 13 transition-protocol tests with 150 expectations,
+13 source-verifier Node tests, three real Workerd/R2 verifier tests, and the
+Transition Worker's eight Node plus two Workerd/D1/R2 integration tests. Both
+source-verifier Wrangler dry-runs are 300.16 KiB / 49.25 KiB gzip with gates
+false. The integrated runtime calls the actual verifier once; replay/status add
+no verifier calls. A dedicated pinned, least-privilege GitHub workflow covers
+the three focused gates.
+
+The complete repository `bun run check` also passes with exit code 0 in
+1,588.8 seconds, covering the configured frontend, Workers/Workerd,
+supply-chain contracts, Rust workspace, and wasm32 checks.
+
+This remains local evidence. The Cloudflare collector, isolated signer,
+external archive, create-once uploader, remote R2/readback, all-seven-service
+deployment leaf, remote D1, 18 uploaded versions, inflight resolver, and fault
+campaign remain blocking. See
+`docs/container-runtime-json-compatibility-source-verifier.md`. No Cloudflare
+or Go/VPS state changed; remote staging and production remain **NO-GO**.

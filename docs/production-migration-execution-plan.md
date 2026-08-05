@@ -4826,3 +4826,48 @@ Local acceptance is the two focused commands documented in
 `docs/container-runtime-json-compatibility-deployment-transition-worker.md`.
 It is not remote Cloudflare evidence. Go/VPS remains the sole production
 authority and production remains **NO-GO**.
+
+## 2026-08-05 Source Verifier Execution Addendum
+
+The private source verifier and its real Workerd integration now exist. This
+addendum supersedes only the verifier-missing row and step; it does not advance
+R1 or any production authority.
+
+| Unit | Current local implementation | Required remote acceptance |
+| --- | --- | --- |
+| Request/proof | v2 canonical operation/authorization/Plan/state-plan/transition/evidence/policy binding; exact execution and replay reconstruction | Retained owner approval and independently reproduced request digest from remote artifacts |
+| Evidence profiles | `release-v1` before campaign; `campaign-closure-v1` with phase manifest v3 after campaign | Real transition and phase source manifests from authenticated remote readback |
+| Source verifier | Private named Worker; inert default; R2 head/get only; strict canonical bundle; pinned current/previous Ed25519 SPKI; double revocation check | Dark deploy and exact version/export/config/trust/R2/binding/route/caller readback |
+| Account inventory | Protocol requires pagination complete, collector/auth identities, page-chain and readback roots, service/route/binding sets | Least-privilege collector, retained raw pages, pagination proof and independent account-wide reconciliation |
+| Archive | Receipt contract requires external compliance-mode WORM and at least 365-day retention | Provisioned external archive, exact retention policy, independent readback and legal/retention approval |
+| R2 publication | Digest-derived canonical key/body/metadata contract | Create-once uploader, conflict refusal, exact remote version/ETag/body readback; R2 is not WORM |
+| Transition integration | Real source verifier plus shared R2 and real D1 in Workerd; deployment leaf remains mock | Real all-seven-service leaf, remote D1, crash/response-loss/drift/concurrency campaign |
+
+### Revised source-evidence order
+
+1. Collect every required Cloudflare API page with a read-only identity and
+   retain raw response digests, request IDs, authentication identity, and the
+   page chain. Incomplete pagination is a stop.
+2. Build the exact 18-artifact and account-wide service/route/binding
+   inventories and independently reproduce their canonical digests.
+3. Publish the full raw source packet to an external compliance-mode WORM
+   archive and independently read back version, ETag, bytes, retention mode,
+   and retain-until evidence.
+4. In an isolated offline ceremony, sign the exact request/evidence roots with
+   the approved current or bounded previous Ed25519 key. Private key material
+   must not enter argv, environment, R2, Worker bindings, logs, or retained
+   public evidence.
+5. Use a create-once publisher to write canonical JSON plus one LF to the fixed
+   R2 key with exact metadata; fail on existing objects and read back the exact
+   remote object before an owner signs the deployment transition.
+6. Invoke the route-free verifier only through the exact approved Transition
+   Worker binding. A rejected or ambiguous proof stops with zero deployment
+   mutation and grants no permission to regenerate evidence or retry.
+7. Use release evidence for the first two transitions. After the real
+   four-phase campaign is archived, build source-manifest v3 and use new,
+   separately approved closure evidence for the last two transitions.
+
+Focused local evidence and exact commands are in
+`docs/container-runtime-json-compatibility-source-verifier.md`. No remote
+collector, signer, archive, R2 object, deployment, credential, traffic change,
+or Go/VPS operation occurred. Production remains **NO-GO**.

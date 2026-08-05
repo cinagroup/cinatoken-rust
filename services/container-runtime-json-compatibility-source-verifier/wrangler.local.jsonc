@@ -1,0 +1,38 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-container-runtime-json-compatibility-source-verifier-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "ENVIRONMENT": "local",
+    "JSON_COMPATIBILITY_SOURCE_VERIFIER_ENABLED": "false",
+    "JSON_COMPATIBILITY_SOURCE_VERIFIER_R2_READ_ENABLED": "false",
+    "JSON_COMPATIBILITY_SOURCE_VERIFIER_PROFILE_VERSION": "1",
+    "JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
+    "JSON_COMPATIBILITY_SOURCE_BUNDLE_KEY_PREFIX": "container-runtime/json-compatibility/source-authentication/v2/sha256",
+    "JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER": "cinatoken-json-compatibility-source-archive-authority-staging",
+    "JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE": "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
+    "JSON_COMPATIBILITY_SOURCE_CURRENT_KID": "",
+    "JSON_COMPATIBILITY_SOURCE_CURRENT_SPKI_SHA256": "",
+    "JSON_COMPATIBILITY_SOURCE_PREVIOUS_KID": "",
+    "JSON_COMPATIBILITY_SOURCE_PREVIOUS_SPKI_SHA256": "",
+    "JSON_COMPATIBILITY_SOURCE_PREVIOUS_ACCEPT_UNTIL": ""
+  },
+  "r2_buckets": [
+    {
+      "binding": "SOURCE_AUTHENTICATION_BUCKET",
+      "bucket_name": "cinatoken-json-compatibility-source-authentication-local",
+      "remote": false
+    }
+  ]
+}

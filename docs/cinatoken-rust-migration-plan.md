@@ -28715,3 +28715,62 @@ The next production sequence is no longer "implement a coordinator." It is:
 Provider, billing/settlement, storage, SLO, cost/capacity, security/privacy,
 reverse sync, drain, DNS/traffic, and rollback matrices remain mandatory.
 No Cloudflare or Go/VPS state changed. Production remains **NO-GO**.
+
+## 2026-08-05 Private Source Authentication And Verification
+
+This checkpoint implements the first item in the preceding production
+sequence: the private read-only source verifier and its transition-bound
+protocol. It does not implement the deployment leaf or authorize R1.
+
+The source-authentication request/proof is now v2 and is reconstructed
+identically during execution and terminal replay. It binds the operation and
+owner-authorized transition, exact Plan v5/state-plan v2, the full transition,
+account and source evidence, and a digest of the approved verifier service,
+key prefix, issuer/audience, current key, and bounded previous key. Cross-plan,
+cross-operation, cross-transition, and trust-policy substitution fail before
+R2 or deployment authority.
+
+The retained bundle distinguishes two timing domains:
+
+1. `release-v1` for `dark -> statusOnly` and `statusOnly -> execution`, using
+   the pre-campaign transition source manifest and no phase source manifest;
+2. `campaign-closure-v1` for `execution -> statusOnly` and
+   `statusOnly -> dark`, requiring the post-campaign phase source-manifest v3.
+
+The private Worker is route-free, has an inert default export, exposes one
+named RPC, reads fixed digest-addressed R2 objects, pins Ed25519 SPKI, checks
+revocation twice, validates every nested evidence relationship, and cannot
+write/list/delete R2 or call the Cloudflare API. Deterministic invalidity is
+rejected; storage/crypto uncertainty is ambiguous. Both outcomes prevent an
+automatic transition retry.
+
+Local acceptance is 13 protocol tests/150 expectations, generated type and
+TypeScript checks, two 300.16 KiB / 49.25 KiB gzip dry-runs, 13 verifier Node
+tests, three real Workerd/R2 tests, and the Transition Worker's eight Node plus
+two Workerd integration tests. The transition integration now executes the
+actual source verifier once against shared R2 and proves replay/status do not
+call it again. The deployment leaf remains mocked.
+
+The complete repository `bun run check` passes with exit code 0 in 1,588.8
+seconds, covering the configured frontend, Workers/Workerd, supply-chain
+contracts, Rust workspace, and wasm32 checks. This remains local evidence.
+
+The revised pre-R1 order is:
+
+1. build the least-privilege, complete-pagination account/config collector;
+2. provision and independently read back an external compliance-mode WORM
+   archive with at least 365 days retention;
+3. run an isolated offline Ed25519 signer and revocation ceremony;
+4. publish the canonical bundle through a create-once R2 uploader and verify
+   exact body/version/ETag/metadata readback;
+5. deploy/read back the verifier dark with gates false;
+6. implement and audit the all-seven-service readback/create-once deployment
+   leaf; and
+7. only then create remote D1, upload all 18 artifacts, and start disabled and
+   status-only fault probes.
+
+R2 is a retrieval cache, not WORM evidence. The collector, signer, uploader,
+external archive, remote R2 and Worker readback, deployment leaf, remote D1,
+inflight resolver, four-phase campaign, and wider production matrices remain
+open. See `docs/container-runtime-json-compatibility-source-verifier.md`. No
+Cloudflare or Go/VPS state changed. Production remains **NO-GO**.

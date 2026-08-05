@@ -37,12 +37,24 @@ export function digest(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export function buildSourceEvidence(accountIdSha256) {
+export function buildSourceEvidence(accountIdSha256, transition) {
+  const pair = `${transition.fromState}->${transition.toState}`;
+  const profile = pair === "dark->statusOnly" || pair === "statusOnly->execution"
+    ? "release-v1"
+    : "campaign-closure-v1";
   return Object.freeze({
+    schemaVersion: 2,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-deployment-transition-source-evidence-v2",
+    profile,
     accountIdSha256,
-    sourceManifestSha256: digest("source-manifest"),
+    transitionSourceManifestSha256: digest("transition-source-manifest"),
+    phaseSourceManifestSha256: profile === "campaign-closure-v1"
+      ? digest("phase-source-manifest")
+      : null,
     sourceSignatureEnvelopeSha256: digest("source-signature"),
-    immutableSourceArchiveSha256: digest("source-archive"),
+    sourceVerifierPolicySha256: digest("source-verifier-policy"),
+    immutableSourceArchiveReceiptSha256: digest("source-archive-receipt"),
     artifactInventoryReadbackSha256: digest("artifact-inventory-readback"),
     accountBindingInventorySha256: digest("account-binding-inventory"),
   });
@@ -88,6 +100,7 @@ export async function createAuthorizedTransitionFixture({
       },
       sourceEvidence: buildSourceEvidence(
         digest("cloudflare-account-staging"),
+        transition,
       ),
       privateKeyBytes,
       now: new Date(now * 1000),

@@ -25,8 +25,12 @@ export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_SUBJECT_CONTRACT 
   "cinatoken-container-runtime-json-compatibility-deployment-transition-approval-subject-v1";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_ENVELOPE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-approval-envelope-v1";
+export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTH_REQUEST_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-source-authentication-request-v2";
+export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_EVIDENCE_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-source-evidence-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTH_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-source-authentication-v1";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-source-authentication-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_READBACK_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-readback-v1";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MUTATION_INTENT_CONTRACT =
@@ -47,6 +51,9 @@ export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EMPTY_ROUTE_SET_SHA256 =
   sha256Canonical([]);
 
 const SCHEMA_VERSION = 1;
+const SOURCE_AUTHENTICATION_REQUEST_SCHEMA_VERSION = 2;
+const SOURCE_AUTHENTICATION_SCHEMA_VERSION = 2;
+const SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS = 60;
 const CAMPAIGN_PLAN_SCHEMA_VERSION = 4;
 const STATE_PLAN_SCHEMA_VERSION = 2;
 const MAX_PRIVATE_KEY_BYTES = 64 * 1024;
@@ -97,7 +104,7 @@ export function signJsonCompatibilityDeploymentTransition({
     transition,
     issuedAt,
   );
-  const sourceEvidence = validateSourceEvidence(sourceEvidenceInput);
+  const sourceEvidence = validateSourceEvidence(sourceEvidenceInput, transition);
   const request = {
     schemaVersion: SCHEMA_VERSION,
     contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_REQUEST_CONTRACT,
@@ -349,27 +356,105 @@ export function validateJsonCompatibilityDeploymentTransitionAuthorization(
   return authorized;
 }
 
-export function buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
+export function buildJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest({
+  operationIdSha256,
+  operationDigestSha256,
+  authorizedTransitionSha256,
+  campaignPlanDigestSha256,
+  statePlanDigestSha256,
+  transition: transitionInput,
   sourceEvidence: sourceEvidenceInput,
+}) {
+  sha256(operationIdSha256, "source authentication operation ID");
+  sha256(operationDigestSha256, "source authentication operation digest");
+  sha256(
+    authorizedTransitionSha256,
+    "source authentication authorized transition",
+  );
+  sha256(campaignPlanDigestSha256, "source authentication campaign plan");
+  sha256(statePlanDigestSha256, "source authentication state plan");
+  const transition = validateSourceAuthenticationTransition(transitionInput);
+  const profile = sourceAuthenticationProfile(transition);
+  const sourceEvidence = validateSourceEvidence(sourceEvidenceInput, transition);
+  const subject = {
+    schemaVersion: SOURCE_AUTHENTICATION_REQUEST_SCHEMA_VERSION,
+    contract:
+      JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTH_REQUEST_CONTRACT,
+    environment: "staging",
+    profile,
+    operationIdSha256,
+    operationDigestSha256,
+    authorizedTransitionSha256,
+    campaignPlanDigestSha256,
+    statePlanDigestSha256,
+    transition: cloneJson(transition),
+    sourceEvidence: cloneJson(sourceEvidence),
+  };
+  return {
+    ...subject,
+    sourceAuthenticationRequestSha256: sha256Canonical(subject),
+  };
+}
+
+export function validateJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest(
+  input,
+) {
+  const request = record(input, "transition source authentication request");
+  exactKeys(request, [
+    "schemaVersion", "contract", "environment", "profile",
+    "operationIdSha256", "operationDigestSha256",
+    "authorizedTransitionSha256", "campaignPlanDigestSha256",
+    "statePlanDigestSha256", "transition",
+    "sourceEvidence", "sourceAuthenticationRequestSha256",
+  ], "transition source authentication request");
+  const rebuilt = buildJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest({
+    operationIdSha256: request.operationIdSha256,
+    operationDigestSha256: request.operationDigestSha256,
+    authorizedTransitionSha256: request.authorizedTransitionSha256,
+    campaignPlanDigestSha256: request.campaignPlanDigestSha256,
+    statePlanDigestSha256: request.statePlanDigestSha256,
+    transition: request.transition,
+    sourceEvidence: request.sourceEvidence,
+  });
+  canonicalEqual(
+    rebuilt,
+    request,
+    "transition source authentication request",
+  );
+  return cloneJson(request);
+}
+
+export function buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
+  sourceAuthenticationRequest: sourceAuthenticationRequestInput,
   classification,
+  reasonCode = null,
   verifierIdentitySha256,
   evidenceSha256,
   verifiedAt,
 }) {
-  const sourceEvidence = validateSourceEvidence(sourceEvidenceInput);
+  const sourceAuthenticationRequest =
+    validateJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest(
+      sourceAuthenticationRequestInput,
+    );
   oneOf(
     classification,
     ["authenticated", "rejected", "ambiguous"],
     "source authentication classification",
   );
+  if (classification === "authenticated") {
+    equal(reasonCode, null, "authenticated source reason code");
+  } else {
+    safeToken(reasonCode, "source authentication reason code");
+  }
   sha256(verifierIdentitySha256, "source verifier identity");
   sha256(evidenceSha256, "source authentication evidence");
   integer(verifiedAt, "source authentication time");
   const subject = {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: SOURCE_AUTHENTICATION_SCHEMA_VERSION,
     contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTH_CONTRACT,
     classification,
-    sourceEvidence: cloneJson(sourceEvidence),
+    reasonCode,
+    request: cloneJson(sourceAuthenticationRequest),
     verifierIdentitySha256,
     evidenceSha256,
     verifiedAt,
@@ -578,12 +663,24 @@ export async function executeJsonCompatibilityDeploymentTransition({
     mutationAttempts: 0,
     readbackAttempts: 0,
   };
+  const sourceAuthenticationRequest = sourceAuthenticationRequestForAuthorized(
+    validatedPlans.campaignPlan,
+    validatedPlans.statePlan,
+    authorized,
+  );
   const sourceAuthentication = validateSourceAuthentication(
     await dependencies.authenticateSource(
-      cloneJson(authorized.request.sourceEvidence),
+      cloneJson(sourceAuthenticationRequest),
     ),
-    authorized.request.sourceEvidence,
+    sourceAuthenticationRequest,
   );
+  const sourceAuthenticationObservedAt = dependencyNow(dependencies);
+  if (
+    sourceAuthentication.verifiedAt < nowAtStart - 5
+    || sourceAuthentication.verifiedAt > sourceAuthenticationObservedAt + 5
+    || sourceAuthenticationObservedAt - sourceAuthentication.verifiedAt
+      > SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS
+  ) throw new Error("source authentication proof time is outside execution");
   execution.sourceAuthentication = sourceAuthentication;
   await appendJournalEvidence(dependencies, {
     kind: "source_authentication",
@@ -797,10 +894,18 @@ export function validateJsonCompatibilityDeploymentTransitionReceipt(
   if (receipt.finishedAt < receipt.startedAt) {
     throw new Error("transition receipt time is non-monotonic");
   }
-  validateSourceAuthentication(
+  const sourceAuthentication = validateSourceAuthentication(
     receipt.sourceAuthentication,
-    authorized.request.sourceEvidence,
+    sourceAuthenticationRequestForAuthorized(
+      campaignPlan,
+      statePlan,
+      authorized,
+    ),
   );
+  if (
+    sourceAuthentication.verifiedAt < receipt.startedAt - 5
+    || sourceAuthentication.verifiedAt > receipt.finishedAt + 5
+  ) throw new Error("transition receipt source proof time is invalid");
   if (!Array.isArray(receipt.steps)) {
     throw new Error("transition receipt steps must be an array");
   }
@@ -959,7 +1064,7 @@ function validateTransitionRequest(input, campaignPlan, statePlan) {
   const transition = selectTransition(statePlan, transitionInput.id);
   canonicalEqual(transitionInput, transition, "transition request transition");
   validatePriorStateEvidence(request.priorStateEvidence, transition, null);
-  validateSourceEvidence(request.sourceEvidence);
+  validateSourceEvidence(request.sourceEvidence, transition);
   return request;
 }
 
@@ -982,20 +1087,122 @@ function validatePriorStateEvidence(input, transition, approvalTime) {
   return cloneJson(evidence);
 }
 
-function validateSourceEvidence(input) {
+function validateSourceEvidence(input, transition) {
   const evidence = record(input, "transition source evidence");
   exactKeys(evidence, [
+    "schemaVersion",
+    "contract",
+    "profile",
     "accountIdSha256",
-    "sourceManifestSha256",
+    "transitionSourceManifestSha256",
+    "phaseSourceManifestSha256",
     "sourceSignatureEnvelopeSha256",
-    "immutableSourceArchiveSha256",
+    "sourceVerifierPolicySha256",
+    "immutableSourceArchiveReceiptSha256",
     "artifactInventoryReadbackSha256",
     "accountBindingInventorySha256",
   ], "transition source evidence");
+  equal(evidence.schemaVersion, 2, "transition source evidence schema");
+  equal(
+    evidence.contract,
+    JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_EVIDENCE_CONTRACT,
+    "transition source evidence contract",
+  );
+  const profile = sourceAuthenticationProfile(transition);
+  equal(evidence.profile, profile, "transition source evidence profile");
   for (const [label, value] of Object.entries(evidence)) {
-    sha256(value, `transition source ${label}`);
+    if (
+      label !== "schemaVersion"
+      && label !== "contract"
+      && label !== "profile"
+      && label !== "phaseSourceManifestSha256"
+    ) sha256(value, `transition source ${label}`);
+  }
+  if (profile === "release-v1") {
+    equal(
+      evidence.phaseSourceManifestSha256,
+      null,
+      "release source phase manifest",
+    );
+  } else {
+    sha256(
+      evidence.phaseSourceManifestSha256,
+      "closure source phase manifest",
+    );
   }
   return cloneJson(evidence);
+}
+
+function validateSourceAuthenticationTransition(input) {
+  const transition = record(input, "source authentication transition");
+  exactKeys(transition, [
+    "id", "ordinal", "fromState", "toState", "transitionSha256",
+  ], "source authentication transition");
+  safeToken(transition.id, "source authentication transition ID");
+  integer(transition.ordinal, "source authentication transition ordinal");
+  if (transition.ordinal < 1) {
+    throw new Error("source authentication transition ordinal is invalid");
+  }
+  oneOf(
+    transition.fromState,
+    ["dark", "statusOnly", "execution"],
+    "source authentication from-state",
+  );
+  oneOf(
+    transition.toState,
+    ["dark", "statusOnly", "execution"],
+    "source authentication to-state",
+  );
+  sha256(transition.transitionSha256, "source authentication transition");
+  sourceAuthenticationProfile(transition);
+  return cloneJson(transition);
+}
+
+function sourceAuthenticationTransition(transition) {
+  return {
+    id: transition.id,
+    ordinal: transition.ordinal,
+    fromState: transition.fromState,
+    toState: transition.toState,
+    transitionSha256: sha256Canonical(transition),
+  };
+}
+
+function sourceAuthenticationProfile(transition) {
+  const pair = `${transition.fromState}->${transition.toState}`;
+  if (pair === "dark->statusOnly" || pair === "statusOnly->execution") {
+    return "release-v1";
+  }
+  if (pair === "execution->statusOnly" || pair === "statusOnly->dark") {
+    return "campaign-closure-v1";
+  }
+  throw new Error("source authentication transition profile is invalid");
+}
+
+function sourceAuthenticationRequestForAuthorized(
+  campaignPlan,
+  statePlan,
+  authorized,
+) {
+  const authorizedTransitionSha256 = sha256Canonical(authorized);
+  const operationSubject = {
+    schemaVersion: SCHEMA_VERSION,
+    contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_OPERATION_CONTRACT,
+    operationIdSha256: authorized.request.operationIdSha256,
+    authorizedRequestSha256: authorizedTransitionSha256,
+    campaignPlanDigestSha256: campaignPlan.planDigestSha256,
+    statePlanDigestSha256: statePlan.planDigestSha256,
+    transitionId: authorized.request.transition.id,
+  };
+  return buildJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest({
+    operationIdSha256: authorized.request.operationIdSha256,
+    operationDigestSha256: sha256Canonical(operationSubject),
+    authorizedTransitionSha256,
+    campaignPlanDigestSha256: campaignPlan.planDigestSha256,
+    statePlanDigestSha256: statePlan.planDigestSha256,
+    transition: sourceAuthenticationTransition(authorized.request.transition),
+    sourceEvidence: authorized.request.sourceEvidence,
+  });
 }
 
 function selectTransition(statePlan, transitionId) {
@@ -1194,14 +1401,18 @@ function validateMutationOutcome(input, expectedIntent) {
   return outcome;
 }
 
-function validateSourceAuthentication(input, expectedSource) {
+function validateSourceAuthentication(input, expectedRequest) {
   const proof = record(input, "transition source authentication");
   exactKeys(proof, [
-    "schemaVersion", "contract", "classification", "sourceEvidence",
+    "schemaVersion", "contract", "classification", "reasonCode", "request",
     "verifierIdentitySha256", "evidenceSha256", "verifiedAt",
     "sourceAuthenticationDigestSha256",
   ], "transition source authentication");
-  equal(proof.schemaVersion, SCHEMA_VERSION, "source authentication schema");
+  equal(
+    proof.schemaVersion,
+    SOURCE_AUTHENTICATION_SCHEMA_VERSION,
+    "source authentication schema",
+  );
   equal(
     proof.contract,
     JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTH_CONTRACT,
@@ -1212,7 +1423,16 @@ function validateSourceAuthentication(input, expectedSource) {
     ["authenticated", "rejected", "ambiguous"],
     "source authentication classification",
   );
-  canonicalEqual(proof.sourceEvidence, expectedSource, "authenticated source evidence");
+  if (proof.classification === "authenticated") {
+    equal(proof.reasonCode, null, "authenticated source reason code");
+  } else {
+    safeToken(proof.reasonCode, "source authentication reason code");
+  }
+  canonicalEqual(
+    proof.request,
+    expectedRequest,
+    "authenticated source request",
+  );
   sha256(proof.verifierIdentitySha256, "source verifier identity");
   sha256(proof.evidenceSha256, "source authentication evidence");
   integer(proof.verifiedAt, "source authentication time");

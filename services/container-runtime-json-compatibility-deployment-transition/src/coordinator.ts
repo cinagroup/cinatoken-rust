@@ -128,9 +128,9 @@ export async function executeDeploymentTransition(
     authorizedTransition: invocation.authorizedTransition,
     dependencies: {
       now: () => runtimeNow(runtime),
-      authenticateSource: async (sourceEvidence) => {
+      authenticateSource: async (sourceAuthenticationRequest) => {
         return await env.JSON_COMPATIBILITY_SOURCE_VERIFIER
-          .authenticateTransitionSource(sourceEvidence);
+          .authenticateTransitionSource(sourceAuthenticationRequest);
       },
       readback: async (readbackInput) => {
         if (readbackOrdinal(readbackInput) === 2) {

@@ -1591,3 +1591,20 @@ transition row above. It grants no staging or production authority.
 | Status and recovery | D1-only status revalidates authorization, derives operation identity and returns not-found/inflight/terminal; terminal receipt is revalidated; zero adapter calls | Readback-only inflight outcome resolver, separately authorized sealing, crash matrix; mutation must remain structurally unavailable | Terminal visibility pass; inflight blocked |
 | Retention | Canonical terminal receipt is append-preserved in D1 | Locked R2/WORM bundle, signatures/public verification material, retention/legal policy and independent readback | **Blocked** |
 | Promotion | No remote D1, Worker, Service Binding, API, route, gate, traffic, financial/storage/provider or Go/VPS mutation occurred | Complete 18-artifact dark upload/readback, four transitions, four campaign phases, wider readiness matrices and independent approvals | **NO-GO** |
+
+## 2026-08-05 Private Source Verifier Overlay
+
+This overlay supersedes only the source-verifier mock row above. It grants no
+staging or production authority.
+
+| Control | Current local evidence | Production implementation/evidence still required | Decision |
+| --- | --- | --- | --- |
+| Request authority | Source request/proof v2 binds operation, owner authorization, Plan v5, state-plan v2, exact transition, evidence roots and approved verifier policy; execution/replay reconstruct identically | Retained owner approval and independent digest reconstruction from remote evidence | Local pass; remote open |
+| Temporal profile | Release profiles require no impossible pre-campaign phase manifest; closure profiles require source-manifest v3 | Real release evidence before arm and separately approved closure evidence after archived campaign | Local contract |
+| Verifier isolation | Named route-free Worker, inert default, no credential/fetch, R2 head/get only, default-false master/read gates | Remote exact version/export/config/binding/route/caller readback and least-capability review | Local pass; remote blocked |
+| Trust and revocation | Approved current/previous policy digest, pinned Ed25519 SPKI, bounded previous window, double revocation check, seven-day maximum signature and 15-minute remaining window | Managed isolated signer, two-person ceremony, key rotation/revocation drill and retained audit evidence | Verification pass; issuer blocked |
+| Bundle validation | Fixed key, stable head/get, 12 MiB cap, fatal UTF-8, bounded canonical JSON, exact metadata and nested plan/manifest/inventory/archive validation | Create-once remote uploader, conflict refusal and independent version/ETag/body readback | Local runtime pass; remote blocked |
+| Account inventory | Complete-pagination assertion plus collector/authentication/page-chain/readback roots and account service/route/binding-set digests | Real least-privilege API collector, raw pages and independent account-wide reconciliation | Protocol only; collector blocked |
+| Retention boundary | External-WORM compliance receipt requires at least 365 days; R2 explicitly serves only as retrieval cache | Provisioned external WORM, legal policy, independent readback and offline replay | **Blocked** |
+| Integration | Real verifier Worker and shared R2 run behind Transition Worker in Workerd; one call, zero replay/status calls | Real deployment leaf, remote R2/D1/Workers and complete fault campaign | Local pass; remote blocked |
+| Promotion | No remote collector, signer, archive, R2, Worker, D1, API, traffic, financial/provider/storage or Go/VPS mutation occurred | Complete source pipeline, all-seven-service leaf, 18 artifacts, four transitions/campaign phases and independent approvals | **NO-GO** |

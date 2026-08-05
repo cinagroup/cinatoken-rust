@@ -36,6 +36,7 @@ import {
   buildJsonCompatibilityDeploymentTransitionMutationOutcome,
   buildJsonCompatibilityDeploymentTransitionReadback,
   buildJsonCompatibilityDeploymentTransitionSourceAuthentication,
+  buildJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest,
   executeJsonCompatibilityDeploymentTransition,
   signJsonCompatibilityDeploymentTransition,
   validateJsonCompatibilityDeploymentTransitionAuthorization,
@@ -55,7 +56,6 @@ import {
 
 const NOW = 1_786_000_000;
 const ACCOUNT_ID_SHA256 = digest("cloudflare-account-staging");
-const SOURCE_EVIDENCE = buildSourceEvidence(ACCOUNT_ID_SHA256);
 
 let directory;
 let privateKeyBytes;
@@ -112,7 +112,10 @@ describe("JSON compatibility deployment transition authorization", () => {
           id: TRANSITION_IDS[1],
           steps: EXPECTED_ROLE_ORDERS[1].map((role) => ({ role })),
         },
-        sourceEvidence: SOURCE_EVIDENCE,
+        sourceEvidence: buildSourceEvidence(
+          ACCOUNT_ID_SHA256,
+          statePlan.transitions[1],
+        ),
       },
       approval: {
         contract:
@@ -153,7 +156,8 @@ describe("JSON compatibility deployment transition authorization", () => {
     )).toThrow(/request transition|request digest/);
 
     const sourceDrift = structuredClone(authorize(TRANSITION_IDS[0]));
-    sourceDrift.request.sourceEvidence.immutableSourceArchiveSha256 = digest("other");
+    sourceDrift.request.sourceEvidence.immutableSourceArchiveReceiptSha256 =
+      digest("other");
     expect(() => validateJsonCompatibilityDeploymentTransitionAuthorization(
       campaignPlan,
       statePlan,
@@ -336,7 +340,7 @@ describe("JSON compatibility deterministic deployment transition executor", () =
     expect(unstableReceipt.stopReason).toBe("source_state_unstable");
     expect(repeatedRequest.mutations).toHaveLength(0);
 
-    const clock = [NOW, NOW, NOW, NOW + 596, NOW + 596];
+    const clock = [NOW, NOW, NOW, NOW, NOW + 596, NOW + 596];
     const expiring = createHarness(authorized, {
       now: () => clock.shift() ?? NOW + 596,
     });
@@ -378,6 +382,79 @@ describe("JSON compatibility deterministic deployment transition executor", () =
     });
     expect(harness.mutations).toHaveLength(0);
     expect(harness.readbacks).toHaveLength(0);
+  });
+
+  test("cross-binds source authentication to the exact operation and plans", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const harness = createHarness(authorized);
+    await executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: harness.dependencies,
+    });
+    expect(harness.sourceAuthenticationRequests).toHaveLength(1);
+    expect(harness.sourceAuthenticationRequests[0]).toMatchObject({
+      schemaVersion: 2,
+      environment: "staging",
+      profile: "release-v1",
+      operationIdSha256: authorized.request.operationIdSha256,
+      campaignPlanDigestSha256: campaignPlan.planDigestSha256,
+      statePlanDigestSha256: statePlan.planDigestSha256,
+      transition: {
+        id: authorized.request.transition.id,
+        ordinal: authorized.request.transition.ordinal,
+        fromState: authorized.request.transition.fromState,
+        toState: authorized.request.transition.toState,
+      },
+      sourceEvidence: authorized.request.sourceEvidence,
+    });
+
+    const substituted = createHarness(authorized, {
+      sourceAuthenticationOverride: ({ sourceAuthenticationRequest }) => {
+        const detachedRequest =
+          buildJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest({
+            ...sourceAuthenticationRequest,
+            operationIdSha256: digest("detached-operation"),
+          });
+        return buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
+          sourceAuthenticationRequest: detachedRequest,
+          classification: "authenticated",
+          reasonCode: null,
+          verifierIdentitySha256: digest("source-verifier"),
+          evidenceSha256: digest("source-authentication-evidence"),
+          verifiedAt: NOW,
+        });
+      },
+    });
+    await expect(executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: substituted.dependencies,
+    })).rejects.toThrow(/authenticated source request/);
+    expect(substituted.mutations).toHaveLength(0);
+    expect(substituted.readbacks).toHaveLength(0);
+
+    const stale = createHarness(authorized, {
+      sourceAuthenticationOverride: ({ sourceAuthenticationRequest }) =>
+        buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
+          sourceAuthenticationRequest,
+          classification: "authenticated",
+          reasonCode: null,
+          verifierIdentitySha256: digest("source-verifier"),
+          evidenceSha256: digest("stale-source-authentication-evidence"),
+          verifiedAt: NOW - 60,
+        }),
+    });
+    await expect(executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: stale.dependencies,
+    })).rejects.toThrow(/source authentication proof time/);
+    expect(stale.mutations).toHaveLength(0);
+    expect(stale.readbacks).toHaveLength(0);
   });
 
   test("returns an exact archived replay without source, readback, or mutation effects", async () => {
@@ -481,7 +558,7 @@ function authorize(transitionId, { enteredAt = null } = {}) {
         ?? NOW - transition.minimumHoldSeconds,
       evidenceSha256: digest(`prior-state:${transitionId}`),
     },
-    sourceEvidence: SOURCE_EVIDENCE,
+    sourceEvidence: buildSourceEvidence(ACCOUNT_ID_SHA256, transition),
     privateKeyBytes,
     now: new Date(NOW * 1000),
   });
@@ -492,21 +569,33 @@ function createHarness(authorized, options = {}) {
   const timeline = [];
   const mutations = [];
   const readbacks = [];
+  const sourceAuthenticationRequests = [];
   let readbackSequence = 0;
   const sideEffectFailure = () => {
     if (options.failOnSideEffect) throw new Error("unexpected side effect");
   };
   const dependencies = {
     now: options.now ?? (() => NOW),
-    authenticateSource: async (sourceEvidence) => {
+    authenticateSource: async (sourceAuthenticationRequest) => {
       sideEffectFailure();
-      return buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
-        sourceEvidence,
+      sourceAuthenticationRequests.push(sourceAuthenticationRequest);
+      const proof = buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
+        sourceAuthenticationRequest,
         classification: options.sourceClassification ?? "authenticated",
+        reasonCode: options.sourceClassification === undefined
+            || options.sourceClassification === "authenticated"
+          ? null
+          : `source_fixture_${options.sourceClassification}`,
         verifierIdentitySha256: digest("source-verifier"),
         evidenceSha256: digest("source-authentication-evidence"),
         verifiedAt: NOW,
       });
+      return options.sourceAuthenticationOverride === undefined
+        ? proof
+        : options.sourceAuthenticationOverride({
+          sourceAuthenticationRequest,
+          proof,
+        });
     },
     readback: async (context) => {
       sideEffectFailure();
@@ -572,7 +661,14 @@ function createHarness(authorized, options = {}) {
       },
     },
   };
-  return { dependencies, events, timeline, mutations, readbacks };
+  return {
+    dependencies,
+    events,
+    timeline,
+    mutations,
+    readbacks,
+    sourceAuthenticationRequests,
+  };
 }
 
 function resealReceipt(receipt) {

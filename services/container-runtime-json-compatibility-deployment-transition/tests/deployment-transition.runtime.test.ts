@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   executeDeploymentTransition,
   type DeploymentTransitionEnv,
-  type DeploymentTransitionStatusV2,
+  type DeploymentTransitionStatusV3,
 } from "../src/coordinator";
 import type {
   JsonCompatibilityDeploymentTransitionReceiptV1,
@@ -15,7 +15,7 @@ interface TransitionRpcBinding {
   executeTransition(
     input: unknown,
   ): Promise<JsonCompatibilityDeploymentTransitionReceiptV1>;
-  getTransitionStatus(input: unknown): Promise<DeploymentTransitionStatusV2>;
+  getTransitionStatus(input: unknown): Promise<DeploymentTransitionStatusV3>;
 }
 
 interface MockControlBinding {
@@ -155,6 +155,7 @@ describe("deployment transition named RPC with real D1", () => {
       .JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_NAMED
       .getTransitionStatus(invocation);
     expect(status).toMatchObject({
+      schemaVersion: 3,
       classification: "terminal",
       transitionResult: "completed",
       eventCount: 25,
@@ -168,6 +169,8 @@ describe("deployment transition named RPC with real D1", () => {
         versionId: "deployment-transition-runtime-version-001",
         privateRpcOnly: true,
       },
+      resolution: null,
+      resolvedAt: null,
     });
     expect(status.receipt?.receiptDigestSha256).toBe(
       replay.receiptDigestSha256,

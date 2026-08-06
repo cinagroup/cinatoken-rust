@@ -17,10 +17,12 @@ import {
 export async function createMutationEnvelopeFixture({
   now = Math.floor(Date.now() / 1000),
   operationSeed = "deployment-mutation-operation",
+  includeApprovalPrivateKey = false,
 } = {}) {
   const fixture = await createAuthorizedTransitionFixture({
     now,
     operationSeed,
+    includeApprovalPrivateKey,
   });
   const { campaignPlan, statePlan, authorizedTransition } = fixture;
   const transition = authorizedTransition.request.transition;
@@ -142,6 +144,9 @@ export async function createMutationEnvelopeFixture({
       mutationIntent,
       sourceReadbacks,
     },
+    ...(includeApprovalPrivateKey
+      ? { approvalPrivateKeyBytes: fixture.approvalPrivateKeyBytes }
+      : {}),
   };
 }
 

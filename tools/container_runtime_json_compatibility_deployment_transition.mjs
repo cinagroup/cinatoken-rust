@@ -53,6 +53,8 @@ export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_AUDIENCE =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-executor-staging";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STABLE_READ_COUNT = 2;
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STABILITY_MINIMUM_SECONDS = 5;
+export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS =
+  60;
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EMPTY_ROUTE_SET_SHA256 =
   sha256Canonical([]);
 
@@ -60,7 +62,8 @@ const SCHEMA_VERSION = 1;
 const AUTHORIZATION_SCHEMA_VERSION = 2;
 const SOURCE_AUTHENTICATION_REQUEST_SCHEMA_VERSION = 2;
 const SOURCE_AUTHENTICATION_SCHEMA_VERSION = 2;
-const SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS = 60;
+const SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS =
+  JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS;
 const CAMPAIGN_PLAN_SCHEMA_VERSION = 4;
 const STATE_PLAN_SCHEMA_VERSION = 2;
 const SOURCE_ARTIFACT_INVENTORY_CONTRACT =
@@ -787,6 +790,18 @@ export function buildJsonCompatibilityDeploymentTransitionMutationOutcome({
     ...subject,
     outcomeDigestSha256: sha256Canonical(subject),
   };
+}
+
+export function validateJsonCompatibilityDeploymentTransitionMutationOutcome(
+  input,
+  expectedIntent,
+) {
+  return validateMutationOutcome(
+    input,
+    validateJsonCompatibilityDeploymentTransitionMutationIntent(
+      expectedIntent,
+    ),
+  );
 }
 
 export async function executeJsonCompatibilityDeploymentTransition({
@@ -1946,7 +1961,6 @@ function classifyReadbackPair(observations, expected) {
   const classifications = observations.map((observation) =>
     classifyReadback(observation, expected));
   if (classifications.includes("ambiguous")) return "ambiguous";
-  if (classifications.includes("drift")) return "drift";
   if (
     observations[0].readbackRequestIdSha256
       === observations[1].readbackRequestIdSha256
@@ -1955,6 +1969,7 @@ function classifyReadbackPair(observations, expected) {
     || observations[0].remoteStateSha256
       !== observations[1].remoteStateSha256
   ) return "unstable";
+  if (classifications.includes("drift")) return "drift";
   return "stable";
 }
 
@@ -2254,13 +2269,7 @@ export function validateJsonCompatibilityDeploymentTransitionExecutionContext(
     "deployment leaf source authentication classification",
   );
   const observedAt = epochSeconds(now, "deployment leaf validation time");
-  if (
-    sourceAuthentication.verifiedAt < observedAt -
-      SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS
-    || sourceAuthentication.verifiedAt > observedAt + CLOCK_SKEW_SECONDS
-  ) {
-    throw new Error("deployment leaf source authentication proof is stale");
-  }
+  validateFreshSourceAuthentication(sourceAuthentication, observedAt);
   return {
     campaignPlan: cloneJson(campaignPlan),
     statePlan: cloneJson(statePlan),
@@ -2274,6 +2283,232 @@ export function validateJsonCompatibilityDeploymentTransitionExecutionContext(
       authorizedTransition,
     ),
   };
+}
+
+export function buildJsonCompatibilityDeploymentTransitionRecoverySourceAuthenticationRequest(
+  {
+    campaignPlan: campaignPlanInput,
+    statePlan: statePlanInput,
+    authorizedTransition: authorizedTransitionInput,
+  },
+) {
+  const { campaignPlan, statePlan } = validateCurrentPlanPair(
+    campaignPlanInput,
+    statePlanInput,
+  );
+  const authorizedTransition =
+    validateJsonCompatibilityDeploymentTransitionAuthorization(
+      campaignPlan,
+      statePlan,
+      authorizedTransitionInput,
+    );
+  return sourceAuthenticationRequestForAuthorized(
+    campaignPlan,
+    statePlan,
+    authorizedTransition,
+  );
+}
+
+export function validateJsonCompatibilityDeploymentTransitionRecoveryContext(
+  {
+    campaignPlan: campaignPlanInput,
+    statePlan: statePlanInput,
+    authorizedTransition: authorizedTransitionInput,
+    sourceAuthentication: sourceAuthenticationInput,
+  },
+  { now = new Date() } = {},
+) {
+  const { campaignPlan, statePlan } = validateCurrentPlanPair(
+    campaignPlanInput,
+    statePlanInput,
+  );
+  const authorizedTransition =
+    validateJsonCompatibilityDeploymentTransitionAuthorization(
+      campaignPlan,
+      statePlan,
+      authorizedTransitionInput,
+    );
+  const sourceAuthentication = validateSourceAuthentication(
+    sourceAuthenticationInput,
+    sourceAuthenticationRequestForAuthorized(
+      campaignPlan,
+      statePlan,
+      authorizedTransition,
+    ),
+  );
+  equal(
+    sourceAuthentication.classification,
+    "authenticated",
+    "deployment recovery source authentication classification",
+  );
+  const observedAt = epochSeconds(now, "deployment recovery validation time");
+  validateFreshSourceAuthentication(sourceAuthentication, observedAt);
+  return {
+    campaignPlan: cloneJson(campaignPlan),
+    statePlan: cloneJson(statePlan),
+    authorizedTransition: cloneJson(authorizedTransition),
+    sourceAuthentication: cloneJson(sourceAuthentication),
+    artifactInventoryReadback: cloneJson(
+      authorizedTransition.request.artifactInventoryReadback,
+    ),
+    operation: operationForAuthorized(
+      { campaignPlan, statePlan },
+      authorizedTransition,
+    ),
+  };
+}
+
+export function buildJsonCompatibilityDeploymentTransitionRecoveryReadbackRequest(
+  {
+    campaignPlan,
+    statePlan,
+    authorizedTransition,
+    sourceAuthentication,
+    originalSourceAuthentication: originalSourceAuthenticationInput,
+    mutationIntent: mutationIntentInput,
+    sourceReadbacks: sourceReadbacksInput,
+    observationOrdinal,
+  },
+  options = {},
+) {
+  const context = validateJsonCompatibilityDeploymentTransitionRecoveryContext(
+    {
+      campaignPlan,
+      statePlan,
+      authorizedTransition,
+      sourceAuthentication,
+    },
+    options,
+  );
+  const mutationIntent = validateMutationIntent(mutationIntentInput);
+  const originalSourceAuthentication = validateSourceAuthentication(
+    originalSourceAuthenticationInput,
+    sourceAuthenticationRequestForAuthorized(
+      context.campaignPlan,
+      context.statePlan,
+      context.authorizedTransition,
+    ),
+  );
+  equal(
+    originalSourceAuthentication.classification,
+    "authenticated",
+    "deployment recovery original source authentication classification",
+  );
+  const transition = context.authorizedTransition.request.transition;
+  const step = transition.steps.find((candidate) =>
+    candidate.ordinal === mutationIntent.stepOrdinal);
+  if (step === undefined) {
+    throw new Error("deployment recovery step is not owner authorized");
+  }
+  if (
+    !Array.isArray(sourceReadbacksInput)
+    || sourceReadbacksInput.length !== JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STABLE_READ_COUNT
+  ) {
+    throw new Error("deployment recovery source readback set is invalid");
+  }
+  const sourceReadbacks = sourceReadbacksInput.map((value) =>
+    validateReadback(value));
+  const expectedSource = expectedArtifact(
+    context.statePlan,
+    context.artifactInventoryReadback,
+    context.authorizedTransition.request.executionAuthority,
+    step,
+    "from",
+  );
+  const expectedTarget = expectedArtifact(
+    context.statePlan,
+    context.artifactInventoryReadback,
+    context.authorizedTransition.request.executionAuthority,
+    step,
+    "to",
+  );
+  expectedSource.accountIdSha256 =
+    context.authorizedTransition.request.sourceEvidence.accountIdSha256;
+  expectedTarget.accountIdSha256 =
+    context.authorizedTransition.request.sourceEvidence.accountIdSha256;
+  equal(
+    classifyReadbackPair(sourceReadbacks, expectedSource),
+    "stable",
+    "deployment recovery source readback",
+  );
+  const rebuiltIntent = buildMutationIntent(
+    context.authorizedTransition,
+    context.operation,
+    originalSourceAuthentication,
+    step,
+    expectedTarget,
+    sourceReadbacks,
+  );
+  canonicalEqual(
+    rebuiltIntent,
+    mutationIntent,
+    "deployment recovery mutation intent",
+  );
+  return buildJsonCompatibilityDeploymentTransitionReadbackRequest({
+    operation: context.operation,
+    sourceAuthenticationDigestSha256:
+      context.sourceAuthentication.sourceAuthenticationDigestSha256,
+    transition: { id: transition.id, ordinal: transition.ordinal },
+    step,
+    phase: "target",
+    observationOrdinal,
+    expected: expectedTarget,
+  });
+}
+
+export function validateJsonCompatibilityDeploymentTransitionRecoveryReadbackExecution(
+  input,
+  options = {},
+) {
+  const value = record(input, "deployment recovery readback envelope");
+  exactKeys(value, [
+    "campaignPlan", "statePlan", "authorizedTransition",
+    "sourceAuthentication", "originalSourceAuthentication",
+    "mutationIntent", "sourceReadbacks", "readbackRequest",
+  ], "deployment recovery readback envelope");
+  const request = validateJsonCompatibilityDeploymentTransitionReadbackRequest(
+    value.readbackRequest,
+  );
+  equal(request.phase, "target", "deployment recovery readback phase");
+  const rebuilt =
+    buildJsonCompatibilityDeploymentTransitionRecoveryReadbackRequest({
+      campaignPlan: value.campaignPlan,
+      statePlan: value.statePlan,
+      authorizedTransition: value.authorizedTransition,
+      sourceAuthentication: value.sourceAuthentication,
+      originalSourceAuthentication: value.originalSourceAuthentication,
+      mutationIntent: value.mutationIntent,
+      sourceReadbacks: value.sourceReadbacks,
+      observationOrdinal: request.observationOrdinal,
+    }, options);
+  canonicalEqual(rebuilt, request, "deployment recovery owner authorization");
+  const context = validateJsonCompatibilityDeploymentTransitionRecoveryContext(
+    value,
+    options,
+  );
+  return {
+    ...context,
+    mutationIntent: cloneJson(value.mutationIntent),
+    sourceReadbacks: cloneJson(value.sourceReadbacks),
+    readbackRequest: cloneJson(request),
+    expected: cloneJson(request.expected),
+  };
+}
+
+export function classifyJsonCompatibilityDeploymentTransitionReadbackPair(
+  observations,
+  expected,
+) {
+  if (
+    !Array.isArray(observations)
+    || observations.length !== JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STABLE_READ_COUNT
+  ) {
+    throw new Error("deployment transition readback pair is invalid");
+  }
+  return classifyReadbackPair(
+    observations.map((value) => validateReadback(value)),
+    expectedReadback(expected),
+  );
 }
 
 export function validateJsonCompatibilityDeploymentTransitionReadbackExecution(
@@ -2691,6 +2926,16 @@ function validateReservation(input) {
 function approvalStillActive(authorized, dependencies) {
   const now = dependencyNow(dependencies);
   return authorized.approval.subject.expiresAt - now >= CLOCK_SKEW_SECONDS;
+}
+
+function validateFreshSourceAuthentication(sourceAuthentication, observedAt) {
+  if (
+    sourceAuthentication.verifiedAt < observedAt -
+      SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS
+    || sourceAuthentication.verifiedAt > observedAt + CLOCK_SKEW_SECONDS
+  ) {
+    throw new Error("deployment leaf source authentication proof is stale");
+  }
 }
 
 function dependencyNow(dependencies) {

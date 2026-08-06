@@ -32,6 +32,9 @@ describe("deployment readback package configuration", () => {
 
     expect(index).toContain("JsonCompatibilityDeploymentReadbackEntrypoint");
     expect(index).toContain("readDeploymentState(input: unknown)");
+    expect(index).toContain(
+      "readDeploymentStateForResolution(input: unknown)",
+    );
     expect(index).toMatch(
       /JsonCompatibilityDeploymentReadbackDefaultEntrypoint[\s\S]*WorkerEntrypoint<JsonCompatibilityDeploymentReadbackEnv> \{\}/,
     );

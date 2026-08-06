@@ -6,7 +6,11 @@ import {
   buildJsonCompatibilityDeploymentLeafServiceIdentity,
   buildJsonCompatibilityDeploymentTransitionReadback,
   validateJsonCompatibilityDeploymentTransitionReadbackExecution,
+  validateJsonCompatibilityDeploymentTransitionRecoveryReadbackExecution,
 } from "../../../tools/container_runtime_json_compatibility_deployment_transition.mjs";
+import {
+  validateJsonCompatibilityDeploymentResolutionAuthorization,
+} from "../../../tools/container_runtime_json_compatibility_deployment_resolution.mjs";
 
 export const READBACK_SERVICE_NAME =
   "cinatoken-container-runtime-json-compatibility-deployment-readback-staging";
@@ -115,6 +119,10 @@ interface ReadbackExecutionContext {
     };
   };
   readonly artifactInventoryReadback: unknown;
+  readonly sourceAuthentication: {
+    readonly sourceAuthenticationDigestSha256: string;
+    readonly verifiedAt: number;
+  };
   readonly readbackRequest: {
     readonly readbackRequestSha256: string;
     readonly step: { readonly role: string };
@@ -152,6 +160,81 @@ export async function validateReadbackInvocation(
     input as Readonly<Record<string, unknown>>,
     { now: new Date(nowMilliseconds) },
   ) as unknown as ReadbackExecutionContext;
+
+  assertFixedServicePlan(context);
+  const runtimeIdentity = await validateRuntimeIdentity(env, context);
+  return {
+    accountId: env.CLOUDFLARE_ACCOUNT_ID,
+    context,
+    readbackServiceIdentitySha256: runtimeIdentity,
+  };
+}
+
+export async function validateRecoveryReadbackInvocation(
+  env: JsonCompatibilityDeploymentReadbackEnv,
+  input: unknown,
+  nowMilliseconds: number,
+): Promise<ValidatedReadbackInvocation> {
+  if (env.JSON_COMPATIBILITY_DEPLOYMENT_READBACK_ENABLED !== "true") {
+    throw new Error("deployment readback is disabled");
+  }
+  if (!Number.isFinite(nowMilliseconds)) {
+    throw new Error("deployment readback clock is invalid");
+  }
+
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new Error("deployment recovery readback envelope is invalid");
+  }
+  const value = input as Readonly<Record<string, unknown>>;
+  const expectedKeys = [
+    "authorizedResolution",
+    "authorizedTransition",
+    "campaignPlan",
+    "mutationIntent",
+    "originalSourceAuthentication",
+    "readbackRequest",
+    "sourceAuthentication",
+    "sourceReadbacks",
+    "statePlan",
+  ];
+  if (
+    canonicalJson(Object.keys(value).sort())
+      !== canonicalJson(expectedKeys)
+  ) {
+    throw new Error("deployment recovery readback envelope fields are invalid");
+  }
+  const authorizedResolution =
+    validateJsonCompatibilityDeploymentResolutionAuthorization(
+    value.campaignPlan,
+    value.statePlan,
+    value.authorizedTransition,
+    value.authorizedResolution,
+    { now: new Date(nowMilliseconds), requireUsableWindow: true },
+  );
+  const context =
+    validateJsonCompatibilityDeploymentTransitionRecoveryReadbackExecution(
+      {
+        campaignPlan: value.campaignPlan,
+        statePlan: value.statePlan,
+        authorizedTransition: value.authorizedTransition,
+        sourceAuthentication: value.sourceAuthentication,
+        originalSourceAuthentication: value.originalSourceAuthentication,
+        mutationIntent: value.mutationIntent,
+        sourceReadbacks: value.sourceReadbacks,
+        readbackRequest: value.readbackRequest,
+      },
+      { now: new Date(nowMilliseconds) },
+    ) as unknown as ReadbackExecutionContext;
+  if (
+    context.sourceAuthentication.sourceAuthenticationDigestSha256
+      !== authorizedResolution.request.sourceAuthenticationDigestSha256
+    || context.sourceAuthentication.verifiedAt
+      !== authorizedResolution.request.sourceAuthenticationVerifiedAt
+  ) {
+    throw new Error(
+      "deployment recovery source authentication is not owner authorized",
+    );
+  }
 
   assertFixedServicePlan(context);
   const runtimeIdentity = await validateRuntimeIdentity(env, context);

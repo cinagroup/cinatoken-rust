@@ -13931,3 +13931,43 @@ remote Worker/Service Binding, deployment leaf, Cloudflare mutation, traffic
 change, or Go/VPS operation was used. Collector, signer, uploader, archive,
 remote deployment/readback, and the full fault campaign remain blocking.
 Production remains **NO-GO**.
+
+## Reader-Only Deployment Inflight Resolution Verification (2026-08-06)
+
+This checkpoint supersedes only the missing local inflight-resolution
+implementation statements above. It does not establish remote Cloudflare
+deployment, quiescence, credential, archive, traffic, or production evidence.
+
+| Gate | Result |
+| --- | --- |
+| Resolution protocol | PASS: 4 tests, 17 expectations; separate Ed25519 recovery authority, structured drain evidence, fresh source proof, stable/manual/inconclusive classification, independently bound Reader requests/identity, resealed-tamper rejection, and non-progressing receipt |
+| Resolver generated types and TypeScript | PASS: generated-type drift check and strict `tsc --noEmit` |
+| Resolver Wrangler builds | PASS: local and staging dry-runs; 336.81 KiB upload / 54.04 KiB gzip; exactly one D1 and one Reader Service Binding; all three gates false |
+| Resolver Node tests | PASS: 2 files, 14 tests; 20-way concurrency, exact replay, proof-bounded lease, N+1 after inconclusive evidence, complete journaled mutation outcome, final-write response loss, D1-only status, forbidden capability inventory, stale/contradictory drain evidence, and early identity/proof rejection |
+| Resolver Workerd/D1 tests | PASS: 1 file, 4 tests; migration 0003, 20-way claim linearization, operation-digest replay binding, post-outcome and malformed checkpoints, zero/one-observation rejection, stable/manual/inconclusive SQL parity, duplicate/mixed readbacks, spacing, fencing, identity ledgers, and `INSERT OR REPLACE` rejection with recursive triggers off |
+| Reader regression | PASS: generated types, TypeScript, both dry-runs at 281.35/47.02 KiB, 15 Node tests, and a positive recovery-RPC path into bounded ambiguity |
+| Transition regression | PASS: protocol 14 tests/157 expectations; Worker 8 Node and 2 Workerd tests; both dry-runs at 294.87/48.48 KiB; status v3 uses one D1 batch snapshot |
+| Mutation regression | PASS: 19 Node and 2 Workerd tests; both dry-runs at 255.55/42.96 KiB |
+| `bun run check` | PASS: exit code 0 in 1,462.3 seconds; complete configured frontend, Worker/Workerd, supply-chain, D1, Rust workspace, and wasm32 gates, including the new Resolver path |
+
+The Resolver is a private Worker with an inert default export, no route, no
+Cloudflare credential, no Mutator or Source Verifier binding, and no automatic
+retry. It validates the Reader response identity against the owner-authorized
+execution authority before persisting an observation. Its signed evidence
+binds Coordinator identity/configuration, caller topology,
+`executionEnabled=false`, maximum admitted lifetime, propagation and clock-skew
+allowances, their exact required sum, and boundary/observation times. Migration
+0003 keeps claims, observations, outcomes, and identity ledgers append-preserved
+and prevents a resolution claim from coexisting with later normal execution
+progress or a normal receipt.
+
+Locally supplied structured drain inputs are not independent measured remote
+drain evidence. The Workerd runtime remains pinned to its supported
+`2026-07-15` compatibility date while deployment dry-runs consume the tracked
+`2026-08-06` profiles; exact-date parity remains explicit toolchain debt. No
+Cloudflare API, credential, upload, deployment, D1 migration, Service Binding
+RPC, traffic change, provider/billing/storage mutation, or Go/VPS operation was
+performed. Independent remote drain collection/re-read and measured policy
+values, remote schema and capability readback, wider crash/response-loss and
+multi-generation fault injection, locked receipt publication/readback, and the
+isolated staging campaign remain blocking. Production remains **NO-GO**.

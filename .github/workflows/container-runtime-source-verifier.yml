@@ -11,6 +11,8 @@ on:
       - "services/container-runtime-json-compatibility-deployment-readback/**"
       - "services/container-runtime-json-compatibility-deployment-mutation/**"
       - "services/container-runtime-json-compatibility-deployment-transition/**"
+      - "services/container-runtime-json-compatibility-deployment-resolution/**"
+      - "tests/container-runtime-json-compatibility-deployment-resolution.test.mjs"
       - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
       - "tests/container-runtime-json-compatibility-source-publication.test.mjs"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
@@ -27,6 +29,7 @@ on:
       - "tools/lib/bounded_json_file.mjs"
       - "tools/container_runtime_json_compatibility_deployment_states.mjs"
       - "tools/container_runtime_json_compatibility_deployment_transition.*"
+      - "tools/container_runtime_json_compatibility_deployment_resolution.*"
       - "tools/container_runtime_json_compatibility_external_worm_archive.*"
       - "tools/container_runtime_json_compatibility_external_worm_s3_closure.*"
       - "tools/container_runtime_json_compatibility_external_worm_s3_observation.*"
@@ -51,6 +54,8 @@ on:
       - "services/container-runtime-json-compatibility-deployment-readback/**"
       - "services/container-runtime-json-compatibility-deployment-mutation/**"
       - "services/container-runtime-json-compatibility-deployment-transition/**"
+      - "services/container-runtime-json-compatibility-deployment-resolution/**"
+      - "tests/container-runtime-json-compatibility-deployment-resolution.test.mjs"
       - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
       - "tests/container-runtime-json-compatibility-source-publication.test.mjs"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
@@ -67,6 +72,7 @@ on:
       - "tools/lib/bounded_json_file.mjs"
       - "tools/container_runtime_json_compatibility_deployment_states.mjs"
       - "tools/container_runtime_json_compatibility_deployment_transition.*"
+      - "tools/container_runtime_json_compatibility_deployment_resolution.*"
       - "tools/container_runtime_json_compatibility_external_worm_archive.*"
       - "tools/container_runtime_json_compatibility_external_worm_s3_closure.*"
       - "tools/container_runtime_json_compatibility_external_worm_s3_observation.*"
@@ -127,3 +133,6 @@ jobs:
 
       - name: Verify transition integration through the real source verifier
         run: bun run check:container-runtime:json-compatibility-deployment-transition-worker
+
+      - name: Verify Reader-only deployment inflight resolution
+        run: bun run check:container-runtime:json-compatibility-deployment-resolution

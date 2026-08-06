@@ -28641,11 +28641,12 @@ Transition Coordinator
   -> locked transition receipt archive
 ```
 
-The private TypeScript Worker coordinator, all-seven-service leaf adapter,
-authenticated full-config remote readback, applied immutable D1 schema,
-readback-only inflight recovery, deployed coordinator source/version proof,
-locked archive, and crash/response-loss/drift/concurrency fault campaign remain
-unimplemented. All 18 versions still require dark upload and independent
+At this checkpoint, before the superseding 2026-08-05 and 2026-08-06
+implementation increments below, the private TypeScript Worker coordinator,
+all-seven-service leaf adapter, authenticated full-config remote readback,
+applied immutable D1 schema, readback-only inflight recovery, deployed
+coordinator source/version proof, locked archive, and crash/response-loss/drift/
+concurrency fault campaign remained unimplemented. All 18 versions still require dark upload and independent
 readback. Account binding inventory, topology/context collection, source
 publication, real four-phase campaign, wider provider/billing/storage/SLO/
 security/privacy gates, Go/VPS drain, and production cutover also remain open.
@@ -28697,7 +28698,9 @@ The integrated `bun run check` passed with exit code 0 in 1,310.7 seconds on
 2026-08-05, covering the configured frontend, Workers/workerd, supply-chain,
 Rust workspace, and wasm32 gates. It is not remote Cloudflare evidence.
 
-The next production sequence is no longer "implement a coordinator." It is:
+The then-current production sequence was no longer "implement a coordinator."
+Steps 1, 2, and the local Resolver portion of step 6 are superseded by later
+local implementation checkpoints below; their remote evidence remains open:
 
 1. implement and review the private source verifier;
 2. implement the allowlisted all-seven-service readback/create-once leaf;
@@ -29300,8 +29303,9 @@ source observations plus both leaf identities and credentials.
 
 Coordinator migration 0002 atomically stores the exact authority beside the
 operation reservation. SQL rejects equal Reader/Mutator service, identity, or
-credential values and makes the authority row append-preserved. Status is v2
-and remains D1-only; it has no recovery mutation path.
+credential values and makes the authority row append-preserved. Status is v3,
+reads operation/authority/events/normal receipt/latest resolution in one D1
+batch snapshot, and remains D1-only; it has no recovery mutation path.
 
 ### Reader
 
@@ -29354,7 +29358,7 @@ transition success; only two later exact Reader observations can advance.
 The focused local gates pass:
 
 - transition protocol: 14 tests and 157 expectations;
-- Reader: 14 tests, generated types, TypeScript, and both Wrangler dry-runs;
+- Reader: 15 tests, generated types, TypeScript, and both Wrangler dry-runs;
 - Mutator: 19 Node tests, two Workerd/D1 tests, generated types, TypeScript,
   and both Wrangler dry-runs;
 - Coordinator: eight Node tests and two Workerd/D1/R2 tests; and
@@ -29362,17 +29366,16 @@ The focused local gates pass:
   write calls, one coordinator operation, one authority row, 25 events, and
   one terminal receipt under four concurrent callers.
 
-Dry-run bundles are 243.14/41.71 KiB Reader, 255.13/42.92 KiB Mutator, and
-281.70/46.36 KiB Coordinator for upload/gzip respectively. Every tracked gate
+Dry-run bundles are 281.35/47.02 KiB Reader, 255.55/42.96 KiB Mutator, and
+294.87/48.48 KiB Coordinator for upload/gzip respectively. Every tracked gate
 is false. These are local contract, Workerd, D1, HTTP mock, and Wrangler build
 results only.
 
-The complete repository `bun run check` also passed with exit code 0 in
-1,366.7 seconds on 2026-08-06 after the physical split was integrated. It
-covered the configured Worker/Workerd, generated-type, Wrangler dry-run,
-frontend, supply-chain, Rust workspace, and wasm32 gates. Existing Rust
-dead-code warnings remain warnings; this result is not live Cloudflare
-evidence.
+The complete repository `bun run check` passed with exit code 0 in 1,462.3
+seconds on 2026-08-06 after the Resolver hardening was integrated. It covered
+the configured Worker/Workerd, generated-type, Wrangler dry-run, frontend,
+supply-chain, D1, Rust workspace, and wasm32 gates. Existing Rust dead-code
+warnings remain warnings; this result is not live Cloudflare evidence.
 
 ### Production assessment
 
@@ -29387,11 +29390,246 @@ ceremonies, final private Worker deployments and exact Version Metadata
 readback, account-wide proof of allowed callers, complete C0/C3 artifact digest
 derivation, remote creation/application/readback of both D1 databases, public-
 route and wrong-version drills, response-loss/crash injection, credential
-rotation and revocation, a Reader-only inflight resolver, and locked receipt
-publication. Changing any gate or binding creates a different Worker version
-and invalidates the authority; final candidate versions must be deployed and
-read back before the owner signs the execution authority.
+   rotation and revocation, remote deployment and proof of the independently
+   authorized quiesced Reader-only resolver specified below, and locked normal/
+   resolution receipt publication.
+Changing any gate or binding creates a different Worker version and invalidates
+the authority; final candidate versions must be deployed and read back before
+the owner signs execution or recovery authority.
 
 No Cloudflare API, D1, R2, route, deployment, traffic, provider, billing, or
 Go/VPS state changed in this increment. Go/VPS remains authoritative and
 production remains **NO-GO**.
+
+## 2026-08-06 D0 Quiesced Reader-Only Inflight Resolution Foundation
+
+This checkpoint defines the production-safe recovery boundary for an inflight
+deployment transition. It supersedes earlier references to an unspecified
+"future" or status-only resolver. The authoritative design is
+`docs/container-runtime-json-compatibility-deployment-resolution.md`.
+
+The current Coordinator, Reader, Mutator, Source Verifier, D1 journal, local
+tests, Workerd runs, and Wrangler dry-runs remain local implementation
+evidence. The Resolver now adds a signed v1 contract, recovery readback
+helpers, migration 0003, private Reader-only Worker, D1 repository,
+execution/status core, root scripts, and focused CI wiring. Focused verification
+passes four Bun protocol tests with seventeen expectations, fourteen Node
+Worker/config tests, and four Workerd/D1 repository tests. Generated types, TypeScript,
+aggregate package tests, and both Wrangler dry-runs pass. The tests include
+20-way claim concurrency in injected and real D1 repositories, a journaled-
+outcome checkpoint, N+1 continuation after an inconclusive attempt, terminal-
+write response-loss reconciliation with no extra Reader call, D1-only status,
+early wrong-version or substituted-fresh-proof rejection, and unbound Reader
+response identity rejection before observation persistence. Local tests also
+cover forbidden capabilities, stale/contradictory drain evidence, operation-
+digest replay binding, malformed checkpoints, zero/one-observation rejection,
+duplicate/mixed/stable classifications, append identity ledgers, and SQLite
+`INSERT OR REPLACE` rejection. Independent remote drain-evidence collection,
+measured policy inputs, wider claim/observation and real-D1 multi-generation
+fault coverage, compatibility-date parity, and all remote Cloudflare evidence
+remain incomplete or unproven. Both Resolver dry-runs are 336.81 KiB upload /
+54.04 KiB gzip with
+one D1 binding, one Reader binding, Version Metadata, and all gates false.
+
+### Physical capability boundary
+
+The resolver must be a separate private Worker rather than another Coordinator
+method:
+
+```text
+Independent Ed25519 owner recovery authorization
++ fresh source proof produced by an external approved ceremony
+  -> Quiesced Deployment Resolution Worker
+     -> transition D1
+     -> Deployment Reader Service Binding only
+
+No Mutator binding
+No Source Verifier binding
+No Cloudflare token or token secret name
+No public route, workers.dev, preview URL, or execution RPC
+```
+
+The fresh source proof is passed in the strict request and verified locally
+against the approved verifier identity and source roots. The Resolver cannot
+obtain or refresh it because its physical configuration contains no Source
+Verifier binding. The Reader remains the only component holding a read-only
+Cloudflare credential; the Resolver holds none.
+
+Keeping a Mutator binding but promising not to use it is insufficient. Remote
+promotion must independently read back the final Resolver's exact exports,
+Version Metadata, D1 and Reader bindings, route absence, secret-name inventory,
+and account-wide caller topology.
+
+### Quiescence before claim
+
+A D1 claim cannot cancel a Coordinator request that already persisted
+`mutation_intent` and is about to call the independent Mutator. The resolver
+therefore requires a quiesced control plane:
+
+1. Disable normal transition execution on the exact Coordinator candidate.
+2. Independently read back its version, gate, configuration, bindings, private
+   route state, and account-wide caller topology.
+3. Record the last possible execution-admission time.
+4. Wait a signed policy interval longer than the audited maximum admitted-
+   request lifetime, all nested deadlines, propagation allowance, and clock
+   skew.
+5. Repeat the configuration and caller-topology readback; any drift restarts
+   the drain.
+6. Only after `quiescenceSatisfiedAt`, obtain a fresh source proof and create
+   one owner recovery authorization for one operation and generation.
+
+This sequence must be proven in isolated remote staging. A local gate value or
+sleep alone is not quiescence evidence.
+
+### Independent recovery authorization
+
+The dedicated Ed25519 recovery envelope has its own signature domain,
+audience, subject, schema, request digest, nonce, and bounded lifetime. Normal
+transition approval, phase approval, source proof, status input, or an older
+recovery generation cannot substitute for it.
+
+The signature binds:
+
+- original operation, authorized request, plans, transition, and immutable
+  execution-authority digests;
+- exact event count, journal-head ordinal and digest, canonical journal
+  snapshot digest, and expected generation;
+- final Resolver and Reader service, entrypoint, version, profile, capability,
+  credential-identity, and service-identity digests;
+- fresh source-proof digest, approved Source Verifier identity, source roots,
+  and proof issue/expiry time;
+- execution-disabled evidence, disabled Coordinator version/configuration,
+  caller-topology digest, both observation times, drain policy inputs, and
+  `quiescenceSatisfiedAt`;
+- target state, observation stability interval, claim not-before time, and
+  lease expiry; and
+- zero automatic retries, no mutation authority, no Source Verifier call, and
+  `nextTransitionAllowed=false`.
+
+The lease cannot outlive the recovery authorization or fresh source proof. A
+failed or expired generation requires a new fresh source proof and a newly
+signed generation `N+1` against the then-current journal head. The Resolver
+does not select or extend its own authority.
+
+The current v1 foundation binds the journal head, generation, Resolver,
+execution Reader authority, exact fresh source-proof digest and verification/
+expiry times, structured execution-disabled evidence digest, quiescence
+boundary, evidence-derived interval, and 45-second lease, with a generic
+600-second authorization ceiling. The evidence self-binds Coordinator identity
+and configuration, caller topology, `executionEnabled=false`, maximum admitted
+request lifetime, propagation and clock-skew allowances, their exact sum of at
+least 30 seconds, and observation time. Fresh-proof expiry reduces the effective
+v1 authorization to at most 60 seconds, and the signer and Resolver require the
+full lease plus five-second clock-skew margin to fit inside proof and owner-
+authorization windows. Resolver and Reader independently reject a valid
+substituted fresh proof before D1, token, or network access. These locally
+supplied values are not remote proof that all admitted executions drained; an
+independent collector, repeated readback, and measured maximum-lifetime inputs
+remain required before version freeze.
+
+### Append-only resolution state
+
+Local migration 0003 adds create-only resolution claims, target observations,
+and independent resolution outcomes/receipts to the transition D1 without
+rewriting migrations 0001 or 0002. It remains local worktree evidence until
+the full runtime matrix passes and the exact schema is remotely applied and
+independently read back.
+
+One conditional `INSERT ... SELECT` plus exact first-primary readback checks the exact signed journal
+head, generation, absence of a normal or resolution terminal receipt, absence
+of an unexpired competing claim, completed quiescence, and lease. Claim
+creation durably fences later normal execution events and normal receipt
+creation. Quiescence remains mandatory because the fence cannot retract an
+already admitted mutation call.
+
+Each claim generation can append exactly two target observations with the
+authority-pinned Reader identity and signed minimum stability interval.
+Distinct request IDs are required for a stable/manual conclusion; duplicates
+are retained only as inconclusive evidence. Evidence from different generations
+cannot be combined. A lost Reader response is not synthesized or
+automatically retried; a new attempt needs a newly signed generation after the
+lease. Lost claim, observation, or receipt write acknowledgements are resolved
+only by exact digest readback.
+
+The final resolution receipt is separate from the normal transition receipt.
+It never inserts or invents a missing `mutation_outcome`, never marks the
+normal execution complete, never resumes remaining steps, and never resends a
+deployment. Normal and resolution receipts are mutually exclusive, all
+resolution tables reject update/delete, and append-preserved identity ledgers
+reject SQLite `INSERT OR REPLACE` recreation even with recursive triggers off.
+
+Two stable exact target observations may produce `target_confirmed`. Two
+stable observed responses agreeing on the same source, intermediate, or other
+non-target state produce `manual_review_required`; ambiguous, mixed, or
+unstable evidence may produce only a
+non-final `readback_inconclusive` attempt receipt and cannot produce a
+successful seal. A later generation still needs a fresh proof and owner
+signature. Both final classifications record `mutationResent=false`,
+`normalMutationOutcomeSynthesized=false`, and
+`nextTransitionAllowed=false`. The original operation becomes absorbing. Any
+continuation, rollback, or remediation, including manual review, requires
+fresh prior-state evidence and a newly signed operation.
+
+### Required local and remote tests
+
+The implementation gate must cover:
+
+- 20 concurrent resolvers with exactly one claim, no dual terminal receipt,
+  and zero Mutator/Source Verifier property access or call count;
+- claim versus normal receipt, claim versus execution event, generation versus
+  generation, and consistent status-read races;
+- execution still enabled, incomplete drain, stale or drifting disable
+  evidence, incorrect maximum-lifetime calculation, and premature claim;
+- crash after claim or one observation, lease expiry, newly signed generation,
+  and permanent rejection of stale-generation writes;
+- two stable target observations, stable source/intermediate observations,
+  mixed or drifting states, and a missing Coordinator-side Mutator outcome;
+- response loss at claim, Reader response, observation append, and resolution
+  receipt commit, with exact-replay recovery only and no resend;
+- wrong Resolver/Reader/Source Verifier version or identity, wrong Reader
+  credential identity, wrong operation/journal head/generation, stale proof,
+  expired authorization/lease, and unsupported N/N-1 schema;
+- immutable-table update/delete rejection, observation spacing, distinct
+  request IDs, receipt mutual exclusion, and D1 atomic snapshot behavior; and
+- config dry-run proving gates false, private-only routing, and physical absence
+  of Mutator, Source Verifier, and token capabilities.
+
+The exact deployed staging candidates must repeat concurrency, crash,
+response-loss, wrong-version, generation, lease, gate-disable, propagation,
+maximum-lifetime drain, D1 ambiguity, credential rotation/revocation, locked
+receipt publication, and independent readback. Local Node, Workerd, mocks, and
+Wrangler dry-runs do not prove these remote properties.
+
+### Production assessment
+
+The design prevents inflight recovery from becoming an accidental second
+mutation path and aligns the control plane with least privilege, append-only
+evidence, explicit leases, and owner-authorized incident handling. It is
+feasible on Cloudflare using a private Worker, Service Binding, Version
+Metadata, and the existing transition D1, but feasibility is not readiness.
+
+Production remains **NO-GO** until all of the following are complete:
+
+- completion of the remaining Resolver gates: independent drain-evidence
+  collection/re-read, audited maximum-lifetime measurement, wider claim/
+  observation and multi-generation fault tests, and Workerd/deploy
+  compatibility-date parity;
+- remote Coordinator/Reader/Mutator/Source Verifier/Resolver versions and
+  complete C0/C3 version/config/binding/route/secret-name/migration evidence;
+- remotely applied and independently read transition and Mutator D1 schemas;
+- account-wide caller proof and physical Resolver capability readback;
+- two-person recovery-key issuance, signing, custody, rotation, revocation, and
+  audit evidence plus a production fresh-source-proof delivery ceremony;
+- execution disable/readback, audited drain, repeat readback, and all remote
+  concurrency/response-loss/wrong-version/lease/generation campaigns;
+- actual one-send Mutator and no-resend evidence, locked normal and resolution
+  receipt publication, independent digest readback, and incident drills; and
+- the remaining all-18 dark upload/readback, four-transition N/N-1 campaign,
+  rollback, provider, billing, settlement, storage, SLO, capacity/cost,
+  security, privacy, Go/VPS drain, and traffic-cutover approvals.
+
+No secret was read for this local implementation increment. No Cloudflare API,
+remote D1, R2, route, Worker deployment, traffic, provider,
+billing, or Go/VPS state was accessed or changed. The evidence recorded here
+is local implementation/design evidence, not remote Cloudflare proof. Go/VPS
+remains authoritative and production remains **NO-GO**.

@@ -3,6 +3,10 @@ import type {
   JsonCompatibilityDeploymentTransitionOperationV1,
   JsonCompatibilityDeploymentTransitionReceiptV1,
 } from "../../../tools/container_runtime_json_compatibility_deployment_transition.mjs";
+import {
+  validateJsonCompatibilityDeploymentResolutionReceipt,
+  type JsonCompatibilityDeploymentResolutionReceiptV1,
+} from "../../../tools/container_runtime_json_compatibility_deployment_resolution.mjs";
 
 import { canonicalJson } from "./canonical";
 
@@ -42,6 +46,11 @@ const RECEIPT_COLUMNS = `
   archived_at
 `;
 
+const RESOLUTION_COLUMNS = `
+  operation_id_sha256, generation, classification,
+  resolution_digest_sha256, resolution_json, resolved_at
+`;
+
 interface OperationRow {
   readonly operation_id_sha256: string;
   readonly operation_digest_sha256: string;
@@ -74,6 +83,18 @@ interface ReceiptRow {
   readonly archived_at: number;
 }
 
+interface ResolutionRow {
+  readonly operation_id_sha256: string;
+  readonly generation: number;
+  readonly classification:
+    | "target_confirmed"
+    | "manual_review_required"
+    | "readback_inconclusive";
+  readonly resolution_digest_sha256: string;
+  readonly resolution_json: string;
+  readonly resolved_at: number;
+}
+
 interface AuthorityRow {
   readonly operation_id_sha256: string;
   readonly authority_digest_sha256: string;
@@ -94,6 +115,13 @@ interface AuthorityRow {
   readonly mutation_credential_id_sha256: string;
   readonly created_at: number;
 }
+
+type TransitionStatusRow =
+  | OperationRow
+  | AuthorityRow
+  | TransitionEventRow
+  | ReceiptRow
+  | ResolutionRow;
 
 interface RepositoryServiceAuthority {
   readonly serviceName: string;
@@ -121,7 +149,7 @@ export interface TransitionRepositoryIdentity {
 }
 
 export interface TransitionStatusSnapshot {
-  readonly classification: "not_found" | "inflight" | "terminal";
+  readonly classification: "not_found" | "inflight" | "terminal" | "resolved";
   readonly operation: {
     readonly operationIdSha256: string;
     readonly operationDigestSha256: string;
@@ -140,6 +168,8 @@ export interface TransitionStatusSnapshot {
   readonly events: readonly TransitionEventRow[];
   readonly receipt: JsonCompatibilityDeploymentTransitionReceiptV1 | null;
   readonly archivedAt: number | null;
+  readonly resolution: JsonCompatibilityDeploymentResolutionReceiptV1 | null;
+  readonly resolvedAt: number | null;
 }
 
 export class TransitionRepositoryUnavailableError extends Error {
@@ -414,43 +444,112 @@ export async function readTransitionStatus(
   digest(operationIdSha256, "transition operation ID");
   digest(expectedOperationDigestSha256, "transition operation digest");
   const session = database.withSession("first-primary");
-  const operation = await readOperation(session, operationIdSha256);
+  let results: D1Result<TransitionStatusRow>[];
+  try {
+    results = await session.batch<TransitionStatusRow>([
+      session.prepare(
+        `SELECT ${OPERATION_COLUMNS}
+         FROM json_compatibility_deployment_transition_operations
+         WHERE operation_id_sha256 = ?1
+         LIMIT 1`,
+      ).bind(operationIdSha256),
+      session.prepare(
+        `SELECT ${AUTHORITY_COLUMNS}
+         FROM json_compatibility_deployment_transition_authorities
+         WHERE operation_id_sha256 = ?1
+         LIMIT 1`,
+      ).bind(operationIdSha256),
+      session.prepare(
+        `SELECT ${EVENT_COLUMNS}
+         FROM json_compatibility_deployment_transition_events
+         WHERE operation_id_sha256 = ?1
+         ORDER BY event_ordinal ASC`,
+      ).bind(operationIdSha256),
+      session.prepare(
+        `SELECT ${RECEIPT_COLUMNS}
+         FROM json_compatibility_deployment_transition_receipts
+         WHERE operation_id_sha256 = ?1
+         LIMIT 1`,
+      ).bind(operationIdSha256),
+      session.prepare(
+        `SELECT ${RESOLUTION_COLUMNS}
+         FROM json_compatibility_deployment_transition_resolution_outcomes
+         WHERE operation_id_sha256 = ?1
+         ORDER BY generation DESC
+         LIMIT 1`,
+      ).bind(operationIdSha256),
+    ]);
+  } catch {
+    throw new TransitionRepositoryUnavailableError(false);
+  }
+  if (results.length !== 5 || results.some((result) => !result.success)) {
+    throw new TransitionRepositoryUnavailableError(false);
+  }
+  const operation = optionalStatusRow<OperationRow>(
+    results[0],
+    "transition status operation",
+  );
   if (operation === null) {
+    if (results.slice(1).some((result) => result.results.length !== 0)) {
+      throw new TransitionRepositoryUnavailableError(false);
+    }
     return {
       classification: "not_found",
       operation: null,
       events: [],
       receipt: null,
       archivedAt: null,
+      resolution: null,
+      resolvedAt: null,
     };
   }
   if (operation.operation_digest_sha256 !== expectedOperationDigestSha256) {
     throw new TransitionRepositoryConflictError();
   }
-  const authority = await readAuthority(session, operationIdSha256);
+  const authority = optionalStatusRow<AuthorityRow>(
+    results[1],
+    "transition status authority",
+  );
   if (authority === null) {
     throw new TransitionRepositoryUnavailableError(false);
   }
-  let events: TransitionEventRow[];
-  try {
-    const result = await session.prepare(
-      `SELECT ${EVENT_COLUMNS}
-       FROM json_compatibility_deployment_transition_events
-       WHERE operation_id_sha256 = ?1
-       ORDER BY event_ordinal ASC`,
-    ).bind(operationIdSha256).all<TransitionEventRow>();
-    events = result.results;
-  } catch {
+  const events = results[2].results as TransitionEventRow[];
+  const receiptRow = optionalStatusRow<ReceiptRow>(
+    results[3],
+    "transition status receipt",
+  );
+  const resolutionRow = optionalStatusRow<ResolutionRow>(
+    results[4],
+    "transition status resolution",
+  );
+  if (receiptRow !== null && resolutionRow !== null) {
     throw new TransitionRepositoryUnavailableError(false);
   }
-  const receiptRow = await readReceipt(session, operationIdSha256);
+  const finalResolution = resolutionRow !== null
+    && resolutionRow.classification !== "readback_inconclusive";
   return {
-    classification: receiptRow === null ? "inflight" : "terminal",
+    classification: receiptRow !== null
+      ? "terminal"
+      : finalResolution ? "resolved" : "inflight",
     operation: publicOperation(operation, authority),
     events,
     receipt: receiptRow === null ? null : parseReceipt(receiptRow),
     archivedAt: receiptRow?.archived_at ?? null,
+    resolution: resolutionRow === null
+      ? null
+      : parseResolution(resolutionRow),
+    resolvedAt: resolutionRow?.resolved_at ?? null,
   };
+}
+
+function optionalStatusRow<Row extends TransitionStatusRow>(
+  result: D1Result<TransitionStatusRow>,
+  _label: string,
+): Row | null {
+  if (result.results.length > 1) {
+    throw new TransitionRepositoryUnavailableError(false);
+  }
+  return (result.results[0] as Row | undefined) ?? null;
 }
 
 async function readOperation(
@@ -623,6 +722,34 @@ function parseReceipt(row: ReceiptRow): JsonCompatibilityDeploymentTransitionRec
     throw new TransitionRepositoryUnavailableError(true);
   }
   return value as JsonCompatibilityDeploymentTransitionReceiptV1;
+}
+
+function parseResolution(
+  row: ResolutionRow,
+): JsonCompatibilityDeploymentResolutionReceiptV1 {
+  let value: unknown;
+  try {
+    value = JSON.parse(row.resolution_json);
+  } catch {
+    throw new TransitionRepositoryUnavailableError(true);
+  }
+  try {
+    const resolution = validateJsonCompatibilityDeploymentResolutionReceipt(
+      value,
+    );
+    if (
+      resolution.operationIdSha256 !== row.operation_id_sha256
+      || resolution.claimGeneration !== row.generation
+      || resolution.classification !== row.classification
+      || resolution.resolutionReceiptSha256
+        !== row.resolution_digest_sha256
+    ) {
+      throw new Error("persisted resolution row drifted");
+    }
+    return resolution;
+  } catch {
+    throw new TransitionRepositoryUnavailableError(true);
+  }
 }
 
 function validateOperation(

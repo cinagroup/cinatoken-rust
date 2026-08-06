@@ -6,6 +6,9 @@ import {
   validateJsonCompatibilityDeploymentTransitionReceipt,
   type JsonCompatibilityDeploymentTransitionReceiptV1,
 } from "../../../tools/container_runtime_json_compatibility_deployment_transition.mjs";
+import type {
+  JsonCompatibilityDeploymentResolutionReceiptV1,
+} from "../../../tools/container_runtime_json_compatibility_deployment_resolution.mjs";
 
 import { canonicalJson, sha256Canonical } from "./canonical";
 import {
@@ -17,7 +20,7 @@ import {
 } from "./repository";
 
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-status-v2";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-status-v3";
 
 const MAX_INVOCATION_BYTES = 1024 * 1024;
 const STABILITY_CLOCK_GRANULARITY_PADDING_MILLISECONDS = 1000;
@@ -73,12 +76,16 @@ export interface DeploymentTransitionRuntime {
   sleep(milliseconds: number): Promise<void>;
 }
 
-export interface DeploymentTransitionStatusV2 {
-  readonly schemaVersion: 2;
+export interface DeploymentTransitionStatusV3 {
+  readonly schemaVersion: 3;
   readonly contract:
     typeof JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_CONTRACT;
   readonly environment: "staging";
-  readonly classification: "not_found" | "inflight" | "terminal";
+  readonly classification:
+    | "not_found"
+    | "inflight"
+    | "terminal"
+    | "resolved";
   readonly transitionResult: "completed" | "stopped" | null;
   readonly operationIdSha256: string;
   readonly operationDigestSha256: string;
@@ -105,7 +112,9 @@ export interface DeploymentTransitionStatusV2 {
   readonly deploymentMutationCalled: false;
   readonly executionRetryPermitted: false;
   readonly receipt: JsonCompatibilityDeploymentTransitionReceiptV1 | null;
+  readonly resolution: JsonCompatibilityDeploymentResolutionReceiptV1 | null;
   readonly archivedAt: number | null;
+  readonly resolvedAt: number | null;
   readonly observedAt: number;
   readonly statusDigestSha256: string;
 }
@@ -198,7 +207,7 @@ export async function getDeploymentTransitionStatus(
   env: DeploymentTransitionEnv,
   input: unknown,
   runtime: DeploymentTransitionRuntime = DEFAULT_RUNTIME,
-): Promise<DeploymentTransitionStatusV2> {
+): Promise<DeploymentTransitionStatusV3> {
   const invocation = parseInvocation(input);
   const configuration = requireStatusConfiguration(env);
   const authorized = validateJsonCompatibilityDeploymentTransitionAuthorization(
@@ -234,10 +243,10 @@ export async function getDeploymentTransitionStatus(
   }
   const observedAt = runtimeNow(runtime);
   const body: Omit<
-    DeploymentTransitionStatusV2,
+    DeploymentTransitionStatusV3,
     "statusDigestSha256"
   > = {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_CONTRACT,
     environment: "staging" as const,
     classification: snapshot.classification,
@@ -272,7 +281,9 @@ export async function getDeploymentTransitionStatus(
     deploymentMutationCalled: false as const,
     executionRetryPermitted: false as const,
     receipt,
+    resolution: snapshot.resolution,
     archivedAt: snapshot.archivedAt,
+    resolvedAt: snapshot.resolvedAt,
     observedAt,
   };
   return {

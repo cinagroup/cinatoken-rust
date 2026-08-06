@@ -281,6 +281,8 @@ export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_OPERATION_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-deployment-transition-operation-v1";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STABILITY_MINIMUM_SECONDS:
   5;
+export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS:
+  60;
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EMPTY_ROUTE_SET_SHA256:
   string;
 export const JSON_COMPATIBILITY_DEPLOYMENT_LEAF_SERVICE_IDENTITY_CONTRACT:
@@ -376,6 +378,11 @@ export function buildJsonCompatibilityDeploymentTransitionMutationOutcome(
   input: Readonly<Record<string, unknown>>,
 ): JsonCompatibilityDeploymentTransitionMutationOutcomeV2;
 
+export function validateJsonCompatibilityDeploymentTransitionMutationOutcome(
+  input: unknown,
+  expectedIntent: unknown,
+): JsonCompatibilityDeploymentTransitionMutationOutcomeV2;
+
 export function signJsonCompatibilityDeploymentTransition(
   input: Readonly<Record<string, unknown>>,
 ): JsonCompatibilityAuthorizedDeploymentTransitionV2;
@@ -400,6 +407,45 @@ export function validateJsonCompatibilityDeploymentTransitionReadbackExecution(
     JsonCompatibilityDeploymentTransitionReadbackRequestV2;
   readonly expected: JsonCompatibilityDeploymentTransitionExpectedReadbackV2;
 };
+
+export function buildJsonCompatibilityDeploymentTransitionRecoverySourceAuthenticationRequest(
+  input: {
+    readonly campaignPlan: unknown;
+    readonly statePlan: unknown;
+    readonly authorizedTransition: unknown;
+  },
+): JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2;
+
+export function validateJsonCompatibilityDeploymentTransitionRecoveryContext(
+  input: Readonly<Record<string, unknown>>,
+  options?: { readonly now?: Date },
+): Readonly<Record<string, unknown>> & {
+  readonly authorizedTransition: JsonCompatibilityAuthorizedDeploymentTransitionV2;
+  readonly sourceAuthentication:
+    JsonCompatibilityDeploymentTransitionSourceAuthenticationV2;
+  readonly artifactInventoryReadback:
+    JsonCompatibilityDeploymentArtifactInventoryReadbackV1;
+  readonly operation: JsonCompatibilityDeploymentTransitionOperationV1;
+};
+
+export function buildJsonCompatibilityDeploymentTransitionRecoveryReadbackRequest(
+  input: Readonly<Record<string, unknown>>,
+  options?: { readonly now?: Date },
+): JsonCompatibilityDeploymentTransitionReadbackRequestV2;
+
+export function validateJsonCompatibilityDeploymentTransitionRecoveryReadbackExecution(
+  input: Readonly<Record<string, unknown>>,
+  options?: { readonly now?: Date },
+): Readonly<Record<string, unknown>> & {
+  readonly readbackRequest:
+    JsonCompatibilityDeploymentTransitionReadbackRequestV2;
+  readonly expected: JsonCompatibilityDeploymentTransitionExpectedReadbackV2;
+};
+
+export function classifyJsonCompatibilityDeploymentTransitionReadbackPair(
+  observations: readonly unknown[],
+  expected: unknown,
+): "stable" | "ambiguous" | "drift" | "unstable";
 
 export function validateJsonCompatibilityDeploymentTransitionMutationExecution(
   input: Readonly<Record<string, unknown>>,

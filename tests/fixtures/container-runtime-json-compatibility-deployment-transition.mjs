@@ -187,6 +187,7 @@ export async function createAuthorizedTransitionFixture({
   transitionId = TRANSITION_IDS[0],
   now = Math.floor(Date.now() / 1000),
   operationSeed = "runtime-worker-operation",
+  includeApprovalPrivateKey = false,
 } = {}) {
   const directory = await mkdtemp(
     path.join(os.tmpdir(), "cinatoken-transition-worker-fixture-"),
@@ -242,6 +243,9 @@ export async function createAuthorizedTransitionFixture({
       statePlan,
       authorizedTransition,
       artifactInventoryReadback,
+      ...(includeApprovalPrivateKey
+        ? { approvalPrivateKeyBytes: Buffer.from(privateKeyBytes) }
+        : {}),
     };
   } finally {
     privateKeyBytes?.fill(0);

@@ -1,17 +1,26 @@
 # JSON compatibility deployment readback Worker
 
 This D0 Worker is the read-only half of the deployment transition boundary. Its
-default entrypoint has no methods. The only callable RPC is
-`JsonCompatibilityDeploymentReadbackEntrypoint.readDeploymentState(input)`.
+default entrypoint has no methods. The named entrypoint exposes
+`readDeploymentState(input)` for live execution and
+`readDeploymentStateForResolution(input)` for separately signed, target-only
+inflight recovery. Both methods remain read-only.
 
 ## Boundary
 
-- The input has exactly `campaignPlan`, `statePlan`, `authorizedTransition`,
-  `sourceAuthentication`, and `readbackRequest`. The artifact inventory is read
-  only from the signed `authorizedTransition`.
+- The normal RPC accepts exactly `campaignPlan`, `statePlan`,
+  `authorizedTransition`, `sourceAuthentication`, and `readbackRequest`. The
+  recovery RPC instead accepts exactly `campaignPlan`, `statePlan`,
+  `authorizedTransition`, `authorizedResolution`, `sourceAuthentication`,
+  `originalSourceAuthentication`, `mutationIntent`, `sourceReadbacks`, and
+  `readbackRequest`. The artifact inventory is read only from the signed
+  `authorizedTransition`.
 - Plan currency, owner authorization, source authentication, operation digests,
   the signed inventory, the exact step/phase/artifact, and the Reader's signed
   execution authority are validated before the token binding is read.
+- The recovery RPC additionally validates the dedicated resolution signature
+  and its exact fresh-source-proof digest before token or network access. A
+  separately valid substituted proof is rejected.
 - The only secret is `CLOUDFLARE_DEPLOYMENT_READ_API_TOKEN`. The account ID,
   account digest, and credential ID digest are non-secret identity anchors.
 - The remote client performs one GET each for deployments, the exact version,

@@ -7,6 +7,14 @@ This document defines the D0 physical read/write separation implemented on
 does not claim that either Worker, either credential, either D1 database, or
 any target service exists in remote staging.
 
+The independent quiesced Reader-only resolver is specified here and in its
+dedicated design document. Its signed local v1 protocol, migration 0003,
+private Worker, D1 repository, Resolver/status core, focused Node and
+Workerd/D1 tests, root scripts, and CI wiring now exist. Signed structured
+drain inputs and local contradiction/staleness checks are implemented, but the
+independent remote collector, measured maximum-lifetime values, and runtime
+fault evidence are incomplete.
+
 All tracked gates are false, all tracked database and credential identities
 are placeholders, no public route is configured, and no Cloudflare mutation
 was performed. Go/VPS remains authoritative and production remains **NO-GO**.
@@ -23,7 +31,9 @@ flowchart LR
   M --> MA["Cloudflare mutation-only API token"]
   M --> MD["Independent create-once mutation D1"]
   C --> CD["Coordinator append-only D1"]
-  X["Future inflight resolver"] --> R
+  A["Owner recovery authorization + fresh source proof"] --> X["Quiesced Resolution Worker"]
+  X --> CD
+  X --> R
 ```
 
 The capability split is structural:
@@ -33,12 +43,14 @@ The capability split is structural:
 | Transition Coordinator | none | coordinator D1 | `executeTransition`, D1-only `getTransitionStatus` |
 | Deployment Readback | read-only Cloudflare API token | none | `readDeploymentState` |
 | Deployment Mutation | mutation-only Cloudflare API token | independent mutation D1 | `mutateDeploymentOnce` |
-| Future inflight resolver | none | future resolver journal | Reader binding only |
+| Quiesced Resolution Worker | none | append-only resolution tables in coordinator D1 | `resolveDeploymentTransitionInflight`, D1-only `getDeploymentTransitionResolutionStatus`; Reader binding only |
 
 The Coordinator never receives either API token. The Reader has no mutation
 binding or D1 mutation journal. The Mutator has no read token and cannot
-produce stable target proof. A future resolver must not receive the Mutator
-binding.
+produce stable target proof. The Resolution Worker must have no Mutator
+binding, no Source Verifier binding, and no Cloudflare token or token secret
+name. A fresh source proof is supplied in the signed recovery request and is
+verified locally.
 
 Service Binding topology is not caller authentication. Any account Worker
 that receives a binding could invoke it. Each leaf therefore independently
@@ -194,6 +206,56 @@ Migration 0001's historical `deployment_leaf_service_name` column is retained
 for schema compatibility and stores the Reader service name; migration 0002 is
 the authority for the distinct Reader and Mutator identities.
 
+## Quiesced Resolution Boundary
+
+The resolver is a separate private Worker because retaining a Mutator binding
+inside a recovery code path would not prove Reader-only capability. It owns no
+normal transition RPC and cannot call the Source Verifier. Its strict request
+contains a dedicated Ed25519 owner recovery authorization plus a fresh source
+proof produced by an independent recovery ceremony.
+
+The recovery authorization binds the original operation and execution
+authority, exact event count and journal-head digest, expected claim
+generation, final Resolver and Reader service/version/identity and Reader
+credential digests, fresh source-proof digest and approved verifier identity,
+execution-disabled evidence and caller-topology digest, the complete audited
+drain calculation, `quiescenceSatisfiedAt`, observation stability interval,
+and a lease bounded by both authorization and proof expiry.
+
+Resolution cannot start merely because a gate now reads false. Operators must
+disable execution, independently read back that exact Coordinator version and
+account-wide caller topology, wait longer than the maximum lifetime of every
+already admitted request plus propagation and clock-skew allowance, and repeat
+the readback. Without this quiescence, an old Coordinator request could have
+persisted `mutation_intent` and still be about to invoke the Mutator after a
+resolver claim.
+
+The Resolver atomically appends one D1 claim for the signed generation and
+journal head. It then appends exactly two target observations from the pinned
+Reader with the signed minimum spacing before creating one independent
+resolution receipt. Distinct request IDs are required for stable/manual
+conclusions; duplicates are retained only as inconclusive evidence. All rows
+are create-only;
+updates/deletes fail, identity ledgers reject `INSERT OR REPLACE` recreation,
+generations cannot share observations, old generations cannot append after a
+newer claim, and normal and resolution receipts are mutually exclusive.
+
+Claim, observation, or receipt response loss is reconciled only by exact
+digest readback. A lost Reader response is not synthesized or automatically
+retried. The Resolver never writes a normal mutation outcome, never fabricates
+a normal transition receipt, never resends a deployment, and never continues
+the interrupted step sequence. Both `target_confirmed` and
+`manual_review_required` final receipts set `nextTransitionAllowed=false`. An
+ambiguous or unstable pair may create only non-final `readback_inconclusive`
+evidence and grants no retry authority. Manual review can be addressed only
+with newly observed prior state and a newly signed operation, never by
+reopening the old operation.
+
+See
+`docs/container-runtime-json-compatibility-deployment-resolution.md` for the
+complete state machine, authorization fields, SQL invariants, test matrix, and
+remote ceremony.
+
 ## Local Acceptance
 
 The focused gates are:
@@ -203,6 +265,7 @@ bun run check:container-runtime:json-compatibility-deployment-transition
 bun run check:container-runtime:json-compatibility-deployment-readback
 bun run check:container-runtime:json-compatibility-deployment-mutation
 bun run check:container-runtime:json-compatibility-deployment-transition-worker
+bun run check:container-runtime:json-compatibility-deployment-resolution
 ```
 
 Current local evidence:
@@ -210,14 +273,22 @@ Current local evidence:
 | Gate | Result |
 | --- | --- |
 | shared transition protocol | 14 tests, 157 expectations |
-| Reader | 14 tests; TypeScript and generated types pass |
-| Reader Wrangler dry-run | 243.14 KiB upload / 41.71 KiB gzip, both gates false |
+| Reader | 15 tests; TypeScript and generated types pass |
+| Reader Wrangler dry-run | 281.35 KiB upload / 47.02 KiB gzip, both gates false |
 | Mutator Node | 19 tests |
 | Mutator Workerd/D1 | 2 tests |
-| Mutator Wrangler dry-run | 255.13 KiB upload / 42.92 KiB gzip, both gates false |
+| Mutator Wrangler dry-run | 255.55 KiB upload / 42.96 KiB gzip, both gates false |
 | Coordinator Node | 8 tests |
 | Coordinator Workerd/D1 | 2 tests, four concurrent calls, one operation, four mutations, 16 reads |
-| Coordinator Wrangler dry-run | 281.70 KiB upload / 46.36 KiB gzip, all gates false |
+| Coordinator Wrangler dry-run | 294.87 KiB upload / 48.48 KiB gzip, all gates false |
+| Resolver protocol | 4 tests, 17 expectations, including resealed receipt tampering |
+| Resolver Node | 14 tests, including 20-way claim concurrency, proof-bounded lease rejection, N+1 after an inconclusive attempt, journaled-outcome reconstruction, final-write response loss, forbidden capability inventory, stale/contradictory drain evidence, and unbound Reader-response identity rejection before observation persistence |
+| Resolver Workerd/D1 | 4 tests, including 20-way claim concurrency, post-outcome and malformed checkpoints, operation-digest replay binding, zero/one-observation rejection, duplicate/mixed/stable classification, spacing, fencing, identity ledgers, and `INSERT OR REPLACE` rejection |
+| Resolver generated types, TypeScript, Wrangler dry-runs | pass; 336.81/54.04 KiB upload/gzip, one D1 and one Reader binding, all gates false |
+
+The complete repository `bun run check` passes with exit code 0 in 1,462.3
+seconds after this hardening, covering the configured frontend,
+Worker/Workerd, supply-chain, D1, Rust workspace, and wasm32 gates.
 
 The Coordinator runtime test uses physically distinct Reader and Mutator mock
 Workers. It proves separate call counts, exact terminal replay without leaf
@@ -225,6 +296,18 @@ effects, D1-only status, and immutable operation, authority, event, and receipt
 tables. The Mutator runtime test applies its actual migration and proves
 concurrent claim linearization. Reader tests inject bounded HTTP responses and
 do not call Cloudflare.
+
+The Resolver authorization binds the exact fresh source-proof digest, and both
+Resolver and Reader reject a valid substituted proof before D1, token, or
+network access. Its package aggregate test is green, root `check`/`build:all`
+and focused CI include it, and terminal receipt response-loss replay performs
+no extra Reader call. The structured local evidence contract is signed and
+validated; independent remote collection/re-read, measured policy values,
+wider claim/observation fault coverage, and remote evidence remain open. The
+Workerd runtime is pinned to its supported `2026-07-15` compatibility date,
+while deploy dry-runs consume the tracked `2026-08-06` profiles; upgrading the
+runtime and proving exact-date parity remains explicit toolchain debt. No local
+result is remote Cloudflare proof.
 
 ## Remote Staging Sequence
 
@@ -247,17 +330,27 @@ Do not combine or reorder these steps:
    IDs. Changing a gate or binding creates a different candidate and requires
    a new readback and signature.
 6. Prove account-wide caller topology: only the reviewed Coordinator version
-   may call Mutator; only Coordinator and the future reviewed resolver may call
-   Reader; no unreviewed Worker may hold either binding.
+   may call Mutator; only the reviewed Coordinator and Resolution Worker
+   versions may call Reader; no unreviewed Worker may hold either binding.
 7. Upload and independently read back all 18 service artifacts dark. Rebuild
    config, binding, route, gate, secret-name, and migration digests using the
    approved C0/C3 normalization.
-8. Run disabled and status-only probes, then concurrency, crash, timeout,
+8. Complete and locally approve the remaining independent Resolver gates.
+   Implement independent drain-evidence collection/re-read, freeze measured
+   policy values, extend claim/observation and multi-generation fault coverage,
+   and prove its configuration has no Mutator, Source Verifier, token, or
+   public-route capability.
+9. Run disabled and status-only probes, then concurrency, crash, timeout,
    response-loss, pagination drift, public-route drift, wrong-version,
    credential-rotation, N/N-1, and post-send D1 ambiguity tests.
-9. Implement and approve the Reader-only inflight resolver and locked terminal
-   receipt archive before the first real transition.
-10. Execute the four transitions only inside isolated staging with Go/VPS
+10. Disable execution and independently read it back, drain the audited maximum
+    request lifetime, repeat configuration and caller-topology readback, then
+    obtain a fresh source proof and one owner-signed recovery generation.
+11. Run resolver claim/observation/receipt response-loss, wrong-version,
+    generation, lease, quiescence, drift, and concurrent resolver tests. Prove
+    zero mutation resend and publish the independent resolution receipt to the
+    locked archive before the first real transition.
+12. Execute the four transitions only inside isolated staging with Go/VPS
     authoritative and an independently approved rollback decision path.
 
 ## Remaining D0 Blockers
@@ -265,16 +358,23 @@ Do not combine or reorder these steps:
 D0 is not production-complete until remote evidence proves:
 
 - real least-privilege credentials and distinct credential identities;
-- final Worker version and exact configuration readback for all three D0
-  services;
+- final Resolver, Reader, Mutator, Source Verifier, and Coordinator Worker
+  versions and exact configuration readback;
 - complete live public-route absence and caller-binding topology;
 - independently derived immutable config, binding, secret-name, and Durable
   Object migration digests for every signed artifact inventory entry;
-- applied and independently read Mutator and Coordinator D1 schemas;
+- applied and independently read Mutator and transition D1 schemas, including
+  the exact resolution migration 0003;
 - actual one-send API request and response-loss evidence without retry;
 - credential rotation/revocation and wrong-version negative drills;
-- Reader-only inflight resolution and locked receipt publication; and
+- implemented and remotely proven quiesced Reader-only inflight resolution,
+  including owner recovery signing, fresh source-proof delivery, physical
+  capability inventory, execution disable/readback/drain evidence,
+  concurrency/response-loss/wrong-version tests, and locked independent
+  resolution-receipt publication; and
 - security, privacy, SRE, release, rollback, campaign, and cutover approval.
 
 Local tests and Wrangler dry-runs establish implementation behavior only. They
-grant no Cloudflare deployment or traffic authority.
+grant no Cloudflare deployment or traffic authority. The Resolver foundation
+does not establish a complete production Resolver or remote implementation
+evidence.

@@ -7,7 +7,9 @@ import {
   buildAmbiguousReadback,
   buildObservedReadback,
   type JsonCompatibilityDeploymentReadbackEnv,
+  type ValidatedReadbackInvocation,
   validateReadbackInvocation,
+  validateRecoveryReadbackInvocation,
 } from "./protocol";
 
 export type { JsonCompatibilityDeploymentReadbackEnv } from "./protocol";
@@ -19,12 +21,43 @@ export async function readDeploymentState(
   input: unknown,
   dependencies: ReadbackDependencies = {},
 ): Promise<Record<string, unknown>> {
+  return await readDeploymentStateWithValidator(
+    env,
+    input,
+    dependencies,
+    validateReadbackInvocation,
+  );
+}
+
+export async function readDeploymentStateForResolution(
+  env: JsonCompatibilityDeploymentReadbackEnv,
+  input: unknown,
+  dependencies: ReadbackDependencies = {},
+): Promise<Record<string, unknown>> {
+  return await readDeploymentStateWithValidator(
+    env,
+    input,
+    dependencies,
+    validateRecoveryReadbackInvocation,
+  );
+}
+
+async function readDeploymentStateWithValidator(
+  env: JsonCompatibilityDeploymentReadbackEnv,
+  input: unknown,
+  dependencies: ReadbackDependencies,
+  validateInvocation: (
+    env: JsonCompatibilityDeploymentReadbackEnv,
+    input: unknown,
+    nowMilliseconds: number,
+  ) => Promise<ValidatedReadbackInvocation>,
+): Promise<Record<string, unknown>> {
   const nowMilliseconds = dependencies.nowMilliseconds ?? Date.now;
   const validationTime = nowMilliseconds();
 
   // This completes every authority, digest, artifact, and runtime identity check
   // before the capability token property is touched.
-  const invocation = await validateReadbackInvocation(
+  const invocation = await validateInvocation(
     env,
     input,
     validationTime,

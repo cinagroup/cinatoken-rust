@@ -59,6 +59,9 @@ export type JsonCompatibilityAccountBindingParsedArgs =
       readonly collectionProfilePath: string;
       readonly collectorIdentityPath: string;
       readonly accountId: string;
+      readonly expectedTrustPolicySha256: string;
+      readonly expectedRevocationStateSha256: string;
+      readonly minimumRevocationSequence: number;
       readonly rawPageDirectory: string;
       readonly outputPath: string;
     }

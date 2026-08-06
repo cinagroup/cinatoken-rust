@@ -1,3 +1,7 @@
+import type {
+  JsonCompatibilityAccountBindingCredentialProvenanceV1,
+} from "./container_runtime_json_compatibility_account_binding_credentials.mjs";
+
 export const JSON_COMPATIBILITY_ACCOUNT_BINDING_COLLECTOR_IDENTITY_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-account-binding-collector-identity-v1";
 export const JSON_COMPATIBILITY_ACCOUNT_BINDING_COLLECTION_PROFILE_CONTRACT:
@@ -80,8 +84,19 @@ export interface JsonCompatibilityAccountBindingCollectionProfileV1 {
   readonly campaignPlanDigestSha256: string;
   readonly statePlanDigestSha256: string;
   readonly collectorIdentitySha256: string;
+  readonly credentialProvenance: JsonCompatibilityAccountBindingCredentialProvenanceV1;
+  readonly credentialProvenanceApprovedAt: number;
+  readonly credentialProvenanceSha256: string;
+  readonly credentialTrustPolicySha256: string;
+  readonly credentialRevocationStateSha256: string;
+  readonly collectionCredentialIdSha256: string;
+  readonly readbackCredentialIdSha256: string;
+  readonly collectionCredentialReceiptSha256: string;
+  readonly readbackCredentialReceiptSha256: string;
   readonly collectionPermissionSetSha256: string;
   readonly readbackPermissionSetSha256: string;
+  readonly collectionCustodianIdentitySha256: string;
+  readonly readbackCustodianIdentitySha256: string;
   readonly requiredResourceFamilies: readonly JsonCompatibilityAccountBindingResourceFamily[];
   readonly campaignServices: readonly JsonCompatibilityAccountBindingCampaignServiceV1[];
   readonly allowedCampaignBindingEdges: readonly JsonCompatibilityAccountBindingLogicalEdgeV1[];
@@ -98,6 +113,13 @@ export interface JsonCompatibilityAccountBindingAuthenticationIdentityV1 {
   readonly accountIdSha256: string;
   readonly credentialIdSha256: string;
   readonly permissionSetSha256: string;
+  readonly credentialVerificationPageReceiptSha256: string;
+  readonly credentialVerificationResponseBodySha256: string;
+  readonly credentialReceiptSha256: string;
+  readonly custodianIdentitySha256: string;
+  readonly credentialTrustPolicySha256: string;
+  readonly credentialRevocationStateSha256: string;
+  readonly credentialProvenanceSha256: string;
   readonly active: true;
   readonly readOnly: true;
   readonly verifiedAt: number;
@@ -285,8 +307,8 @@ export function buildJsonCompatibilityAccountBindingCollectionProfile(input: {
   readonly statePlan: unknown;
   readonly accountIdSha256: string;
   readonly collectorIdentitySha256: string;
-  readonly collectionPermissionSetSha256: string;
-  readonly readbackPermissionSetSha256: string;
+  readonly credentialProvenance: JsonCompatibilityAccountBindingCredentialProvenanceV1;
+  readonly credentialProvenanceApprovedAt: number;
   readonly allowedCampaignBindingEdges: readonly JsonCompatibilityAccountBindingLogicalEdgeV1[];
 }): JsonCompatibilityAccountBindingCollectionProfileV1;
 
@@ -301,6 +323,13 @@ export function buildJsonCompatibilityAccountBindingAuthenticationIdentity(
     readonly accountIdSha256: string;
     readonly credentialIdSha256: string;
     readonly permissionSetSha256: string;
+    readonly credentialVerificationPageReceiptSha256: string;
+    readonly credentialVerificationResponseBodySha256: string;
+    readonly credentialReceiptSha256: string;
+    readonly custodianIdentitySha256: string;
+    readonly credentialTrustPolicySha256: string;
+    readonly credentialRevocationStateSha256: string;
+    readonly credentialProvenanceSha256: string;
     readonly verifiedAt: number;
   },
 ): JsonCompatibilityAccountBindingAuthenticationIdentityV1;

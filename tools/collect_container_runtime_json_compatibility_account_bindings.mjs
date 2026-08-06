@@ -23,7 +23,14 @@ const COLLECTION_TOKEN_ENV =
   "CLOUDFLARE_ACCOUNT_BINDING_COLLECTION_TOKEN";
 const READBACK_TOKEN_ENV =
   "CLOUDFLARE_ACCOUNT_BINDING_READBACK_TOKEN";
-const GENERIC_TOKEN_ENV = "CLOUDFLARE_API_TOKEN";
+const GENERIC_CREDENTIAL_ENVIRONMENT = Object.freeze([
+  "CLOUDFLARE_API_TOKEN",
+  "CLOUDFLARE_API_KEY",
+  "CLOUDFLARE_EMAIL",
+  "CF_API_TOKEN",
+  "CF_API_KEY",
+  "CF_EMAIL",
+]);
 const MAX_INPUT_BYTES = 12 * 1024 * 1024;
 const ACCOUNT_ID = /^[0-9a-f]{32}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -34,6 +41,9 @@ const VALUE_OPTIONS = new Set([
   "--collection-profile",
   "--collector-identity",
   "--account-id",
+  "--credential-trust-policy-sha256",
+  "--credential-revocation-state-sha256",
+  "--minimum-revocation-sequence",
   "--raw-page-dir",
   "--collection-artifact",
   "--readback-artifact",
@@ -83,7 +93,7 @@ export function buildAccountBindingCollectorDryRunPlan(mode) {
       ? COLLECTION_TOKEN_ENV
       : READBACK_TOKEN_ENV,
     forbiddenCredentialEnvironment: [
-      GENERIC_TOKEN_ENV,
+      ...GENERIC_CREDENTIAL_ENVIRONMENT,
       mode === "collection" ? READBACK_TOKEN_ENV : COLLECTION_TOKEN_ENV,
     ],
     httpMethodAllowlist: ["GET"],
@@ -98,6 +108,9 @@ export function buildAccountBindingCollectorDryRunPlan(mode) {
       "collection-profile",
       "collector-identity",
       "account-id",
+      "credential-trust-policy-sha256",
+      "credential-revocation-state-sha256",
+      "minimum-revocation-sequence",
       "raw-page-dir",
     ],
   };
@@ -169,15 +182,43 @@ export function parseAccountBindingCollectorArgs(argv) {
     "--collection-profile",
     "--collector-identity",
     "--account-id",
+    "--credential-trust-policy-sha256",
+    "--credential-revocation-state-sha256",
+    "--minimum-revocation-sequence",
     "--raw-page-dir",
     "--output",
   ]);
   const accountId = required(values, "--account-id");
   if (!ACCOUNT_ID.test(accountId)) fail("account_id_invalid");
+  const expectedTrustPolicySha256 = required(
+    values,
+    "--credential-trust-policy-sha256",
+  );
+  const expectedRevocationStateSha256 = required(
+    values,
+    "--credential-revocation-state-sha256",
+  );
+  if (!SHA256.test(expectedTrustPolicySha256)) {
+    fail("credential_trust_policy_sha256_invalid");
+  }
+  if (!SHA256.test(expectedRevocationStateSha256)) {
+    fail("credential_revocation_state_sha256_invalid");
+  }
+  const minimumRevocationSequence = Number(required(
+    values,
+    "--minimum-revocation-sequence",
+  ));
+  if (!Number.isSafeInteger(minimumRevocationSequence)
+    || minimumRevocationSequence < 1) {
+    fail("minimum_revocation_sequence_invalid");
+  }
   return {
     ...common,
     collectorIdentityPath: required(values, "--collector-identity"),
     accountId,
+    expectedTrustPolicySha256,
+    expectedRevocationStateSha256,
+    minimumRevocationSequence,
     rawPageDirectory: required(values, "--raw-page-dir"),
   };
 }
@@ -284,6 +325,9 @@ export async function runAccountBindingCollectorCli({
     mode: args.mode,
     accountId: args.accountId,
     apiToken,
+    expectedTrustPolicySha256: args.expectedTrustPolicySha256,
+    expectedRevocationStateSha256: args.expectedRevocationStateSha256,
+    minimumRevocationSequence: args.minimumRevocationSequence,
     rawPageSink,
     fetchImpl,
     ...(clock === undefined ? {} : { clock }),
@@ -419,9 +463,13 @@ async function writeBytesCreateOnce(path, bytes) {
 
 function assertCredentialEnvironment(mode, environment) {
   const forbidden = mode === "finalize"
-    ? [GENERIC_TOKEN_ENV, COLLECTION_TOKEN_ENV, READBACK_TOKEN_ENV]
+    ? [
+        ...GENERIC_CREDENTIAL_ENVIRONMENT,
+        COLLECTION_TOKEN_ENV,
+        READBACK_TOKEN_ENV,
+      ]
     : [
-        GENERIC_TOKEN_ENV,
+        ...GENERIC_CREDENTIAL_ENVIRONMENT,
         mode === "collection" ? READBACK_TOKEN_ENV : COLLECTION_TOKEN_ENV,
       ];
   if (forbidden.some((name) => Object.hasOwn(environment, name))) {
@@ -492,7 +540,7 @@ function usage() {
     "Usage:",
     "  bun tools/collect_container_runtime_json_compatibility_account_bindings.mjs --self-test",
     "  bun tools/collect_container_runtime_json_compatibility_account_bindings.mjs --mode <collection|independent-readback|finalize> --dry-run",
-    "  bun tools/collect_container_runtime_json_compatibility_account_bindings.mjs --mode <collection|independent-readback> --campaign-plan <canonical.json> --state-plan <canonical.json> --collection-profile <canonical.json> --collector-identity <canonical.json> --account-id <32hex> --raw-page-dir <new-directory> --output <new-canonical.json>",
+    "  bun tools/collect_container_runtime_json_compatibility_account_bindings.mjs --mode <collection|independent-readback> --campaign-plan <canonical.json> --state-plan <canonical.json> --collection-profile <canonical.json> --collector-identity <canonical.json> --account-id <32hex> --credential-trust-policy-sha256 <approved-sha256> --credential-revocation-state-sha256 <approved-sha256> --minimum-revocation-sequence <positive-integer> --raw-page-dir <new-directory> --output <new-canonical.json>",
     "  bun tools/collect_container_runtime_json_compatibility_account_bindings.mjs --mode finalize --campaign-plan <canonical.json> --state-plan <canonical.json> --collection-profile <canonical.json> --collection-artifact <canonical.json> --readback-artifact <canonical.json> --output <new-canonical.json>",
     `Collection credential: ${COLLECTION_TOKEN_ENV}`,
     `Independent readback credential: ${READBACK_TOKEN_ENV}`,

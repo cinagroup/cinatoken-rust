@@ -9,6 +9,7 @@ import {
   buildJsonCompatibilityAccountBindingAuthenticationIdentity,
   buildJsonCompatibilityAccountBindingCollectionArtifact,
   buildJsonCompatibilityAccountBindingEvidence,
+  buildJsonCompatibilityAccountBindingPageReceipt,
   buildJsonCompatibilityAccountBindingSnapshot,
   validateJsonCompatibilityAccountBindingEvidence,
 } from "../tools/container_runtime_json_compatibility_account_binding_evidence.mjs";
@@ -115,23 +116,31 @@ describe("JSON compatibility account-wide binding evidence", () => {
           evidence.collection.authenticationIdentity.credentialIdSha256,
         permissionSetSha256:
           evidence.collectionProfile.readbackPermissionSetSha256,
+        credentialVerificationPageReceiptSha256:
+          evidence.independentReadback.authenticationIdentity
+            .credentialVerificationPageReceiptSha256,
+        credentialVerificationResponseBodySha256:
+          evidence.independentReadback.authenticationIdentity
+            .credentialVerificationResponseBodySha256,
+        credentialReceiptSha256:
+          evidence.collectionProfile.readbackCredentialReceiptSha256,
+        custodianIdentitySha256:
+          evidence.collectionProfile.readbackCustodianIdentitySha256,
+        credentialTrustPolicySha256:
+          evidence.collectionProfile.credentialTrustPolicySha256,
+        credentialRevocationStateSha256:
+          evidence.collectionProfile.credentialRevocationStateSha256,
+        credentialProvenanceSha256:
+          evidence.collectionProfile.credentialProvenanceSha256,
         verifiedAt:
           evidence.independentReadback.authenticationIdentity.verifiedAt,
       });
-    const reusedReadback = rebuildReadback(
+    expect(() => rebuildReadback(
       fixture,
       evidence,
       evidence.independentReadback.snapshot,
       reusedAuthentication,
-    );
-
-    expect(() => buildJsonCompatibilityAccountBindingEvidence({
-      campaignPlan: fixture.campaignPlan,
-      statePlan: fixture.statePlan,
-      collectionProfile: evidence.collectionProfile,
-      collection: evidence.collection,
-      independentReadback: reusedReadback,
-    })).toThrow(/independent_readback_credential_reused/);
+    )).toThrow(/account_binding_artifact_credential_ID_mismatch/);
   });
 
   test("rejects missing resource families and a broken predecessor chain", async () => {
@@ -160,6 +169,47 @@ describe("JSON compatibility account-wide binding evidence", () => {
       pageReceipts: brokenPages,
       observedAt: snapshot.observedAt,
     })).toThrow(/page receipt predecessor|page_receipt/i);
+  });
+
+  test("binds token verification, credential time, and global request order", async () => {
+    const fixture = await createSourceAuthenticationFixture();
+    const evidence = fixture.bundle.accountBindingEvidence;
+    const snapshot = evidence.independentReadback.snapshot;
+
+    const detachedPages = rebuildPageChain(snapshot.pageReceipts, (pages) => {
+      pages[0].responseBodySha256 = digest("detached-token-verification-body");
+      return pages;
+    });
+    const detachedSnapshot = rebuildSnapshot(snapshot, {
+      pageReceipts: detachedPages,
+    });
+    expect(() => rebuildReadback(
+      fixture,
+      evidence,
+      detachedSnapshot,
+    )).toThrow(/credential_verification_page_receipt_mismatch/);
+
+    const expiredAuthentication =
+      buildJsonCompatibilityAccountBindingAuthenticationIdentity({
+        ...evidence.independentReadback.authenticationIdentity,
+        verifiedAt:
+          evidence.collectionProfile.credentialProvenance.revocation.subject
+            .expiresAt,
+      });
+    expect(() => rebuildReadback(
+      fixture,
+      evidence,
+      snapshot,
+      expiredAuthentication,
+    )).toThrow(/authentication_credential_not_current/);
+
+    const reorderedPages = rebuildPageChain(snapshot.pageReceipts, (pages) => {
+      [pages[0], pages[1]] = [pages[1], pages[0]];
+      return pages;
+    });
+    expect(() => rebuildSnapshot(snapshot, {
+      pageReceipts: reorderedPages,
+    })).toThrow(/account_binding_request_schedule_order_invalid/);
   });
 
   test("rejects semantic drift between collection and readback", async () => {
@@ -295,6 +345,31 @@ function rebuildSnapshot(snapshot, overrides) {
     pageReceipts: overrides.pageReceipts ?? snapshot.pageReceipts,
     observedAt: snapshot.observedAt,
   });
+}
+
+function rebuildPageChain(input, transform) {
+  const pages = transform(structuredClone(input));
+  const rebuilt = [];
+  for (let index = 0; index < pages.length; index += 1) {
+    const page = pages[index];
+    rebuilt.push(buildJsonCompatibilityAccountBindingPageReceipt({
+      sequence: index + 1,
+      resourceFamily: page.resourceFamily,
+      resourceIdentitySha256: page.resourceIdentitySha256,
+      requestPathSha256: page.requestPathSha256,
+      responseBodySha256: page.responseBodySha256,
+      responseByteLength: page.responseByteLength,
+      resultCount: page.resultCount,
+      pageNumber: page.pageNumber,
+      totalPages: page.totalPages,
+      requestIdSha256: page.requestIdSha256,
+      predecessorSha256: index === 0
+        ? null
+        : rebuilt[index - 1].pageReceiptSha256,
+      observedAt: page.observedAt,
+    }));
+  }
+  return rebuilt;
 }
 
 function edgeKey(edge) {

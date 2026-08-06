@@ -7,14 +7,20 @@ on:
       - "bun.lock"
       - "package.json"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
+      - "tests/container-runtime-json-compatibility-bounded-file.test.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-deployment-transition.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs"
+      - "tools/assemble_container_runtime_json_compatibility_account_binding_profile.*"
       - "tools/collect_container_runtime_json_compatibility_account_bindings.*"
+      - "tools/sign_container_runtime_json_compatibility_account_binding_credential.*"
+      - "tools/container_runtime_json_compatibility_account_binding_credentials.*"
       - "tools/container_runtime_json_compatibility_account_binding_evidence.*"
       - "tools/container_runtime_json_compatibility_campaign.mjs"
       - "tools/container_runtime_json_compatibility_deployment_states.mjs"
       - "tools/container_runtime_json_compatibility_source_authentication.*"
       - "tools/lib/container_runtime_json_compatibility_account_binding_collector.*"
+      - "tools/lib/container_runtime_json_compatibility_account_binding_credentials.*"
+      - "tools/lib/bounded_json_file.mjs"
   push:
     branches:
       - main
@@ -23,14 +29,20 @@ on:
       - "bun.lock"
       - "package.json"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
+      - "tests/container-runtime-json-compatibility-bounded-file.test.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-deployment-transition.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs"
+      - "tools/assemble_container_runtime_json_compatibility_account_binding_profile.*"
       - "tools/collect_container_runtime_json_compatibility_account_bindings.*"
+      - "tools/sign_container_runtime_json_compatibility_account_binding_credential.*"
+      - "tools/container_runtime_json_compatibility_account_binding_credentials.*"
       - "tools/container_runtime_json_compatibility_account_binding_evidence.*"
       - "tools/container_runtime_json_compatibility_campaign.mjs"
       - "tools/container_runtime_json_compatibility_deployment_states.mjs"
       - "tools/container_runtime_json_compatibility_source_authentication.*"
       - "tools/lib/container_runtime_json_compatibility_account_binding_collector.*"
+      - "tools/lib/container_runtime_json_compatibility_account_binding_credentials.*"
+      - "tools/lib/bounded_json_file.mjs"
   workflow_dispatch:
 
 permissions:

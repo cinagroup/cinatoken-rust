@@ -28746,13 +28746,13 @@ rejected; storage/crypto uncertainty is ambiguous. Both outcomes prevent an
 automatic transition retry.
 
 Local acceptance is 13 protocol tests/150 expectations, generated type and
-TypeScript checks, two 301.25 KiB / 49.37 KiB gzip dry-runs, 13 verifier Node
+TypeScript checks, two 383.00 KiB / 62.14 KiB gzip dry-runs, 13 verifier Node
 tests, three real Workerd/R2 tests, and the Transition Worker's eight Node plus
 two Workerd integration tests. The transition integration now executes the
 actual source verifier once against shared R2 and proves replay/status do not
 call it again. The deployment leaf remains mocked.
 
-The complete repository `bun run check` passes with exit code 0 in 1,814.1
+The complete repository `bun run check` passes with exit code 0 in 1,186.7
 seconds, covering the configured frontend, Workers/Workerd, supply-chain
 contracts, Rust workspace, and wasm32 checks. This remains local evidence.
 
@@ -28797,7 +28797,7 @@ The production evidence flow is:
 
 ```text
 owner-approved Plan/state-plan + frozen collector identity
-  -> signed collection profile
+  -> externally anchored canonical collection profile
      -> offline creation receipt A -> credential A -> collection traversal
      -> offline creation receipt B -> credential B -> independent traversal
   -> create-once raw response pages and predecessor-linked receipts
@@ -28838,15 +28838,18 @@ A signed credential-creation receipt must bind at least:
 - an explicit absence of Workers, routes, D1, R2, DNS, or token-management
   write permissions.
 
-The signed collection profile pins separate collection/readback receipt and
-permission-set digests. The profile assembler must validate the approved
+The canonical collection profile pins separate collection/readback receipt and
+permission-set digests; the later isolated source signature authenticates the
+complete evidence package. The profile assembler must validate the approved
 receipt issuer and compare token verify's credential-ID digest with the
 corresponding receipt before accepting the authentication identity. The target
 least-privilege set is limited to `Workers Scripts Read`,
 `Workers Routes Read`, and `Zone Read` over the intended staging account/zones.
-The in-progress local profile currently establishes the permission-digest
-slots; explicit receipt schemas, signature validation, and credential-ID
-cross-check are still P0 and must land before a remote run is admissible.
+The local profile now embeds explicit signed receipt/revocation schemas and the
+online collector enforces credential-ID cross-check before inventory. A remote
+run additionally requires externally approved trust/revocation digests,
+minimum revocation sequence, real provider permission/resource readback, and
+the C4 isolated source signature.
 
 Tokens are supplied through a secret-capable runtime channel to one process
 only. They are forbidden in argv, files, GitHub artifacts, raw-page keys,
@@ -28929,7 +28932,7 @@ retention evidence remain open.
 | Gate | Required production evidence | Current boundary |
 | --- | --- | --- |
 | C0 collector contract | frozen identity, exact schedule, bounds, binding classifier, structured-evidence-to-inventory projection, negative/fault tests | local protocol/library/CLI and dedicated CI implemented; no remote evidence |
-| C1 credential ceremony | two signed creation receipts, distinct IDs/custody, least privilege, verify-to-receipt match, revocation path | not completed |
+| C1 credential ceremony | two signed creation receipts, distinct IDs/custody, least privilege, verify-to-receipt match, revocation path | local signed-receipt/trust/revocation protocol, stdin-only signer, profile assembler, and pre-inventory enforcement implemented; no real issuance ceremony or remote verify evidence |
 | C2 immutable raw source | create-once sink, external compliance WORM, 365-day retention, independent exact readback | local file capture implemented; external WORM and independent readback not implemented |
 | C3 stable account proof | two complete traversals 5-900 seconds apart with identical service/version/zone/route/edge sets | not run |
 | C4 source publication | isolated Ed25519 ceremony, signed bundle v2, create-once R2 upload and independent body/version/ETag/metadata readback | not completed |
@@ -28955,9 +28958,78 @@ tables, columns, indexes, triggers, and migration head are independently read
 back. The existing local append-only transition journal proves neither this
 infrastructure creation nor remote schema application.
 
-No collector credential has been issued or used by this documentation update.
+No collector credential has been issued or used by this local implementation
+increment.
 No Cloudflare API, deployment, route, DNS, R2, D1, provider, billing, traffic,
 or Go/VPS state changed. The deployment leaf, D1 create-once path, external
 WORM, source publication, real four-phase campaign, and wider production
 acceptance matrix remain open. Go/VPS remains authoritative and production
 remains **NO-GO**.
+
+## 2026-08-06 Account Binding Credential Provenance V1 Foundation
+
+This increment implements the local C1 protocol required before either
+account traversal can be admitted. It does not create a Cloudflare token and
+does not convert fixture signatures into production evidence.
+
+The collection profile no longer accepts caller-supplied permission digests.
+It embeds and hashes one credential-provenance object containing:
+
+- a current/optional-previous Ed25519 trust policy with exact SPKI bytes,
+  digests, effective time, and one-hour maximum previous-key overlap;
+- separate signed `collection` and `independent-readback` creation receipts;
+- a current-key signed, complete revocation snapshot;
+- distinct credential-ID and custodian digests;
+- exact `Workers Scripts Read`, `Workers Routes Read`, and `Zone Read` grants;
+- specific-account and all-zones-in-account read scope;
+- one-hour maximum token life, ten-minute minimum remaining life, and a
+  15-minute maximum revocation-snapshot life;
+- issuing-principal, two distinct approvers, approval-policy, receipt,
+  permission, trust-policy, revocation, and profile-approval-time digests; and
+- explicit `readOnly=true`, no write/token-management permission, and no
+  retained secret.
+
+The new offline signer accepts exactly one canonical PKCS8 DER/PEM Ed25519 key
+through bounded non-TTY stdin, rejects trailing/concatenated material, derives
+and matches the approved SPKI slot and external policy digest, signs receipt or
+revocation subjects under a dedicated domain, self-verifies, clears input
+bytes, and syncs a create-only canonical envelope. It accepts no token or key
+argv value, refuses ambient Wrangler credential variables, and performs no
+network call. The credential-free profile assembler
+refuses the known Wrangler token/API-key/email variables, validates external
+trust/revocation digest anchors and minimum sequence, verifies both receipts
+and the current revocation snapshot at a caller-frozen approval time, validates
+custody/duty separation, and writes one create-only profile.
+
+The online collector repeats all provenance signature, key-rotation, expiry,
+revocation, permission, and custody checks before the first Cloudflare request.
+It then calls only the account token-verify endpoint. The returned credential
+ID must hash to the exact role receipt before the Workers scripts request is
+allowed. A forged signature, expired revocation, reused custodian, reused
+credential, wrong token ID, ambient cross-role token, or output overwrite
+fails closed.
+
+The Source Verifier treats the embedded C1 provenance as structurally bound
+evidence, not as a self-authenticating root. The assembler/collector enforce
+the external C1 anchors; production publication still depends on the separate
+C4 source-bundle signature pinned by Worker configuration.
+
+Local focused acceptance is 37 tests with 155 expectations, strict declaration
+checking, real subprocess stdin/trailing/oversize key probes,
+signer/profile descriptions, and all collector self-test/dry-run plans. The
+collector requires independent trust/revocation digest anchors plus a minimum
+revocation sequence, limits previous-key overlap to one hour, binds the token
+verify page/body into authentication identity, replays validity at
+`verifiedAt`, and enforces the eight-stage request order. Source Verifier Node
+and Workerd tests remain green; local/staging Wrangler dry-runs are 383.00 KiB
+/ 62.14 KiB gzip with both gates false.
+
+Remaining C1 production evidence is the actual two-person token-issuance
+ceremony, provider permission-group/resource selector readback, managed-key
+custody and current/previous rotation, signed revocation drill, distinct
+operator custody, verify-to-receipt remote capture, immediate post-run token
+revocation, trusted ceremony-directory/recovery proof, and external-WORM
+retention. An uncertain local create-only write consumes its artifact path and
+must use a new identity rather than overwrite. C2-C4, deployment leaf, remote D1,
+campaign, rollback, and wider production gates remain open. No Cloudflare or
+Go/VPS state changed; production remains **NO-GO**.

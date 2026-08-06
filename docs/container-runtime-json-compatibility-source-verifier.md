@@ -140,28 +140,83 @@ the presented token ID and active status; it does not prove the permission
 set. The exact read-only permissions and resource scopes therefore come from
 an offline credential-creation receipt. The receipt must canonically bind the
 account digest, credential-ID digest, role, creation/expiry facts, and the
-least-privilege permission set. The profile signer validates that receipt and
-pins its receipt and permission-set digests. The online verify result must
-hash to the same credential ID before any inventory request is admissible.
+least-privilege permission set. The offline credential signer and profile
+assembler validate that receipt; the canonical profile pins its receipt and
+permission-set digests. The online verify result must hash to the same
+credential ID before any inventory request is admissible.
 
 The intended permission set contains only the account/zone scopes needed for
 `Workers Scripts Read`, `Workers Routes Read`, and `Zone Read`. It contains no
 Workers write, route write, D1 write, or token-management permission,
 including `Account API Tokens Read`. In particular, the collector must not
 call a token-detail endpoint merely to assert its own privileges. Explicit
-receipt objects,
-signature/issuer validation, and the verify-to-receipt credential-ID check are
-still P0 integration work; a bare permission digest supplied by a test fixture
-does not close this gate.
+receipt objects, signature/issuer validation, and the verify-to-receipt
+credential-ID check are now implemented locally. A bare permission digest is
+no longer accepted by the collection-profile contract.
+
+The credential provenance v1 contract retains an offline-approved current/
+previous Ed25519 SPKI policy, one signed receipt per role, and a current-key
+signed complete revocation snapshot. Each receipt binds the exact account and
+credential-ID digests, the three read-only permission group IDs/names, account
+and all-account-zone scope, one-hour maximum lifetime, issuing principal,
+distinct custodian, two distinct approvers, approval-policy digest, and
+explicit absence of write/token-management permission or secret retention.
+The profile binds the complete provenance object, its approval time, both
+receipt/permission/custodian digests, trust-policy digest, and revocation-state
+digest. At approval and collection time, each credential must retain at least
+ten minutes of life; a revocation snapshot is valid for at most 15 minutes.
+The previous trust key is accepted for at most one hour after the policy's
+effective time. Trust-policy and revocation-state digests plus the minimum
+accepted revocation sequence are supplied independently to the signer,
+assembler, and online collector; provenance cannot introduce its own trust
+root or roll back to an older still-current snapshot.
+
+`bun run sign:container-runtime:json-compatibility-account-binding-credential`
+accepts only a canonical receipt or revocation subject, externally pinned
+trust-policy digest, one canonical PKCS8 DER/PEM Ed25519 key on non-TTY stdin,
+and absent output path. It rejects trailing or concatenated key material,
+derives and matches the public SPKI, signs under a dedicated domain,
+self-verifies, refuses ambient Wrangler credential variables, syncs one
+create-only envelope, clears the caller-visible input key bytes, and performs
+no network request. `bun run
+assemble:container-runtime:json-compatibility-account-binding-profile`
+accepts the two envelopes, current revocation, plans, collector identity, and
+allowed edges plus external trust/revocation digests and minimum sequence. It
+refuses Wrangler token/API-key/email credential variables, verifies every
+trust slot, signature, time/custody/revocation invariant, and creates one
+canonical profile. The online collector repeats those anchored checks before
+its first request, then permits only token verify; a returned token ID mismatch
+stops before the Workers scripts request. Authentication identity binds the
+verify page receipt and response-body digests, and retained artifact validation
+replays credential/revocation validity at `verifiedAt`.
+
+These tools establish a locally testable protocol, not a production token
+ceremony. No real token creation receipt, managed-key custody proof, approver
+attestation, rotation/revocation drill, or remote verify result has been
+captured.
+
+The Source Verifier performs strict structural/digest validation of the
+embedded provenance but does not accept its embedded Ed25519 key as an
+independent trust root. C1 signature verification happens in the externally
+anchored assembler and collector; admissible publication still requires the
+C4 outer source-bundle signature pinned by the verifier Worker configuration.
+
+Local create-only files are fail-closed ceremony artifacts, not WORM proof.
+Their parent directory must be pre-provisioned and trusted; an uncertain
+write/sync/close consumes that artifact path and requires a new identity rather
+than overwrite or retry. Input-buffer zeroing is defense in depth, so the
+signer must still run as a short-lived isolated process backed by managed-key
+custody.
 
 The command boundary is
 `bun run collect:container-runtime:json-compatibility-account-bindings`.
 Online modes
 accept canonical Plan, state-plan, profile, collector identity, account ID, a
-new raw-page directory, and a new artifact path. `collection` reads only
+external trust/revocation digests, minimum revocation sequence, new raw-page
+directory, and a new artifact path. `collection` reads only
 `CLOUDFLARE_ACCOUNT_BINDING_COLLECTION_TOKEN`; `independent-readback` reads
 only `CLOUDFLARE_ACCOUNT_BINDING_READBACK_TOKEN`; each refuses the other token
-and generic `CLOUDFLARE_API_TOKEN`. `finalize` refuses all token environments
+and all generic Wrangler auth variables. `finalize` refuses all credential environments
 and combines the two canonical artifacts offline into one create-once evidence
 plus inventory package. `--self-test` and each mode's `--dry-run` perform zero
 credential reads, network requests, or file writes.
@@ -192,7 +247,8 @@ identity, request-path digest, response-body digest and byte length, result
 count, page coordinates, request-ID digest, observation time, and predecessor.
 Sequences must be contiguous, request IDs unique, and the expected service,
 active-version, zone-page, and zone-route identity multisets exact. Merely
-observing every resource-family name once is insufficient.
+observing every resource-family name once is insufficient. The validator also
+requires the eight resource-family stages to be monotonic in the table order.
 
 The custom-domain endpoint is treated as a single-page API. If it returns
 `result_info`, only `page=1`, `total_pages=1`, and exact count/total-count
@@ -295,19 +351,19 @@ bun run check:container-runtime:json-compatibility-source-verifier
 bun run check:container-runtime:json-compatibility-deployment-transition-worker
 ```
 
-Current focused evidence on 2026-08-05 is:
+Current focused evidence on 2026-08-06 is:
 
 | Gate | Result |
 | --- | --- |
-| Account-binding evidence/collector/CLI | 20 tests, 75 expectations; strict declaration check; four credential-free self-test/dry-run plans |
+| Account-binding credentials/evidence/collector/CLI | 37 tests, 155 expectations; strict declaration check; process-level DER/PEM stdin/tail/size/ambient-credential probes; anchored signer/profile descriptions; four credential-free collector self-test/dry-run plans |
 | Transition protocol | 13 tests, 150 expectations; includes exact v2 request/proof replay, cross-operation/plan binding, and proof-time rejection |
 | Generated types and TypeScript | pass |
-| Source verifier dry-runs | local and staging pass; 349.65 KiB upload / 57.27 KiB gzip; both gates false |
+| Source verifier dry-runs | local and staging pass; 383.00 KiB upload / 62.14 KiB gzip; both gates false |
 | Source verifier Node tests | 3 files, 13 tests |
 | Source verifier Workerd/R2 tests | 1 file, 3 tests; canonical read-only verification, missing object, and revocation |
 | Transition Worker Node tests | 2 files, 8 tests |
 | Transition Worker Workerd integration | 1 file, 2 tests; real secondary verifier Worker plus shared R2 and real D1 |
-| Complete repository | `bun run check` passed with exit code 0 in 1,814.1 seconds |
+| Complete repository | `bun run check` passed with exit code 0 in 1,186.7 seconds |
 
 The integrated Workerd test seeds a canonical R2 bundle, routes the transition
 through the actual verifier named entrypoint, proves exactly one verifier call,
@@ -374,10 +430,11 @@ Before any isolated staging transition:
     readbacks, D1 creation/migration evidence, and deployment receipts for
     independent offline replay.
 
-The source verifier and collector v2 close local implementation gaps but have
-not produced admissible remote evidence.
-The signed credential receipts, create-once raw-page/WORM sink, independent
-archive reader, signer, R2 uploader, remote bucket/verifier readback,
+The source verifier, collector v2, and credential-provenance v1 protocol close
+local implementation gaps but have not produced admissible remote evidence.
+Real signed credential-issuance receipts and managed-key ceremony evidence,
+the create-once raw-page/WORM sink, independent archive reader, source-bundle
+signer, R2 uploader, remote bucket/verifier readback,
 deployment leaf, D1 create-once provisioner and immutable remote schema,
 inflight resolver, fault campaign, and wider provider/billing/settlement/
 storage/SLO/cost/security/privacy/rollback/cutover evidence remain open. The

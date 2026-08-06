@@ -6,6 +6,10 @@ import {
 import {
   validateJsonCompatibilityDeploymentStatePlan,
 } from "./container_runtime_json_compatibility_deployment_states.mjs";
+import {
+  JSON_COMPATIBILITY_ACCOUNT_BINDING_CREDENTIAL_MIN_REMAINING_SECONDS,
+  validateJsonCompatibilityAccountBindingCredentialProvenance,
+} from "./container_runtime_json_compatibility_account_binding_credentials.mjs";
 
 export const JSON_COMPATIBILITY_ACCOUNT_BINDING_COLLECTOR_IDENTITY_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-account-binding-collector-identity-v1";
@@ -102,8 +106,8 @@ export function buildJsonCompatibilityAccountBindingCollectionProfile({
   statePlan: statePlanInput,
   accountIdSha256,
   collectorIdentitySha256,
-  collectionPermissionSetSha256,
-  readbackPermissionSetSha256,
+  credentialProvenance: credentialProvenanceInput,
+  credentialProvenanceApprovedAt,
   allowedCampaignBindingEdges: edgeInput,
 }) {
   const { campaignPlan, statePlan } = validateCurrentPlanPair(
@@ -113,9 +117,33 @@ export function buildJsonCompatibilityAccountBindingCollectionProfile({
   for (const [label, value] of [
     ["account ID", accountIdSha256],
     ["collector identity", collectorIdentitySha256],
-    ["collection permission set", collectionPermissionSetSha256],
-    ["readback permission set", readbackPermissionSetSha256],
   ]) sha256(value, `collection profile ${label}`);
+  const credentialProvenance =
+    validateJsonCompatibilityAccountBindingCredentialProvenance(
+      credentialProvenanceInput,
+    );
+  equal(
+    credentialProvenance.accountIdSha256,
+    accountIdSha256,
+    "collection profile credential account",
+  );
+  integer(
+    credentialProvenanceApprovedAt,
+    "collection profile credential approval time",
+  );
+  if (
+    credentialProvenance.revocation.subject.issuedAt
+      > credentialProvenanceApprovedAt
+    || credentialProvenance.revocation.subject.expiresAt
+      < credentialProvenanceApprovedAt
+    || [
+      credentialProvenance.collectionReceipt.subject,
+      credentialProvenance.readbackReceipt.subject,
+    ].some((receipt) =>
+      receipt.createdAt > credentialProvenanceApprovedAt
+      || receipt.expiresAt - credentialProvenanceApprovedAt
+        < JSON_COMPATIBILITY_ACCOUNT_BINDING_CREDENTIAL_MIN_REMAINING_SECONDS)
+  ) fail("collection_profile_credential_provenance_not_current");
   const campaignServices = Object.entries(statePlan.services)
     .map(([role, service]) => ({
       role,
@@ -144,8 +172,30 @@ export function buildJsonCompatibilityAccountBindingCollectionProfile({
     campaignPlanDigestSha256: campaignPlan.planDigestSha256,
     statePlanDigestSha256: statePlan.planDigestSha256,
     collectorIdentitySha256,
-    collectionPermissionSetSha256,
-    readbackPermissionSetSha256,
+    credentialProvenance,
+    credentialProvenanceApprovedAt,
+    credentialProvenanceSha256:
+      credentialProvenance.credentialProvenanceSha256,
+    credentialTrustPolicySha256:
+      credentialProvenance.credentialTrustPolicySha256,
+    credentialRevocationStateSha256:
+      credentialProvenance.credentialRevocationStateSha256,
+    collectionCredentialIdSha256:
+      credentialProvenance.collectionCredentialIdSha256,
+    readbackCredentialIdSha256:
+      credentialProvenance.readbackCredentialIdSha256,
+    collectionCredentialReceiptSha256:
+      credentialProvenance.collectionCredentialReceiptSha256,
+    readbackCredentialReceiptSha256:
+      credentialProvenance.readbackCredentialReceiptSha256,
+    collectionPermissionSetSha256:
+      credentialProvenance.collectionPermissionSetSha256,
+    readbackPermissionSetSha256:
+      credentialProvenance.readbackPermissionSetSha256,
+    collectionCustodianIdentitySha256:
+      credentialProvenance.collectionCustodianIdentitySha256,
+    readbackCustodianIdentitySha256:
+      credentialProvenance.readbackCustodianIdentitySha256,
     requiredResourceFamilies: [
       ...JSON_COMPATIBILITY_ACCOUNT_BINDING_RESOURCE_FAMILIES,
     ],
@@ -171,8 +221,15 @@ export function validateJsonCompatibilityAccountBindingCollectionProfile(
   exactKeys(value, [
     "schemaVersion", "contract", "environment", "accountIdSha256",
     "campaignPlanDigestSha256", "statePlanDigestSha256",
-    "collectorIdentitySha256", "collectionPermissionSetSha256",
-    "readbackPermissionSetSha256", "requiredResourceFamilies",
+    "collectorIdentitySha256", "credentialProvenance",
+    "credentialProvenanceApprovedAt",
+    "credentialProvenanceSha256", "credentialTrustPolicySha256",
+    "credentialRevocationStateSha256",
+    "collectionCredentialIdSha256", "readbackCredentialIdSha256",
+    "collectionCredentialReceiptSha256",
+    "readbackCredentialReceiptSha256", "collectionPermissionSetSha256",
+    "readbackPermissionSetSha256", "collectionCustodianIdentitySha256",
+    "readbackCustodianIdentitySha256", "requiredResourceFamilies",
     "campaignServices", "allowedCampaignBindingEdges",
     "minimumIndependentReadbackDelaySeconds",
     "maximumIndependentReadbackDelaySeconds", "collectionProfileSha256",
@@ -182,8 +239,8 @@ export function validateJsonCompatibilityAccountBindingCollectionProfile(
     statePlan,
     accountIdSha256: value.accountIdSha256,
     collectorIdentitySha256: value.collectorIdentitySha256,
-    collectionPermissionSetSha256: value.collectionPermissionSetSha256,
-    readbackPermissionSetSha256: value.readbackPermissionSetSha256,
+    credentialProvenance: value.credentialProvenance,
+    credentialProvenanceApprovedAt: value.credentialProvenanceApprovedAt,
     allowedCampaignBindingEdges: value.allowedCampaignBindingEdges,
   });
   canonicalEqual(rebuilt, value, "account binding collection profile");
@@ -194,12 +251,28 @@ export function buildJsonCompatibilityAccountBindingAuthenticationIdentity({
   accountIdSha256,
   credentialIdSha256,
   permissionSetSha256,
+  credentialVerificationPageReceiptSha256,
+  credentialVerificationResponseBodySha256,
+  credentialReceiptSha256,
+  custodianIdentitySha256,
+  credentialTrustPolicySha256,
+  credentialRevocationStateSha256,
+  credentialProvenanceSha256,
   verifiedAt,
 }) {
   for (const [label, value] of [
     ["account ID", accountIdSha256],
     ["credential ID", credentialIdSha256],
     ["permission set", permissionSetSha256],
+    ["credential verification page receipt",
+      credentialVerificationPageReceiptSha256],
+    ["credential verification response body",
+      credentialVerificationResponseBodySha256],
+    ["credential receipt", credentialReceiptSha256],
+    ["custodian identity", custodianIdentitySha256],
+    ["credential trust policy", credentialTrustPolicySha256],
+    ["credential revocation state", credentialRevocationStateSha256],
+    ["credential provenance", credentialProvenanceSha256],
   ]) sha256(value, `authentication identity ${label}`);
   integer(verifiedAt, "authentication identity verification time");
   const subject = {
@@ -210,6 +283,13 @@ export function buildJsonCompatibilityAccountBindingAuthenticationIdentity({
     accountIdSha256,
     credentialIdSha256,
     permissionSetSha256,
+    credentialVerificationPageReceiptSha256,
+    credentialVerificationResponseBodySha256,
+    credentialReceiptSha256,
+    custodianIdentitySha256,
+    credentialTrustPolicySha256,
+    credentialRevocationStateSha256,
+    credentialProvenanceSha256,
     active: true,
     readOnly: true,
     verifiedAt,
@@ -226,8 +306,12 @@ export function validateJsonCompatibilityAccountBindingAuthenticationIdentity(
   const value = record(input, "account binding authentication identity");
   exactKeys(value, [
     "schemaVersion", "contract", "environment", "accountIdSha256",
-    "credentialIdSha256", "permissionSetSha256", "active", "readOnly",
-    "verifiedAt", "authenticationIdentitySha256",
+    "credentialIdSha256", "permissionSetSha256",
+    "credentialVerificationPageReceiptSha256",
+    "credentialVerificationResponseBodySha256", "credentialReceiptSha256",
+    "custodianIdentitySha256", "credentialTrustPolicySha256",
+    "credentialRevocationStateSha256", "credentialProvenanceSha256",
+    "active", "readOnly", "verifiedAt", "authenticationIdentitySha256",
   ], "account binding authentication identity");
   const rebuilt = buildJsonCompatibilityAccountBindingAuthenticationIdentity(
     value,
@@ -444,6 +528,9 @@ export function buildJsonCompatibilityAccountBindingCollectionArtifact({
   const snapshot = validateJsonCompatibilityAccountBindingSnapshot(
     snapshotInput,
   );
+  const credentialVerificationPage = snapshot.pageReceipts.find(
+    (page) => page.resourceFamily === "credential-verification",
+  );
   for (const [label, actual, expected] of [
     ["profile account", profile.accountIdSha256, snapshot.accountIdSha256],
     ["authentication account", authenticationIdentity.accountIdSha256,
@@ -454,7 +541,54 @@ export function buildJsonCompatibilityAccountBindingCollectionArtifact({
       mode === "collection"
         ? profile.collectionPermissionSetSha256
         : profile.readbackPermissionSetSha256],
+    ["credential ID", authenticationIdentity.credentialIdSha256,
+      mode === "collection"
+        ? profile.collectionCredentialIdSha256
+        : profile.readbackCredentialIdSha256],
+    ["credential receipt", authenticationIdentity.credentialReceiptSha256,
+      mode === "collection"
+        ? profile.collectionCredentialReceiptSha256
+        : profile.readbackCredentialReceiptSha256],
+    ["credential custodian", authenticationIdentity.custodianIdentitySha256,
+      mode === "collection"
+        ? profile.collectionCustodianIdentitySha256
+        : profile.readbackCustodianIdentitySha256],
+    ["credential trust policy",
+      authenticationIdentity.credentialTrustPolicySha256,
+      profile.credentialTrustPolicySha256],
+    ["credential revocation state",
+      authenticationIdentity.credentialRevocationStateSha256,
+      profile.credentialRevocationStateSha256],
+    ["credential provenance",
+      authenticationIdentity.credentialProvenanceSha256,
+      profile.credentialProvenanceSha256],
+    ["credential verification page receipt",
+      authenticationIdentity.credentialVerificationPageReceiptSha256,
+      credentialVerificationPage.pageReceiptSha256],
+    ["credential verification response body",
+      authenticationIdentity.credentialVerificationResponseBodySha256,
+      credentialVerificationPage.responseBodySha256],
   ]) equal(actual, expected, `account binding artifact ${label}`);
+  const credentialReceipt = mode === "collection"
+    ? profile.credentialProvenance.collectionReceipt.subject
+    : profile.credentialProvenance.readbackReceipt.subject;
+  const revocation = profile.credentialProvenance.revocation.subject;
+  if (
+    authenticationIdentity.verifiedAt
+      < profile.credentialProvenanceApprovedAt
+    || credentialReceipt.createdAt > authenticationIdentity.verifiedAt
+    || credentialReceipt.expiresAt <= authenticationIdentity.verifiedAt
+    || revocation.issuedAt > authenticationIdentity.verifiedAt
+    || revocation.expiresAt <= authenticationIdentity.verifiedAt
+    || credentialVerificationPage.observedAt
+      > authenticationIdentity.verifiedAt
+    || (
+      credentialReceipt.keyId === profile.credentialProvenance.trustPolicy
+        .previous?.keyId
+      && authenticationIdentity.verifiedAt
+        > profile.credentialProvenance.trustPolicy.previous.acceptUntil
+    )
+  ) fail("authentication_credential_not_current");
   if (authenticationIdentity.verifiedAt > snapshot.observedAt) {
     fail("authentication_verified_after_snapshot");
   }
@@ -942,6 +1076,17 @@ function validatePageChain({
   );
   const families = new Set();
   const requestIds = new Set();
+  const familyOrder = new Map([
+    ["credential-verification", 0],
+    ["workers-scripts", 1],
+    ["worker-deployments", 2],
+    ["worker-version", 3],
+    ["worker-subdomain", 4],
+    ["account-worker-domains", 5],
+    ["account-zones", 6],
+    ["zone-worker-routes", 7],
+  ]);
+  let previousFamilyOrder = -1;
   for (let index = 0; index < pages.length; index += 1) {
     const page = pages[index];
     equal(page.sequence, index + 1, "page receipt sequence");
@@ -956,6 +1101,11 @@ function validatePageChain({
     if (!requestIds.add(page.requestIdSha256)) {
       fail("account_binding_request_id_duplicate");
     }
+    const currentFamilyOrder = familyOrder.get(page.resourceFamily);
+    if (currentFamilyOrder < previousFamilyOrder) {
+      fail("account_binding_request_schedule_order_invalid");
+    }
+    previousFamilyOrder = currentFamilyOrder;
     families.add(page.resourceFamily);
   }
   for (const family of JSON_COMPATIBILITY_ACCOUNT_BINDING_RESOURCE_FAMILIES) {

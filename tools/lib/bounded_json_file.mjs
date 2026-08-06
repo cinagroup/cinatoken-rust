@@ -42,10 +42,29 @@ export async function readBoundedUtf8File(filePath, maximumBytes, label) {
       );
     }
 
-    const bytes = await handle.readFile();
+    const bytes = new Uint8Array(before.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const { bytesRead } = await handle.read(
+        bytes,
+        offset,
+        bytes.byteLength - offset,
+        offset,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const overflowProbe = new Uint8Array(1);
+    const { bytesRead: overflowBytesRead } = await handle.read(
+      overflowProbe,
+      0,
+      1,
+      before.size,
+    );
     const after = await handle.stat();
     if (
-      bytes.byteLength !== before.size ||
+      offset !== before.size ||
+      overflowBytesRead !== 0 ||
       after.size !== before.size ||
       after.mtimeMs !== before.mtimeMs ||
       after.ctimeMs !== before.ctimeMs

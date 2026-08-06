@@ -3,9 +3,6 @@ import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 
 import {
-  sha256Canonical,
-} from "../tools/container_runtime_json_compatibility_campaign.mjs";
-import {
   buildJsonCompatibilityAccountBindingCollectionProfile,
 } from "../tools/container_runtime_json_compatibility_account_binding_evidence.mjs";
 import {
@@ -14,6 +11,7 @@ import {
   normalizeVersionDetail,
 } from "../tools/lib/container_runtime_json_compatibility_account_binding_collector.mjs";
 import {
+  createAccountBindingCredentialProvenanceFixture,
   createSourceAuthenticationFixture,
 } from "./fixtures/container-runtime-json-compatibility-source-authentication.mjs";
 
@@ -132,6 +130,54 @@ describe("JSON compatibility account binding Cloudflare collector", () => {
       monotonicClock: () => 0,
     })).rejects.toThrow(/cloudflare_api_credential_reflected/);
     expect(transport.calls).toHaveLength(2);
+  });
+
+  test("rejects a token verify ID that does not match its signed receipt", async () => {
+    const fixture = await collectorFixture();
+    const transport = fakeCloudflareTransport(fixture, {
+      token: COLLECTION_TOKEN,
+      tokenId: "dddddddddddddddddddddddddddddddd",
+    });
+
+    await expect(collectJsonCompatibilityAccountBindingArtifact({
+      ...fixture.inputs,
+      mode: "collection",
+      accountId: ACCOUNT_ID,
+      apiToken: COLLECTION_TOKEN,
+      rawPageSink: async () => {},
+      fetchImpl: transport.fetch,
+      clock: () => fixture.now,
+      monotonicClock: () => 0,
+    })).rejects.toThrow(/verified_credential_receipt_identity_mismatch/);
+    expect(transport.calls).toHaveLength(1);
+  });
+
+  test("rejects trust-root replacement and revocation rollback before network", async () => {
+    const fixture = await collectorFixture();
+    const transport = fakeCloudflareTransport(fixture, {
+      token: COLLECTION_TOKEN,
+      tokenId: COLLECTION_TOKEN_ID,
+    });
+    const common = {
+      ...fixture.inputs,
+      mode: "collection",
+      accountId: ACCOUNT_ID,
+      apiToken: COLLECTION_TOKEN,
+      rawPageSink: async () => {},
+      fetchImpl: transport.fetch,
+      clock: () => fixture.now,
+      monotonicClock: () => 0,
+    };
+
+    await expect(collectJsonCompatibilityAccountBindingArtifact({
+      ...common,
+      expectedTrustPolicySha256: "0".repeat(64),
+    })).rejects.toThrow(/credential_trust_policy_anchor_mismatch/);
+    await expect(collectJsonCompatibilityAccountBindingArtifact({
+      ...common,
+      minimumRevocationSequence: common.minimumRevocationSequence + 1,
+    })).rejects.toThrow(/credential_revocation_sequence_rollback/);
+    expect(transport.calls).toHaveLength(0);
   });
 
   test("rejects incomplete account-domain pagination", async () => {
@@ -261,6 +307,14 @@ describe("JSON compatibility account binding Cloudflare collector", () => {
 async function collectorFixture() {
   const source = await createSourceAuthenticationFixture();
   const sourceEvidence = source.bundle.accountBindingEvidence;
+  const now = source.now - 120;
+  const credentialProvenance =
+    createAccountBindingCredentialProvenanceFixture({
+      accountIdSha256: sha256(ACCOUNT_ID),
+      collectionCredentialIdSha256: sha256(COLLECTION_TOKEN_ID),
+      readbackCredentialIdSha256: sha256(READBACK_TOKEN_ID),
+      now,
+    });
   const collectionProfile =
     buildJsonCompatibilityAccountBindingCollectionProfile({
       campaignPlan: source.campaignPlan,
@@ -268,21 +322,25 @@ async function collectorFixture() {
       accountIdSha256: sha256(ACCOUNT_ID),
       collectorIdentitySha256:
         sourceEvidence.collection.collectorIdentity.collectorIdentitySha256,
-      collectionPermissionSetSha256:
-        signedReadOnlyPermissionSetSha256("collection"),
-      readbackPermissionSetSha256:
-        signedReadOnlyPermissionSetSha256("independent-readback"),
+      credentialProvenance,
+      credentialProvenanceApprovedAt: now,
       allowedCampaignBindingEdges:
         sourceEvidence.collectionProfile.allowedCampaignBindingEdges,
     });
   return {
-    now: source.now - 120,
+    now,
     sourceEvidence,
     inputs: {
       campaignPlan: source.campaignPlan,
       statePlan: source.statePlan,
       collectionProfile,
       collectorIdentity: sourceEvidence.collection.collectorIdentity,
+      expectedTrustPolicySha256:
+        credentialProvenance.credentialTrustPolicySha256,
+      expectedRevocationStateSha256:
+        credentialProvenance.credentialRevocationStateSha256,
+      minimumRevocationSequence:
+        credentialProvenance.revocation.subject.sequence,
     },
   };
 }
@@ -407,22 +465,6 @@ function apiBindingFromEdge(edge) {
       ? {}
       : { entrypoint: edge.targetEntrypoint }),
   };
-}
-
-function signedReadOnlyPermissionSetSha256(role) {
-  return sha256Canonical({
-    schemaVersion: 1,
-    contract:
-      "cinatoken-container-runtime-json-compatibility-read-only-permission-set-v1",
-    environment: "staging",
-    role,
-    accountIdSha256: sha256(ACCOUNT_ID),
-    permissionGroups: [
-      "Workers Routes Read",
-      "Workers Scripts Read",
-      "Zone Read",
-    ],
-  });
 }
 
 function tokenRequestPaths(calls) {

@@ -19,6 +19,9 @@ import {
   validateJsonCompatibilityAccountBindingCollectionProfile,
   validateJsonCompatibilityAccountBindingCollectorIdentity,
 } from "../container_runtime_json_compatibility_account_binding_evidence.mjs";
+import {
+  verifyJsonCompatibilityAccountBindingCredentialProvenance,
+} from "./container_runtime_json_compatibility_account_binding_credentials.mjs";
 
 const API_ORIGIN = "https://api.cloudflare.com";
 const API_PREFIX = "/client/v4";
@@ -89,6 +92,9 @@ export async function collectJsonCompatibilityAccountBindingArtifact({
   mode,
   accountId,
   apiToken,
+  expectedTrustPolicySha256,
+  expectedRevocationStateSha256,
+  minimumRevocationSequence,
   rawPageSink,
   fetchImpl = globalThis.fetch,
   clock = () => Math.floor(Date.now() / 1000),
@@ -110,6 +116,23 @@ export async function collectJsonCompatibilityAccountBindingArtifact({
     validateJsonCompatibilityAccountBindingCollectorIdentity(
       collectorIdentityInput,
     );
+  const credentialProvenanceVerifiedAt = integer(
+    clock(),
+    "credential provenance verification time",
+  );
+  const credentialProvenance =
+    verifyJsonCompatibilityAccountBindingCredentialProvenance(
+      profile.credentialProvenance,
+      {
+        now: credentialProvenanceVerifiedAt,
+        expectedTrustPolicySha256,
+        expectedRevocationStateSha256,
+        minimumRevocationSequence,
+      },
+    );
+  const credentialReceipt = mode === "collection"
+    ? credentialProvenance.collectionReceipt.subject
+    : credentialProvenance.readbackReceipt.subject;
   const accountIdSha256 = sha256Text(accountId);
   const accountResourceIdentitySha256 = sha256Canonical({ accountIdSha256 });
   equal(accountIdSha256, profile.accountIdSha256, "collector account identity");
@@ -135,15 +158,19 @@ export async function collectJsonCompatibilityAccountBindingArtifact({
     credentialRepresentations: credentialRepresentations(apiToken),
   };
 
-  const verified = normalizeTokenVerification(
-    (await apiGet(state, {
+  const credentialVerification = await apiGet(state, {
       family: "credential-verification",
       url: accountUrl(accountId, "tokens", "verify"),
       pagination: "none",
       resourceIdentitySha256: accountResourceIdentitySha256,
-    })).result,
-  );
+    });
+  const verified = normalizeTokenVerification(credentialVerification.result);
   const credentialIdSha256 = sha256Text(verified.id);
+  equal(
+    credentialIdSha256,
+    credentialReceipt.credentialIdSha256,
+    "verified credential receipt identity",
+  );
   const permissionSetSha256 = mode === "collection"
     ? profile.collectionPermissionSetSha256
     : profile.readbackPermissionSetSha256;
@@ -153,6 +180,20 @@ export async function collectJsonCompatibilityAccountBindingArtifact({
       accountIdSha256,
       credentialIdSha256,
       permissionSetSha256,
+      credentialVerificationPageReceiptSha256:
+        credentialVerification.receipt.pageReceiptSha256,
+      credentialVerificationResponseBodySha256:
+        credentialVerification.receipt.responseBodySha256,
+      credentialReceiptSha256: mode === "collection"
+        ? profile.collectionCredentialReceiptSha256
+        : profile.readbackCredentialReceiptSha256,
+      custodianIdentitySha256: mode === "collection"
+        ? profile.collectionCustodianIdentitySha256
+        : profile.readbackCustodianIdentitySha256,
+      credentialTrustPolicySha256: profile.credentialTrustPolicySha256,
+      credentialRevocationStateSha256:
+        profile.credentialRevocationStateSha256,
+      credentialProvenanceSha256: profile.credentialProvenanceSha256,
       verifiedAt,
     });
 
@@ -165,6 +206,7 @@ export async function collectJsonCompatibilityAccountBindingArtifact({
   const serviceNames = normalizeScriptList(scriptResponse.result);
   const serviceRecords = [];
   const bindingEdges = [];
+  const deploymentsByService = new Map();
   for (const serviceName of serviceNames) {
     const deployments = normalizeDeployments(
       (await apiGet(state, {
@@ -181,6 +223,11 @@ export async function collectJsonCompatibilityAccountBindingArtifact({
       })).result,
       serviceName,
     );
+    deploymentsByService.set(serviceName, deployments);
+  }
+  const bindingEdgesByService = new Map();
+  for (const serviceName of serviceNames) {
+    const deployments = deploymentsByService.get(serviceName);
     const serviceEdges = [];
     for (const versionId of deployments.activeVersionIds) {
       const version = normalizeVersionDetail(
@@ -205,6 +252,12 @@ export async function collectJsonCompatibilityAccountBindingArtifact({
       );
       serviceEdges.push(...version.serviceBindingEdges);
     }
+    bindingEdgesByService.set(serviceName, serviceEdges);
+    bindingEdges.push(...serviceEdges);
+  }
+  for (const serviceName of serviceNames) {
+    const deployments = deploymentsByService.get(serviceName);
+    const serviceEdges = bindingEdgesByService.get(serviceName);
     const subdomain = normalizeSubdomain(
       (await apiGet(state, {
         family: "worker-subdomain",
@@ -219,7 +272,6 @@ export async function collectJsonCompatibilityAccountBindingArtifact({
         resourceIdentitySha256: serviceResourceIdentity(serviceName),
       })).result,
     );
-    bindingEdges.push(...serviceEdges);
     serviceRecords.push({
       serviceName,
       activeVersionIds: deployments.activeVersionIds,
@@ -702,7 +754,7 @@ async function apiGet(state, options) {
     receipt,
   });
   state.receipts.push(receipt);
-  return { result: value.result, page };
+  return { result: value.result, page, receipt };
 }
 
 function validatePagination(mode, requestedPage, input, resultCount) {

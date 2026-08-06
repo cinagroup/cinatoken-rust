@@ -49,6 +49,7 @@ describe("JSON compatibility account binding collector CLI", () => {
     expect(result.mode).toBe("collection");
     expect(result.networkRequests).toBe(0);
     expect(result.fileWrites).toBe(0);
+    expect(result.forbiddenCredentialEnvironment).toContain("CF_API_KEY");
     expect(output).toHaveLength(1);
   });
 
@@ -102,6 +103,9 @@ describe("JSON compatibility account binding collector CLI", () => {
         "--collection-profile", "missing-profile.json",
         "--collector-identity", "missing-collector.json",
         "--account-id", "0123456789abcdef0123456789abcdef",
+        "--credential-trust-policy-sha256", "a".repeat(64),
+        "--credential-revocation-state-sha256", "b".repeat(64),
+        "--minimum-revocation-sequence", "1",
         "--raw-page-dir", "must-not-be-created",
         "--output", "must-not-be-created.json",
       ],

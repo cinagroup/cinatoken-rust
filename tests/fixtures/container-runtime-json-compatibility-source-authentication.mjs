@@ -3,6 +3,7 @@ import {
   generateKeyPairSync,
   sign,
 } from "node:crypto";
+import { Buffer } from "node:buffer";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -42,6 +43,15 @@ import {
   buildJsonCompatibilityAccountBindingPageReceipt,
   buildJsonCompatibilityAccountBindingSnapshot,
 } from "../../tools/container_runtime_json_compatibility_account_binding_evidence.mjs";
+import {
+  accountBindingCredentialSigningPayload,
+  buildJsonCompatibilityAccountBindingCredentialProvenance,
+  buildJsonCompatibilityAccountBindingCredentialReceiptEnvelope,
+  buildJsonCompatibilityAccountBindingCredentialReceiptSubject,
+  buildJsonCompatibilityAccountBindingCredentialRevocationEnvelope,
+  buildJsonCompatibilityAccountBindingCredentialRevocationSubject,
+  buildJsonCompatibilityAccountBindingCredentialTrustPolicy,
+} from "../../tools/container_runtime_json_compatibility_account_binding_credentials.mjs";
 import {
   createSyntheticJsonCompatibilitySourceManifest,
 } from "../../tools/container_runtime_json_compatibility_source_manifest.mjs";
@@ -364,6 +374,106 @@ export async function createSourceAuthenticationFixture({
   }
 }
 
+export function createAccountBindingCredentialProvenanceFixture({
+  accountIdSha256,
+  collectionCredentialIdSha256,
+  readbackCredentialIdSha256,
+  now,
+}) {
+  const keys = generateKeyPairSync("ed25519");
+  const spki = keys.publicKey.export({ format: "der", type: "spki" });
+  const keyId = "account-binding-credential-authority-2026-08";
+  const trustPolicy =
+    buildJsonCompatibilityAccountBindingCredentialTrustPolicy({
+      effectiveAt: now - 120,
+      current: {
+        keyId,
+        spkiSha256: createHash("sha256").update(spki).digest("hex"),
+        spkiBase64url: Buffer.from(spki).toString("base64url"),
+      },
+    });
+  const permissionGrants = [
+    {
+      permissionGroupId: "workers-scripts-read",
+      name: "Workers Scripts Read",
+      access: "read",
+    },
+    {
+      permissionGroupId: "workers-routes-read",
+      name: "Workers Routes Read",
+      access: "read",
+    },
+    {
+      permissionGroupId: "zone-read",
+      name: "Zone Read",
+      access: "read",
+    },
+  ];
+  const receipt = (role, credentialIdSha256, custodianSeed) => {
+    const subject =
+      buildJsonCompatibilityAccountBindingCredentialReceiptSubject({
+        accountIdSha256,
+        role,
+        credentialIdSha256,
+        permissionGrants,
+        createdAt: now - 60,
+        expiresAt: now + 30 * 60,
+        issuingPrincipalIdentitySha256:
+          digest("account-binding-credential-issuing-principal"),
+        custodianIdentitySha256: digest(custodianSeed),
+        approverIdentitySha256s: [
+          digest("account-binding-credential-approver-security"),
+          digest("account-binding-credential-approver-operations"),
+        ],
+        approvalPolicySha256:
+          digest("account-binding-credential-two-person-policy"),
+        keyId,
+      });
+    return buildJsonCompatibilityAccountBindingCredentialReceiptEnvelope({
+      subject,
+      signatureBase64url: sign(
+        null,
+        accountBindingCredentialSigningPayload(subject),
+        keys.privateKey,
+      ).toString("base64url"),
+    });
+  };
+  const collectionReceipt = receipt(
+    "collection",
+    collectionCredentialIdSha256,
+    "account-binding-collection-custodian",
+  );
+  const readbackReceipt = receipt(
+    "independent-readback",
+    readbackCredentialIdSha256,
+    "account-binding-readback-custodian",
+  );
+  const revocationSubject =
+    buildJsonCompatibilityAccountBindingCredentialRevocationSubject({
+      sequence: 1,
+      revokedCredentialIdSha256s: [],
+      revokedReceiptSubjectSha256s: [],
+      issuedAt: now,
+      expiresAt: now + 15 * 60,
+      keyId,
+    });
+  const revocation =
+    buildJsonCompatibilityAccountBindingCredentialRevocationEnvelope({
+      subject: revocationSubject,
+      signatureBase64url: sign(
+        null,
+        accountBindingCredentialSigningPayload(revocationSubject),
+        keys.privateKey,
+      ).toString("base64url"),
+    });
+  return buildJsonCompatibilityAccountBindingCredentialProvenance({
+    trustPolicy,
+    collectionReceipt,
+    readbackReceipt,
+    revocation,
+  });
+}
+
 function buildAccountBindingEvidenceFixture({
   campaignPlan,
   statePlan,
@@ -377,10 +487,15 @@ function buildAccountBindingEvidenceFixture({
       executableSha256: digest("account-binding-collector-executable"),
       dependencyLockSha256: digest("account-binding-collector-lock"),
     });
-  const collectionPermissionSetSha256 =
-    digest("account-binding-collection-read-permissions");
-  const readbackPermissionSetSha256 =
-    digest("account-binding-readback-read-permissions");
+  const credentialProvenance =
+    createAccountBindingCredentialProvenanceFixture({
+      accountIdSha256,
+      collectionCredentialIdSha256:
+        digest("account-binding-collection-credential"),
+      readbackCredentialIdSha256:
+        digest("account-binding-readback-credential"),
+      now: observedAt - 60,
+    });
   const roleServices = Object.fromEntries(
     Object.entries(statePlan.services).map(([role, service]) => [
       role,
@@ -475,8 +590,8 @@ function buildAccountBindingEvidenceFixture({
       statePlan,
       accountIdSha256,
       collectorIdentitySha256: collectorIdentity.collectorIdentitySha256,
-      collectionPermissionSetSha256,
-      readbackPermissionSetSha256,
+      credentialProvenance,
+      credentialProvenanceApprovedAt: observedAt - 60,
       allowedCampaignBindingEdges,
     });
   const services = serviceNames.map((serviceName) => ({
@@ -526,15 +641,47 @@ function buildAccountBindingEvidenceFixture({
   const collectionAuthentication =
     buildJsonCompatibilityAccountBindingAuthenticationIdentity({
       accountIdSha256,
-      credentialIdSha256: digest("account-binding-collection-credential"),
-      permissionSetSha256: collectionPermissionSetSha256,
+      credentialIdSha256:
+        credentialProvenance.collectionCredentialIdSha256,
+      permissionSetSha256:
+        credentialProvenance.collectionPermissionSetSha256,
+      credentialVerificationPageReceiptSha256:
+        collectionSnapshot.pageReceipts[0].pageReceiptSha256,
+      credentialVerificationResponseBodySha256:
+        collectionSnapshot.pageReceipts[0].responseBodySha256,
+      credentialReceiptSha256:
+        credentialProvenance.collectionCredentialReceiptSha256,
+      custodianIdentitySha256:
+        credentialProvenance.collectionCustodianIdentitySha256,
+      credentialTrustPolicySha256:
+        credentialProvenance.credentialTrustPolicySha256,
+      credentialRevocationStateSha256:
+        credentialProvenance.credentialRevocationStateSha256,
+      credentialProvenanceSha256:
+        credentialProvenance.credentialProvenanceSha256,
       verifiedAt: collectionObservedAt - 1,
     });
   const readbackAuthentication =
     buildJsonCompatibilityAccountBindingAuthenticationIdentity({
       accountIdSha256,
-      credentialIdSha256: digest("account-binding-readback-credential"),
-      permissionSetSha256: readbackPermissionSetSha256,
+      credentialIdSha256:
+        credentialProvenance.readbackCredentialIdSha256,
+      permissionSetSha256:
+        credentialProvenance.readbackPermissionSetSha256,
+      credentialVerificationPageReceiptSha256:
+        readbackSnapshot.pageReceipts[0].pageReceiptSha256,
+      credentialVerificationResponseBodySha256:
+        readbackSnapshot.pageReceipts[0].responseBodySha256,
+      credentialReceiptSha256:
+        credentialProvenance.readbackCredentialReceiptSha256,
+      custodianIdentitySha256:
+        credentialProvenance.readbackCustodianIdentitySha256,
+      credentialTrustPolicySha256:
+        credentialProvenance.credentialTrustPolicySha256,
+      credentialRevocationStateSha256:
+        credentialProvenance.credentialRevocationStateSha256,
+      credentialProvenanceSha256:
+        credentialProvenance.credentialProvenanceSha256,
       verifiedAt: observedAt - 1,
     });
   const collection =

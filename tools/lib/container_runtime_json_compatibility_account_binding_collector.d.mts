@@ -73,6 +73,9 @@ export function collectJsonCompatibilityAccountBindingArtifact<
   readonly mode: TMode;
   readonly accountId: string;
   readonly apiToken: string;
+  readonly expectedTrustPolicySha256: string;
+  readonly expectedRevocationStateSha256: string;
+  readonly minimumRevocationSequence: number;
   readonly rawPageSink: JsonCompatibilityAccountBindingRawPageSink;
   readonly fetchImpl?: typeof fetch;
   readonly clock?: () => number;

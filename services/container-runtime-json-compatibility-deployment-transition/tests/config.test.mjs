@@ -18,10 +18,16 @@ describe("private deployment transition Worker configuration", () => {
     expect(config).not.toHaveProperty("routes");
     expect(config.services).toEqual([
       {
-        binding: "JSON_COMPATIBILITY_DEPLOYMENT_LEAF",
+        binding: "JSON_COMPATIBILITY_DEPLOYMENT_READBACK",
         service:
-          "cinatoken-container-runtime-json-compatibility-deployment-leaf-staging",
-        entrypoint: "JsonCompatibilityDeploymentLeafEntrypoint",
+          "cinatoken-container-runtime-json-compatibility-deployment-readback-staging",
+        entrypoint: "JsonCompatibilityDeploymentReadbackEntrypoint",
+      },
+      {
+        binding: "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION",
+        service:
+          "cinatoken-container-runtime-json-compatibility-deployment-mutation-staging",
+        entrypoint: "JsonCompatibilityDeploymentMutationEntrypoint",
       },
       {
         binding: "JSON_COMPATIBILITY_SOURCE_VERIFIER",
@@ -79,6 +85,35 @@ describe("private deployment transition Worker configuration", () => {
     );
     expect(migration).toContain(
       "json_compatibility_deployment_transition_receipt_source_guard",
+    );
+
+    const authorityMigration = readFileSync(
+      new URL(
+        "../migrations/0002_json_compatibility_deployment_transition_authorities.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    expect(authorityMigration).toContain(
+      "CREATE TABLE json_compatibility_deployment_transition_authorities",
+    );
+    expect(authorityMigration).toContain(
+      "json_compatibility_deployment_transition_authority_time_guard",
+    );
+    expect(authorityMigration).toContain(
+      "json_compatibility_deployment_transition_authority_update_guard",
+    );
+    expect(authorityMigration).toContain(
+      "json_compatibility_deployment_transition_authority_delete_guard",
+    );
+    expect(authorityMigration).toContain(
+      "CHECK (readback_service_name <> mutation_service_name)",
+    );
+    expect(authorityMigration).toContain(
+      "CHECK (readback_identity_sha256 <> mutation_identity_sha256)",
+    );
+    expect(authorityMigration).toContain(
+      "CHECK (readback_credential_id_sha256 <> mutation_credential_id_sha256)",
     );
   });
 });

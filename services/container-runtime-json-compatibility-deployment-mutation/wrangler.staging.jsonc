@@ -1,0 +1,34 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-container-runtime-json-compatibility-deployment-mutation-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-06",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "ENVIRONMENT": "staging",
+    "CLOUDFLARE_ACCOUNT_ID": "replace-with-staging-account-id",
+    "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_ENABLED": "false",
+    "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_REMOTE_ENABLED": "false",
+    "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_PROFILE_VERSION": "1",
+    "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-deployment-mutation-staging",
+    "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_CREDENTIAL_ID_SHA256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_ACCOUNT_ID_SHA256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cinatoken-json-compatibility-deployment-mutation-staging",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

@@ -15,6 +15,12 @@ const d1Migrations = await readD1Migrations("./migrations");
 const sourceVerifierBundlePath = path.resolve(
   ".wrangler/runtime-source-verifier/index.mjs",
 );
+const readbackMockBundlePath = path.resolve(
+  ".wrangler/runtime-deployment-readback-mock/index.mjs",
+);
+const mutationMockBundlePath = path.resolve(
+  ".wrangler/runtime-deployment-mutation-mock/index.mjs",
+);
 await build({
   entryPoints: [
     "../container-runtime-json-compatibility-source-verifier/src/index.ts",
@@ -31,18 +37,57 @@ await build({
   },
   logLevel: "silent",
 });
+await build({
+  entryPoints: ["./tests/fixtures/deployment-readback-rpc-mock.mjs"],
+  outfile: readbackMockBundlePath,
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  external: ["cloudflare:workers", "node:*"],
+  define: {
+    "import.meta.main": "false",
+    "import.meta.url": '"file:///worker/index.mjs"',
+  },
+  logLevel: "silent",
+});
+await build({
+  entryPoints: ["./tests/fixtures/deployment-mutation-rpc-mock.mjs"],
+  outfile: mutationMockBundlePath,
+  bundle: true,
+  format: "esm",
+  platform: "browser",
+  target: "es2022",
+  external: ["cloudflare:workers", "node:*"],
+  define: {
+    "import.meta.main": "false",
+    "import.meta.url": '"file:///worker/index.mjs"',
+  },
+  logLevel: "silent",
+});
+const coordinatorVersionId = "deployment-transition-runtime-version-001";
 const sourceVerifierVersionId = "source-verifier-integration-version-001";
+const readbackVersionId = "deployment-readback-runtime-version-001";
+const mutationVersionId = "deployment-mutation-runtime-version-001";
 const sourceFixture = await createSourceAuthenticationFixture({
   now: Math.floor(Date.now() / 1000),
   operationSeed: "deployment-transition-workerd-operation",
   sourceVerifierVersionId,
+  executionAuthorityOverrides: {
+    coordinator: { versionId: coordinatorVersionId },
+    readback: { versionId: readbackVersionId },
+    mutation: { versionId: mutationVersionId },
+  },
 });
 const invocation = {
   campaignPlan: sourceFixture.campaignPlan,
   statePlan: sourceFixture.statePlan,
   authorizedTransition: sourceFixture.authorizedTransition,
 };
-const mockWorkerName = "json-compatibility-deployment-transition-rpc-mock";
+const readbackMockWorkerName =
+  "json-compatibility-deployment-transition-readback-rpc-mock";
+const mutationMockWorkerName =
+  "json-compatibility-deployment-transition-mutation-rpc-mock";
 const sourceVerifierWorkerName =
   "json-compatibility-deployment-transition-source-verifier";
 const sourceVerifierProxyWorkerName =
@@ -74,7 +119,7 @@ export default defineConfig({
           TEST_SOURCE_SIGNATURE_ENVELOPE_SHA256:
             sourceFixture.sourceSignatureEnvelopeSha256,
           CF_VERSION_METADATA: {
-            id: "deployment-transition-runtime-version-001",
+            id: coordinatorVersionId,
             tag: "runtime-test",
             timestamp: "2026-08-05T00:00:00.000Z",
           },
@@ -85,8 +130,10 @@ export default defineConfig({
           JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_PROFILE_VERSION: "1",
           JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SERVICE_NAME:
             "cinatoken-container-runtime-json-compatibility-deployment-transition-staging",
-          JSON_COMPATIBILITY_DEPLOYMENT_LEAF_SERVICE_NAME:
-            "cinatoken-container-runtime-json-compatibility-deployment-leaf-staging",
+          JSON_COMPATIBILITY_DEPLOYMENT_READBACK_SERVICE_NAME:
+            "cinatoken-container-runtime-json-compatibility-deployment-readback-staging",
+          JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_SERVICE_NAME:
+            "cinatoken-container-runtime-json-compatibility-deployment-mutation-staging",
           JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME:
             "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
         },
@@ -94,9 +141,13 @@ export default defineConfig({
           DB: "json-compatibility-deployment-transition-runtime-test",
         },
         serviceBindings: {
-          JSON_COMPATIBILITY_DEPLOYMENT_LEAF: {
-            name: mockWorkerName,
-            entrypoint: "JsonCompatibilityDeploymentLeafEntrypoint",
+          JSON_COMPATIBILITY_DEPLOYMENT_READBACK: {
+            name: readbackMockWorkerName,
+            entrypoint: "JsonCompatibilityDeploymentReadbackEntrypoint",
+          },
+          JSON_COMPATIBILITY_DEPLOYMENT_MUTATION: {
+            name: mutationMockWorkerName,
+            entrypoint: "JsonCompatibilityDeploymentMutationEntrypoint",
           },
           JSON_COMPATIBILITY_SOURCE_VERIFIER: {
             name: sourceVerifierProxyWorkerName,
@@ -106,10 +157,15 @@ export default defineConfig({
             name: kCurrentWorker,
             entrypoint: "JsonCompatibilityDeploymentTransitionEntrypoint",
           },
-          JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MOCK_CONTROL: {
-            name: mockWorkerName,
+          JSON_COMPATIBILITY_DEPLOYMENT_READBACK_MOCK_CONTROL: {
+            name: readbackMockWorkerName,
             entrypoint:
-              "JsonCompatibilityDeploymentTransitionMockControlEntrypoint",
+              "JsonCompatibilityDeploymentReadbackMockControlEntrypoint",
+          },
+          JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_MOCK_CONTROL: {
+            name: mutationMockWorkerName,
+            entrypoint:
+              "JsonCompatibilityDeploymentMutationMockControlEntrypoint",
           },
           JSON_COMPATIBILITY_SOURCE_VERIFIER_PROXY_CONTROL: {
             name: sourceVerifierProxyWorkerName,
@@ -122,8 +178,23 @@ export default defineConfig({
         },
         workers: [
           {
-            name: mockWorkerName,
-            scriptPath: "./tests/fixtures/deployment-rpc-mock.mjs",
+            name: readbackMockWorkerName,
+            scriptPath: readbackMockBundlePath,
+            modules: true,
+            modulesRules: moduleRules,
+            compatibilityDate: "2026-07-15",
+            compatibilityFlags: ["nodejs_compat"],
+            bindings: {
+              CF_VERSION_METADATA: {
+                id: readbackVersionId,
+                tag: "runtime-integration-test",
+                timestamp: "2026-08-05T00:00:00.000Z",
+              },
+            },
+          },
+          {
+            name: mutationMockWorkerName,
+            scriptPath: mutationMockBundlePath,
             modules: true,
             modulesRules: moduleRules,
             compatibilityDate: "2026-07-15",

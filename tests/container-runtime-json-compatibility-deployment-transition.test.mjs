@@ -48,7 +48,9 @@ import {
 import {
   EXPECTED_ROLE_ORDERS,
   TRANSITION_IDS,
+  buildArtifactInventoryReadback,
   buildCampaignPlan,
+  buildExecutionAuthority,
   buildSourceEvidence,
   buildStatePlan,
   digest,
@@ -61,6 +63,7 @@ let directory;
 let privateKeyBytes;
 let campaignPlan;
 let statePlan;
+let artifactInventoryReadback;
 
 beforeAll(async () => {
   directory = await mkdtemp(path.join(os.tmpdir(), "cinatoken-transition-executor-"));
@@ -78,6 +81,12 @@ beforeAll(async () => {
     statePlan,
     approvalSpkiSha256,
   );
+  artifactInventoryReadback = buildArtifactInventoryReadback(
+    campaignPlan,
+    statePlan,
+    ACCOUNT_ID_SHA256,
+    NOW - 120,
+  );
 });
 
 afterAll(async () => {
@@ -86,7 +95,7 @@ afterAll(async () => {
 });
 
 describe("JSON compatibility deployment transition authorization", () => {
-  test("binds Plan v5, state-plan v2, exact frozen steps, source, and a dedicated signature domain", () => {
+  test("binds Plan v5, state-plan v2, exact frozen steps, source, authority, and a dedicated signature domain", () => {
     const authorized = authorize(TRANSITION_IDS[1]);
     expect(validateJsonCompatibilityDeploymentTransitionAuthorization(
       campaignPlan,
@@ -94,7 +103,7 @@ describe("JSON compatibility deployment transition authorization", () => {
       authorized,
     )).toEqual(authorized);
     expect(authorized).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       contract: JSON_COMPATIBILITY_AUTHORIZED_DEPLOYMENT_TRANSITION_CONTRACT,
       request: {
         mode: "remote-create-once",
@@ -115,7 +124,16 @@ describe("JSON compatibility deployment transition authorization", () => {
         sourceEvidence: buildSourceEvidence(
           ACCOUNT_ID_SHA256,
           statePlan.transitions[1],
+          artifactInventoryReadback.artifactInventoryReadbackSha256,
         ),
+        artifactInventoryReadback,
+        executionAuthority: {
+          accountIdSha256: ACCOUNT_ID_SHA256,
+          coordinator: { capability: "coordinate-only" },
+          sourceVerifier: { capability: "source-verify-only" },
+          readback: { capability: "read-only" },
+          mutation: { capability: "mutation-only" },
+        },
       },
       approval: {
         contract:
@@ -128,6 +146,8 @@ describe("JSON compatibility deployment transition authorization", () => {
           campaignPlanSchemaVersion: 4,
           statePlanContract: JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
           statePlanSchemaVersion: 2,
+          executionAuthoritySha256:
+            authorized.request.executionAuthority.authorityDigestSha256,
         },
       },
     });
@@ -302,7 +322,7 @@ describe("JSON compatibility deterministic deployment transition executor", () =
         phase === "target"
           && step.role === "invoker"
           && observationOrdinal === 2
-          ? { ...value, bindingSetSha256: digest("unstable-binding-set") }
+          ? { ...value, observedAt: value.observedAt - 4 }
           : value
       ),
     });
@@ -315,6 +335,47 @@ describe("JSON compatibility deterministic deployment transition executor", () =
     expect(targetReceipt.stopReason).toBe("target_state_unstable");
     expect(unstable.mutations).toHaveLength(1);
     expect(unstable.mutations[0].role).toBe("invoker");
+  });
+
+  test("rejects a substituted Reader identity before the first mutation", async () => {
+    const authorized = authorize(TRANSITION_IDS[0]);
+    const substitutedService = createHarness(authorized, {
+      readbackOverride: ({ phase, step, value }) => (
+        phase === "source" && step.role === "invoker"
+          ? {
+              ...value,
+              readbackServiceIdentitySha256:
+                digest("substituted-readback-service"),
+            }
+          : value
+      ),
+    });
+    await expect(executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: substitutedService.dependencies,
+    })).rejects.toThrow(/readback observation service identity/);
+    expect(substitutedService.mutations).toHaveLength(0);
+
+    const substitutedCredential = createHarness(authorized, {
+      readbackOverride: ({ phase, step, value }) => (
+        phase === "source" && step.role === "invoker"
+          ? {
+              ...value,
+              authenticationIdentitySha256:
+                digest("substituted-readback-credential"),
+            }
+          : value
+      ),
+    });
+    await expect(executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: substitutedCredential.dependencies,
+    })).rejects.toThrow(/readback observation credential identity/);
+    expect(substitutedCredential.mutations).toHaveLength(0);
   });
 
   test("requires distinct, time-separated readbacks and rechecks approval immediately before mutation", async () => {
@@ -582,7 +643,13 @@ function authorize(transitionId, { enteredAt = null } = {}) {
         ?? NOW - transition.minimumHoldSeconds,
       evidenceSha256: digest(`prior-state:${transitionId}`),
     },
-    sourceEvidence: buildSourceEvidence(ACCOUNT_ID_SHA256, transition),
+    sourceEvidence: buildSourceEvidence(
+      ACCOUNT_ID_SHA256,
+      transition,
+      artifactInventoryReadback.artifactInventoryReadbackSha256,
+    ),
+    artifactInventoryReadback,
+    executionAuthority: buildExecutionAuthority(ACCOUNT_ID_SHA256),
     privateKeyBytes,
     now: new Date(NOW * 1000),
   });
@@ -629,12 +696,12 @@ function createHarness(authorized, options = {}) {
       readbackSequence += 1;
       let value = {
         ...context.expected,
+        readbackRequestSha256: context.readbackRequestSha256,
+        readbackServiceIdentitySha256:
+          authorized.request.executionAuthority.readback.identitySha256,
         classification: "observed",
-        bindingSetSha256: digest(`bindings:${context.step.role}`),
-        routeSetSha256: digest("[]"),
-        secretNameSetSha256: digest(`secrets:${context.step.role}`),
-        durableObjectMigrationSetSha256: digest(`migrations:${context.step.role}`),
-        authenticationIdentitySha256: digest("readback-credential"),
+        authenticationIdentitySha256:
+          authorized.request.executionAuthority.readback.credentialIdSha256,
         readbackRequestIdSha256: digest(`readback-request:${readbackSequence}`),
         remoteEvidenceSha256: digest(`remote:${readbackSequence}`),
         authenticationEvidenceSha256: digest(`auth:${readbackSequence}`),
@@ -645,7 +712,7 @@ function createHarness(authorized, options = {}) {
       }
       return buildJsonCompatibilityDeploymentTransitionReadback(value);
     },
-    mutateOnce: async (intent) => {
+    mutateOnce: async ({ mutationIntent: intent }) => {
       sideEffectFailure();
       mutations.push(intent);
       timeline.push(`mutate:${intent.mutationIntentSha256}`);
@@ -653,6 +720,15 @@ function createHarness(authorized, options = {}) {
         ?? "accepted";
       return buildJsonCompatibilityDeploymentTransitionMutationOutcome({
         mutationIntent: intent,
+        mutationRpcRequestSha256: digest(`mutation-rpc:${intent.role}`),
+        mutationServiceIdentitySha256:
+          authorized.request.executionAuthority.mutation.identitySha256,
+        authenticationIdentitySha256:
+          authorized.request.executionAuthority.mutation.credentialIdSha256,
+        mutationRequestSha256: digest(`mutation-request:${intent.role}`),
+        mutationAnnotationSha256: digest(`mutation-annotation:${intent.role}`),
+        endpointSha256: digest(`mutation-endpoint:${intent.role}`),
+        sentAt: NOW + readbackSequence * 5 + 1,
         classification,
         httpStatus: classification === "ambiguous"
           ? null

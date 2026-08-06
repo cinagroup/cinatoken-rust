@@ -20,14 +20,20 @@
     "JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_READ_ENABLED": "false",
     "JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_PROFILE_VERSION": "1",
     "JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-deployment-transition-staging",
-    "JSON_COMPATIBILITY_DEPLOYMENT_LEAF_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-deployment-leaf-staging",
+    "JSON_COMPATIBILITY_DEPLOYMENT_READBACK_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-deployment-readback-staging",
+    "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-deployment-mutation-staging",
     "JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-source-verifier-staging"
   },
   "services": [
     {
-      "binding": "JSON_COMPATIBILITY_DEPLOYMENT_LEAF",
-      "service": "cinatoken-container-runtime-json-compatibility-deployment-leaf-staging",
-      "entrypoint": "JsonCompatibilityDeploymentLeafEntrypoint"
+      "binding": "JSON_COMPATIBILITY_DEPLOYMENT_READBACK",
+      "service": "cinatoken-container-runtime-json-compatibility-deployment-readback-staging",
+      "entrypoint": "JsonCompatibilityDeploymentReadbackEntrypoint"
+    },
+    {
+      "binding": "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION",
+      "service": "cinatoken-container-runtime-json-compatibility-deployment-mutation-staging",
+      "entrypoint": "JsonCompatibilityDeploymentMutationEntrypoint"
     },
     {
       "binding": "JSON_COMPATIBILITY_SOURCE_VERIFIER",

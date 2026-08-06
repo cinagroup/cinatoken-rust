@@ -8,6 +8,8 @@ on:
       - "package.json"
       - "services/container-runtime-json-compatibility-source-verifier/**"
       - "services/container-runtime-json-compatibility-source-publisher/**"
+      - "services/container-runtime-json-compatibility-deployment-readback/**"
+      - "services/container-runtime-json-compatibility-deployment-mutation/**"
       - "services/container-runtime-json-compatibility-deployment-transition/**"
       - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
       - "tests/container-runtime-json-compatibility-source-publication.test.mjs"
@@ -46,6 +48,8 @@ on:
       - "package.json"
       - "services/container-runtime-json-compatibility-source-verifier/**"
       - "services/container-runtime-json-compatibility-source-publisher/**"
+      - "services/container-runtime-json-compatibility-deployment-readback/**"
+      - "services/container-runtime-json-compatibility-deployment-mutation/**"
       - "services/container-runtime-json-compatibility-deployment-transition/**"
       - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
       - "tests/container-runtime-json-compatibility-source-publication.test.mjs"
@@ -114,6 +118,12 @@ jobs:
 
       - name: Verify private C4 source publisher and verifier
         run: bun run check:container-runtime:json-compatibility-source-verifier
+
+      - name: Verify private deployment Reader
+        run: bun run check:container-runtime:json-compatibility-deployment-readback
+
+      - name: Verify create-once deployment Mutator
+        run: bun run check:container-runtime:json-compatibility-deployment-mutation
 
       - name: Verify transition integration through the real source verifier
         run: bun run check:container-runtime:json-compatibility-deployment-transition-worker

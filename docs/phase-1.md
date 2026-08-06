@@ -5842,3 +5842,39 @@ deployment leaf, remote D1, 18 uploaded versions, inflight resolver, and fault
 campaign remain blocking. See
 `docs/container-runtime-json-compatibility-source-verifier.md`. No Cloudflare
 or Go/VPS state changed; remote staging and production remain **NO-GO**.
+
+## 2026-08-06 Phase 1 D0 Physical Leaf Boundary
+
+The local all-seven-service deployment leaf is now physically split into
+Reader and Mutator Workers. This supersedes only the missing-local-leaf item
+above. It does not provide remote staging authority.
+
+- The owner-signed transition v2 embeds all 18 artifact observations and a
+  derived four-service execution authority.
+- Reader and Mutator independently replay owner, source, plan, inventory,
+  step, runtime version, capability, and credential identities before touching
+  their tokens.
+- Reader performs GET-only active-version, exact-version, subdomain, custom-
+  domain, complete zone pagination, and every-zone route evidence with no
+  retry. Public-route drift cannot be echoed as the signed empty route set.
+- Mutator owns the only write token and an independent immutable D1 claim.
+  Only one fresh claim can issue one fixed 100 percent deployment POST; force
+  and retry are absent, and every uncertain result forbids resend.
+- Coordinator uses distinct Reader and Mutator bindings and stores one exact
+  immutable authority row beside the operation reservation. Status remains
+  D1-only.
+
+Focused acceptance is 14 protocol tests with 157 expectations, 14 Reader
+tests, 19 Mutator Node plus two Mutator Workerd/D1 tests, and eight Coordinator
+Node plus two Coordinator Workerd/D1/R2 tests. Local/staging Wrangler dry-runs
+pass with every gate false. The root check graph now includes both leaf
+packages before the Coordinator Worker.
+
+Remote Phase 1 remains **NO-GO**. Blocking evidence includes real distinct
+credential ceremonies and revocation, final private Worker versions, exact
+account caller inventory, complete C0/C3 artifact digest derivation, both
+remote D1 databases and schema readback, all 18 dark versions, crash/response-
+loss and credential-rotation drills, Reader-only inflight resolution, locked
+receipt publication, and the real four-transition/four-phase campaign. See
+`docs/container-runtime-json-compatibility-deployment-leaves.md`. No
+Cloudflare or Go/VPS state changed.

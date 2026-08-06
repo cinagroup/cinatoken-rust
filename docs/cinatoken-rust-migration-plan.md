@@ -28937,7 +28937,7 @@ remain open.
 | C2 immutable raw source | create-once sink, external compliance WORM, 365-day retention, independent exact readback | terminal local capture, provider-neutral C2 contract, S3 Object Lock data plane and Source Verifier replay implemented locally; no real external publication/readback |
 | C3 stable account proof | two complete traversals 5-900 seconds apart with identical service/version/zone/route/edge sets | not run |
 | C4 source publication | isolated Ed25519 ceremony, signed bundle v3, create-once R2 upload and independent body/version/ETag/metadata readback | local stdin-only signer, packet assembler, private one-put Publisher and independent Verifier receipt implemented; real managed-key and remote R2 ceremony not completed |
-| D0 deployment leaf | private all-seven-service leaf, physical read/mutate separation, exact owner/operation/plan/transition/service/version binding, one send, no retry, stable target proof | deployment mutation remains mocked locally |
+| D0 deployment leaf | private all-seven-service leaf, physical read/mutate separation, exact owner/operation/plan/transition/service/version binding, one send, no retry, stable target proof | local physical Reader/Mutator, authority v2, route-safe readback, and independent one-send D1 implemented; no remote credentials, versions, caller inventory, or API evidence |
 | D1 staging database | owner-approved create-once D1 provisioning, no blind retry after ambiguity, frozen returned database ID, immutable migration-set application and exact schema readback | remote D1 not created or proven |
 | D2 transition campaign | dark control plane, locked receipt archive, readback-only inflight resolution, all 18 artifacts, four transitions, fault campaign and rollback evidence | not started remotely |
 
@@ -29255,3 +29255,143 @@ and replayed. Cloudflare was not called and no credential was read. C3, D0,
 remote D1, four-transition campaign, rollback and wider provider/billing/
 storage/SLO/security/privacy/cutover gates remain open. Go/VPS remains
 authoritative and production remains **NO-GO**.
+
+## 2026-08-06 D0 Physical Deployment Leaf Foundation
+
+This increment replaces the local combined deployment-leaf mock as the planned
+production architecture. It implements three separate private Workers and two
+separate D1 authorities:
+
+```text
+Transition Coordinator, no API credential
+  -> Source Verifier, R2 read only
+  -> Deployment Reader, Cloudflare read credential only
+  -> Deployment Mutator, Cloudflare mutation credential + independent D1
+
+Coordinator D1: owner operation, ordered evidence, terminal receipt
+Mutator D1: create-once mutation claim and immutable outcome
+```
+
+The complete implementation and remote runbook are maintained in
+`docs/container-runtime-json-compatibility-deployment-leaves.md`.
+
+### Authorization and coordinator changes
+
+The deployment-transition request, source evidence, source authentication,
+readback request/readback, mutation intent/outcome, and authorized transition
+now use their v2 contracts. The owner request embeds the complete signed
+18-artifact inventory instead of trusting only an inventory digest. It also
+binds one four-service execution authority for Coordinator, Source Verifier,
+Reader, and Mutator.
+
+Reader and Mutator identity digests are derived from account, service,
+entrypoint, actual Worker version, profile, private-RPC flag, capability, and
+credential ID digest. The two services, identities, and credentials must be
+distinct. Both leaves independently replay the complete owner signature,
+current approval window, source authentication, plans, artifact inventory,
+exact step, and derived intent before touching their capability.
+
+The Coordinator now has separate Reader and Mutator Service Bindings. Reader
+identity and credential identity are compared immediately after each response,
+before a mutation intent can be journaled or sent. Expected readback state now
+contains exact binding, route, secret-name, Durable Object migration, and
+authentication identity digests. The mutation intent transitively binds those
+source observations plus both leaf identities and credentials.
+
+Coordinator migration 0002 atomically stores the exact authority beside the
+operation reservation. SQL rejects equal Reader/Mutator service, identity, or
+credential values and makes the authority row append-preserved. Status is v2
+and remains D1-only; it has no recovery mutation path.
+
+### Reader
+
+`services/container-runtime-json-compatibility-deployment-readback` is a named
+RPC Worker with an inert default export, no D1, no routes, and no mutation
+binding. Tracked gates are false and the token is not present in configuration.
+The Worker rejects tracked all-zero identity placeholders even if its gate is
+mistakenly enabled.
+
+After full owner/runtime validation and only then token access, one attempt
+uses bounded GET requests for target deployments, the exact immutable version,
+subdomain/preview status, account custom domains, complete account-filtered
+zone pagination, and every zone's Worker routes. It performs no retry, follows
+no redirect, shares a ten-second deadline and 64 KiB response budget, and
+fails closed on pagination, request-ID, body, UTF-8/JSON, shape, account, or
+deadline uncertainty. Live public routes produce a non-empty route digest and
+cannot satisfy the owner-required empty set.
+
+The exact version ID is joined to the C4-signed immutable artifact inventory.
+Config, binding, secret-name, and Durable Object migration digests remain a
+signed projection of that immutable version. Production C0/C3 must still prove
+the remote normalization that created those values; local synthetic inventory
+does not establish it.
+
+### Mutator
+
+`services/container-runtime-json-compatibility-deployment-mutation` is a
+different named RPC Worker with an inert default export, no read credential,
+no public route, two default-false gates, an independent D1 database, and the
+only mutation token. Missing or malformed token configuration fails before D1
+claim creation.
+
+The Worker accepts only the fixed seven-service allowlist and derives one
+canonical percentage deployment body with exactly one 100 percent target
+version. Its annotation binds the complete mutation-intent digest; `force` is
+absent. The HTTP adapter performs one manual-redirect POST, has no retry, uses a
+three-second timeout and a 64 KiB body limit, and treats transport failure,
+timeout, 408/425/429/5xx, response loss, oversize body, invalid JSON, or result
+drift as ambiguous.
+
+An immutable D1 claim binds the complete operation, authority, source proof,
+stable Reader evidence, target, body, endpoint, Mutator version, and credential
+before network access. Only an unambiguous fresh insert can send. Concurrent
+calls, exact replay, insertion ambiguity, missing outcome, and result-loss
+recovery return no second send. An accepted POST is never sufficient for
+transition success; only two later exact Reader observations can advance.
+
+### Local evidence
+
+The focused local gates pass:
+
+- transition protocol: 14 tests and 157 expectations;
+- Reader: 14 tests, generated types, TypeScript, and both Wrangler dry-runs;
+- Mutator: 19 Node tests, two Workerd/D1 tests, generated types, TypeScript,
+  and both Wrangler dry-runs;
+- Coordinator: eight Node tests and two Workerd/D1/R2 tests; and
+- physically distinct runtime Reader/Mutator mocks with 16 read calls, four
+  write calls, one coordinator operation, one authority row, 25 events, and
+  one terminal receipt under four concurrent callers.
+
+Dry-run bundles are 243.14/41.71 KiB Reader, 255.13/42.92 KiB Mutator, and
+281.70/46.36 KiB Coordinator for upload/gzip respectively. Every tracked gate
+is false. These are local contract, Workerd, D1, HTTP mock, and Wrangler build
+results only.
+
+The complete repository `bun run check` also passed with exit code 0 in
+1,366.7 seconds on 2026-08-06 after the physical split was integrated. It
+covered the configured Worker/Workerd, generated-type, Wrangler dry-run,
+frontend, supply-chain, Rust workspace, and wasm32 gates. Existing Rust
+dead-code warnings remain warnings; this result is not live Cloudflare
+evidence.
+
+### Production assessment
+
+The Cloudflare design remains feasible and materially safer than the previous
+combined leaf because credential theft, implementation defects, and caller
+mistakes no longer automatically span both read and write authority. The
+independent Mutator D1 turns an RPC replay into a no-resend result, while the
+Reader is the only service that can classify target state.
+
+It is not yet production-ready. D0 still requires real two-person credential
+ceremonies, final private Worker deployments and exact Version Metadata
+readback, account-wide proof of allowed callers, complete C0/C3 artifact digest
+derivation, remote creation/application/readback of both D1 databases, public-
+route and wrong-version drills, response-loss/crash injection, credential
+rotation and revocation, a Reader-only inflight resolver, and locked receipt
+publication. Changing any gate or binding creates a different Worker version
+and invalidates the authority; final candidate versions must be deployed and
+read back before the owner signs the execution authority.
+
+No Cloudflare API, D1, R2, route, deployment, traffic, provider, billing, or
+Go/VPS state changed in this increment. Go/VPS remains authoritative and
+production remains **NO-GO**.

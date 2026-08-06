@@ -1,0 +1,26 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-container-runtime-json-compatibility-deployment-readback-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "ENVIRONMENT": "staging",
+    "JSON_COMPATIBILITY_DEPLOYMENT_READBACK_ENABLED": "false",
+    "JSON_COMPATIBILITY_DEPLOYMENT_READBACK_PROFILE_VERSION": "1",
+    "JSON_COMPATIBILITY_DEPLOYMENT_READBACK_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-deployment-readback-staging",
+    "JSON_COMPATIBILITY_DEPLOYMENT_READBACK_ENTRYPOINT": "JsonCompatibilityDeploymentReadbackEntrypoint",
+    "CLOUDFLARE_ACCOUNT_ID": "00000000000000000000000000000000",
+    "CLOUDFLARE_ACCOUNT_ID_SHA256": "84e0c0eafaa95a34c293f278ac52e45ce537bab5e752a00e6959a13ae103b65a",
+    "CLOUDFLARE_DEPLOYMENT_READ_CREDENTIAL_ID_SHA256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

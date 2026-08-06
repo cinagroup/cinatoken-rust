@@ -1,7 +1,8 @@
 # JSON Compatibility Deployment Transition Coordinator
 
-Status: local protocol and dependency-injected coordinator complete on
-2026-08-05. No Cloudflare credential, upload, deployment, remote readback,
+Status: local protocol, private Coordinator, and physically separate Reader
+and Mutator complete through 2026-08-06. No Cloudflare credential, upload,
+deployment, remote readback,
 Durable Object mutation, Container request, traffic change, or Go/VPS cutover
 was performed.
 
@@ -22,9 +23,8 @@ This is the intended production layering:
 ```text
 owner approval
   -> transition coordinator
-     -> private Service Binding
-        -> create-once Cloudflare deployment leaf
-        -> authenticated readback leaf
+     -> private Reader Service Binding, read credential only
+     -> private Mutator Service Binding, write credential + independent D1
      -> append-only D1 transition journal
      -> locked receipt archive
 ```
@@ -78,9 +78,9 @@ Each frozen step executes in this order:
    five seconds between observations, and one semantic remote-state digest.
 3. Verify account, service, entrypoint, version, canonical config digest,
    deployment state, gates, private-only flags, and empty route-set digest.
-   Binding, secret-name, and Durable Object migration set digests remain in the
-   semantic state and must be stable. The canonical config digest binds their
-   exact frozen configuration.
+   Binding, route, secret-name, and Durable Object migration set digests are
+   explicit expected-state fields and must match both observations. The
+   canonical config digest separately binds the exact frozen configuration.
 4. Build a mutation intent that binds the authorized request, transition and
    step ordinals, exact service, source/target artifacts, target version/config,
    and the just-observed source-state digest.
@@ -137,7 +137,7 @@ Run:
 bun run check:container-runtime:json-compatibility-deployment-transition
 ```
 
-The current focused gate passes 12 tests with 142 expectations. Coverage
+The current focused gate passes 14 tests with 157 expectations. Coverage
 includes:
 
 - dedicated Plan v5/state-plan v2 authorization and phase-approval rejection;
@@ -170,18 +170,16 @@ The coordinator closes the missing local command, approval, stable-readback,
 mutation-intent, and terminal-receipt contracts. It does not close the remote
 transition gate. Before staging can execute:
 
-1. Implement a private TypeScript Worker coordinator using generated Wrangler
-   types and Service Bindings. Do not add a public route or default execution
-   entrypoint.
-2. Generalize the create-once leaf to all seven allowlisted services and prove
-   the exact Cloudflare request body, annotation, account, target version, and
-   at-most-one send.
-3. Implement authenticated normalized readback for version, config,
-   entrypoint, bindings, route absence, gates, secret presence without values,
-   and Durable Object migrations. The upload response is not readback.
-4. Add an append-only D1 journal with database time, unique operation/intent
-   authority, immutable update/delete guards, step predecessor links, and one
-   terminal seal.
+1. Provision and independently read back the two remote D1 databases and their
+   exact immutable migrations; local Workerd D1 is not remote evidence.
+2. Deploy the physically separate Reader, Mutator, Source Verifier, and
+   Coordinator final candidate versions, then bind those exact version IDs
+   into a new owner execution authority.
+3. Complete C0/C3 remote inventory derivation for version, config, entrypoint,
+   bindings, route absence, gates, secret names without values, and Durable
+   Object migrations for all 18 artifacts.
+4. Prove account-wide caller topology and real distinct least-privilege Reader
+   and Mutator credential issuance, custody, verification, and revocation.
 5. Add a status-only recovery route for an inflight reservation. It may perform
    authenticated readback and seal a result, but must never call mutation.
 6. Bind the deployed coordinator version and source release identity, publish
@@ -206,11 +204,14 @@ hosts the protocol behind a named TypeScript `WorkerEntrypoint`. The inert
 default export has no `fetch`; local and staging configs have no route, disable
 Workers.dev and preview URLs, contain no credentials, and keep the master,
 execution, and status gates false. Generated Wrangler types, Version Metadata,
-one D1 binding, and separate source-verifier and deployment-leaf Service
-Bindings define the complete local capability surface.
+one D1 binding, and separate source-verifier, deployment-readback, and
+deployment-mutation Service Bindings define the complete local capability
+surface.
 
 Migration 0001 provides create-only operations, ordered evidence, and one
-terminal receipt. D1 database time, unique operation/authorization/receipt
+terminal receipt. Migration 0002 atomically stores the exact four-service
+execution authority and enforces distinct Reader/Mutator service, identity,
+and credential digests. D1 database time, unique operation/authorization/receipt
 digests, canonical body limits, terminal-event ordering, source-authentication
 prerequisite, foreign keys, and update/delete guards are enforced in SQL. A
 `first-primary` session reserves the operation before any downstream call.
@@ -220,22 +221,25 @@ receipt is inflight and is never re-executed.
 The named status RPC revalidates the signed Plan/state-plan invocation, derives
 the operation digest, and reads only D1. It returns signed-shape status for
 `not_found | inflight | terminal` and validates a terminal receipt. It neither
-calls the source verifier nor reads or mutates the deployment leaf. This closes
+calls the source verifier, Reader, or Mutator. This closes
 read-only observability and terminal recovery, but not inflight outcome
 resolution or sealing.
 
-Real workerd coverage applies the migration and races four named RPCs. One
+Real workerd coverage applies both migrations and races four named RPCs. One
 operation wins, the others fail inflight, and the completed dark-to-status
 transition produces one source authentication, four mutations, 16 reads, 25
-events, and one receipt. Replay and status add zero downstream calls. Node
+events, one authority row, and one receipt. Replay and status add zero
+downstream calls. Node
 tests also lock default-off/private/credential-free config and all immutable
 triggers; both Wrangler configs build in dry-run mode.
 
 The detailed RPC, schema, rollout order, and evidence boundary are in
 `docs/container-runtime-json-compatibility-deployment-transition-worker.md`.
-Still missing are the real source verifier, the all-seven-service authenticated
-Cloudflare mutation/readback leaf, a non-placeholder remote D1 apply/readback,
-readback-only inflight resolution, locked archive, remote account caller
-inventory, all-18-version dark upload/readback, and the crash/response-loss
-campaign. No remote operation occurred. Go/VPS remains authoritative and
-production remains **NO-GO**.
+The physically separate all-seven-service Reader and Mutator now exist locally.
+Still missing are non-placeholder remote D1 apply/readback, real credential
+ceremonies, final Worker deployment/readback, complete C0/C3 inventory
+derivation, readback-only inflight resolution, locked archive, remote account
+caller inventory, all-18-version dark upload/readback, and the crash/response-
+loss campaign. No remote operation occurred. Go/VPS remains authoritative and
+production remains **NO-GO**. See
+`docs/container-runtime-json-compatibility-deployment-leaves.md`.

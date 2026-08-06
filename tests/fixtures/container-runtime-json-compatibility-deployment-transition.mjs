@@ -13,6 +13,8 @@ import {
   validateJsonCompatibilityDeploymentStatePlan,
 } from "../../tools/container_runtime_json_compatibility_deployment_states.mjs";
 import {
+  buildJsonCompatibilityDeploymentLeafServiceIdentity,
+  buildJsonCompatibilityDeploymentTransitionExecutionAuthority,
   signJsonCompatibilityDeploymentTransition,
 } from "../../tools/container_runtime_json_compatibility_deployment_transition.mjs";
 import {
@@ -37,7 +39,11 @@ export function digest(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export function buildSourceEvidence(accountIdSha256, transition) {
+export function buildSourceEvidence(
+  accountIdSha256,
+  transition,
+  artifactInventoryReadbackSha256 = digest("artifact-inventory-readback"),
+) {
   const pair = `${transition.fromState}->${transition.toState}`;
   const profile = pair === "dark->statusOnly" || pair === "statusOnly->execution"
     ? "release-v1"
@@ -56,8 +62,124 @@ export function buildSourceEvidence(accountIdSha256, transition) {
     sourceVerifierPolicySha256: digest("source-verifier-policy"),
     sourceVerifierIdentitySha256: digest("source-verifier-identity"),
     immutableSourceArchiveReceiptSha256: digest("source-archive-receipt"),
-    artifactInventoryReadbackSha256: digest("artifact-inventory-readback"),
+    artifactInventoryReadbackSha256,
     accountBindingInventorySha256: digest("account-binding-inventory"),
+  });
+}
+
+export function buildArtifactInventoryReadback(
+  campaignPlan,
+  statePlan,
+  accountIdSha256 = digest("cloudflare-account-staging"),
+  observedAt = 1_785_999_880,
+) {
+  const artifacts = [];
+  for (const [role, service] of Object.entries(statePlan.services)) {
+    for (const [artifact, frozen] of Object.entries(service.artifacts)) {
+      artifacts.push({
+        role,
+        artifact,
+        serviceName: service.serviceName,
+        entrypoint: service.entrypoint,
+        deploymentState: frozen.deploymentState,
+        versionId: frozen.versionId,
+        configSha256: frozen.configSha256,
+        gates: structuredClone(frozen.gates),
+        privateRpcOnly: service.privateRpcOnly,
+        workersDev: service.workersDev,
+        previewUrls: service.previewUrls,
+        bindingSetSha256: digest(`bindings:${role}:${artifact}`),
+        routeSetSha256: sha256Canonical([]),
+        secretNameSetSha256: digest(`secrets:${role}:${artifact}`),
+        durableObjectMigrationSetSha256:
+          digest(`migrations:${role}:${artifact}`),
+      });
+    }
+  }
+  artifacts.sort((left, right) =>
+    `${left.role}:${left.artifact}`.localeCompare(
+      `${right.role}:${right.artifact}`,
+    ));
+  const subject = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-source-artifact-inventory-readback-v1",
+    kind: "container-runtime-json-compatibility-source-artifact-inventory",
+    environment: "staging",
+    accountIdSha256,
+    campaignPlanDigestSha256: campaignPlan.planDigestSha256,
+    statePlanDigestSha256: statePlan.planDigestSha256,
+    artifacts,
+    artifactCount: artifacts.length,
+    observedAt,
+  };
+  return {
+    ...subject,
+    artifactInventoryReadbackSha256: sha256Canonical(subject),
+  };
+}
+
+export function buildExecutionAuthority(
+  accountIdSha256 = digest("cloudflare-account-staging"),
+  overrides = {},
+) {
+  const service = (
+    key,
+    serviceName,
+    entrypoint,
+    capability,
+    credential = null,
+  ) => {
+    const value = {
+      serviceName,
+      entrypoint,
+      versionId: `${key}-version-2026-08`,
+      profileVersion: 1,
+      privateRpcOnly: true,
+      capability,
+      credentialIdSha256: credential === null
+        ? null
+        : digest(`${credential}-credential-id`),
+      ...(overrides[key] ?? {}),
+    };
+    const identitySha256 = key === "source-verifier"
+      ? overrides[key]?.identitySha256 ?? digest("source-verifier-identity")
+      : key === "readback" || key === "mutation"
+        ? buildJsonCompatibilityDeploymentLeafServiceIdentity({
+          accountIdSha256,
+          ...value,
+        }).identitySha256
+        : digest(`${key}-identity`);
+    return { ...value, identitySha256 };
+  };
+  return buildJsonCompatibilityDeploymentTransitionExecutionAuthority({
+    accountIdSha256,
+    coordinator: service(
+      "coordinator",
+      "cinatoken-container-runtime-json-compatibility-deployment-transition-staging",
+      "JsonCompatibilityDeploymentTransitionEntrypoint",
+      "coordinate-only",
+    ),
+    sourceVerifier: service(
+      "source-verifier",
+      "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
+      "JsonCompatibilitySourceVerifierEntrypoint",
+      "source-verify-only",
+    ),
+    readback: service(
+      "readback",
+      "cinatoken-container-runtime-json-compatibility-deployment-readback-staging",
+      "JsonCompatibilityDeploymentReadbackEntrypoint",
+      "read-only",
+      "readback",
+    ),
+    mutation: service(
+      "mutation",
+      "cinatoken-container-runtime-json-compatibility-deployment-mutation-staging",
+      "JsonCompatibilityDeploymentMutationEntrypoint",
+      "mutation-only",
+      "mutation",
+    ),
   });
 }
 
@@ -89,6 +211,12 @@ export async function createAuthorizedTransitionFixture({
       (value) => value.id === transitionId,
     );
     if (transition === undefined) throw new Error("transition fixture is absent");
+    const artifactInventoryReadback = buildArtifactInventoryReadback(
+      campaignPlan,
+      statePlan,
+      digest("cloudflare-account-staging"),
+      now - 120,
+    );
     const authorizedTransition = signJsonCompatibilityDeploymentTransition({
       campaignPlan,
       statePlan,
@@ -102,11 +230,19 @@ export async function createAuthorizedTransitionFixture({
       sourceEvidence: buildSourceEvidence(
         digest("cloudflare-account-staging"),
         transition,
+        artifactInventoryReadback.artifactInventoryReadbackSha256,
       ),
+      artifactInventoryReadback,
+      executionAuthority: buildExecutionAuthority(),
       privateKeyBytes,
       now: new Date(now * 1000),
     });
-    return { campaignPlan, statePlan, authorizedTransition };
+    return {
+      campaignPlan,
+      statePlan,
+      authorizedTransition,
+      artifactInventoryReadback,
+    };
   } finally {
     privateKeyBytes?.fill(0);
     await rm(directory, { recursive: true, force: true });

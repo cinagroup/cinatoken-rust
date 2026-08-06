@@ -18,31 +18,37 @@ import {
 } from "./container_runtime_json_compatibility_deployment_states.mjs";
 
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_REQUEST_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-request-v1";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-request-v2";
 export const JSON_COMPATIBILITY_AUTHORIZED_DEPLOYMENT_TRANSITION_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-authorized-deployment-transition-v1";
+  "cinatoken-container-runtime-json-compatibility-authorized-deployment-transition-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_SUBJECT_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-approval-subject-v1";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-approval-subject-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_ENVELOPE_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-approval-envelope-v1";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-approval-envelope-v2";
+export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EXECUTION_AUTHORITY_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-execution-authority-v1";
+export const JSON_COMPATIBILITY_DEPLOYMENT_LEAF_SERVICE_IDENTITY_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-leaf-service-identity-v1";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTH_REQUEST_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-source-authentication-request-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_EVIDENCE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-source-evidence-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SOURCE_AUTH_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-source-authentication-v2";
+export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_READBACK_REQUEST_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-readback-request-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_READBACK_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-readback-v1";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-readback-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MUTATION_INTENT_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-mutation-intent-v1";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-mutation-intent-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MUTATION_OUTCOME_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-mutation-outcome-v1";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-mutation-outcome-v2";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_OPERATION_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-operation-v1";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_RECEIPT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-receipt-v1";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_SIGNATURE_DOMAIN =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-approval-v1\n";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-approval-v2\n";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_AUDIENCE =
   "cinatoken-container-runtime-json-compatibility-deployment-transition-executor-staging";
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STABLE_READ_COUNT = 2;
@@ -51,11 +57,14 @@ export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EMPTY_ROUTE_SET_SHA256 =
   sha256Canonical([]);
 
 const SCHEMA_VERSION = 1;
+const AUTHORIZATION_SCHEMA_VERSION = 2;
 const SOURCE_AUTHENTICATION_REQUEST_SCHEMA_VERSION = 2;
 const SOURCE_AUTHENTICATION_SCHEMA_VERSION = 2;
 const SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS = 60;
 const CAMPAIGN_PLAN_SCHEMA_VERSION = 4;
 const STATE_PLAN_SCHEMA_VERSION = 2;
+const SOURCE_ARTIFACT_INVENTORY_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-source-artifact-inventory-readback-v1";
 const MAX_PRIVATE_KEY_BYTES = 64 * 1024;
 const CLOCK_SKEW_SECONDS = 5;
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
@@ -89,6 +98,8 @@ export function signJsonCompatibilityDeploymentTransition({
   operationIdSha256,
   priorStateEvidence: priorStateEvidenceInput,
   sourceEvidence: sourceEvidenceInput,
+  artifactInventoryReadback: artifactInventoryReadbackInput,
+  executionAuthority: executionAuthorityInput,
   privateKeyBytes: privateKeyInput,
   now = new Date(),
 }) {
@@ -105,8 +116,18 @@ export function signJsonCompatibilityDeploymentTransition({
     issuedAt,
   );
   const sourceEvidence = validateSourceEvidence(sourceEvidenceInput, transition);
+  const artifactInventoryReadback = validateTransitionArtifactInventory(
+    campaignPlan,
+    statePlan,
+    sourceEvidence,
+    artifactInventoryReadbackInput,
+  );
+  const executionAuthority = validateJsonCompatibilityDeploymentTransitionExecutionAuthority(
+    executionAuthorityInput,
+    sourceEvidence.accountIdSha256,
+  );
   const request = {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: AUTHORIZATION_SCHEMA_VERSION,
     contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_REQUEST_CONTRACT,
     mode: "remote-create-once",
     environment: "staging",
@@ -124,6 +145,8 @@ export function signJsonCompatibilityDeploymentTransition({
     transition: cloneJson(transition),
     priorStateEvidence,
     sourceEvidence,
+    artifactInventoryReadback,
+    executionAuthority,
   };
   const requestSha256 = sha256Canonical(request);
   const approvalPolicy = transitionApprovalPolicy(campaignPlan);
@@ -151,7 +174,7 @@ export function signJsonCompatibilityDeploymentTransition({
     "transition approval private key SPKI digest",
   );
   const subject = {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: AUTHORIZATION_SCHEMA_VERSION,
     contract:
       JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_SUBJECT_CONTRACT,
     environment: "staging",
@@ -166,6 +189,7 @@ export function signJsonCompatibilityDeploymentTransition({
     statePlanContract: JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT,
     statePlanSchemaVersion: STATE_PLAN_SCHEMA_VERSION,
     statePlanDigestSha256: statePlan.planDigestSha256,
+    executionAuthoritySha256: executionAuthority.authorityDigestSha256,
     transitionId: transition.id,
     transitionOrdinal: transition.ordinal,
     fromState: transition.fromState,
@@ -186,7 +210,7 @@ export function signJsonCompatibilityDeploymentTransition({
     throw new Error("transition approval signature self-verification failed");
   }
   const approval = {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: AUTHORIZATION_SCHEMA_VERSION,
     contract:
       JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_ENVELOPE_CONTRACT,
     algorithm: "Ed25519",
@@ -196,7 +220,7 @@ export function signJsonCompatibilityDeploymentTransition({
     signatureBase64url: signature.toString("base64url"),
   };
   const authorized = {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: AUTHORIZATION_SCHEMA_VERSION,
     contract: JSON_COMPATIBILITY_AUTHORIZED_DEPLOYMENT_TRANSITION_CONTRACT,
     request,
     approval,
@@ -225,7 +249,11 @@ export function validateJsonCompatibilityDeploymentTransitionAuthorization(
     ["schemaVersion", "contract", "request", "approval"],
     "authorized deployment transition",
   );
-  equal(authorized.schemaVersion, SCHEMA_VERSION, "authorized transition schema");
+  equal(
+    authorized.schemaVersion,
+    AUTHORIZATION_SCHEMA_VERSION,
+    "authorized transition schema",
+  );
   equal(
     authorized.contract,
     JSON_COMPATIBILITY_AUTHORIZED_DEPLOYMENT_TRANSITION_CONTRACT,
@@ -247,7 +275,11 @@ export function validateJsonCompatibilityDeploymentTransitionAuthorization(
     "signerSpkiBase64url",
     "signatureBase64url",
   ], "transition approval envelope");
-  equal(approval.schemaVersion, SCHEMA_VERSION, "transition approval schema");
+  equal(
+    approval.schemaVersion,
+    AUTHORIZATION_SCHEMA_VERSION,
+    "transition approval schema",
+  );
   equal(
     approval.contract,
     JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_ENVELOPE_CONTRACT,
@@ -260,10 +292,15 @@ export function validateJsonCompatibilityDeploymentTransitionAuthorization(
     "operationIdSha256", "requestSha256", "campaignPlanContract",
     "campaignPlanSchemaVersion", "campaignPlanDigestSha256", "statePlanContract",
     "statePlanSchemaVersion", "statePlanDigestSha256", "transitionId",
+    "executionAuthoritySha256",
     "transitionOrdinal", "fromState", "toState", "issuedAt", "notBefore",
     "expiresAt",
   ], "transition approval subject");
-  equal(subject.schemaVersion, SCHEMA_VERSION, "transition approval subject schema");
+  equal(
+    subject.schemaVersion,
+    AUTHORIZATION_SCHEMA_VERSION,
+    "transition approval subject schema",
+  );
   equal(
     subject.contract,
     JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_APPROVAL_SUBJECT_CONTRACT,
@@ -282,6 +319,8 @@ export function validateJsonCompatibilityDeploymentTransitionAuthorization(
     ["state plan contract", subject.statePlanContract, JSON_COMPATIBILITY_DEPLOYMENT_STATE_PLAN_CONTRACT],
     ["state plan schema", subject.statePlanSchemaVersion, STATE_PLAN_SCHEMA_VERSION],
     ["state plan digest", subject.statePlanDigestSha256, statePlan.planDigestSha256],
+    ["execution authority", subject.executionAuthoritySha256,
+      request.executionAuthority.authorityDigestSha256],
     ["transition ID", subject.transitionId, request.transition.id],
     ["transition ordinal", subject.transitionOrdinal, request.transition.ordinal],
     ["from state", subject.fromState, request.transition.fromState],
@@ -465,7 +504,112 @@ export function buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
   };
 }
 
+export function buildJsonCompatibilityDeploymentTransitionOperation({
+  campaignPlan,
+  statePlan,
+  authorizedTransition,
+}) {
+  const plans = validateCurrentPlanPair(campaignPlan, statePlan);
+  const authorized = validateJsonCompatibilityDeploymentTransitionAuthorization(
+    plans.campaignPlan,
+    plans.statePlan,
+    authorizedTransition,
+  );
+  return operationForAuthorized(plans, authorized);
+}
+
+export function validateJsonCompatibilityDeploymentTransitionOperation(input) {
+  const operation = record(input, "deployment transition operation");
+  exactKeys(operation, [
+    "schemaVersion", "contract", "operationIdSha256",
+    "authorizedRequestSha256", "campaignPlanDigestSha256",
+    "statePlanDigestSha256", "transitionId", "operationDigestSha256",
+  ], "deployment transition operation");
+  equal(operation.schemaVersion, SCHEMA_VERSION, "transition operation schema");
+  equal(
+    operation.contract,
+    JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_OPERATION_CONTRACT,
+    "transition operation contract",
+  );
+  sha256(operation.operationIdSha256, "transition operation ID");
+  sha256(operation.authorizedRequestSha256, "transition authorized request");
+  sha256(operation.campaignPlanDigestSha256, "transition campaign plan");
+  sha256(operation.statePlanDigestSha256, "transition state plan");
+  safeToken(operation.transitionId, "transition operation transition ID");
+  const { operationDigestSha256, ...subject } = operation;
+  equal(
+    operationDigestSha256,
+    sha256Canonical(subject),
+    "transition operation canonical digest",
+  );
+  return operation;
+}
+
+export function buildJsonCompatibilityDeploymentTransitionReadbackRequest({
+  operation,
+  sourceAuthenticationDigestSha256,
+  transition,
+  step,
+  phase,
+  observationOrdinal,
+  expected,
+}) {
+  const normalizedOperation =
+    validateJsonCompatibilityDeploymentTransitionOperation(operation);
+  const normalizedTransition = transitionReference(transition);
+  equal(
+    normalizedTransition.id,
+    normalizedOperation.transitionId,
+    "readback transition ID",
+  );
+  const normalizedStep = transitionStep(step, "readback step");
+  oneOf(phase, ["source", "target"], "readback phase");
+  if (![1, 2].includes(observationOrdinal)) {
+    throw new Error("readback observation ordinal is invalid");
+  }
+  sha256(
+    sourceAuthenticationDigestSha256,
+    "readback source authentication digest",
+  );
+  const normalizedExpected = expectedReadback(expected);
+  const subject = {
+    schemaVersion: 2,
+    contract:
+      JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_READBACK_REQUEST_CONTRACT,
+    environment: "staging",
+    operation: cloneJson(normalizedOperation),
+    sourceAuthenticationDigestSha256,
+    transition: cloneJson(normalizedTransition),
+    step: cloneJson(normalizedStep),
+    phase,
+    observationOrdinal,
+    expected: cloneJson(normalizedExpected),
+  };
+  return {
+    ...subject,
+    readbackRequestSha256: sha256Canonical(subject),
+  };
+}
+
+export function validateJsonCompatibilityDeploymentTransitionReadbackRequest(
+  input,
+) {
+  const request = record(input, "deployment transition readback request");
+  exactKeys(request, [
+    "schemaVersion", "contract", "environment", "operation",
+    "sourceAuthenticationDigestSha256", "transition", "step", "phase",
+    "observationOrdinal", "expected", "readbackRequestSha256",
+  ], "deployment transition readback request");
+  const rebuilt = buildJsonCompatibilityDeploymentTransitionReadbackRequest({
+    ...request,
+  });
+  canonicalEqual(rebuilt, request, "deployment transition readback request");
+  return request;
+}
+
 export function buildJsonCompatibilityDeploymentTransitionReadback({
+  readbackRequestSha256,
+  readbackServiceIdentitySha256,
   classification,
   environment = "staging",
   accountIdSha256,
@@ -488,6 +632,8 @@ export function buildJsonCompatibilityDeploymentTransitionReadback({
   authenticationEvidenceSha256,
   observedAt,
 }) {
+  sha256(readbackRequestSha256, "readback request digest");
+  sha256(readbackServiceIdentitySha256, "readback service identity");
   oneOf(classification, ["observed", "ambiguous"], "readback classification");
   equal(environment, "staging", "readback environment");
   sha256(accountIdSha256, "readback account ID");
@@ -530,6 +676,7 @@ export function buildJsonCompatibilityDeploymentTransitionReadback({
       routeSetSha256,
       secretNameSetSha256,
       durableObjectMigrationSetSha256,
+      readbackServiceIdentitySha256,
       authenticationIdentitySha256,
     });
   } else {
@@ -548,9 +695,11 @@ export function buildJsonCompatibilityDeploymentTransitionReadback({
     ]) equal(value, null, `ambiguous readback ${label}`);
   }
   const subject = {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: 2,
     contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_READBACK_CONTRACT,
     classification,
+    readbackRequestSha256,
+    readbackServiceIdentitySha256,
     environment,
     accountIdSha256,
     serviceName,
@@ -581,6 +730,13 @@ export function buildJsonCompatibilityDeploymentTransitionReadback({
 
 export function buildJsonCompatibilityDeploymentTransitionMutationOutcome({
   mutationIntent,
+  mutationRpcRequestSha256,
+  mutationServiceIdentitySha256,
+  authenticationIdentitySha256,
+  mutationRequestSha256,
+  mutationAnnotationSha256,
+  endpointSha256,
+  sentAt,
   classification,
   httpStatus,
   responseBodySha256,
@@ -588,15 +744,39 @@ export function buildJsonCompatibilityDeploymentTransitionMutationOutcome({
   responseBytes,
 }) {
   const intent = validateMutationIntent(mutationIntent);
+  sha256(mutationRpcRequestSha256, "mutation RPC request digest");
+  sha256(mutationServiceIdentitySha256, "mutation service identity");
+  equal(
+    mutationServiceIdentitySha256,
+    intent.mutationServiceIdentitySha256,
+    "mutation outcome service identity",
+  );
+  sha256(authenticationIdentitySha256, "mutation authentication identity");
+  equal(
+    authenticationIdentitySha256,
+    intent.mutationCredentialIdSha256,
+    "mutation outcome credential identity",
+  );
+  sha256(mutationRequestSha256, "mutation request digest");
+  sha256(mutationAnnotationSha256, "mutation annotation digest");
+  sha256(endpointSha256, "mutation endpoint digest");
+  integer(sentAt, "mutation send time");
   oneOf(classification, ["accepted", "rejected", "ambiguous"], "mutation outcome");
   nullableHttpStatus(httpStatus, "mutation HTTP status");
   nullableSha256(responseBodySha256, "mutation response body digest");
   nullableSha256(responseRequestIdSha256, "mutation request ID digest");
   nullableNonnegativeInteger(responseBytes, "mutation response bytes");
   const subject = {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: 2,
     contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MUTATION_OUTCOME_CONTRACT,
     mutationIntentSha256: intent.mutationIntentSha256,
+    mutationRpcRequestSha256,
+    mutationServiceIdentitySha256,
+    authenticationIdentitySha256,
+    mutationRequestSha256,
+    mutationAnnotationSha256,
+    endpointSha256,
+    sentAt,
     classification,
     httpStatus,
     responseBodySha256,
@@ -625,19 +805,7 @@ export async function executeJsonCompatibilityDeploymentTransition({
   const validatedPlans = validateCurrentPlanPair(campaignPlan, statePlan);
   validateDependencies(dependencies);
   const authorizedRequestSha256 = sha256Canonical(authorized);
-  const operationSubject = {
-    schemaVersion: SCHEMA_VERSION,
-    contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_OPERATION_CONTRACT,
-    operationIdSha256: authorized.request.operationIdSha256,
-    authorizedRequestSha256,
-    campaignPlanDigestSha256: validatedPlans.campaignPlan.planDigestSha256,
-    statePlanDigestSha256: validatedPlans.statePlan.planDigestSha256,
-    transitionId: authorized.request.transition.id,
-  };
-  const operation = {
-    ...operationSubject,
-    operationDigestSha256: sha256Canonical(operationSubject),
-  };
+  const operation = operationForAuthorized(validatedPlans, authorized);
   const reservation = validateReservation(
     await dependencies.journal.reserve(cloneJson(operation)),
   );
@@ -713,8 +881,20 @@ export async function executeJsonCompatibilityDeploymentTransition({
         "approval_expired",
       );
     }
-    const expectedSource = expectedArtifact(validatedPlans.statePlan, step, "from");
-    const expectedTarget = expectedArtifact(validatedPlans.statePlan, step, "to");
+    const expectedSource = expectedArtifact(
+      validatedPlans.statePlan,
+      authorized.request.artifactInventoryReadback,
+      authorized.request.executionAuthority,
+      step,
+      "from",
+    );
+    const expectedTarget = expectedArtifact(
+      validatedPlans.statePlan,
+      authorized.request.artifactInventoryReadback,
+      authorized.request.executionAuthority,
+      step,
+      "to",
+    );
     expectedSource.accountIdSha256 = authorized.request.sourceEvidence.accountIdSha256;
     expectedTarget.accountIdSha256 = authorized.request.sourceEvidence.accountIdSha256;
     const stepReceipt = {
@@ -735,7 +915,10 @@ export async function executeJsonCompatibilityDeploymentTransition({
     execution.steps.push(stepReceipt);
     const sourceRead = await collectStableReadback(
       dependencies,
+      validatedPlans,
       authorized,
+      operation,
+      sourceAuthentication,
       step,
       "source",
       expectedSource,
@@ -769,10 +952,11 @@ export async function executeJsonCompatibilityDeploymentTransition({
     }
     const mutationIntent = buildMutationIntent(
       authorized,
-      authorizedRequestSha256,
+      operation,
+      sourceAuthentication,
       step,
       expectedTarget,
-      sourceRead.observations[1].remoteStateSha256,
+      sourceRead.observations,
     );
     stepReceipt.mutationIntent = mutationIntent;
     await appendJournalEvidence(dependencies, {
@@ -794,7 +978,10 @@ export async function executeJsonCompatibilityDeploymentTransition({
     }
     execution.mutationAttempts += 1;
     const mutationOutcome = validateMutationOutcome(
-      await dependencies.mutateOnce(cloneJson(mutationIntent)),
+      await dependencies.mutateOnce({
+        mutationIntent: cloneJson(mutationIntent),
+        sourceReadbacks: cloneJson(sourceRead.observations),
+      }),
       mutationIntent,
     );
     stepReceipt.mutationOutcome = mutationOutcome;
@@ -818,7 +1005,10 @@ export async function executeJsonCompatibilityDeploymentTransition({
 
     const targetRead = await collectStableReadback(
       dependencies,
+      validatedPlans,
       authorized,
+      operation,
+      sourceAuthentication,
       step,
       "target",
       expectedTarget,
@@ -915,10 +1105,23 @@ export function validateJsonCompatibilityDeploymentTransitionReceipt(
   let mutationAttempts = 0;
   let readbackAttempts = 0;
   let previousStepReceiptSha256 = null;
+  const operation = operationForAuthorized({ campaignPlan, statePlan }, authorized);
   for (let index = 0; index < receipt.steps.length; index += 1) {
     const expectedStep = authorized.request.transition.steps[index];
-    const expectedSource = expectedArtifact(statePlan, expectedStep, "from");
-    const expectedTarget = expectedArtifact(statePlan, expectedStep, "to");
+    const expectedSource = expectedArtifact(
+      statePlan,
+      authorized.request.artifactInventoryReadback,
+      authorized.request.executionAuthority,
+      expectedStep,
+      "from",
+    );
+    const expectedTarget = expectedArtifact(
+      statePlan,
+      authorized.request.artifactInventoryReadback,
+      authorized.request.executionAuthority,
+      expectedStep,
+      "to",
+    );
     expectedSource.accountIdSha256 = authorized.request.sourceEvidence.accountIdSha256;
     expectedTarget.accountIdSha256 = authorized.request.sourceEvidence.accountIdSha256;
     const step = validateStepReceipt(
@@ -928,7 +1131,15 @@ export function validateJsonCompatibilityDeploymentTransitionReceipt(
         expectedSource,
         expectedTarget,
         operationIdSha256: authorized.request.operationIdSha256,
+        operation,
         authorizedRequestSha256: sha256Canonical(authorized),
+        campaignPlanDigestSha256: campaignPlan.planDigestSha256,
+        statePlanDigestSha256: statePlan.planDigestSha256,
+        artifactInventoryReadbackSha256:
+          authorized.request.artifactInventoryReadback
+            .artifactInventoryReadbackSha256,
+        sourceAuthentication,
+        executionAuthority: authorized.request.executionAuthority,
         transitionId: authorized.request.transition.id,
         transitionOrdinal: authorized.request.transition.ordinal,
         terminalStopReason:
@@ -1021,6 +1232,22 @@ function validateCurrentPlanPair(campaignPlanInput, statePlanInput) {
   return { campaignPlan, statePlan };
 }
 
+function operationForAuthorized(plans, authorized) {
+  const subject = {
+    schemaVersion: SCHEMA_VERSION,
+    contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_OPERATION_CONTRACT,
+    operationIdSha256: authorized.request.operationIdSha256,
+    authorizedRequestSha256: sha256Canonical(authorized),
+    campaignPlanDigestSha256: plans.campaignPlan.planDigestSha256,
+    statePlanDigestSha256: plans.statePlan.planDigestSha256,
+    transitionId: authorized.request.transition.id,
+  };
+  return {
+    ...subject,
+    operationDigestSha256: sha256Canonical(subject),
+  };
+}
+
 function transitionApprovalPolicy(campaignPlan) {
   const policy = record(campaignPlan.operatorApproval, "operator approval policy");
   return {
@@ -1038,9 +1265,13 @@ function validateTransitionRequest(input, campaignPlan, statePlan) {
   exactKeys(request, [
     "schemaVersion", "contract", "mode", "environment", "operationIdSha256",
     "campaignPlan", "statePlan", "transition", "priorStateEvidence",
-    "sourceEvidence",
+    "sourceEvidence", "artifactInventoryReadback", "executionAuthority",
   ], "deployment transition request");
-  equal(request.schemaVersion, SCHEMA_VERSION, "transition request schema");
+  equal(
+    request.schemaVersion,
+    AUTHORIZATION_SCHEMA_VERSION,
+    "transition request schema",
+  );
   equal(
     request.contract,
     JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_REQUEST_CONTRACT,
@@ -1064,7 +1295,25 @@ function validateTransitionRequest(input, campaignPlan, statePlan) {
   const transition = selectTransition(statePlan, transitionInput.id);
   canonicalEqual(transitionInput, transition, "transition request transition");
   validatePriorStateEvidence(request.priorStateEvidence, transition, null);
-  validateSourceEvidence(request.sourceEvidence, transition);
+  const sourceEvidence = validateSourceEvidence(
+    request.sourceEvidence,
+    transition,
+  );
+  validateTransitionArtifactInventory(
+    campaignPlan,
+    statePlan,
+    sourceEvidence,
+    request.artifactInventoryReadback,
+  );
+  const authority = validateJsonCompatibilityDeploymentTransitionExecutionAuthority(
+    request.executionAuthority,
+    sourceEvidence.accountIdSha256,
+  );
+  equal(
+    authority.sourceVerifier.identitySha256,
+    sourceEvidence.sourceVerifierIdentitySha256,
+    "execution authority source verifier identity",
+  );
   return request;
 }
 
@@ -1132,6 +1381,296 @@ function validateSourceEvidence(input, transition) {
     );
   }
   return cloneJson(evidence);
+}
+
+function validateTransitionArtifactInventory(
+  campaignPlan,
+  statePlan,
+  sourceEvidence,
+  input,
+) {
+  const inventory = record(input, "transition artifact inventory readback");
+  exactKeys(inventory, [
+    "schemaVersion", "contract", "kind", "environment",
+    "accountIdSha256", "campaignPlanDigestSha256", "statePlanDigestSha256",
+    "artifacts", "artifactCount", "observedAt",
+    "artifactInventoryReadbackSha256",
+  ], "transition artifact inventory readback");
+  equal(inventory.schemaVersion, SCHEMA_VERSION, "artifact inventory schema");
+  equal(
+    inventory.contract,
+    SOURCE_ARTIFACT_INVENTORY_CONTRACT,
+    "artifact inventory contract",
+  );
+  equal(
+    inventory.kind,
+    "container-runtime-json-compatibility-source-artifact-inventory",
+    "artifact inventory kind",
+  );
+  equal(inventory.environment, "staging", "artifact inventory environment");
+  equal(
+    inventory.accountIdSha256,
+    sourceEvidence.accountIdSha256,
+    "artifact inventory account ID",
+  );
+  equal(
+    inventory.campaignPlanDigestSha256,
+    campaignPlan.planDigestSha256,
+    "artifact inventory campaign plan",
+  );
+  equal(
+    inventory.statePlanDigestSha256,
+    statePlan.planDigestSha256,
+    "artifact inventory state plan",
+  );
+  if (!Array.isArray(inventory.artifacts)) {
+    throw new Error("transition artifact inventory is not an array");
+  }
+  const expected = [];
+  for (const [role, service] of Object.entries(statePlan.services)) {
+    for (const [artifact, frozen] of Object.entries(service.artifacts)) {
+      expected.push({ role, artifact, service, frozen });
+    }
+  }
+  expected.sort((left, right) =>
+    `${left.role}:${left.artifact}`.localeCompare(
+      `${right.role}:${right.artifact}`,
+    ));
+  equal(
+    inventory.artifacts.length,
+    expected.length,
+    "artifact inventory artifact count",
+  );
+  const artifacts = expected.map((entry, index) => {
+    const artifact = record(
+      inventory.artifacts[index],
+      "transition artifact inventory observation",
+    );
+    exactKeys(artifact, [
+      "role", "artifact", "serviceName", "entrypoint", "deploymentState",
+      "versionId", "configSha256", "gates", "privateRpcOnly", "workersDev",
+      "previewUrls", "bindingSetSha256", "routeSetSha256",
+      "secretNameSetSha256", "durableObjectMigrationSetSha256",
+    ], "transition artifact inventory observation");
+    for (const [label, actual, frozen] of [
+      ["role", artifact.role, entry.role],
+      ["artifact", artifact.artifact, entry.artifact],
+      ["service name", artifact.serviceName, entry.service.serviceName],
+      ["entrypoint", artifact.entrypoint, entry.service.entrypoint],
+      ["deployment state", artifact.deploymentState,
+        entry.frozen.deploymentState],
+      ["version ID", artifact.versionId, entry.frozen.versionId],
+      ["config digest", artifact.configSha256, entry.frozen.configSha256],
+      ["private RPC", artifact.privateRpcOnly, entry.service.privateRpcOnly],
+      ["workers.dev", artifact.workersDev, entry.service.workersDev],
+      ["preview URLs", artifact.previewUrls, entry.service.previewUrls],
+    ]) equal(actual, frozen, `artifact inventory ${label}`);
+    canonicalEqual(
+      artifact.gates,
+      entry.frozen.gates,
+      "artifact inventory gates",
+    );
+    for (const [label, digest] of [
+      ["binding set", artifact.bindingSetSha256],
+      ["route set", artifact.routeSetSha256],
+      ["secret-name set", artifact.secretNameSetSha256],
+      ["Durable Object migration set",
+        artifact.durableObjectMigrationSetSha256],
+    ]) sha256(digest, `artifact inventory ${label}`);
+    equal(
+      artifact.routeSetSha256,
+      JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EMPTY_ROUTE_SET_SHA256,
+      "artifact inventory empty route set",
+    );
+    return cloneJson(artifact);
+  });
+  equal(inventory.artifactCount, artifacts.length, "artifact inventory count");
+  integer(inventory.observedAt, "artifact inventory observation time");
+  const { artifactInventoryReadbackSha256, ...subject } = inventory;
+  equal(
+    artifactInventoryReadbackSha256,
+    sha256Canonical(subject),
+    "artifact inventory canonical digest",
+  );
+  equal(
+    artifactInventoryReadbackSha256,
+    sourceEvidence.artifactInventoryReadbackSha256,
+    "signed artifact inventory digest",
+  );
+  return cloneJson({ ...subject, artifacts, artifactInventoryReadbackSha256 });
+}
+
+export function buildJsonCompatibilityDeploymentLeafServiceIdentity({
+  accountIdSha256,
+  serviceName,
+  entrypoint,
+  versionId,
+  profileVersion,
+  privateRpcOnly,
+  capability,
+  credentialIdSha256,
+}) {
+  sha256(accountIdSha256, "deployment leaf identity account ID");
+  safeToken(serviceName, "deployment leaf identity service name");
+  safeToken(entrypoint, "deployment leaf identity entrypoint");
+  safeToken(versionId, "deployment leaf identity version ID");
+  equal(profileVersion, 1, "deployment leaf identity profile version");
+  equal(privateRpcOnly, true, "deployment leaf identity private RPC");
+  oneOf(
+    capability,
+    ["read-only", "mutation-only"],
+    "deployment leaf identity capability",
+  );
+  sha256(credentialIdSha256, "deployment leaf identity credential ID");
+  const subject = {
+    schemaVersion: SCHEMA_VERSION,
+    contract: JSON_COMPATIBILITY_DEPLOYMENT_LEAF_SERVICE_IDENTITY_CONTRACT,
+    environment: "staging",
+    accountIdSha256,
+    serviceName,
+    entrypoint,
+    versionId,
+    profileVersion,
+    privateRpcOnly,
+    capability,
+    credentialIdSha256,
+  };
+  return {
+    ...subject,
+    identitySha256: sha256Canonical(subject),
+  };
+}
+
+export function buildJsonCompatibilityDeploymentTransitionExecutionAuthority({
+  accountIdSha256,
+  coordinator,
+  sourceVerifier,
+  readback,
+  mutation,
+}) {
+  sha256(accountIdSha256, "execution authority account ID");
+  const subject = {
+    schemaVersion: SCHEMA_VERSION,
+    contract:
+      JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EXECUTION_AUTHORITY_CONTRACT,
+    environment: "staging",
+    accountIdSha256,
+    coordinator: executionServiceAuthority(
+      coordinator,
+      "coordinate-only",
+      false,
+      "execution authority coordinator",
+    ),
+    sourceVerifier: executionServiceAuthority(
+      sourceVerifier,
+      "source-verify-only",
+      false,
+      "execution authority source verifier",
+    ),
+    readback: executionServiceAuthority(
+      readback,
+      "read-only",
+      true,
+      "execution authority readback",
+    ),
+    mutation: executionServiceAuthority(
+      mutation,
+      "mutation-only",
+      true,
+      "execution authority mutation",
+    ),
+  };
+  const serviceNames = Object.values(subject)
+    .filter((value) => value !== null && typeof value === "object")
+    .map((value) => value.serviceName)
+    .filter((value) => typeof value === "string");
+  const identities = [
+    subject.coordinator.identitySha256,
+    subject.sourceVerifier.identitySha256,
+    subject.readback.identitySha256,
+    subject.mutation.identitySha256,
+  ];
+  if (
+    new Set(serviceNames).size !== serviceNames.length
+    || new Set(identities).size !== identities.length
+    || subject.readback.credentialIdSha256
+      === subject.mutation.credentialIdSha256
+  ) {
+    throw new Error("execution authority separation is invalid");
+  }
+  for (const [label, leaf] of [
+    ["readback", subject.readback],
+    ["mutation", subject.mutation],
+  ]) {
+    const identity = buildJsonCompatibilityDeploymentLeafServiceIdentity({
+      accountIdSha256,
+      ...leaf,
+    });
+    equal(
+      leaf.identitySha256,
+      identity.identitySha256,
+      `execution authority ${label} derived identity`,
+    );
+  }
+  return {
+    ...subject,
+    authorityDigestSha256: sha256Canonical(subject),
+  };
+}
+
+export function validateJsonCompatibilityDeploymentTransitionExecutionAuthority(
+  input,
+  expectedAccountIdSha256 = null,
+) {
+  const authority = record(input, "deployment transition execution authority");
+  exactKeys(authority, [
+    "schemaVersion", "contract", "environment", "accountIdSha256",
+    "coordinator", "sourceVerifier", "readback", "mutation",
+    "authorityDigestSha256",
+  ], "deployment transition execution authority");
+  const rebuilt = buildJsonCompatibilityDeploymentTransitionExecutionAuthority({
+    ...authority,
+  });
+  canonicalEqual(
+    rebuilt,
+    authority,
+    "deployment transition execution authority",
+  );
+  if (expectedAccountIdSha256 !== null) {
+    equal(
+      authority.accountIdSha256,
+      expectedAccountIdSha256,
+      "execution authority account ID",
+    );
+  }
+  return authority;
+}
+
+function executionServiceAuthority(
+  input,
+  expectedCapability,
+  requiresCredential,
+  label,
+) {
+  const value = record(input, label);
+  exactKeys(value, [
+    "serviceName", "entrypoint", "versionId", "profileVersion",
+    "privateRpcOnly", "capability", "credentialIdSha256",
+    "identitySha256",
+  ], label);
+  safeToken(value.serviceName, `${label} service name`);
+  safeToken(value.entrypoint, `${label} entrypoint`);
+  safeToken(value.versionId, `${label} version ID`);
+  equal(value.profileVersion, 1, `${label} profile version`);
+  equal(value.privateRpcOnly, true, `${label} private RPC`);
+  equal(value.capability, expectedCapability, `${label} capability`);
+  if (requiresCredential) {
+    sha256(value.credentialIdSha256, `${label} credential ID`);
+  } else {
+    equal(value.credentialIdSha256, null, `${label} credential ID`);
+  }
+  sha256(value.identitySha256, `${label} identity`);
+  return cloneJson(value);
 }
 
 function validateSourceAuthenticationTransition(input) {
@@ -1217,7 +1756,10 @@ function selectTransition(statePlan, transitionId) {
 
 async function collectStableReadback(
   dependencies,
+  plans,
   authorized,
+  operation,
+  sourceAuthentication,
   step,
   phase,
   expected,
@@ -1229,15 +1771,47 @@ async function collectStableReadback(
     ordinal <= JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STABLE_READ_COUNT;
     ordinal += 1
   ) {
-    const observation = validateReadback(
-      await dependencies.readback({
-        operationIdSha256: authorized.request.operationIdSha256,
-        transitionId: authorized.request.transition.id,
-        step: cloneJson(step),
+    const readbackRequest =
+      buildJsonCompatibilityDeploymentTransitionReadbackRequest({
+        operation,
+        sourceAuthenticationDigestSha256:
+          sourceAuthentication.sourceAuthenticationDigestSha256,
+        transition: {
+          id: authorized.request.transition.id,
+          ordinal: authorized.request.transition.ordinal,
+        },
+        step,
         phase,
         observationOrdinal: ordinal,
-        expected: cloneJson(expected),
-      }),
+        expected,
+      });
+    equal(
+      readbackRequest.operation.campaignPlanDigestSha256,
+      plans.campaignPlan.planDigestSha256,
+      "readback campaign plan digest",
+    );
+    equal(
+      readbackRequest.operation.statePlanDigestSha256,
+      plans.statePlan.planDigestSha256,
+      "readback state plan digest",
+    );
+    const observation = validateReadback(
+      await dependencies.readback(cloneJson(readbackRequest)),
+    );
+    equal(
+      observation.readbackRequestSha256,
+      readbackRequest.readbackRequestSha256,
+      "readback observation request digest",
+    );
+    equal(
+      observation.readbackServiceIdentitySha256,
+      authorized.request.executionAuthority.readback.identitySha256,
+      "readback observation service identity",
+    );
+    equal(
+      observation.authenticationIdentitySha256,
+      authorized.request.executionAuthority.readback.credentialIdSha256,
+      "readback observation credential identity",
     );
     observations.push(observation);
     execution.readbackAttempts += 1;
@@ -1253,24 +1827,102 @@ async function collectStableReadback(
   };
 }
 
-function expectedArtifact(statePlan, step, side) {
+function transitionReference(input) {
+  const value = record(input, "deployment transition reference");
+  exactKeys(value, ["id", "ordinal"], "deployment transition reference");
+  safeToken(value.id, "deployment transition reference ID");
+  integer(value.ordinal, "deployment transition reference ordinal");
+  return cloneJson(value);
+}
+
+function transitionStep(input, label) {
+  const value = record(input, label);
+  exactKeys(value, [
+    "ordinal", "role", "fromArtifact", "toArtifact", "targetVersionId",
+    "targetConfigSha256",
+  ], label);
+  integer(value.ordinal, `${label} ordinal`);
+  safeToken(value.role, `${label} role`);
+  oneOf(value.fromArtifact, [...DEPLOYMENT_STATES], `${label} source artifact`);
+  oneOf(value.toArtifact, [...DEPLOYMENT_STATES], `${label} target artifact`);
+  safeToken(value.targetVersionId, `${label} target version`);
+  sha256(value.targetConfigSha256, `${label} target config`);
+  return cloneJson(value);
+}
+
+function expectedReadback(input) {
+  const value = record(input, "deployment transition expected readback");
+  exactKeys(value, [
+    "environment", "accountIdSha256", "serviceName", "entrypoint",
+    "versionId", "configSha256", "deploymentState", "gates",
+    "privateRpcOnly", "workersDev", "previewUrls", "bindingSetSha256",
+    "routeSetSha256", "secretNameSetSha256",
+    "durableObjectMigrationSetSha256", "authenticationIdentitySha256",
+  ], "deployment transition expected readback");
+  equal(value.environment, "staging", "expected readback environment");
+  sha256(value.accountIdSha256, "expected readback account ID");
+  safeToken(value.serviceName, "expected readback service name");
+  safeToken(value.entrypoint, "expected readback entrypoint");
+  safeToken(value.versionId, "expected readback version ID");
+  sha256(value.configSha256, "expected readback config digest");
+  oneOf(
+    value.deploymentState,
+    [...DEPLOYMENT_STATES],
+    "expected readback deployment state",
+  );
+  booleanRecord(value.gates, "expected readback gates");
+  boolean(value.privateRpcOnly, "expected readback private RPC");
+  boolean(value.workersDev, "expected readback workers_dev");
+  boolean(value.previewUrls, "expected readback preview URLs");
+  sha256(value.bindingSetSha256, "expected readback binding set");
+  sha256(value.routeSetSha256, "expected readback route set");
+  sha256(value.secretNameSetSha256, "expected readback secret-name set");
+  sha256(
+    value.durableObjectMigrationSetSha256,
+    "expected readback Durable Object migration set",
+  );
+  sha256(
+    value.authenticationIdentitySha256,
+    "expected readback authentication identity",
+  );
+  return cloneJson(value);
+}
+
+function expectedArtifact(
+  statePlan,
+  artifactInventoryReadback,
+  executionAuthority,
+  step,
+  side,
+) {
   const state = side === "from" ? step.fromArtifact : step.toArtifact;
   const key = state === "status-only" ? "statusOnly" : state;
   const service = statePlan.services[step.role];
   const artifact = service.artifacts[key];
+  const observation = artifactInventoryReadback.artifacts.find((value) =>
+    value.role === step.role && value.artifact === key);
+  if (observation === undefined) {
+    throw new Error("transition artifact inventory observation is absent");
+  }
   return {
     environment: "staging",
-    serviceName: service.serviceName,
-    entrypoint: service.entrypoint,
-    versionId: artifact.versionId,
-    configSha256: artifact.configSha256,
-    deploymentState: artifact.deploymentState,
-    gates: cloneJson(artifact.gates),
-    privateRpcOnly: service.privateRpcOnly,
-    workersDev: service.workersDev,
-    previewUrls: service.previewUrls,
-    routeSetSha256:
-      JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EMPTY_ROUTE_SET_SHA256,
+    accountIdSha256: artifactInventoryReadback.accountIdSha256,
+    serviceName: observation.serviceName,
+    entrypoint: observation.entrypoint,
+    versionId: observation.versionId,
+    configSha256: observation.configSha256,
+    deploymentState: observation.deploymentState,
+    gates: cloneJson(observation.gates),
+    privateRpcOnly: observation.privateRpcOnly,
+    workersDev: observation.workersDev,
+    previewUrls: observation.previewUrls,
+    bindingSetSha256: observation.bindingSetSha256,
+    routeSetSha256: observation.routeSetSha256,
+    secretNameSetSha256: observation.secretNameSetSha256,
+    durableObjectMigrationSetSha256:
+      observation.durableObjectMigrationSetSha256,
+    authenticationIdentitySha256:
+      executionAuthority.readback.credentialIdSha256,
   };
 }
 
@@ -1279,7 +1931,8 @@ function classifyReadback(observation, expected) {
   for (const key of [
     "environment", "accountIdSha256", "serviceName", "entrypoint", "versionId", "configSha256",
     "deploymentState", "privateRpcOnly", "workersDev", "previewUrls",
-    "routeSetSha256",
+    "bindingSetSha256", "routeSetSha256", "secretNameSetSha256",
+    "durableObjectMigrationSetSha256", "authenticationIdentitySha256",
   ]) {
     if (observation[key] !== expected[key]) return "drift";
   }
@@ -1305,29 +1958,83 @@ function classifyReadbackPair(observations, expected) {
   return "stable";
 }
 
-function buildMutationIntent(
+export function buildJsonCompatibilityDeploymentTransitionMutationIntent(
   authorized,
-  authorizedRequestSha256,
+  operation,
+  sourceAuthentication,
   step,
   expected,
-  sourceStateSha256,
+  sourceReadbacks,
 ) {
+  const normalizedOperation =
+    validateJsonCompatibilityDeploymentTransitionOperation(operation);
+  const normalizedSourceAuthentication = record(
+    sourceAuthentication,
+    "mutation source authentication",
+  );
+  sha256(
+    normalizedSourceAuthentication.sourceAuthenticationDigestSha256,
+    "mutation source authentication digest",
+  );
+  if (!Array.isArray(sourceReadbacks) || sourceReadbacks.length !== 2) {
+    throw new Error("mutation source readback set is invalid");
+  }
+  const observations = sourceReadbacks.map((value) => validateReadback(value));
+  const sourceStateSha256 = observations[1].remoteStateSha256;
   sha256(sourceStateSha256, "mutation source state digest");
+  equal(
+    observations[0].readbackServiceIdentitySha256,
+    observations[1].readbackServiceIdentitySha256,
+    "mutation readback service identity",
+  );
+  for (const observation of observations) {
+    equal(
+      observation.readbackServiceIdentitySha256,
+      authorized.request.executionAuthority.readback.identitySha256,
+      "mutation approved readback service identity",
+    );
+    equal(
+      observation.authenticationIdentitySha256,
+      authorized.request.executionAuthority.readback.credentialIdSha256,
+      "mutation approved readback credential identity",
+    );
+  }
   const subject = {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: 2,
     contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MUTATION_INTENT_CONTRACT,
+    environment: "staging",
     operationIdSha256: authorized.request.operationIdSha256,
-    authorizedRequestSha256,
+    operationDigestSha256: normalizedOperation.operationDigestSha256,
+    authorizedRequestSha256: normalizedOperation.authorizedRequestSha256,
+    campaignPlanDigestSha256: normalizedOperation.campaignPlanDigestSha256,
+    statePlanDigestSha256: normalizedOperation.statePlanDigestSha256,
+    executionAuthoritySha256:
+      authorized.request.executionAuthority.authorityDigestSha256,
+    artifactInventoryReadbackSha256:
+      authorized.request.artifactInventoryReadback
+        .artifactInventoryReadbackSha256,
+    sourceAuthenticationDigestSha256:
+      normalizedSourceAuthentication.sourceAuthenticationDigestSha256,
     transitionId: authorized.request.transition.id,
     transitionOrdinal: authorized.request.transition.ordinal,
     stepOrdinal: step.ordinal,
     role: step.role,
     serviceName: expected.serviceName,
+    entrypoint: expected.entrypoint,
     fromArtifact: step.fromArtifact,
     toArtifact: step.toArtifact,
     targetVersionId: expected.versionId,
     targetConfigSha256: expected.configSha256,
     sourceStateSha256,
+    sourceReadbackSetSha256: sha256Canonical(observations),
+    readbackServiceIdentitySha256:
+      observations[0].readbackServiceIdentitySha256,
+    readbackCredentialIdSha256:
+      authorized.request.executionAuthority.readback.credentialIdSha256,
+    mutationServiceIdentitySha256:
+      authorized.request.executionAuthority.mutation.identitySha256,
+    mutationCredentialIdSha256:
+      authorized.request.executionAuthority.mutation.credentialIdSha256,
   };
   return {
     ...subject,
@@ -1335,32 +2042,67 @@ function buildMutationIntent(
   };
 }
 
-function validateMutationIntent(input) {
+export function validateJsonCompatibilityDeploymentTransitionMutationIntent(
+  input,
+) {
   const intent = record(input, "deployment transition mutation intent");
   exactKeys(intent, [
-    "schemaVersion", "contract", "operationIdSha256", "authorizedRequestSha256",
+    "schemaVersion", "contract", "environment", "operationIdSha256",
+    "operationDigestSha256", "authorizedRequestSha256",
+    "campaignPlanDigestSha256", "statePlanDigestSha256",
+    "executionAuthoritySha256", "artifactInventoryReadbackSha256",
+    "sourceAuthenticationDigestSha256",
     "transitionId", "transitionOrdinal", "stepOrdinal", "role", "serviceName",
+    "entrypoint",
     "fromArtifact", "toArtifact", "targetVersionId", "targetConfigSha256",
-    "sourceStateSha256", "mutationIntentSha256",
+    "sourceStateSha256", "sourceReadbackSetSha256",
+    "readbackServiceIdentitySha256", "readbackCredentialIdSha256",
+    "mutationServiceIdentitySha256", "mutationCredentialIdSha256",
+    "mutationIntentSha256",
   ], "deployment transition mutation intent");
-  equal(intent.schemaVersion, SCHEMA_VERSION, "mutation intent schema");
+  equal(intent.schemaVersion, 2, "mutation intent schema");
   equal(
     intent.contract,
     JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MUTATION_INTENT_CONTRACT,
     "mutation intent contract",
   );
+  equal(intent.environment, "staging", "mutation intent environment");
   sha256(intent.operationIdSha256, "mutation operation ID");
+  sha256(intent.operationDigestSha256, "mutation operation digest");
   sha256(intent.authorizedRequestSha256, "mutation authorized request digest");
+  sha256(intent.campaignPlanDigestSha256, "mutation campaign plan digest");
+  sha256(intent.statePlanDigestSha256, "mutation state plan digest");
+  sha256(intent.executionAuthoritySha256, "mutation execution authority");
+  sha256(
+    intent.artifactInventoryReadbackSha256,
+    "mutation artifact inventory readback",
+  );
+  sha256(
+    intent.sourceAuthenticationDigestSha256,
+    "mutation source authentication",
+  );
   safeToken(intent.transitionId, "mutation transition ID");
   integer(intent.transitionOrdinal, "mutation transition ordinal");
   integer(intent.stepOrdinal, "mutation step ordinal");
   safeToken(intent.role, "mutation role");
   safeToken(intent.serviceName, "mutation service name");
+  safeToken(intent.entrypoint, "mutation entrypoint");
   oneOf(intent.fromArtifact, [...DEPLOYMENT_STATES], "mutation source artifact");
   oneOf(intent.toArtifact, [...DEPLOYMENT_STATES], "mutation target artifact");
   safeToken(intent.targetVersionId, "mutation target version ID");
   sha256(intent.targetConfigSha256, "mutation target config digest");
   sha256(intent.sourceStateSha256, "mutation source state digest");
+  sha256(intent.sourceReadbackSetSha256, "mutation source readback set");
+  sha256(
+    intent.readbackServiceIdentitySha256,
+    "mutation readback service identity",
+  );
+  sha256(intent.readbackCredentialIdSha256, "mutation readback credential ID");
+  sha256(
+    intent.mutationServiceIdentitySha256,
+    "mutation service identity",
+  );
+  sha256(intent.mutationCredentialIdSha256, "mutation credential ID");
   const { mutationIntentSha256, ...subject } = intent;
   equal(
     mutationIntentSha256,
@@ -1370,14 +2112,22 @@ function validateMutationIntent(input) {
   return intent;
 }
 
+const buildMutationIntent =
+  buildJsonCompatibilityDeploymentTransitionMutationIntent;
+const validateMutationIntent =
+  validateJsonCompatibilityDeploymentTransitionMutationIntent;
+
 function validateMutationOutcome(input, expectedIntent) {
   const outcome = record(input, "deployment transition mutation outcome");
   exactKeys(outcome, [
-    "schemaVersion", "contract", "mutationIntentSha256", "classification",
+    "schemaVersion", "contract", "mutationIntentSha256",
+    "mutationRpcRequestSha256", "mutationServiceIdentitySha256",
+    "authenticationIdentitySha256", "mutationRequestSha256",
+    "mutationAnnotationSha256", "endpointSha256", "sentAt", "classification",
     "httpStatus", "responseBodySha256", "responseRequestIdSha256",
     "responseBytes", "outcomeDigestSha256",
   ], "deployment transition mutation outcome");
-  equal(outcome.schemaVersion, SCHEMA_VERSION, "mutation outcome schema");
+  equal(outcome.schemaVersion, 2, "mutation outcome schema");
   equal(
     outcome.contract,
     JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_MUTATION_OUTCOME_CONTRACT,
@@ -1388,6 +2138,25 @@ function validateMutationOutcome(input, expectedIntent) {
     expectedIntent.mutationIntentSha256,
     "mutation outcome intent digest",
   );
+  for (const [label, value] of [
+    ["RPC request", outcome.mutationRpcRequestSha256],
+    ["service identity", outcome.mutationServiceIdentitySha256],
+    ["authentication identity", outcome.authenticationIdentitySha256],
+    ["request", outcome.mutationRequestSha256],
+    ["annotation", outcome.mutationAnnotationSha256],
+    ["endpoint", outcome.endpointSha256],
+  ]) sha256(value, `mutation outcome ${label}`);
+  equal(
+    outcome.mutationServiceIdentitySha256,
+    expectedIntent.mutationServiceIdentitySha256,
+    "mutation outcome service identity",
+  );
+  equal(
+    outcome.authenticationIdentitySha256,
+    expectedIntent.mutationCredentialIdSha256,
+    "mutation outcome credential identity",
+  );
+  integer(outcome.sentAt, "mutation outcome send time");
   oneOf(outcome.classification, ["accepted", "rejected", "ambiguous"], "mutation outcome");
   nullableHttpStatus(outcome.httpStatus, "mutation HTTP status");
   nullableSha256(outcome.responseBodySha256, "mutation response body digest");
@@ -1451,10 +2220,194 @@ function validateSourceAuthentication(input, expectedRequest) {
   return proof;
 }
 
-function validateReadback(input) {
+export function validateJsonCompatibilityDeploymentTransitionExecutionContext(
+  {
+    campaignPlan: campaignPlanInput,
+    statePlan: statePlanInput,
+    authorizedTransition: authorizedTransitionInput,
+    sourceAuthentication: sourceAuthenticationInput,
+  },
+  { now = new Date() } = {},
+) {
+  const { campaignPlan, statePlan } = validateCurrentPlanPair(
+    campaignPlanInput,
+    statePlanInput,
+  );
+  const authorizedTransition =
+    validateJsonCompatibilityDeploymentTransitionAuthorization(
+      campaignPlan,
+      statePlan,
+      authorizedTransitionInput,
+      { now, requireUsableWindow: true },
+    );
+  const sourceAuthentication = validateSourceAuthentication(
+    sourceAuthenticationInput,
+    sourceAuthenticationRequestForAuthorized(
+      campaignPlan,
+      statePlan,
+      authorizedTransition,
+    ),
+  );
+  equal(
+    sourceAuthentication.classification,
+    "authenticated",
+    "deployment leaf source authentication classification",
+  );
+  const observedAt = epochSeconds(now, "deployment leaf validation time");
+  if (
+    sourceAuthentication.verifiedAt < observedAt -
+      SOURCE_AUTHENTICATION_MAX_PROOF_AGE_SECONDS
+    || sourceAuthentication.verifiedAt > observedAt + CLOCK_SKEW_SECONDS
+  ) {
+    throw new Error("deployment leaf source authentication proof is stale");
+  }
+  return {
+    campaignPlan: cloneJson(campaignPlan),
+    statePlan: cloneJson(statePlan),
+    authorizedTransition: cloneJson(authorizedTransition),
+    sourceAuthentication: cloneJson(sourceAuthentication),
+    artifactInventoryReadback: cloneJson(
+      authorizedTransition.request.artifactInventoryReadback,
+    ),
+    operation: operationForAuthorized(
+      { campaignPlan, statePlan },
+      authorizedTransition,
+    ),
+  };
+}
+
+export function validateJsonCompatibilityDeploymentTransitionReadbackExecution(
+  input,
+  options = {},
+) {
+  const value = record(input, "deployment readback execution envelope");
+  exactKeys(value, [
+    "campaignPlan", "statePlan", "authorizedTransition",
+    "sourceAuthentication", "readbackRequest",
+  ], "deployment readback execution envelope");
+  const context =
+    validateJsonCompatibilityDeploymentTransitionExecutionContext(value, options);
+  const request =
+    validateJsonCompatibilityDeploymentTransitionReadbackRequest(
+      value.readbackRequest,
+    );
+  const transition = context.authorizedTransition.request.transition;
+  const step = transition.steps.find((candidate) =>
+    candidate.ordinal === request.step.ordinal);
+  if (step === undefined) {
+    throw new Error("deployment readback step is not owner authorized");
+  }
+  canonicalEqual(request.step, step, "deployment readback authorized step");
+  const expected = expectedArtifact(
+    context.statePlan,
+    context.artifactInventoryReadback,
+    context.authorizedTransition.request.executionAuthority,
+    step,
+    request.phase === "source" ? "from" : "to",
+  );
+  const rebuilt = buildJsonCompatibilityDeploymentTransitionReadbackRequest({
+    operation: context.operation,
+    sourceAuthenticationDigestSha256:
+      context.sourceAuthentication.sourceAuthenticationDigestSha256,
+    transition: { id: transition.id, ordinal: transition.ordinal },
+    step,
+    phase: request.phase,
+    observationOrdinal: request.observationOrdinal,
+    expected,
+  });
+  canonicalEqual(rebuilt, request, "deployment readback owner authorization");
+  return { ...context, readbackRequest: cloneJson(request), expected };
+}
+
+export function validateJsonCompatibilityDeploymentTransitionMutationExecution(
+  input,
+  options = {},
+) {
+  const value = record(input, "deployment mutation execution envelope");
+  exactKeys(value, [
+    "campaignPlan", "statePlan", "authorizedTransition",
+    "sourceAuthentication", "mutationIntent", "sourceReadbacks",
+  ], "deployment mutation execution envelope");
+  const context =
+    validateJsonCompatibilityDeploymentTransitionExecutionContext(value, options);
+  const intent = validateMutationIntent(value.mutationIntent);
+  const transition = context.authorizedTransition.request.transition;
+  const step = transition.steps.find((candidate) =>
+    candidate.ordinal === intent.stepOrdinal);
+  if (step === undefined) {
+    throw new Error("deployment mutation step is not owner authorized");
+  }
+  if (!Array.isArray(value.sourceReadbacks) || value.sourceReadbacks.length !== 2) {
+    throw new Error("deployment mutation source readback set is invalid");
+  }
+  const sourceReadbacks = value.sourceReadbacks.map((observation, index) => {
+    const readback = validateReadback(observation);
+    const readbackRequest =
+      buildJsonCompatibilityDeploymentTransitionReadbackRequest({
+        operation: context.operation,
+        sourceAuthenticationDigestSha256:
+          context.sourceAuthentication.sourceAuthenticationDigestSha256,
+        transition: { id: transition.id, ordinal: transition.ordinal },
+        step,
+        phase: "source",
+        observationOrdinal: index + 1,
+        expected: expectedArtifact(
+          context.statePlan,
+          context.artifactInventoryReadback,
+          context.authorizedTransition.request.executionAuthority,
+          step,
+          "from",
+        ),
+      });
+    equal(
+      readback.readbackRequestSha256,
+      readbackRequest.readbackRequestSha256,
+      "deployment mutation source readback request",
+    );
+    return readback;
+  });
+  const expectedSource = expectedArtifact(
+    context.statePlan,
+    context.artifactInventoryReadback,
+    context.authorizedTransition.request.executionAuthority,
+    step,
+    "from",
+  );
+  equal(
+    classifyReadbackPair(sourceReadbacks, expectedSource),
+    "stable",
+    "deployment mutation stable source readback",
+  );
+  const expectedTarget = expectedArtifact(
+    context.statePlan,
+    context.artifactInventoryReadback,
+    context.authorizedTransition.request.executionAuthority,
+    step,
+    "to",
+  );
+  const rebuiltIntent = buildMutationIntent(
+    context.authorizedTransition,
+    context.operation,
+    context.sourceAuthentication,
+    step,
+    expectedTarget,
+    sourceReadbacks,
+  );
+  canonicalEqual(rebuiltIntent, intent, "deployment mutation owner authorization");
+  return {
+    ...context,
+    mutationIntent: cloneJson(intent),
+    sourceReadbacks: cloneJson(sourceReadbacks),
+    expectedSource,
+    expectedTarget,
+  };
+}
+
+export function validateJsonCompatibilityDeploymentTransitionReadback(input) {
   const observation = record(input, "deployment transition readback");
   exactKeys(observation, [
-    "schemaVersion", "contract", "classification", "environment", "serviceName",
+    "schemaVersion", "contract", "classification", "readbackRequestSha256",
+    "readbackServiceIdentitySha256", "environment", "serviceName",
     "accountIdSha256", "entrypoint", "versionId", "configSha256", "deploymentState", "gates",
     "privateRpcOnly", "workersDev", "previewUrls", "bindingSetSha256",
     "routeSetSha256", "secretNameSetSha256", "durableObjectMigrationSetSha256",
@@ -1468,13 +2421,22 @@ function validateReadback(input) {
   return observation;
 }
 
+const validateReadback =
+  validateJsonCompatibilityDeploymentTransitionReadback;
+
 function validateStepReceipt(input, context) {
   const {
     expectedStep,
     expectedSource,
     expectedTarget,
     operationIdSha256,
+    operation,
     authorizedRequestSha256,
+    campaignPlanDigestSha256,
+    statePlanDigestSha256,
+    artifactInventoryReadbackSha256,
+    sourceAuthentication,
+    executionAuthority,
     transitionId,
     transitionOrdinal,
     terminalStopReason,
@@ -1504,6 +2466,34 @@ function validateStepReceipt(input, context) {
     ...step.sourceReadbacks,
     ...step.targetReadbacks,
   ]) validateReadback(observation);
+  for (const [phase, observations, expected] of [
+    ["source", step.sourceReadbacks, expectedSource],
+    ["target", step.targetReadbacks, expectedTarget],
+  ]) {
+    for (let index = 0; index < observations.length; index += 1) {
+      const request =
+        buildJsonCompatibilityDeploymentTransitionReadbackRequest({
+          operation,
+          sourceAuthenticationDigestSha256:
+            sourceAuthentication.sourceAuthenticationDigestSha256,
+          transition: { id: transitionId, ordinal: transitionOrdinal },
+          step: expectedStep,
+          phase,
+          observationOrdinal: index + 1,
+          expected,
+        });
+      equal(
+        observations[index].readbackRequestSha256,
+        request.readbackRequestSha256,
+        `transition ${phase} readback request digest`,
+      );
+      equal(
+        observations[index].readbackServiceIdentitySha256,
+        executionAuthority.readback.identitySha256,
+        `transition ${phase} readback service identity`,
+      );
+    }
+  }
   const sourceClassification = classifyReadbackPair(
     step.sourceReadbacks,
     expectedSource,
@@ -1539,17 +2529,40 @@ function validateStepReceipt(input, context) {
     const intent = validateMutationIntent(step.mutationIntent);
     for (const [label, actual, expected] of [
       ["operation ID", intent.operationIdSha256, operationIdSha256],
+      ["operation digest", intent.operationDigestSha256,
+        operation.operationDigestSha256],
       ["authorized request digest", intent.authorizedRequestSha256, authorizedRequestSha256],
+      ["campaign plan digest", intent.campaignPlanDigestSha256,
+        campaignPlanDigestSha256],
+      ["state plan digest", intent.statePlanDigestSha256,
+        statePlanDigestSha256],
+      ["execution authority", intent.executionAuthoritySha256,
+        executionAuthority.authorityDigestSha256],
+      ["artifact inventory readback", intent.artifactInventoryReadbackSha256,
+        artifactInventoryReadbackSha256],
+      ["source authentication", intent.sourceAuthenticationDigestSha256,
+        sourceAuthentication.sourceAuthenticationDigestSha256],
       ["transition ID", intent.transitionId, transitionId],
       ["transition ordinal", intent.transitionOrdinal, transitionOrdinal],
       ["step ordinal", intent.stepOrdinal, expectedStep.ordinal],
       ["role", intent.role, expectedStep.role],
       ["service name", intent.serviceName, expectedTarget.serviceName],
+      ["entrypoint", intent.entrypoint, expectedTarget.entrypoint],
       ["source artifact", intent.fromArtifact, expectedStep.fromArtifact],
       ["target artifact", intent.toArtifact, expectedStep.toArtifact],
       ["target version", intent.targetVersionId, expectedStep.targetVersionId],
       ["target config", intent.targetConfigSha256, expectedStep.targetConfigSha256],
       ["source state", intent.sourceStateSha256, step.sourceReadbacks[1].remoteStateSha256],
+      ["source readback set", intent.sourceReadbackSetSha256,
+        sha256Canonical(step.sourceReadbacks)],
+      ["readback service identity", intent.readbackServiceIdentitySha256,
+        executionAuthority.readback.identitySha256],
+      ["readback credential ID", intent.readbackCredentialIdSha256,
+        executionAuthority.readback.credentialIdSha256],
+      ["mutation service identity", intent.mutationServiceIdentitySha256,
+        executionAuthority.mutation.identitySha256],
+      ["mutation credential ID", intent.mutationCredentialIdSha256,
+        executionAuthority.mutation.credentialIdSha256],
     ]) equal(actual, expected, `transition mutation intent ${label}`);
     if (step.mutationOutcome !== null) {
       validateMutationOutcome(step.mutationOutcome, intent);

@@ -9,6 +9,7 @@ import { canonicalJson } from "./canonical";
 const SHA256 = /^[0-9a-f]{64}$/;
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MAX_OPERATION_BYTES = 8 * 1024;
+const MAX_AUTHORITY_BYTES = 32 * 1024;
 const MAX_EVENT_BYTES = 128 * 1024;
 const MAX_RECEIPT_BYTES = 512 * 1024;
 
@@ -23,6 +24,17 @@ const OPERATION_COLUMNS = `
 const EVENT_COLUMNS = `
   operation_id_sha256, event_ordinal, event_kind, event_digest_sha256,
   event_json, recorded_at
+`;
+
+const AUTHORITY_COLUMNS = `
+  operation_id_sha256, authority_digest_sha256, authority_json,
+  coordinator_service_name, coordinator_version_id,
+  coordinator_identity_sha256, source_verifier_service_name,
+  source_verifier_version_id, source_verifier_identity_sha256,
+  readback_service_name, readback_version_id, readback_identity_sha256,
+  readback_credential_id_sha256, mutation_service_name,
+  mutation_version_id, mutation_identity_sha256,
+  mutation_credential_id_sha256, created_at
 `;
 
 const RECEIPT_COLUMNS = `
@@ -62,11 +74,50 @@ interface ReceiptRow {
   readonly archived_at: number;
 }
 
+interface AuthorityRow {
+  readonly operation_id_sha256: string;
+  readonly authority_digest_sha256: string;
+  readonly authority_json: string;
+  readonly coordinator_service_name: string;
+  readonly coordinator_version_id: string;
+  readonly coordinator_identity_sha256: string;
+  readonly source_verifier_service_name: string;
+  readonly source_verifier_version_id: string;
+  readonly source_verifier_identity_sha256: string;
+  readonly readback_service_name: string;
+  readonly readback_version_id: string;
+  readonly readback_identity_sha256: string;
+  readonly readback_credential_id_sha256: string;
+  readonly mutation_service_name: string;
+  readonly mutation_version_id: string;
+  readonly mutation_identity_sha256: string;
+  readonly mutation_credential_id_sha256: string;
+  readonly created_at: number;
+}
+
+interface RepositoryServiceAuthority {
+  readonly serviceName: string;
+  readonly versionId: string;
+  readonly identitySha256: string;
+  readonly credentialIdSha256: string | null;
+}
+
+interface RepositoryExecutionAuthority {
+  readonly authorityDigestSha256: string;
+  readonly coordinator: RepositoryServiceAuthority;
+  readonly sourceVerifier: RepositoryServiceAuthority;
+  readonly readback: RepositoryServiceAuthority;
+  readonly mutation: RepositoryServiceAuthority;
+}
+
 export interface TransitionRepositoryIdentity {
+  readonly coordinatorServiceName: string;
   readonly coordinatorVersionId: string;
   readonly coordinatorProfileVersion: 1;
-  readonly deploymentLeafServiceName: string;
+  readonly deploymentReadbackServiceName: string;
+  readonly deploymentMutationServiceName: string;
   readonly sourceVerifierServiceName: string;
+  readonly executionAuthority: RepositoryExecutionAuthority;
 }
 
 export interface TransitionStatusSnapshot {
@@ -80,7 +131,9 @@ export interface TransitionStatusSnapshot {
     readonly transitionId: string;
     readonly coordinatorVersionId: string;
     readonly coordinatorProfileVersion: number;
-    readonly deploymentLeafServiceName: string;
+    readonly executionAuthoritySha256: string;
+    readonly deploymentReadbackServiceName: string;
+    readonly deploymentMutationServiceName: string;
     readonly sourceVerifierServiceName: string;
     readonly createdAt: number;
   } | null;
@@ -122,6 +175,7 @@ export class D1DeploymentTransitionJournal {
     readonly receipt: JsonCompatibilityDeploymentTransitionReceiptV1 | null;
   }> {
     validateOperation(operation);
+    validateRepositoryIdentity(this.identity);
     this.operationIdSha256 = operation.operationIdSha256;
     const operationJson = boundedCanonicalJson(
       operation,
@@ -129,33 +183,76 @@ export class D1DeploymentTransitionJournal {
       "transition operation",
     );
     const session = this.database.withSession("first-primary");
+    const authorityJson = boundedCanonicalJson(
+      this.identity.executionAuthority,
+      MAX_AUTHORITY_BYTES,
+      "transition execution authority",
+    );
     let inserted = false;
     try {
-      const result = await session.prepare(
-        `INSERT INTO json_compatibility_deployment_transition_operations (
-          operation_id_sha256, operation_digest_sha256,
-          authorized_request_sha256, campaign_plan_digest_sha256,
-          state_plan_digest_sha256, transition_id, operation_json,
-          coordinator_version_id, coordinator_profile_version,
-          deployment_leaf_service_name, source_verifier_service_name,
-          created_at
-        ) VALUES (
-          ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch()
-        )`,
-      ).bind(
-        operation.operationIdSha256,
-        operation.operationDigestSha256,
-        operation.authorizedRequestSha256,
-        operation.campaignPlanDigestSha256,
-        operation.statePlanDigestSha256,
-        operation.transitionId,
-        operationJson,
-        this.identity.coordinatorVersionId,
-        this.identity.coordinatorProfileVersion,
-        this.identity.deploymentLeafServiceName,
-        this.identity.sourceVerifierServiceName,
-      ).run();
-      inserted = result.success === true && result.meta.changes === 1;
+      const results = await session.batch([
+        session.prepare(
+          `INSERT INTO json_compatibility_deployment_transition_operations (
+            operation_id_sha256, operation_digest_sha256,
+            authorized_request_sha256, campaign_plan_digest_sha256,
+            state_plan_digest_sha256, transition_id, operation_json,
+            coordinator_version_id, coordinator_profile_version,
+            deployment_leaf_service_name, source_verifier_service_name,
+            created_at
+          ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, unixepoch()
+          )`,
+        ).bind(
+          operation.operationIdSha256,
+          operation.operationDigestSha256,
+          operation.authorizedRequestSha256,
+          operation.campaignPlanDigestSha256,
+          operation.statePlanDigestSha256,
+          operation.transitionId,
+          operationJson,
+          this.identity.coordinatorVersionId,
+          this.identity.coordinatorProfileVersion,
+          this.identity.deploymentReadbackServiceName,
+          this.identity.sourceVerifierServiceName,
+        ),
+        session.prepare(
+          `INSERT INTO json_compatibility_deployment_transition_authorities (
+            operation_id_sha256, authority_digest_sha256, authority_json,
+            coordinator_service_name, coordinator_version_id,
+            coordinator_identity_sha256, source_verifier_service_name,
+            source_verifier_version_id, source_verifier_identity_sha256,
+            readback_service_name, readback_version_id,
+            readback_identity_sha256, readback_credential_id_sha256,
+            mutation_service_name, mutation_version_id,
+            mutation_identity_sha256, mutation_credential_id_sha256,
+            created_at
+          ) VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+            ?14, ?15, ?16, ?17, unixepoch()
+          )`,
+        ).bind(
+          operation.operationIdSha256,
+          this.identity.executionAuthority.authorityDigestSha256,
+          authorityJson,
+          this.identity.executionAuthority.coordinator.serviceName,
+          this.identity.executionAuthority.coordinator.versionId,
+          this.identity.executionAuthority.coordinator.identitySha256,
+          this.identity.executionAuthority.sourceVerifier.serviceName,
+          this.identity.executionAuthority.sourceVerifier.versionId,
+          this.identity.executionAuthority.sourceVerifier.identitySha256,
+          this.identity.executionAuthority.readback.serviceName,
+          this.identity.executionAuthority.readback.versionId,
+          this.identity.executionAuthority.readback.identitySha256,
+          this.identity.executionAuthority.readback.credentialIdSha256,
+          this.identity.executionAuthority.mutation.serviceName,
+          this.identity.executionAuthority.mutation.versionId,
+          this.identity.executionAuthority.mutation.identitySha256,
+          this.identity.executionAuthority.mutation.credentialIdSha256,
+        ),
+      ]);
+      inserted = results.length === 2 && results.every(
+        (result) => result.success === true && result.meta.changes === 1,
+      );
     } catch {
       // A concurrent writer may already have reserved this exact operation.
     }
@@ -166,7 +263,18 @@ export class D1DeploymentTransitionJournal {
       if (conflict) return { classification: "conflict", receipt: null };
       throw new TransitionRepositoryUnavailableError(false);
     }
-    if (!operationMatches(persisted, operationJson, operation, this.identity)) {
+    const authority = await readAuthority(session, operation.operationIdSha256);
+    if (
+      authority === null
+      || !operationMatches(
+        persisted,
+        authority,
+        operationJson,
+        authorityJson,
+        operation,
+        this.identity,
+      )
+    ) {
       return { classification: "conflict", receipt: null };
     }
     if (inserted) return { classification: "reserved", receipt: null };
@@ -319,6 +427,10 @@ export async function readTransitionStatus(
   if (operation.operation_digest_sha256 !== expectedOperationDigestSha256) {
     throw new TransitionRepositoryConflictError();
   }
+  const authority = await readAuthority(session, operationIdSha256);
+  if (authority === null) {
+    throw new TransitionRepositoryUnavailableError(false);
+  }
   let events: TransitionEventRow[];
   try {
     const result = await session.prepare(
@@ -334,7 +446,7 @@ export async function readTransitionStatus(
   const receiptRow = await readReceipt(session, operationIdSha256);
   return {
     classification: receiptRow === null ? "inflight" : "terminal",
-    operation: publicOperation(operation),
+    operation: publicOperation(operation, authority),
     events,
     receipt: receiptRow === null ? null : parseReceipt(receiptRow),
     archivedAt: receiptRow?.archived_at ?? null,
@@ -352,6 +464,22 @@ async function readOperation(
        WHERE operation_id_sha256 = ?1
        LIMIT 1`,
     ).bind(operationIdSha256).first<OperationRow>();
+  } catch {
+    throw new TransitionRepositoryUnavailableError(false);
+  }
+}
+
+async function readAuthority(
+  session: D1DatabaseSession,
+  operationIdSha256: string,
+): Promise<AuthorityRow | null> {
+  try {
+    return await session.prepare(
+      `SELECT ${AUTHORITY_COLUMNS}
+       FROM json_compatibility_deployment_transition_authorities
+       WHERE operation_id_sha256 = ?1
+       LIMIT 1`,
+    ).bind(operationIdSha256).first<AuthorityRow>();
   } catch {
     throw new TransitionRepositoryUnavailableError(false);
   }
@@ -414,7 +542,9 @@ async function readReceipt(
 
 function operationMatches(
   row: OperationRow,
+  authority: AuthorityRow,
   operationJson: string,
+  authorityJson: string,
   operation: JsonCompatibilityDeploymentTransitionOperationV1,
   identity: TransitionRepositoryIdentity,
 ): boolean {
@@ -427,11 +557,42 @@ function operationMatches(
     && row.operation_json === operationJson
     && row.coordinator_version_id === identity.coordinatorVersionId
     && row.coordinator_profile_version === identity.coordinatorProfileVersion
-    && row.deployment_leaf_service_name === identity.deploymentLeafServiceName
-    && row.source_verifier_service_name === identity.sourceVerifierServiceName;
+    && row.deployment_leaf_service_name
+      === identity.deploymentReadbackServiceName
+    && row.source_verifier_service_name === identity.sourceVerifierServiceName
+    && authority.operation_id_sha256 === operation.operationIdSha256
+    && authority.authority_digest_sha256
+      === identity.executionAuthority.authorityDigestSha256
+    && authority.authority_json === authorityJson
+    && authority.coordinator_service_name === identity.coordinatorServiceName
+    && authority.coordinator_version_id === identity.coordinatorVersionId
+    && authority.coordinator_identity_sha256
+      === identity.executionAuthority.coordinator.identitySha256
+    && authority.source_verifier_service_name
+      === identity.sourceVerifierServiceName
+    && authority.source_verifier_version_id
+      === identity.executionAuthority.sourceVerifier.versionId
+    && authority.source_verifier_identity_sha256
+      === identity.executionAuthority.sourceVerifier.identitySha256
+    && authority.readback_service_name
+      === identity.deploymentReadbackServiceName
+    && authority.readback_version_id
+      === identity.executionAuthority.readback.versionId
+    && authority.readback_identity_sha256
+      === identity.executionAuthority.readback.identitySha256
+    && authority.readback_credential_id_sha256
+      === identity.executionAuthority.readback.credentialIdSha256
+    && authority.mutation_service_name
+      === identity.deploymentMutationServiceName
+    && authority.mutation_version_id
+      === identity.executionAuthority.mutation.versionId
+    && authority.mutation_identity_sha256
+      === identity.executionAuthority.mutation.identitySha256
+    && authority.mutation_credential_id_sha256
+      === identity.executionAuthority.mutation.credentialIdSha256;
 }
 
-function publicOperation(row: OperationRow): NonNullable<
+function publicOperation(row: OperationRow, authority: AuthorityRow): NonNullable<
   TransitionStatusSnapshot["operation"]
 > {
   return {
@@ -443,7 +604,9 @@ function publicOperation(row: OperationRow): NonNullable<
     transitionId: row.transition_id,
     coordinatorVersionId: row.coordinator_version_id,
     coordinatorProfileVersion: row.coordinator_profile_version,
-    deploymentLeafServiceName: row.deployment_leaf_service_name,
+    executionAuthoritySha256: authority.authority_digest_sha256,
+    deploymentReadbackServiceName: authority.readback_service_name,
+    deploymentMutationServiceName: authority.mutation_service_name,
     sourceVerifierServiceName: row.source_verifier_service_name,
     createdAt: row.created_at,
   };
@@ -474,6 +637,53 @@ function validateOperation(
     operation.statePlanDigestSha256,
   ]) digest(value, "transition operation digest");
   token(operation.transitionId, "transition ID");
+}
+
+function validateRepositoryIdentity(
+  identity: TransitionRepositoryIdentity,
+): void {
+  for (const [label, value] of [
+    ["coordinator service", identity.coordinatorServiceName],
+    ["coordinator version", identity.coordinatorVersionId],
+    ["deployment readback service", identity.deploymentReadbackServiceName],
+    ["deployment mutation service", identity.deploymentMutationServiceName],
+    ["source verifier service", identity.sourceVerifierServiceName],
+  ]) token(value, label);
+  if (identity.coordinatorProfileVersion !== 1) {
+    throw new Error("transition coordinator profile is invalid");
+  }
+  const authority = identity.executionAuthority;
+  digest(authority.authorityDigestSha256, "transition execution authority");
+  for (const [label, service] of [
+    ["coordinator", authority.coordinator],
+    ["source verifier", authority.sourceVerifier],
+    ["readback", authority.readback],
+    ["mutation", authority.mutation],
+  ] as const) {
+    token(service.serviceName, `${label} authority service`);
+    token(service.versionId, `${label} authority version`);
+    digest(service.identitySha256, `${label} authority identity`);
+  }
+  digest(
+    authority.readback.credentialIdSha256,
+    "readback authority credential",
+  );
+  digest(
+    authority.mutation.credentialIdSha256,
+    "mutation authority credential",
+  );
+  if (
+    authority.coordinator.serviceName !== identity.coordinatorServiceName
+    || authority.coordinator.versionId !== identity.coordinatorVersionId
+    || authority.sourceVerifier.serviceName
+      !== identity.sourceVerifierServiceName
+    || authority.readback.serviceName
+      !== identity.deploymentReadbackServiceName
+    || authority.mutation.serviceName
+      !== identity.deploymentMutationServiceName
+  ) {
+    throw new Error("transition repository authority identity is inconsistent");
+  }
 }
 
 function validateEvent(

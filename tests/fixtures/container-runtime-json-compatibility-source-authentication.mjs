@@ -18,6 +18,9 @@ import {
   signJsonCompatibilityDeploymentTransition,
 } from "../../tools/container_runtime_json_compatibility_deployment_transition.mjs";
 import {
+  buildExecutionAuthority,
+} from "./container-runtime-json-compatibility-deployment-transition.mjs";
+import {
   JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE,
   JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER,
   buildJsonCompatibilitySourceAccountBindingInventory,
@@ -102,6 +105,7 @@ export async function createSourceAuthenticationFixture({
   externalWormSignerReuseSource = null,
   sourceSignerTrustSlot = "current",
   sourceVerifierVersionId = "source-verifier-version-001",
+  executionAuthorityOverrides = {},
   evidenceObservedAt = now - 120,
   archiveLockedAt = now - 90,
   archiveReadbackAt = now - 60,
@@ -349,6 +353,19 @@ export async function createSourceAuthenticationFixture({
         evidenceSha256: digest(`source-prior-state:${transitionId}`),
       },
       sourceEvidence,
+      artifactInventoryReadback,
+      executionAuthority: buildExecutionAuthority(
+        sourceEvidence.accountIdSha256,
+        {
+          ...executionAuthorityOverrides,
+          "source-verifier": {
+            ...(executionAuthorityOverrides["source-verifier"] ?? {}),
+            versionId: sourceVerifierVersionId,
+            identitySha256:
+              sourceVerifierIdentity.sourceVerifierIdentitySha256,
+          },
+        },
+      ),
       privateKeyBytes: transitionPrivateKey,
       now: new Date(now * 1000),
     });

@@ -17,7 +17,7 @@ import {
 } from "./repository";
 
 export const JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_CONTRACT =
-  "cinatoken-container-runtime-json-compatibility-deployment-transition-status-v1";
+  "cinatoken-container-runtime-json-compatibility-deployment-transition-status-v2";
 
 const MAX_INVOCATION_BYTES = 1024 * 1024;
 const STABILITY_CLOCK_GRANULARITY_PADDING_MILLISECONDS = 1000;
@@ -30,8 +30,11 @@ export interface DeploymentTransitionInvocation {
   readonly authorizedTransition: unknown;
 }
 
-export interface DeploymentTransitionLeafBinding {
+export interface DeploymentTransitionReadbackBinding {
   readDeploymentState(input: unknown): Promise<unknown>;
+}
+
+export interface DeploymentTransitionMutationBinding {
   mutateDeploymentOnce(input: unknown): Promise<unknown>;
 }
 
@@ -51,13 +54,16 @@ export type DeploymentTransitionEnv = Omit<
   >,
   | "CF_VERSION_METADATA"
   | "DB"
-  | "JSON_COMPATIBILITY_DEPLOYMENT_LEAF"
+  | "JSON_COMPATIBILITY_DEPLOYMENT_READBACK"
+  | "JSON_COMPATIBILITY_DEPLOYMENT_MUTATION"
   | "JSON_COMPATIBILITY_SOURCE_VERIFIER"
 > & {
   readonly CF_VERSION_METADATA: { readonly id: string };
   readonly DB: D1Database;
-  readonly JSON_COMPATIBILITY_DEPLOYMENT_LEAF:
-    DeploymentTransitionLeafBinding;
+  readonly JSON_COMPATIBILITY_DEPLOYMENT_READBACK:
+    DeploymentTransitionReadbackBinding;
+  readonly JSON_COMPATIBILITY_DEPLOYMENT_MUTATION:
+    DeploymentTransitionMutationBinding;
   readonly JSON_COMPATIBILITY_SOURCE_VERIFIER:
     DeploymentTransitionSourceVerifierBinding;
 };
@@ -67,8 +73,8 @@ export interface DeploymentTransitionRuntime {
   sleep(milliseconds: number): Promise<void>;
 }
 
-export interface DeploymentTransitionStatusV1 {
-  readonly schemaVersion: 1;
+export interface DeploymentTransitionStatusV2 {
+  readonly schemaVersion: 2;
   readonly contract:
     typeof JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_CONTRACT;
   readonly environment: "staging";
@@ -95,8 +101,8 @@ export interface DeploymentTransitionStatusV1 {
   readonly mutationIntentCount: number;
   readonly mutationOutcomeCount: number;
   readonly sourceVerifierCalled: false;
-  readonly deploymentLeafReadCalled: false;
-  readonly deploymentLeafMutationCalled: false;
+  readonly deploymentReadbackCalled: false;
+  readonly deploymentMutationCalled: false;
   readonly executionRetryPermitted: false;
   readonly receipt: JsonCompatibilityDeploymentTransitionReceiptV1 | null;
   readonly archivedAt: number | null;
@@ -117,11 +123,18 @@ export async function executeDeploymentTransition(
   runtime: DeploymentTransitionRuntime = DEFAULT_RUNTIME,
 ): Promise<JsonCompatibilityDeploymentTransitionReceiptV1> {
   const invocation = parseInvocation(input);
-  const configuration = requireConfiguration(env, "execute");
+  const authorized = validateJsonCompatibilityDeploymentTransitionAuthorization(
+    invocation.campaignPlan,
+    invocation.statePlan,
+    invocation.authorizedTransition,
+    { now: new Date(runtimeNow(runtime) * 1000), requireUsableWindow: true },
+  );
+  const configuration = requireExecutionConfiguration(env, authorized);
   const journal = new D1DeploymentTransitionJournal(
     env.DB,
-    repositoryIdentity(configuration),
+    repositoryIdentity(configuration, authorized.request.executionAuthority),
   );
+  let sourceAuthentication: unknown = null;
   return await executeJsonCompatibilityDeploymentTransition({
     campaignPlan: invocation.campaignPlan,
     statePlan: invocation.statePlan,
@@ -129,10 +142,16 @@ export async function executeDeploymentTransition(
     dependencies: {
       now: () => runtimeNow(runtime),
       authenticateSource: async (sourceAuthenticationRequest) => {
-        return await env.JSON_COMPATIBILITY_SOURCE_VERIFIER
+        sourceAuthentication = await env.JSON_COMPATIBILITY_SOURCE_VERIFIER
           .authenticateTransitionSource(sourceAuthenticationRequest);
+        return sourceAuthentication;
       },
       readback: async (readbackInput) => {
+        if (sourceAuthentication === null) {
+          throw new DeploymentTransitionWorkerError(
+            "transition_source_authentication_missing",
+          );
+        }
         if (readbackOrdinal(readbackInput) === 2) {
           await runtime.sleep(
             JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STABILITY_MINIMUM_SECONDS
@@ -140,12 +159,35 @@ export async function executeDeploymentTransition(
               + STABILITY_CLOCK_GRANULARITY_PADDING_MILLISECONDS,
           );
         }
-        return await env.JSON_COMPATIBILITY_DEPLOYMENT_LEAF
-          .readDeploymentState(readbackInput);
+        return await env.JSON_COMPATIBILITY_DEPLOYMENT_READBACK
+          .readDeploymentState({
+            campaignPlan: invocation.campaignPlan,
+            statePlan: invocation.statePlan,
+            authorizedTransition: invocation.authorizedTransition,
+            sourceAuthentication,
+            readbackRequest: readbackInput,
+          });
       },
-      mutateOnce: async (mutationIntent) => {
-        return await env.JSON_COMPATIBILITY_DEPLOYMENT_LEAF
-          .mutateDeploymentOnce(mutationIntent);
+      mutateOnce: async (mutationInput) => {
+        if (sourceAuthentication === null) {
+          throw new DeploymentTransitionWorkerError(
+            "transition_source_authentication_missing",
+          );
+        }
+        if (!isRecord(mutationInput)) {
+          throw new DeploymentTransitionWorkerError(
+            "invalid_deployment_mutation_request",
+          );
+        }
+        return await env.JSON_COMPATIBILITY_DEPLOYMENT_MUTATION
+          .mutateDeploymentOnce({
+            campaignPlan: invocation.campaignPlan,
+            statePlan: invocation.statePlan,
+            authorizedTransition: invocation.authorizedTransition,
+            sourceAuthentication,
+            mutationIntent: mutationInput.mutationIntent,
+            sourceReadbacks: mutationInput.sourceReadbacks,
+          });
       },
       journal,
     },
@@ -156,9 +198,9 @@ export async function getDeploymentTransitionStatus(
   env: DeploymentTransitionEnv,
   input: unknown,
   runtime: DeploymentTransitionRuntime = DEFAULT_RUNTIME,
-): Promise<DeploymentTransitionStatusV1> {
+): Promise<DeploymentTransitionStatusV2> {
   const invocation = parseInvocation(input);
-  const configuration = requireConfiguration(env, "status");
+  const configuration = requireStatusConfiguration(env);
   const authorized = validateJsonCompatibilityDeploymentTransitionAuthorization(
     invocation.campaignPlan,
     invocation.statePlan,
@@ -192,10 +234,10 @@ export async function getDeploymentTransitionStatus(
   }
   const observedAt = runtimeNow(runtime);
   const body: Omit<
-    DeploymentTransitionStatusV1,
+    DeploymentTransitionStatusV2,
     "statusDigestSha256"
   > = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     contract: JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_CONTRACT,
     environment: "staging" as const,
     classification: snapshot.classification,
@@ -226,8 +268,8 @@ export async function getDeploymentTransitionStatus(
       (event) => event.event_kind === "mutation_outcome",
     ).length,
     sourceVerifierCalled: false as const,
-    deploymentLeafReadCalled: false as const,
-    deploymentLeafMutationCalled: false as const,
+    deploymentReadbackCalled: false as const,
+    deploymentMutationCalled: false as const,
     executionRetryPermitted: false as const,
     receipt,
     archivedAt: snapshot.archivedAt,
@@ -242,13 +284,35 @@ export async function getDeploymentTransitionStatus(
 interface TransitionConfiguration {
   readonly serviceName: string;
   readonly versionId: string;
-  readonly deploymentLeafServiceName: string;
+}
+
+interface TransitionExecutionConfiguration extends TransitionConfiguration {
+  readonly deploymentReadbackServiceName: string;
+  readonly deploymentMutationServiceName: string;
   readonly sourceVerifierServiceName: string;
 }
 
-function requireConfiguration(
+interface SignedServiceAuthority {
+  readonly serviceName: string;
+  readonly entrypoint: string;
+  readonly versionId: string;
+  readonly profileVersion: 1;
+  readonly privateRpcOnly: true;
+  readonly capability: string;
+  readonly credentialIdSha256: string | null;
+  readonly identitySha256: string;
+}
+
+interface SignedExecutionAuthority {
+  readonly authorityDigestSha256: string;
+  readonly coordinator: SignedServiceAuthority;
+  readonly sourceVerifier: SignedServiceAuthority;
+  readonly readback: SignedServiceAuthority;
+  readonly mutation: SignedServiceAuthority;
+}
+
+function requireBaseConfiguration(
   env: DeploymentTransitionEnv,
-  purpose: "execute" | "status",
 ): TransitionConfiguration {
   if (
     env.ENVIRONMENT !== "staging"
@@ -257,45 +321,13 @@ function requireConfiguration(
   ) {
     throw new DeploymentTransitionWorkerError("transition_worker_disabled");
   }
-  if (
-    purpose === "execute"
-    && env.JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EXECUTION_ENABLED
-      !== "true"
-  ) {
-    throw new DeploymentTransitionWorkerError("transition_execution_disabled");
-  }
-  if (
-    purpose === "status"
-    && env.JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_READ_ENABLED
-      !== "true"
-  ) {
-    throw new DeploymentTransitionWorkerError("transition_status_disabled");
-  }
   const serviceName = serviceNameValue(
     env.JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_SERVICE_NAME,
     "coordinator service name",
   );
-  const deploymentLeafServiceName = serviceNameValue(
-    env.JSON_COMPATIBILITY_DEPLOYMENT_LEAF_SERVICE_NAME,
-    "deployment leaf service name",
-  );
-  const sourceVerifierServiceName = serviceNameValue(
-    env.JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME,
-    "source verifier service name",
-  );
   const versionId = versionValue(env.CF_VERSION_METADATA?.id);
   if (
-    env.JSON_COMPATIBILITY_DEPLOYMENT_LEAF === null
-    || typeof env.JSON_COMPATIBILITY_DEPLOYMENT_LEAF !== "object"
-    || typeof env.JSON_COMPATIBILITY_DEPLOYMENT_LEAF.readDeploymentState
-      !== "function"
-    || typeof env.JSON_COMPATIBILITY_DEPLOYMENT_LEAF.mutateDeploymentOnce
-      !== "function"
-    || env.JSON_COMPATIBILITY_SOURCE_VERIFIER === null
-    || typeof env.JSON_COMPATIBILITY_SOURCE_VERIFIER !== "object"
-    || typeof env.JSON_COMPATIBILITY_SOURCE_VERIFIER
-      .authenticateTransitionSource !== "function"
-    || env.DB === null
+    env.DB === null
     || typeof env.DB !== "object"
     || typeof env.DB.withSession !== "function"
   ) {
@@ -306,19 +338,116 @@ function requireConfiguration(
   return {
     serviceName,
     versionId,
-    deploymentLeafServiceName,
+  };
+}
+
+function requireStatusConfiguration(
+  env: DeploymentTransitionEnv,
+): TransitionConfiguration {
+  if (
+    env.JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_STATUS_READ_ENABLED
+      !== "true"
+  ) {
+    throw new DeploymentTransitionWorkerError("transition_status_disabled");
+  }
+  return requireBaseConfiguration(env);
+}
+
+function requireExecutionConfiguration(
+  env: DeploymentTransitionEnv,
+  authorized: { readonly request: {
+    readonly executionAuthority: SignedExecutionAuthority;
+  } },
+): TransitionExecutionConfiguration {
+  if (
+    env.JSON_COMPATIBILITY_DEPLOYMENT_TRANSITION_EXECUTION_ENABLED
+      !== "true"
+  ) {
+    throw new DeploymentTransitionWorkerError("transition_execution_disabled");
+  }
+  const base = requireBaseConfiguration(env);
+  const deploymentReadbackServiceName = serviceNameValue(
+    env.JSON_COMPATIBILITY_DEPLOYMENT_READBACK_SERVICE_NAME,
+    "deployment readback service name",
+  );
+  const deploymentMutationServiceName = serviceNameValue(
+    env.JSON_COMPATIBILITY_DEPLOYMENT_MUTATION_SERVICE_NAME,
+    "deployment mutation service name",
+  );
+  const sourceVerifierServiceName = serviceNameValue(
+    env.JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME,
+    "source verifier service name",
+  );
+  if (
+    env.JSON_COMPATIBILITY_DEPLOYMENT_READBACK === null
+    || typeof env.JSON_COMPATIBILITY_DEPLOYMENT_READBACK !== "object"
+    || typeof env.JSON_COMPATIBILITY_DEPLOYMENT_READBACK.readDeploymentState
+      !== "function"
+    || env.JSON_COMPATIBILITY_DEPLOYMENT_MUTATION === null
+    || typeof env.JSON_COMPATIBILITY_DEPLOYMENT_MUTATION !== "object"
+    || typeof env.JSON_COMPATIBILITY_DEPLOYMENT_MUTATION.mutateDeploymentOnce
+      !== "function"
+    || env.JSON_COMPATIBILITY_SOURCE_VERIFIER === null
+    || typeof env.JSON_COMPATIBILITY_SOURCE_VERIFIER !== "object"
+    || typeof env.JSON_COMPATIBILITY_SOURCE_VERIFIER
+      .authenticateTransitionSource !== "function"
+  ) {
+    throw new DeploymentTransitionWorkerError(
+      "transition_worker_binding_invalid",
+    );
+  }
+  const authority = authorized.request.executionAuthority;
+  for (const [label, actual, expected] of [
+    ["coordinator service", base.serviceName,
+      authority.coordinator.serviceName],
+    ["coordinator entrypoint", "JsonCompatibilityDeploymentTransitionEntrypoint",
+      authority.coordinator.entrypoint],
+    ["coordinator version", base.versionId,
+      authority.coordinator.versionId],
+    ["coordinator capability", "coordinate-only",
+      authority.coordinator.capability],
+    ["source verifier service", sourceVerifierServiceName,
+      authority.sourceVerifier.serviceName],
+    ["source verifier entrypoint", "JsonCompatibilitySourceVerifierEntrypoint",
+      authority.sourceVerifier.entrypoint],
+    ["readback service", deploymentReadbackServiceName,
+      authority.readback.serviceName],
+    ["readback entrypoint", "JsonCompatibilityDeploymentReadbackEntrypoint",
+      authority.readback.entrypoint],
+    ["mutation service", deploymentMutationServiceName,
+      authority.mutation.serviceName],
+    ["mutation entrypoint", "JsonCompatibilityDeploymentMutationEntrypoint",
+      authority.mutation.entrypoint],
+  ]) {
+    if (actual !== expected) {
+      throw new DeploymentTransitionWorkerError(
+        "transition_execution_authority_mismatch",
+        label,
+      );
+    }
+  }
+  return {
+    ...base,
+    deploymentReadbackServiceName,
+    deploymentMutationServiceName,
     sourceVerifierServiceName,
   };
 }
 
 function repositoryIdentity(
-  configuration: TransitionConfiguration,
+  configuration: TransitionExecutionConfiguration,
+  executionAuthority: SignedExecutionAuthority,
 ): TransitionRepositoryIdentity {
   return {
+    coordinatorServiceName: configuration.serviceName,
     coordinatorVersionId: configuration.versionId,
     coordinatorProfileVersion: 1,
-    deploymentLeafServiceName: configuration.deploymentLeafServiceName,
+    deploymentReadbackServiceName:
+      configuration.deploymentReadbackServiceName,
+    deploymentMutationServiceName:
+      configuration.deploymentMutationServiceName,
     sourceVerifierServiceName: configuration.sourceVerifierServiceName,
+    executionAuthority,
   };
 }
 

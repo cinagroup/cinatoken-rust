@@ -435,18 +435,18 @@ Before any isolated staging transition:
    execute one create-once R2 write, and produce an independent Verifier
    body/version/ETag/metadata receipt; response ambiguity permits readback-only
    recovery and never a second put;
-8. implement and audit the all-seven-service deployment leaf with physically
-   separate read and mutation capabilities, exact account/service/version/
-   entrypoint allowlists, one mutation send, no automatic retry, stable target
-   readback, and an immutable operation receipt;
+8. independently audit and remotely deploy the implemented all-seven-service
+   Reader and Mutator with exact account/service/version/entrypoint allowlists,
+   one mutation send, no automatic retry, complete live public-route proof,
+   stable target readback, and immutable Coordinator/Mutator D1 evidence;
 9. provision staging D1 through a separately approved create-once operation:
    prove the intended name is absent, send create at most once, resolve an
    ambiguous response only by read-only inventory, freeze the returned
    database ID and migration-set digest, apply the immutable schema once, and
    independently read back the exact migration/table/index/trigger inventory;
 10. deploy the Transition Worker dark only after its D1 binding, append-only
-    journal schema, source-verifier binding, deployment-leaf binding, routes,
-    gates, and Version Metadata are independently proven;
+    journal schema, source-verifier, Reader, and Mutator bindings, routes,
+    gates, caller inventory, and Version Metadata are independently proven;
 11. upload and read back all 18 frozen artifacts, regenerate account-wide
     inventory after bootstrap, and execute only the first two transitions
     under separate owner approvals;

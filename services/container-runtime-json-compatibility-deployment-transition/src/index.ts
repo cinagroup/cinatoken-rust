@@ -4,7 +4,7 @@ import {
   executeDeploymentTransition,
   getDeploymentTransitionStatus,
   type DeploymentTransitionEnv,
-  type DeploymentTransitionStatusV1,
+  type DeploymentTransitionStatusV2,
 } from "./coordinator";
 import type {
   JsonCompatibilityDeploymentTransitionReceiptV1,
@@ -20,7 +20,7 @@ export class JsonCompatibilityDeploymentTransitionEntrypoint
 
   async getTransitionStatus(
     input: unknown,
-  ): Promise<DeploymentTransitionStatusV1> {
+  ): Promise<DeploymentTransitionStatusV2> {
     return await getDeploymentTransitionStatus(this.env, input);
   }
 }

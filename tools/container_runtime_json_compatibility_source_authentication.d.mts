@@ -1,5 +1,6 @@
 import type {
   JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2,
+  JsonCompatibilityDeploymentTransitionSourceEvidenceV2,
 } from "./container_runtime_json_compatibility_deployment_transition.mjs";
 import type {
   JsonCompatibilityAccountBindingEvidenceV1,
@@ -25,6 +26,8 @@ export const JSON_COMPATIBILITY_SOURCE_ARCHIVE_RECEIPT_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v3";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_SUBJECT_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-source-signature-subject-v2";
+export const JSON_COMPATIBILITY_SOURCE_SIGNING_INTENT_CONTRACT:
+  "cinatoken-container-runtime-json-compatibility-source-signing-intent-v1";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_ENVELOPE_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-source-signature-envelope-v2";
 export const JSON_COMPATIBILITY_SOURCE_AUTHENTICATION_BUNDLE_CONTRACT:
@@ -314,6 +317,29 @@ export interface JsonCompatibilitySourceSignatureSubjectV2 {
   readonly expiresAt: number;
 }
 
+export interface JsonCompatibilitySourceSigningIntentV1 {
+  readonly schemaVersion: 1;
+  readonly contract:
+    "cinatoken-container-runtime-json-compatibility-source-signing-intent-v1";
+  readonly environment: "staging";
+  readonly operationIdSha256: string;
+  readonly campaignPlanDigestSha256: string;
+  readonly statePlanDigestSha256: string;
+  readonly transition:
+    JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2["transition"];
+  readonly sourceEvidence: Omit<
+    JsonCompatibilityDeploymentTransitionSourceEvidenceV2,
+    "sourceSignatureEnvelopeSha256"
+  >;
+  readonly accountBindingEvidenceSha256: string;
+  readonly keyId: string;
+  readonly issuedAt: number;
+  readonly notBefore: number;
+  readonly expiresAt: number;
+  readonly sourceSignatureSubjectSha256: string;
+  readonly sourceSigningIntentSha256: string;
+}
+
 export type JsonCompatibilitySourceSignatureSubjectV1 =
   JsonCompatibilitySourceSignatureSubjectV2;
 
@@ -467,11 +493,36 @@ export function buildJsonCompatibilitySourceSignatureSubject(input: {
   readonly expiresAt: number;
 }): JsonCompatibilitySourceSignatureSubjectV2;
 
+export function buildJsonCompatibilitySourceSigningIntent(input: {
+  readonly operationIdSha256: string;
+  readonly campaignPlanDigestSha256: string;
+  readonly statePlanDigestSha256: string;
+  readonly transition:
+    JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2["transition"];
+  readonly sourceEvidence: Omit<
+    JsonCompatibilityDeploymentTransitionSourceEvidenceV2,
+    "sourceSignatureEnvelopeSha256"
+  >;
+  readonly accountBindingEvidenceSha256: string;
+  readonly keyId: string;
+  readonly issuedAt: number;
+  readonly notBefore: number;
+  readonly expiresAt: number;
+}): JsonCompatibilitySourceSigningIntentV1;
+
+export function buildJsonCompatibilitySourceSignatureSubjectFromIntent(
+  intent: unknown,
+): JsonCompatibilitySourceSignatureSubjectV2;
+
 export function buildJsonCompatibilitySourceSignatureEnvelope(input: {
   readonly subject: JsonCompatibilitySourceSignatureSubjectV2;
   readonly signerSpkiBase64url: string;
   readonly signatureBase64url: string;
 }): JsonCompatibilitySourceSignatureEnvelopeV2;
+
+export function validateJsonCompatibilitySourceSignatureSubject(
+  input: unknown,
+): JsonCompatibilitySourceSignatureSubjectV2;
 
 export function validateJsonCompatibilitySourceSignatureEnvelope(
   input: unknown,

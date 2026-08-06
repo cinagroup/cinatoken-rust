@@ -7,8 +7,10 @@ on:
       - "bun.lock"
       - "package.json"
       - "services/container-runtime-json-compatibility-source-verifier/**"
+      - "services/container-runtime-json-compatibility-source-publisher/**"
       - "services/container-runtime-json-compatibility-deployment-transition/**"
       - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
+      - "tests/container-runtime-json-compatibility-source-publication.test.mjs"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
       - "tests/container-runtime-json-compatibility-external-worm-archive.test.mjs"
       - "tests/container-runtime-json-compatibility-external-worm-s3-cli.test.mjs"
@@ -27,6 +29,10 @@ on:
       - "tools/container_runtime_json_compatibility_external_worm_s3_closure.*"
       - "tools/container_runtime_json_compatibility_external_worm_s3_observation.*"
       - "tools/container_runtime_json_compatibility_source_authentication.*"
+      - "tools/container_runtime_json_compatibility_source_publication.*"
+      - "tools/sign_container_runtime_json_compatibility_source_bundle.*"
+      - "tools/assemble_container_runtime_json_compatibility_source_publication.*"
+      - "tools/assemble_container_runtime_json_compatibility_source_signature_subject.*"
       - "tools/container_runtime_json_compatibility_source_manifest.mjs"
       - "tools/lib/container_runtime_json_compatibility_account_binding_collector.*"
       - "tools/lib/container_runtime_json_compatibility_external_worm_s3.*"
@@ -39,8 +45,10 @@ on:
       - "bun.lock"
       - "package.json"
       - "services/container-runtime-json-compatibility-source-verifier/**"
+      - "services/container-runtime-json-compatibility-source-publisher/**"
       - "services/container-runtime-json-compatibility-deployment-transition/**"
       - "tests/container-runtime-json-compatibility-deployment-transition.test.mjs"
+      - "tests/container-runtime-json-compatibility-source-publication.test.mjs"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
       - "tests/container-runtime-json-compatibility-external-worm-archive.test.mjs"
       - "tests/container-runtime-json-compatibility-external-worm-s3-cli.test.mjs"
@@ -59,6 +67,10 @@ on:
       - "tools/container_runtime_json_compatibility_external_worm_s3_closure.*"
       - "tools/container_runtime_json_compatibility_external_worm_s3_observation.*"
       - "tools/container_runtime_json_compatibility_source_authentication.*"
+      - "tools/container_runtime_json_compatibility_source_publication.*"
+      - "tools/sign_container_runtime_json_compatibility_source_bundle.*"
+      - "tools/assemble_container_runtime_json_compatibility_source_publication.*"
+      - "tools/assemble_container_runtime_json_compatibility_source_signature_subject.*"
       - "tools/container_runtime_json_compatibility_source_manifest.mjs"
       - "tools/lib/container_runtime_json_compatibility_account_binding_collector.*"
       - "tools/lib/container_runtime_json_compatibility_external_worm_s3.*"
@@ -100,7 +112,7 @@ jobs:
       - name: Verify account-wide binding evidence and collector safety
         run: bun run check:container-runtime:json-compatibility-account-binding-collector
 
-      - name: Verify private R2 and Ed25519 source verifier
+      - name: Verify private C4 source publisher and verifier
         run: bun run check:container-runtime:json-compatibility-source-verifier
 
       - name: Verify transition integration through the real source verifier

@@ -421,7 +421,9 @@ describe("JSON compatibility deterministic deployment transition executor", () =
           sourceAuthenticationRequest: detachedRequest,
           classification: "authenticated",
           reasonCode: null,
-          verifierIdentitySha256: digest("source-verifier"),
+          verifierIdentitySha256:
+            sourceAuthenticationRequest.sourceEvidence
+              .sourceVerifierIdentitySha256,
           evidenceSha256: digest("source-authentication-evidence"),
           verifiedAt: NOW,
         });
@@ -436,13 +438,35 @@ describe("JSON compatibility deterministic deployment transition executor", () =
     expect(substituted.mutations).toHaveLength(0);
     expect(substituted.readbacks).toHaveLength(0);
 
+    const wrongVerifier = createHarness(authorized, {
+      sourceAuthenticationOverride: ({ sourceAuthenticationRequest }) =>
+        buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
+          sourceAuthenticationRequest,
+          classification: "authenticated",
+          reasonCode: null,
+          verifierIdentitySha256: digest("detached-source-verifier"),
+          evidenceSha256: digest("detached-verifier-evidence"),
+          verifiedAt: NOW,
+        }),
+    });
+    await expect(executeJsonCompatibilityDeploymentTransition({
+      campaignPlan,
+      statePlan,
+      authorizedTransition: authorized,
+      dependencies: wrongVerifier.dependencies,
+    })).rejects.toThrow(/source verifier identity/);
+    expect(wrongVerifier.mutations).toHaveLength(0);
+    expect(wrongVerifier.readbacks).toHaveLength(0);
+
     const stale = createHarness(authorized, {
       sourceAuthenticationOverride: ({ sourceAuthenticationRequest }) =>
         buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
           sourceAuthenticationRequest,
           classification: "authenticated",
           reasonCode: null,
-          verifierIdentitySha256: digest("source-verifier"),
+          verifierIdentitySha256:
+            sourceAuthenticationRequest.sourceEvidence
+              .sourceVerifierIdentitySha256,
           evidenceSha256: digest("stale-source-authentication-evidence"),
           verifiedAt: NOW - 60,
         }),
@@ -586,7 +610,9 @@ function createHarness(authorized, options = {}) {
             || options.sourceClassification === "authenticated"
           ? null
           : `source_fixture_${options.sourceClassification}`,
-        verifierIdentitySha256: digest("source-verifier"),
+        verifierIdentitySha256:
+          sourceAuthenticationRequest.sourceEvidence
+            .sourceVerifierIdentitySha256,
         evidenceSha256: digest("source-authentication-evidence"),
         verifiedAt: NOW,
       });

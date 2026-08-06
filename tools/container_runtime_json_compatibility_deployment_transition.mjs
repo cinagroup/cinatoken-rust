@@ -1435,6 +1435,11 @@ function validateSourceAuthentication(input, expectedRequest) {
     "authenticated source request",
   );
   sha256(proof.verifierIdentitySha256, "source verifier identity");
+  equal(
+    proof.verifierIdentitySha256,
+    expectedRequest.sourceEvidence.sourceVerifierIdentitySha256,
+    "source verifier identity",
+  );
   sha256(proof.evidenceSha256, "source authentication evidence");
   integer(proof.verifiedAt, "source authentication time");
   const { sourceAuthenticationDigestSha256, ...subject } = proof;

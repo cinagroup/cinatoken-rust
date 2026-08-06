@@ -28936,7 +28936,7 @@ remain open.
 | C1 credential ceremony | two signed creation receipts, distinct IDs/custody, least privilege, verify-to-receipt match, revocation path | local signed-receipt/trust/revocation protocol, stdin-only signer, profile assembler, and pre-inventory enforcement implemented; no real issuance ceremony or remote verify evidence |
 | C2 immutable raw source | create-once sink, external compliance WORM, 365-day retention, independent exact readback | terminal local capture, provider-neutral C2 contract, S3 Object Lock data plane and Source Verifier replay implemented locally; no real external publication/readback |
 | C3 stable account proof | two complete traversals 5-900 seconds apart with identical service/version/zone/route/edge sets | not run |
-| C4 source publication | isolated Ed25519 ceremony, signed bundle v3, create-once R2 upload and independent body/version/ETag/metadata readback | v3 bundle validation implemented locally; real signer and R2 ceremony not completed |
+| C4 source publication | isolated Ed25519 ceremony, signed bundle v3, create-once R2 upload and independent body/version/ETag/metadata readback | local stdin-only signer, packet assembler, private one-put Publisher and independent Verifier receipt implemented; real managed-key and remote R2 ceremony not completed |
 | D0 deployment leaf | private all-seven-service leaf, physical read/mutate separation, exact owner/operation/plan/transition/service/version binding, one send, no retry, stable target proof | deployment mutation remains mocked locally |
 | D1 staging database | owner-approved create-once D1 provisioning, no blind retry after ambiguity, frozen returned database ID, immutable migration-set application and exact schema readback | remote D1 not created or proven |
 | D2 transition campaign | dark control plane, locked receipt archive, readback-only inflight resolution, all 18 artifacts, four transitions, fault campaign and rollback evidence | not started remotely |
@@ -29156,3 +29156,102 @@ independently replayed:
 
 Amazon S3 and Cloudflare were not called by this implementation increment.
 Go/VPS remains authoritative and production remains **NO-GO**.
+
+## 2026-08-06 C4 Source Publication Foundation
+
+This increment implements the local C4 ceremony and R2 retrieval boundary. It
+does not claim a managed signing key, deployed Worker, remote R2 object,
+account audit record, two-person ceremony or production authorization. The
+detailed contract and run order are maintained in
+`docs/container-runtime-json-compatibility-source-publication.md`.
+
+The C4 dependency graph is now explicit and acyclic:
+
+```text
+C1/C2 roots
+  -> stable C4 subject
+  -> envelope E
+  -> owner-approved transition and final source request R
+  -> bundle B
+  -> publication packet P
+  -> optional write receipt W
+  -> independent readback request/receipt
+```
+
+The signed subject intentionally excludes `E`, the authorized-transition and
+operation digests, and all publication/readback receipts. The owner approval
+binds `E`, while bundle validation reconstructs the exact signed projection
+from final `R`. Publication artifacts are later ceremony evidence and are not
+fed back into the bundle, which would create a digest cycle.
+
+The new credential-free subject assembler accepts an externally anchored
+canonical signing intent containing only stable pre-envelope fields. It uses
+internal non-authorizing projection sentinels, rejects operator-supplied
+placeholder digests, and writes one create-only subject. The isolated signer
+then accepts that canonical subject and one canonical
+Verifier policy, requires an independently supplied policy digest, accepts one
+bounded non-TTY Ed25519 PKCS8 DER/PEM stream, derives and matches the approved
+current/previous SPKI slot, bounds previous-key expiry, self-verifies, clears
+input buffers and fsyncs one create-only envelope. It rejects key material in
+argv/environment and known Cloudflare/AWS credential variables, performs no
+network request and never persists the private key.
+
+The credential-free assembler replays the complete v3 bundle at a frozen time,
+requires exact externally approved Verifier policy and Version identity
+digests, and writes one create-only publication packet. The packet binds final
+request, bundle, fixed envelope-derived key, canonical body SHA-256/length,
+content type and the exact three custom metadata fields expected by the
+Verifier.
+
+The private TypeScript Source Publisher has an inert default export, one named
+RPC, no public route, no signing key, no account API client and no R2 read/list/
+delete path. Both gates are false in tracked local/staging config. It performs
+one atomic `R2Bucket.put` with `onlyIf.etagDoesNotMatch="*"`, body checksum and
+exact metadata. `null` is occupied; an exception or malformed response is
+ambiguous. Neither condition is retried or overwritten. An unambiguous result
+binds returned version/ETag digests and Publisher Version Metadata in a
+write-only receipt.
+
+The separate read-only Source Verifier now exposes an independent publication
+readback RPC. Its request binds externally approved `P` and requires exactly
+one of `published + W` or `ambiguous + null`. It performs head/get, rejects
+version/ETag/size drift, validates canonical body and metadata, replays C4,
+revocation, C2 signatures and S3 closure, rebuilds `P`, and compares every
+available write-receipt identity. Thus response loss can be resolved only by
+exact independent readback, never by a second put. The receipt binds the
+request, packet, optional writer identity, Verifier service/version and all
+observed object digests.
+
+The Transition protocol also now rejects an authenticated proof whose
+`verifierIdentitySha256` differs from the identity approved in the exact source
+request. This closes wrong-Service-Binding or substitute-implementation drift
+before any deployment mutation.
+
+The correct production order is now frozen: deploy the Verifier dark with
+gates false; independently read back its real Version Metadata ID and policy;
+derive the Verifier identity; deploy/read back the Publisher dark; only then
+run C4 signing, owner approval, bundle/packet assembly, one brief Publisher
+write ceremony and independent Verifier readback. The earlier sequence that
+signed before the real Verifier version existed was invalid.
+
+Focused local acceptance includes five C4 protocol/CLI tests, seven Publisher
+Node tests, two real Workerd/R2 Publisher tests, strict declarations and
+generated-type drift, plus local/staging Wrangler dry-runs at 462.65 KiB upload
+and 74.49 KiB gzip with both Publisher gates false. The expanded Verifier and
+Transition suites independently cover packet/write-receipt drift, ambiguous
+write recovery and verifier-identity substitution. These are local and
+synthetic results, not remote evidence.
+
+The complete repository `bun run check` passed with exit code 0 in 1,348.6
+seconds on 2026-08-06. It covered the configured frontend, Worker/Workerd,
+supply-chain, Rust workspace and wasm32 gates. Existing Rust dead-code warnings
+remain warnings; this result is not live Cloudflare evidence.
+
+Production C4 remains open until a real isolated managed-key ceremony, two
+person approval, signed revocation flow, remote dark Publisher/Verifier version
+and config readback, create-once R2 result, independent exact object readback,
+caller topology/audit evidence and post-ceremony gate disablement are retained
+and replayed. Cloudflare was not called and no credential was read. C3, D0,
+remote D1, four-transition campaign, rollback and wider provider/billing/
+storage/SLO/security/privacy/cutover gates remain open. Go/VPS remains
+authoritative and production remains **NO-GO**.

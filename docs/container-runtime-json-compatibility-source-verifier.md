@@ -382,12 +382,15 @@ Current focused evidence on 2026-08-06 is:
 | External WORM contract, S3 data plane, CLI and closure | 29 tests, 354 expectations; strict declarations; credential-free describe/two-mode dry-runs; no provider call; exact C2 policy/manifest/dual-signature closure, raw observation-set binding and S3 COMPLIANCE/readback fault classification |
 | Transition protocol | 13 tests, 150 expectations; includes exact v2 request/proof replay, cross-operation/plan binding, and proof-time rejection |
 | Generated types and TypeScript | pass |
-| Source verifier dry-runs | local and staging pass; 545.32 KiB upload / 88.85 KiB gzip; both gates false |
-| Source verifier Node tests | 3 files, 19 tests; includes pre-R2 zero-anchor rejection, pinned C2 policy, forged writer/readback, terminal substitution, raw S3 observation substitution and C2/C4 signer-reuse rejection |
-| Source verifier Workerd/R2 tests | 1 file, 3 tests; canonical read-only verification, missing object, and revocation |
+| Source verifier dry-runs | local and staging pass; 565.43 KiB upload / 91.53 KiB gzip; both gates false |
+| C4 signer/packet protocol | 5 tests, 26 expectations; acyclic intent projection, stdin-only Ed25519, external policy/identity anchors, digest-cycle exclusion and create-only assembly |
+| Source Publisher dry-runs | local and staging pass; 462.65 KiB upload / 74.49 KiB gzip; both gates false |
+| Source Publisher Node/Workerd tests | 7 Node and 2 real Workerd/R2 tests; one conditional put, occupied/ambiguous no-retry, exact body/metadata and default-off gates |
+| Source verifier Node tests | 3 files, 20 tests; includes pre-R2 zero-anchor rejection, pinned C2 policy, forged writer/readback, terminal/S3 substitution, C2/C4 signer reuse and packet/write-receipt readback binding |
+| Source verifier Workerd/R2 tests | 1 file, 3 tests; canonical read-only verification, independent publication receipt, missing object, and revocation |
 | Transition Worker Node tests | 2 files, 8 tests |
 | Transition Worker Workerd integration | 1 file, 2 tests; real secondary verifier Worker plus shared R2 and real D1 |
-| Complete repository | `bun run check` passed with exit code 0 in 1,444.1 seconds |
+| Complete repository | `bun run check` passed with exit code 0 in 1,348.6 seconds on 2026-08-06 |
 
 The integrated Workerd test seeds a canonical R2 bundle, routes the transition
 through the actual verifier named entrypoint, proves exactly one verifier call,
@@ -421,15 +424,17 @@ Before any isolated staging transition:
    and independently read back every raw page and terminal artifact;
 4. require stable service, active-version, zone, route, and cross-script edge
    sets across both traversals, then generate the canonical account evidence;
-5. implement an isolated offline signer ceremony with current/previous key
-   rotation, revocation publication, two-person approval, and no key in argv,
-   environment, tracked files, logs, Worker secrets, or R2;
-6. implement a create-once R2 uploader that refuses an existing key, publishes
-   canonical body/metadata, reads back exact version/ETag/body, and retains the
-   result independently;
-7. create the remote R2 bucket and deploy this Worker dark with both gates
+5. create the remote R2 bucket and deploy this Worker dark with both gates
    false, then independently read back its exact version, named export,
    configuration, trust policy, R2 binding, route absence, and every caller;
+6. derive the exact verifier identity from that real Version Metadata ID and
+   frozen policy, then run the isolated offline signer ceremony with
+   current/previous key rotation, revocation publication, two-person approval,
+   and no key in argv, environment, tracked files, logs, Worker secrets, or R2;
+7. deploy/read back the private Publisher dark, assemble the final packet,
+   execute one create-once R2 write, and produce an independent Verifier
+   body/version/ETag/metadata receipt; response ambiguity permits readback-only
+   recovery and never a second put;
 8. implement and audit the all-seven-service deployment leaf with physically
    separate read and mutation capabilities, exact account/service/version/
    entrypoint allowlists, one mutation send, no automatic retry, stable target
@@ -454,12 +459,13 @@ Before any isolated staging transition:
     readbacks, D1 creation/migration evidence, and deployment receipts for
     independent offline replay.
 
-The source verifier, collector v2, credential-provenance v1, terminal raw
-capture, C2 contract and Amazon S3 data plane close local implementation gaps
-but have not produced admissible remote evidence. Real signed
+The source verifier, source publisher, isolated stdin-only C4 signer,
+credential-free packet assembler, collector v2, credential-provenance v1,
+terminal raw capture, C2 contract and Amazon S3 data plane close local
+implementation gaps but have not produced admissible remote evidence. Real signed
 credential-issuance receipts and managed-key ceremony evidence, external WORM
-publication/readback attestations, source-bundle signer, R2 uploader, remote
-bucket/verifier readback,
+publication/readback attestations, managed C4 signing ceremony, remote
+bucket/Publisher/Verifier readback,
 deployment leaf, D1 create-once provisioner and immutable remote schema,
 inflight resolver, fault campaign, and wider provider/billing/settlement/
 storage/SLO/cost/security/privacy/rollback/cutover evidence remain open. The

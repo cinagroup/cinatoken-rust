@@ -51,11 +51,12 @@ describe("source verifier deployment boundary", () => {
     },
   );
 
-  test("exports named RPC only and has no R2 write or list path", async () => {
+  test("exports named read-only RPCs and has no R2 write or list path", async () => {
     const index = await readFile(path.join(root, "src/index.ts"), "utf8");
     const verifier = await readFile(path.join(root, "src/verifier.ts"), "utf8");
     expect(index).toMatch(/extends WorkerEntrypoint/u);
     expect(index).toMatch(/authenticateTransitionSource/u);
+    expect(index).toMatch(/readBackSourcePublication/u);
     expect(index).toMatch(
       /export default class JsonCompatibilitySourceVerifierDefaultEntrypoint/u,
     );

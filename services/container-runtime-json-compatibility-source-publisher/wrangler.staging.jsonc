@@ -1,0 +1,32 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cinatoken-container-runtime-json-compatibility-source-publisher-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
+  "vars": {
+    "ENVIRONMENT": "staging",
+    "JSON_COMPATIBILITY_SOURCE_PUBLISHER_ENABLED": "false",
+    "JSON_COMPATIBILITY_SOURCE_PUBLISHER_R2_WRITE_ENABLED": "false",
+    "JSON_COMPATIBILITY_SOURCE_PUBLISHER_SERVICE_NAME": "cinatoken-container-runtime-json-compatibility-source-publisher-staging",
+    "JSON_COMPATIBILITY_SOURCE_BUNDLE_KEY_PREFIX": "container-runtime/json-compatibility/source-authentication/v3/sha256",
+    "JSON_COMPATIBILITY_SOURCE_PUBLISHER_EXPECTED_VERIFIER_POLICY_SHA256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "JSON_COMPATIBILITY_SOURCE_PUBLISHER_EXPECTED_VERIFIER_IDENTITY_SHA256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "r2_buckets": [
+    {
+      "binding": "SOURCE_AUTHENTICATION_BUCKET",
+      "bucket_name": "cinatoken-json-compatibility-source-authentication-staging",
+      "remote": false
+    }
+  ]
+}

@@ -8,11 +8,20 @@ import type {
   JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2,
   JsonCompatibilityDeploymentTransitionSourceAuthenticationV2,
 } from "../../../tools/container_runtime_json_compatibility_deployment_transition.mjs";
+import type {
+  JsonCompatibilitySourcePublicationReadbackReceiptV1,
+} from "../../../tools/container_runtime_json_compatibility_source_publication.mjs";
+import {
+  buildJsonCompatibilitySourcePublicationReadbackRequest,
+} from "../../../tools/container_runtime_json_compatibility_source_publication.mjs";
 
 interface SourceVerifierRpcBinding {
   authenticateTransitionSource(
     input: unknown,
   ): Promise<JsonCompatibilityDeploymentTransitionSourceAuthenticationV2>;
+  readBackSourcePublication(
+    input: unknown,
+  ): Promise<JsonCompatibilitySourcePublicationReadbackReceiptV1>;
 }
 
 interface RuntimeTestEnv {
@@ -22,6 +31,7 @@ interface RuntimeTestEnv {
   readonly TEST_SOURCE_AUTHENTICATION_BUNDLE: string;
   readonly TEST_SOURCE_AUTHENTICATION_BUNDLE_KEY: string;
   readonly TEST_SOURCE_AUTHENTICATION_BUNDLE_SHA256: string;
+  readonly TEST_SOURCE_PUBLICATION_PACKET_SHA256: string;
   readonly TEST_SOURCE_SIGNATURE_ENVELOPE_SHA256: string;
   readonly TEST_SOURCE_SIGNER_SPKI_SHA256: string;
 }
@@ -54,6 +64,39 @@ describe("source verifier named RPC with real R2", () => {
       version: before?.version,
       etag: before?.etag,
       size: before?.size,
+    });
+    const readback = await runtimeEnv.JSON_COMPATIBILITY_SOURCE_VERIFIER_NAMED
+      .readBackSourcePublication(
+        buildJsonCompatibilitySourcePublicationReadbackRequest({
+          sourceAuthenticationRequest: request,
+          expectedPublicationPacketSha256:
+            runtimeEnv.TEST_SOURCE_PUBLICATION_PACKET_SHA256,
+          writeOutcome: "ambiguous",
+          writeReceipt: null,
+        }),
+      );
+    expect(readback).toMatchObject({
+      contract:
+        "cinatoken-container-runtime-json-compatibility-source-publication-readback-receipt-v1",
+      bundleKey: runtimeEnv.TEST_SOURCE_AUTHENTICATION_BUNDLE_KEY,
+      bundleSha256: runtimeEnv.TEST_SOURCE_AUTHENTICATION_BUNDLE_SHA256,
+      publicationPacketSha256:
+        runtimeEnv.TEST_SOURCE_PUBLICATION_PACKET_SHA256,
+      writeOutcome: "ambiguous",
+      writeReceiptSha256: null,
+      publisherServiceName: null,
+      publisherVersionId: null,
+      sourceVerifierServiceName:
+        "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
+      sourceVerifierVersionId: "source-verifier-runtime-version-001",
+      bodyByteLength: before?.size,
+      sourceSignatureEnvelopeSha256:
+        runtimeEnv.TEST_SOURCE_SIGNATURE_ENVELOPE_SHA256,
+      exactBodyReadback: true,
+      exactVersionReadback: true,
+      exactEtagReadback: true,
+      exactMetadataReadback: true,
+      independentFromPublisher: true,
     });
   });
 

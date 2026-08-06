@@ -22,10 +22,9 @@ export class JsonCompatibilitySourceVerifierEntrypoint
       classification: "authenticated",
       reasonCode: null,
       request: sourceAuthenticationRequest,
-      verifierIdentitySha256: await sha256Canonical({
-        service: "runtime-source-verifier",
-        version: 1,
-      }),
+      verifierIdentitySha256:
+        sourceAuthenticationRequest.sourceEvidence
+          .sourceVerifierIdentitySha256,
       evidenceSha256: await sha256Canonical({
         sourceAuthenticationRequest,
         verification: "runtime-fixture",

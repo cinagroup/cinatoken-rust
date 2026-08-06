@@ -5,6 +5,9 @@ import { defineConfig } from "vitest/config";
 import {
   createSourceAuthenticationFixture,
 } from "../../tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs";
+import {
+  buildJsonCompatibilitySourcePublicationPacket,
+} from "../../tools/container_runtime_json_compatibility_source_publication.mjs";
 
 const sourceVerifierVersionId = "source-verifier-runtime-version-001";
 const fixture = await createSourceAuthenticationFixture({
@@ -12,6 +15,10 @@ const fixture = await createSourceAuthenticationFixture({
   operationSeed: "source-verifier-workerd-operation",
   sourceVerifierVersionId,
 });
+const publicationPacket = buildJsonCompatibilitySourcePublicationPacket({
+  sourceAuthenticationRequest: fixture.sourceAuthenticationRequest,
+  bundle: fixture.bundle,
+}, { now: fixture.now });
 
 export default defineConfig({
   plugins: [
@@ -28,6 +35,8 @@ export default defineConfig({
           TEST_SOURCE_AUTHENTICATION_BUNDLE_KEY: fixture.bundleKey,
           TEST_SOURCE_AUTHENTICATION_BUNDLE_SHA256:
             fixture.bundle.bundleSha256,
+          TEST_SOURCE_PUBLICATION_PACKET_SHA256:
+            publicationPacket.publicationPacketSha256,
           TEST_SOURCE_SIGNATURE_ENVELOPE_SHA256:
             fixture.sourceSignatureEnvelopeSha256,
           TEST_SOURCE_SIGNER_SPKI_SHA256: fixture.sourceSignerSpkiSha256,

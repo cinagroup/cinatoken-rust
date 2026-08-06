@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { createHash } from "node:crypto";
 
 import {
   sourceAuthenticationRevocationKey,
@@ -8,10 +9,16 @@ import {
   sha256Canonical,
 } from "../../../tools/container_runtime_json_compatibility_campaign.mjs";
 import {
+  buildJsonCompatibilitySourcePublicationPacket,
+  buildJsonCompatibilitySourcePublicationReadbackRequest,
+  buildJsonCompatibilitySourcePublicationWriteReceipt,
+} from "../../../tools/container_runtime_json_compatibility_source_publication.mjs";
+import {
   createSourceAuthenticationFixture,
 } from "../../../tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs";
 import {
   authenticateTransitionSource,
+  readBackSourcePublication,
 } from "../src/verifier.ts";
 
 describe("private source verifier", () => {
@@ -48,6 +55,97 @@ describe("private source verifier", () => {
         .externalWormS3ClosureSha256,
     ).toBe(fixture.externalWormS3Closure.closureSha256);
     expect(bucket.counts).toEqual({ head: 3, get: 1 });
+  });
+
+  test("binds independent readback to packet and write receipt or ambiguity", async () => {
+    const fixture = await createSourceAuthenticationFixture({
+      operationSeed: "source-publication-readback-receipt",
+    });
+    const packet = buildJsonCompatibilitySourcePublicationPacket({
+      sourceAuthenticationRequest: fixture.sourceAuthenticationRequest,
+      bundle: fixture.bundle,
+    }, { now: fixture.now });
+    const writeReceipt = buildJsonCompatibilitySourcePublicationWriteReceipt({
+      publisherServiceName:
+        "cinatoken-container-runtime-json-compatibility-source-publisher-staging",
+      publisherVersionId: "source-publisher-version-001",
+      sourceAuthenticationRequestSha256:
+        fixture.sourceAuthenticationRequest.sourceAuthenticationRequestSha256,
+      bundleKey: packet.bundleKey,
+      bundleSha256: packet.bundleSha256,
+      bodySha256: packet.bodySha256,
+      bodyByteLength: packet.bodyByteLength,
+      sourceSignatureEnvelopeSha256:
+        packet.sourceSignatureEnvelopeSha256,
+      objectVersionSha256: rawSha256("source-object-version-001"),
+      objectEtagSha256: rawSha256("source-object-etag-001"),
+      publishedAt: fixture.now - 1,
+    });
+    const readbackRequest =
+      buildJsonCompatibilitySourcePublicationReadbackRequest({
+        sourceAuthenticationRequest: fixture.sourceAuthenticationRequest,
+        expectedPublicationPacketSha256: packet.publicationPacketSha256,
+        writeOutcome: "published",
+        writeReceipt,
+      });
+    const receipt = await readBackSourcePublication(
+      verifierEnv(fixture, new MemorySourceBucket(fixture)),
+      readbackRequest,
+      { now: () => fixture.now },
+    );
+    expect(receipt).toMatchObject({
+      sourcePublicationReadbackRequestSha256:
+        readbackRequest.sourcePublicationReadbackRequestSha256,
+      publicationPacketSha256: packet.publicationPacketSha256,
+      writeOutcome: "published",
+      writeReceiptSha256: writeReceipt.writeReceiptSha256,
+      publisherServiceName: writeReceipt.publisherServiceName,
+      publisherVersionId: writeReceipt.publisherVersionId,
+      sourceVerifierServiceName:
+        "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
+      sourceVerifierVersionId: fixture.sourceVerifierVersionId,
+      exactBodyReadback: true,
+      exactVersionReadback: true,
+      exactEtagReadback: true,
+      exactMetadataReadback: true,
+      independentFromPublisher: true,
+    });
+
+    const driftedWriteReceipt =
+      buildJsonCompatibilitySourcePublicationWriteReceipt({
+        ...writeReceipt,
+        objectVersionSha256: "f".repeat(64),
+      });
+    await expect(readBackSourcePublication(
+      verifierEnv(fixture, new MemorySourceBucket(fixture)),
+      buildJsonCompatibilitySourcePublicationReadbackRequest({
+        sourceAuthenticationRequest: fixture.sourceAuthenticationRequest,
+        expectedPublicationPacketSha256: packet.publicationPacketSha256,
+        writeOutcome: "published",
+        writeReceipt: driftedWriteReceipt,
+      }),
+      { now: () => fixture.now },
+    )).rejects.toMatchObject({
+      code: "source_publication_write_readback_mismatch",
+    });
+
+    const recovered = await readBackSourcePublication(
+      verifierEnv(fixture, new MemorySourceBucket(fixture)),
+      buildJsonCompatibilitySourcePublicationReadbackRequest({
+        sourceAuthenticationRequest: fixture.sourceAuthenticationRequest,
+        expectedPublicationPacketSha256: packet.publicationPacketSha256,
+        writeOutcome: "ambiguous",
+        writeReceipt: null,
+      }),
+      { now: () => fixture.now },
+    );
+    expect(recovered).toMatchObject({
+      writeOutcome: "ambiguous",
+      writeReceiptSha256: null,
+      publisherServiceName: null,
+      publisherVersionId: null,
+      exactBodyReadback: true,
+    });
   });
 
   test("supports a bounded previous-key window and rejects it after expiry", async () => {
@@ -376,4 +474,8 @@ function verifierEnv(fixture, bucket, overrides = {}) {
         : String(fixture.sourcePolicyPrevious.acceptUntil),
     ...overrides,
   };
+}
+
+function rawSha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }

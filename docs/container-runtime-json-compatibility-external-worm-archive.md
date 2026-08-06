@@ -130,9 +130,12 @@ content. The descriptor cap is deliberately below the Source Verifier's
 12 MiB canonical-bundle and 200,000-node limits, so a C2-valid archive cannot
 become structurally unverifiable only after it reaches the Worker.
 
-The manifest object is published last. Its canonical body ends in exactly one
-LF. Its body digest, provider object version, ETag and retention state are
-verified like every other member.
+The canonical manifest is the root over the payload object set and therefore
+cannot include its own body digest as an ordinary member. Contract v1 retains
+that root inside the dual-signed C2 evidence and the C4 bundle, but it does not
+yet claim a separate provider observation for a manifest object. Production
+C2 remains open until a non-self-referential manifest-root publication and
+independent readback receipt are retained alongside the payload observations.
 
 ## Provider Write Contract
 
@@ -146,7 +149,7 @@ The Amazon S3 adapter is intentionally narrower than a general S3 client:
   digest-bound metadata;
 - every successful response must contain HTTP 200, a provider request ID,
   object `VersionId`, ETag and matching checksum evidence; and
-- the canonical manifest is the final write.
+- every payload member is written exactly once under its manifest-derived key.
 
 A timeout, connection loss, malformed response, provider error, or lost
 response after a possible commit is `ambiguous`. The operation ID and object

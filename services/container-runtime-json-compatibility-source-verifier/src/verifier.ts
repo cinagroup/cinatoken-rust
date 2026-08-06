@@ -18,6 +18,14 @@ import {
   type JsonCompatibilitySourceAuthenticationBundleV3,
 } from "../../../tools/container_runtime_json_compatibility_source_authentication.mjs";
 import {
+  JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME,
+  buildJsonCompatibilitySourcePublicationPacket,
+  buildJsonCompatibilitySourcePublicationReadbackReceipt,
+  sourcePublicationObjectMetadata,
+  validateJsonCompatibilitySourcePublicationReadbackRequest,
+  type JsonCompatibilitySourcePublicationReadbackReceiptV1,
+} from "../../../tools/container_runtime_json_compatibility_source_publication.mjs";
+import {
   JsonCompatibilityExternalWormArchiveError,
   verifyJsonCompatibilityExternalWormArchiveEvidence,
 } from "../../../tools/container_runtime_json_compatibility_external_worm_archive.mjs";
@@ -38,6 +46,7 @@ const EXPECTED_SERVICE_NAME =
 const EXPECTED_KEY_PREFIX =
   "container-runtime/json-compatibility/source-authentication/v3/sha256";
 const MAX_REQUEST_BYTES = 16 * 1024;
+const MAX_PUBLICATION_READBACK_REQUEST_BYTES = 64 * 1024;
 const MAX_BUNDLE_BYTES = 12 * 1024 * 1024;
 const MAX_JSON_DEPTH = 64;
 const MAX_JSON_NODES = 200_000;
@@ -98,6 +107,11 @@ interface LoadedBundle {
   readonly version: string;
 }
 
+interface VerifiedSource {
+  readonly loaded: LoadedBundle;
+  readonly signerSpkiSha256: string;
+}
+
 class SourceRejectedError extends Error {
   constructor(readonly code: string) {
     super(code);
@@ -128,22 +142,12 @@ export async function authenticateTransitionSource(
   const configuration = await requireConfiguration(env);
   const request = parseRequest(input);
   try {
-    if (!constantTimeHexEqual(
-      request.sourceEvidence.sourceVerifierPolicySha256,
-      configuration.sourceVerifierPolicySha256,
-    )) throw new SourceRejectedError("source_verifier_policy_mismatch");
-    if (!constantTimeHexEqual(
-      request.sourceEvidence.sourceVerifierIdentitySha256,
-      configuration.verifierIdentitySha256,
-    )) throw new SourceRejectedError("source_verifier_identity_mismatch");
-    const loaded = await loadBundle(env, configuration, request, now);
-    const signerSpkiSha256 = await verifyBundleSignature(
+    const { loaded, signerSpkiSha256 } = await verifySourceRequest(
       env,
       configuration,
-      loaded,
+      request,
       now,
     );
-    await verifyExternalWormArchive(configuration, loaded.bundle);
     const evidenceSha256 = await sha256Canonical({
       schemaVersion: 1,
       contract:
@@ -185,16 +189,7 @@ export async function authenticateTransitionSource(
     const classification = error instanceof SourceAmbiguousError
       ? "ambiguous" as const
       : "rejected" as const;
-    const reasonCode = error instanceof SourceAmbiguousError
-        || error instanceof SourceRejectedError
-      ? error.code
-      : error instanceof JsonCompatibilitySourceAuthenticationProtocolError
-        ? error.code
-        : error instanceof JsonCompatibilityExternalWormArchiveError
-          ? error.code
-        : error instanceof JsonCompatibilityExternalWormS3ClosureError
-          ? error.code
-        : "source_bundle_invalid";
+    const reasonCode = sourceFailureCode(error);
     return buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
       sourceAuthenticationRequest: request,
       classification,
@@ -212,6 +207,169 @@ export async function authenticateTransitionSource(
       verifiedAt: now,
     });
   }
+}
+
+export async function readBackSourcePublication(
+  env: JsonCompatibilitySourceVerifierEnv,
+  input: unknown,
+  runtime: SourceVerifierRuntime = DEFAULT_RUNTIME,
+): Promise<JsonCompatibilitySourcePublicationReadbackReceiptV1> {
+  const now = runtimeNow(runtime);
+  const configuration = await requireConfiguration(env);
+  const readbackRequest = parsePublicationReadbackRequest(input);
+  const request = parseRequest(readbackRequest.sourceAuthenticationRequest);
+  try {
+    const { loaded, signerSpkiSha256 } = await verifySourceRequest(
+      env,
+      configuration,
+      request,
+      now,
+    );
+    const envelopeSha256 =
+      request.sourceEvidence.sourceSignatureEnvelopeSha256;
+    const packet = buildJsonCompatibilitySourcePublicationPacket({
+      sourceAuthenticationRequest: request,
+      bundle: loaded.bundle,
+    }, { now, requireUsableWindow: true });
+    if (!constantTimeHexEqual(
+      packet.publicationPacketSha256,
+      readbackRequest.expectedPublicationPacketSha256,
+    )) throw new SourceRejectedError("source_publication_packet_mismatch");
+    const objectVersionSha256 = await sha256Bytes(
+      new TextEncoder().encode(loaded.version),
+    );
+    const objectEtagSha256 = await sha256Bytes(
+      new TextEncoder().encode(loaded.etag),
+    );
+    const writeReceipt = readbackRequest.writeReceipt;
+    if (writeReceipt !== null) {
+      for (const [actual, expected] of [
+        [writeReceipt.sourceAuthenticationRequestSha256,
+          request.sourceAuthenticationRequestSha256],
+        [writeReceipt.bundleKey, loaded.bundleKey],
+        [writeReceipt.bundleSha256, loaded.bundle.bundleSha256],
+        [writeReceipt.bodySha256, loaded.bodySha256],
+        [writeReceipt.bodyByteLength, loaded.bytes],
+        [writeReceipt.sourceSignatureEnvelopeSha256, envelopeSha256],
+        [writeReceipt.objectVersionSha256, objectVersionSha256],
+        [writeReceipt.objectEtagSha256, objectEtagSha256],
+      ]) {
+        if (actual !== expected) {
+          throw new SourceRejectedError(
+            "source_publication_write_readback_mismatch",
+          );
+        }
+      }
+      if (writeReceipt.publishedAt > now) {
+        throw new SourceRejectedError(
+          "source_publication_write_readback_mismatch",
+        );
+      }
+    }
+    return buildJsonCompatibilitySourcePublicationReadbackReceipt({
+      sourcePublicationReadbackRequestSha256:
+        readbackRequest.sourcePublicationReadbackRequestSha256,
+      publicationPacketSha256: packet.publicationPacketSha256,
+      writeOutcome: readbackRequest.writeOutcome,
+      writeReceiptSha256: writeReceipt?.writeReceiptSha256 ?? null,
+      publisherServiceName: writeReceipt?.publisherServiceName ?? null,
+      publisherVersionId: writeReceipt?.publisherVersionId ?? null,
+      sourceVerifierServiceName:
+        JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME,
+      sourceVerifierVersionId: configuration.versionId,
+      sourceAuthenticationRequestSha256:
+        request.sourceAuthenticationRequestSha256,
+      bundleKey: loaded.bundleKey,
+      bundleSha256: loaded.bundle.bundleSha256,
+      bodySha256: loaded.bodySha256,
+      bodyByteLength: loaded.bytes,
+      sourceSignatureEnvelopeSha256: envelopeSha256,
+      objectVersionSha256,
+      objectEtagSha256,
+      objectMetadataSha256: await sha256Canonical(
+        sourcePublicationObjectMetadata(
+          loaded.bundle.bundleSha256,
+          envelopeSha256,
+        ),
+      ),
+      signerSpkiSha256,
+      verifierIdentitySha256: configuration.verifierIdentitySha256,
+      verifiedAt: now,
+    });
+  } catch (error) {
+    if (error instanceof JsonCompatibilitySourceVerifierWorkerError) {
+      throw error;
+    }
+    if (!(error instanceof Error)) {
+      throw new JsonCompatibilitySourceVerifierWorkerError(
+        "source_bundle_invalid",
+      );
+    }
+    throw new JsonCompatibilitySourceVerifierWorkerError(
+      sourceFailureCode(error),
+    );
+  }
+}
+
+function parsePublicationReadbackRequest(input: unknown) {
+  let bytes: number;
+  try {
+    bytes = new TextEncoder().encode(canonicalJson(input)).byteLength;
+  } catch {
+    throw new JsonCompatibilitySourceVerifierWorkerError(
+      "invalid_source_publication_readback_request",
+    );
+  }
+  if (bytes < 2 || bytes > MAX_PUBLICATION_READBACK_REQUEST_BYTES) {
+    throw new JsonCompatibilitySourceVerifierWorkerError(
+      "source_publication_readback_request_too_large",
+    );
+  }
+  try {
+    return validateJsonCompatibilitySourcePublicationReadbackRequest(input);
+  } catch {
+    throw new JsonCompatibilitySourceVerifierWorkerError(
+      "invalid_source_publication_readback_request",
+    );
+  }
+}
+
+async function verifySourceRequest(
+  env: JsonCompatibilitySourceVerifierEnv,
+  configuration: VerifierConfiguration,
+  request: JsonCompatibilityDeploymentTransitionSourceAuthenticationRequestV2,
+  now: number,
+): Promise<VerifiedSource> {
+  if (!constantTimeHexEqual(
+    request.sourceEvidence.sourceVerifierPolicySha256,
+    configuration.sourceVerifierPolicySha256,
+  )) throw new SourceRejectedError("source_verifier_policy_mismatch");
+  if (!constantTimeHexEqual(
+    request.sourceEvidence.sourceVerifierIdentitySha256,
+    configuration.verifierIdentitySha256,
+  )) throw new SourceRejectedError("source_verifier_identity_mismatch");
+  const loaded = await loadBundle(env, configuration, request, now);
+  const signerSpkiSha256 = await verifyBundleSignature(
+    env,
+    configuration,
+    loaded,
+    now,
+  );
+  await verifyExternalWormArchive(configuration, loaded.bundle);
+  return { loaded, signerSpkiSha256 };
+}
+
+function sourceFailureCode(error: Error): string {
+  return error instanceof SourceAmbiguousError
+      || error instanceof SourceRejectedError
+    ? error.code
+    : error instanceof JsonCompatibilitySourceAuthenticationProtocolError
+      ? error.code
+      : error instanceof JsonCompatibilityExternalWormArchiveError
+        ? error.code
+      : error instanceof JsonCompatibilityExternalWormS3ClosureError
+        ? error.code
+      : "source_bundle_invalid";
 }
 
 async function loadBundle(

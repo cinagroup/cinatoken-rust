@@ -9,6 +9,7 @@ import {
   validateJsonCompatibilityDeploymentStatePlan,
 } from "./container_runtime_json_compatibility_deployment_states.mjs";
 import {
+  buildJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest,
   validateJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest,
 } from "./container_runtime_json_compatibility_deployment_transition.mjs";
 import {
@@ -35,6 +36,8 @@ export const JSON_COMPATIBILITY_SOURCE_ARCHIVE_RECEIPT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v3";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_SUBJECT_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-source-signature-subject-v2";
+export const JSON_COMPATIBILITY_SOURCE_SIGNING_INTENT_CONTRACT =
+  "cinatoken-container-runtime-json-compatibility-source-signing-intent-v1";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_ENVELOPE_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-source-signature-envelope-v2";
 export const JSON_COMPATIBILITY_SOURCE_AUTHENTICATION_BUNDLE_CONTRACT =
@@ -626,12 +629,127 @@ export function buildJsonCompatibilitySourceSignatureSubject({
   };
 }
 
+export function buildJsonCompatibilitySourceSigningIntent({
+  operationIdSha256,
+  campaignPlanDigestSha256,
+  statePlanDigestSha256,
+  transition,
+  sourceEvidence: sourceEvidenceInput,
+  accountBindingEvidenceSha256,
+  keyId,
+  issuedAt,
+  notBefore,
+  expiresAt,
+}) {
+  const sourceEvidence = record(
+    sourceEvidenceInput,
+    "source signing intent evidence",
+  );
+  exactKeys(sourceEvidence, [
+    "schemaVersion", "contract", "profile", "accountIdSha256",
+    "transitionSourceManifestSha256", "phaseSourceManifestSha256",
+    "sourceVerifierPolicySha256", "sourceVerifierIdentitySha256",
+    "immutableSourceArchiveReceiptSha256",
+    "artifactInventoryReadbackSha256", "accountBindingInventorySha256",
+  ], "source signing intent evidence");
+  const request = sourceSigningIntentProjectionRequest({
+    operationIdSha256,
+    campaignPlanDigestSha256,
+    statePlanDigestSha256,
+    transition,
+    sourceEvidence,
+  });
+  const subject = buildJsonCompatibilitySourceSignatureSubject({
+    sourceAuthenticationRequest: request,
+    accountBindingEvidenceSha256,
+    immutableSourceArchiveReceiptSha256:
+      sourceEvidence.immutableSourceArchiveReceiptSha256,
+    keyId,
+    issuedAt,
+    notBefore,
+    expiresAt,
+  });
+  const intent = {
+    schemaVersion: SCHEMA_VERSION,
+    contract: JSON_COMPATIBILITY_SOURCE_SIGNING_INTENT_CONTRACT,
+    environment: "staging",
+    operationIdSha256,
+    campaignPlanDigestSha256,
+    statePlanDigestSha256,
+    transition: cloneJson(request.transition),
+    sourceEvidence: cloneJson(sourceEvidence),
+    accountBindingEvidenceSha256,
+    keyId,
+    issuedAt,
+    notBefore,
+    expiresAt,
+    sourceSignatureSubjectSha256: sha256Canonical(subject),
+  };
+  return { ...intent, sourceSigningIntentSha256: sha256Canonical(intent) };
+}
+
+export function buildJsonCompatibilitySourceSignatureSubjectFromIntent(
+  intentInput,
+) {
+  const value = record(intentInput, "source signing intent");
+  exactKeys(value, [
+    "schemaVersion", "contract", "environment", "operationIdSha256",
+    "campaignPlanDigestSha256", "statePlanDigestSha256", "transition",
+    "sourceEvidence", "accountBindingEvidenceSha256", "keyId", "issuedAt",
+    "notBefore", "expiresAt", "sourceSignatureSubjectSha256",
+    "sourceSigningIntentSha256",
+  ], "source signing intent");
+  equal(value.schemaVersion, SCHEMA_VERSION, "source signing intent schema");
+  equal(
+    value.contract,
+    JSON_COMPATIBILITY_SOURCE_SIGNING_INTENT_CONTRACT,
+    "source signing intent contract",
+  );
+  equal(value.environment, "staging", "source signing intent environment");
+  const rebuilt = buildJsonCompatibilitySourceSigningIntent({
+    operationIdSha256: value.operationIdSha256,
+    campaignPlanDigestSha256: value.campaignPlanDigestSha256,
+    statePlanDigestSha256: value.statePlanDigestSha256,
+    transition: value.transition,
+    sourceEvidence: value.sourceEvidence,
+    accountBindingEvidenceSha256: value.accountBindingEvidenceSha256,
+    keyId: value.keyId,
+    issuedAt: value.issuedAt,
+    notBefore: value.notBefore,
+    expiresAt: value.expiresAt,
+  });
+  canonicalEqual(rebuilt, value, "source signing intent");
+  const request = sourceSigningIntentProjectionRequest({
+    operationIdSha256: rebuilt.operationIdSha256,
+    campaignPlanDigestSha256: rebuilt.campaignPlanDigestSha256,
+    statePlanDigestSha256: rebuilt.statePlanDigestSha256,
+    transition: rebuilt.transition,
+    sourceEvidence: rebuilt.sourceEvidence,
+  });
+  const subject = buildJsonCompatibilitySourceSignatureSubject({
+    sourceAuthenticationRequest: request,
+    accountBindingEvidenceSha256: rebuilt.accountBindingEvidenceSha256,
+    immutableSourceArchiveReceiptSha256:
+      rebuilt.sourceEvidence.immutableSourceArchiveReceiptSha256,
+    keyId: rebuilt.keyId,
+    issuedAt: rebuilt.issuedAt,
+    notBefore: rebuilt.notBefore,
+    expiresAt: rebuilt.expiresAt,
+  });
+  equal(
+    sha256Canonical(subject),
+    rebuilt.sourceSignatureSubjectSha256,
+    "source signing intent subject digest",
+  );
+  return subject;
+}
+
 export function buildJsonCompatibilitySourceSignatureEnvelope({
   subject: subjectInput,
   signerSpkiBase64url,
   signatureBase64url,
 }) {
-  const subject = validateSignatureSubject(subjectInput);
+  const subject = validateJsonCompatibilitySourceSignatureSubject(subjectInput);
   base64urlBytes(signerSpkiBase64url, "source signer SPKI", 1, 512);
   base64urlBytes(signatureBase64url, "source signature", 64, 64);
   return {
@@ -668,7 +786,7 @@ export function validateJsonCompatibilitySourceSignatureEnvelope(input) {
 }
 
 export function sourceSignatureSigningPayload(subjectInput) {
-  const subject = validateSignatureSubject(subjectInput);
+  const subject = validateJsonCompatibilitySourceSignatureSubject(subjectInput);
   return new TextEncoder().encode(
     `${JSON_COMPATIBILITY_SOURCE_SIGNATURE_DOMAIN}${canonicalJson(subject)}`,
   );
@@ -1559,7 +1677,34 @@ function validateArtifactSet(statePlan, input) {
   });
 }
 
-function validateSignatureSubject(input) {
+function sourceSigningIntentProjectionRequest({
+  operationIdSha256,
+  campaignPlanDigestSha256,
+  statePlanDigestSha256,
+  transition,
+  sourceEvidence,
+}) {
+  const sentinel = (field) => sha256Canonical({
+    schemaVersion: SCHEMA_VERSION,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-source-signing-projection-sentinel-v1",
+    field,
+  });
+  return buildJsonCompatibilityDeploymentTransitionSourceAuthenticationRequest({
+    operationIdSha256,
+    operationDigestSha256: sentinel("operation-digest"),
+    authorizedTransitionSha256: sentinel("authorized-transition"),
+    campaignPlanDigestSha256,
+    statePlanDigestSha256,
+    transition,
+    sourceEvidence: {
+      ...cloneJson(sourceEvidence),
+      sourceSignatureEnvelopeSha256: sentinel("source-signature-envelope"),
+    },
+  });
+}
+
+export function validateJsonCompatibilitySourceSignatureSubject(input) {
   const value = record(input, "source signature subject");
   exactKeys(value, [
     "schemaVersion", "contract", "environment", "issuer", "audience",

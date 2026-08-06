@@ -5,6 +5,15 @@ import type {
   JsonCompatibilityAccountBindingEvidenceV1,
   JsonCompatibilityAccountBindingInventoryProjectionV1,
 } from "./container_runtime_json_compatibility_account_binding_evidence.mjs";
+import type {
+  JsonCompatibilityExternalWormArchiveEvidenceV1,
+} from "./container_runtime_json_compatibility_external_worm_archive.mjs";
+import type {
+  JsonCompatibilityAccountBindingRawCaptureTerminalV1,
+} from "./container_runtime_json_compatibility_account_binding_raw_capture.mjs";
+import type {
+  JsonCompatibilityExternalWormS3ClosureV1,
+} from "./container_runtime_json_compatibility_external_worm_s3_closure.mjs";
 
 export const JSON_COMPATIBILITY_SOURCE_ARTIFACT_INVENTORY_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-source-artifact-inventory-readback-v1";
@@ -13,13 +22,13 @@ export const JSON_COMPATIBILITY_TRANSITION_SOURCE_MANIFEST_CONTRACT:
 export const JSON_COMPATIBILITY_SOURCE_ACCOUNT_BINDING_INVENTORY_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-source-account-binding-inventory-v1";
 export const JSON_COMPATIBILITY_SOURCE_ARCHIVE_RECEIPT_CONTRACT:
-  "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v2";
+  "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v3";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_SUBJECT_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-source-signature-subject-v2";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_ENVELOPE_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-source-signature-envelope-v2";
 export const JSON_COMPATIBILITY_SOURCE_AUTHENTICATION_BUNDLE_CONTRACT:
-  "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v2";
+  "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v3";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_DOMAIN:
   "cinatoken-container-runtime-json-compatibility-source-signature-v2\n";
 export const JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER:
@@ -103,10 +112,10 @@ export interface JsonCompatibilitySourceVerifierPreviousTrustKeyV1
   readonly acceptUntil: number;
 }
 
-export interface JsonCompatibilitySourceVerifierPolicyV1 {
+export interface JsonCompatibilitySourceVerifierPolicyV2 {
   readonly schemaVersion: 1;
   readonly contract:
-    "cinatoken-container-runtime-json-compatibility-source-verifier-policy-v1";
+    "cinatoken-container-runtime-json-compatibility-source-verifier-policy-v2";
   readonly environment: "staging";
   readonly serviceName:
     "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
@@ -116,10 +125,14 @@ export interface JsonCompatibilitySourceVerifierPolicyV1 {
     "cinatoken-json-compatibility-source-archive-authority-staging";
   readonly audience:
     "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+  readonly externalWormArchivePolicySha256: string;
   readonly current: JsonCompatibilitySourceVerifierTrustKeyV1;
   readonly previous: JsonCompatibilitySourceVerifierPreviousTrustKeyV1 | null;
   readonly sourceVerifierPolicySha256: string;
 }
+
+export type JsonCompatibilitySourceVerifierPolicyV1 =
+  JsonCompatibilitySourceVerifierPolicyV2;
 
 export interface JsonCompatibilitySourceVerifierIdentityV1 {
   readonly schemaVersion: 1;
@@ -225,34 +238,48 @@ export interface JsonCompatibilitySourceAccountBindingInventoryV1 {
   readonly accountBindingInventorySha256: string;
 }
 
-export interface JsonCompatibilitySourceImmutableArchiveReceiptV2 {
+export interface JsonCompatibilitySourceImmutableArchiveReceiptV3 {
   readonly schemaVersion: 1;
   readonly contract:
-    "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v2";
+    "cinatoken-container-runtime-json-compatibility-source-immutable-archive-receipt-v3";
   readonly kind:
     "container-runtime-json-compatibility-source-immutable-archive-receipt";
   readonly environment: "staging";
   readonly archiveBackend: "external-worm";
   readonly retentionMode: "compliance";
+  readonly providerControl: "version-specific-object-lock-compliance";
+  readonly r2BucketLockAccepted: false;
   readonly accountIdSha256: string;
   readonly transitionSourceManifestSha256: string;
   readonly phaseSourceManifestSha256: string | null;
   readonly artifactInventoryReadbackSha256: string;
   readonly accountBindingEvidenceSha256: string;
   readonly accountBindingInventorySha256: string;
-  readonly immutableSourceArchiveSha256: string;
-  readonly archiveObjectVersionSha256: string;
-  readonly archiveObjectEtagSha256: string;
-  readonly archiveByteLength: number;
+  readonly archivePolicySha256: string;
+  readonly archiveManifestSha256: string;
+  readonly archiveEvidenceSha256: string;
+  readonly externalWormS3ClosureSha256: string;
+  readonly archiveObjectSetSha256: string;
+  readonly objectIdentitySetSha256: string;
+  readonly archiveObjectCount: number;
+  readonly archiveTotalByteLength: number;
+  readonly collectionCaptureTerminalSha256: string;
+  readonly independentReadbackCaptureTerminalSha256: string;
+  readonly writeObservationEnvelopeSha256: string;
+  readonly independentReadbackEnvelopeSha256: string;
   readonly lockedAt: number;
   readonly retainUntil: number;
   readonly independentlyReadBackAt: number;
-  readonly retentionEvidenceSha256: string;
+  readonly exactObjectReadback: true;
+  readonly independentWriterAndReader: true;
+  readonly complianceRetentionVerified: true;
   readonly immutableSourceArchiveReceiptSha256: string;
 }
 
+export type JsonCompatibilitySourceImmutableArchiveReceiptV2 =
+  JsonCompatibilitySourceImmutableArchiveReceiptV3;
 export type JsonCompatibilitySourceImmutableArchiveReceiptV1 =
-  JsonCompatibilitySourceImmutableArchiveReceiptV2;
+  JsonCompatibilitySourceImmutableArchiveReceiptV3;
 
 export interface JsonCompatibilitySourceSignatureSubjectV2 {
   readonly schemaVersion: 1;
@@ -304,10 +331,10 @@ export interface JsonCompatibilitySourceSignatureEnvelopeV2 {
 export type JsonCompatibilitySourceSignatureEnvelopeV1 =
   JsonCompatibilitySourceSignatureEnvelopeV2;
 
-export interface JsonCompatibilitySourceAuthenticationBundleV2 {
+export interface JsonCompatibilitySourceAuthenticationBundleV3 {
   readonly schemaVersion: 1;
   readonly contract:
-    "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v2";
+    "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v3";
   readonly kind:
     "container-runtime-json-compatibility-source-authentication-bundle";
   readonly environment: "staging";
@@ -318,13 +345,22 @@ export interface JsonCompatibilitySourceAuthenticationBundleV2 {
   readonly artifactInventoryReadback: JsonCompatibilitySourceArtifactInventoryReadbackV1;
   readonly accountBindingEvidence: JsonCompatibilityAccountBindingEvidenceV1;
   readonly accountBindingInventory: JsonCompatibilitySourceAccountBindingInventoryV1;
-  readonly immutableSourceArchiveReceipt: JsonCompatibilitySourceImmutableArchiveReceiptV2;
+  readonly externalWormArchiveEvidence:
+    JsonCompatibilityExternalWormArchiveEvidenceV1;
+  readonly externalWormS3Closure: JsonCompatibilityExternalWormS3ClosureV1;
+  readonly collectionCaptureTerminal:
+    JsonCompatibilityAccountBindingRawCaptureTerminalV1;
+  readonly independentReadbackCaptureTerminal:
+    JsonCompatibilityAccountBindingRawCaptureTerminalV1;
+  readonly immutableSourceArchiveReceipt: JsonCompatibilitySourceImmutableArchiveReceiptV3;
   readonly sourceSignatureEnvelope: JsonCompatibilitySourceSignatureEnvelopeV2;
   readonly bundleSha256: string;
 }
 
+export type JsonCompatibilitySourceAuthenticationBundleV2 =
+  JsonCompatibilitySourceAuthenticationBundleV3;
 export type JsonCompatibilitySourceAuthenticationBundleV1 =
-  JsonCompatibilitySourceAuthenticationBundleV2;
+  JsonCompatibilitySourceAuthenticationBundleV3;
 
 export class JsonCompatibilitySourceAuthenticationProtocolError extends Error {
   constructor(code: string, message?: string);
@@ -340,9 +376,10 @@ export function buildJsonCompatibilitySourceVerifierPolicy(input: {
     "cinatoken-json-compatibility-source-archive-authority-staging";
   readonly audience:
     "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
+  readonly externalWormArchivePolicySha256: string;
   readonly current: JsonCompatibilitySourceVerifierTrustKeyV1;
   readonly previous: JsonCompatibilitySourceVerifierPreviousTrustKeyV1 | null;
-}): JsonCompatibilitySourceVerifierPolicyV1;
+}): JsonCompatibilitySourceVerifierPolicyV2;
 
 export function buildJsonCompatibilitySourceVerifierIdentity(input: {
   readonly versionId: string;
@@ -396,25 +433,24 @@ export function validateJsonCompatibilitySourceAccountBindingInventory(
 ): JsonCompatibilitySourceAccountBindingInventoryV1;
 
 export function buildJsonCompatibilitySourceImmutableArchiveReceipt(input: {
-  readonly accountIdSha256: string;
-  readonly transitionSourceManifestSha256: string;
-  readonly phaseSourceManifestSha256: string | null;
-  readonly artifactInventoryReadbackSha256: string;
-  readonly accountBindingEvidenceSha256: string;
-  readonly accountBindingInventorySha256: string;
-  readonly immutableSourceArchiveSha256: string;
-  readonly archiveObjectVersionSha256: string;
-  readonly archiveObjectEtagSha256: string;
-  readonly archiveByteLength: number;
-  readonly lockedAt: number;
-  readonly retainUntil: number;
-  readonly independentlyReadBackAt: number;
-  readonly retentionEvidenceSha256: string;
-}): JsonCompatibilitySourceImmutableArchiveReceiptV2;
+  readonly externalWormArchiveEvidence:
+    JsonCompatibilityExternalWormArchiveEvidenceV1;
+  readonly externalWormS3Closure: JsonCompatibilityExternalWormS3ClosureV1;
+  readonly collectionCaptureTerminal:
+    JsonCompatibilityAccountBindingRawCaptureTerminalV1;
+  readonly independentReadbackCaptureTerminal:
+    JsonCompatibilityAccountBindingRawCaptureTerminalV1;
+}): JsonCompatibilitySourceImmutableArchiveReceiptV3;
 
 export function validateJsonCompatibilitySourceImmutableArchiveReceipt(
   input: unknown,
-): JsonCompatibilitySourceImmutableArchiveReceiptV2;
+  externalWormArchiveEvidence: JsonCompatibilityExternalWormArchiveEvidenceV1,
+  externalWormS3Closure: JsonCompatibilityExternalWormS3ClosureV1,
+  collectionCaptureTerminal:
+    JsonCompatibilityAccountBindingRawCaptureTerminalV1,
+  independentReadbackCaptureTerminal:
+    JsonCompatibilityAccountBindingRawCaptureTerminalV1,
+): JsonCompatibilitySourceImmutableArchiveReceiptV3;
 
 export function buildJsonCompatibilitySourceSignatureSubject(input: {
   readonly sourceAuthenticationRequest:
@@ -453,9 +489,16 @@ export function buildJsonCompatibilitySourceAuthenticationBundle(input: {
   readonly artifactInventoryReadback: JsonCompatibilitySourceArtifactInventoryReadbackV1;
   readonly accountBindingEvidence: JsonCompatibilityAccountBindingEvidenceV1;
   readonly accountBindingInventory: JsonCompatibilitySourceAccountBindingInventoryV1;
-  readonly immutableSourceArchiveReceipt: JsonCompatibilitySourceImmutableArchiveReceiptV2;
+  readonly externalWormArchiveEvidence:
+    JsonCompatibilityExternalWormArchiveEvidenceV1;
+  readonly externalWormS3Closure: JsonCompatibilityExternalWormS3ClosureV1;
+  readonly collectionCaptureTerminal:
+    JsonCompatibilityAccountBindingRawCaptureTerminalV1;
+  readonly independentReadbackCaptureTerminal:
+    JsonCompatibilityAccountBindingRawCaptureTerminalV1;
+  readonly immutableSourceArchiveReceipt: JsonCompatibilitySourceImmutableArchiveReceiptV3;
   readonly sourceSignatureEnvelope: JsonCompatibilitySourceSignatureEnvelopeV2;
-}): JsonCompatibilitySourceAuthenticationBundleV2;
+}): JsonCompatibilitySourceAuthenticationBundleV3;
 
 export function validateJsonCompatibilitySourceAuthenticationBundle(
   sourceAuthenticationRequest:
@@ -465,7 +508,7 @@ export function validateJsonCompatibilitySourceAuthenticationBundle(
     readonly now?: number | null;
     readonly requireUsableWindow?: boolean;
   },
-): JsonCompatibilitySourceAuthenticationBundleV2;
+): JsonCompatibilitySourceAuthenticationBundleV3;
 
 export function sourceAuthenticationBundleKey(
   sourceSignatureEnvelopeSha256: string,

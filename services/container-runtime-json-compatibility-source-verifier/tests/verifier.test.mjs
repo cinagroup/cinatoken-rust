@@ -4,6 +4,10 @@ import {
   sourceAuthenticationRevocationKey,
 } from "../../../tools/container_runtime_json_compatibility_source_authentication.mjs";
 import {
+  canonicalJson,
+  sha256Canonical,
+} from "../../../tools/container_runtime_json_compatibility_campaign.mjs";
+import {
   createSourceAuthenticationFixture,
 } from "../../../tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs";
 import {
@@ -11,7 +15,7 @@ import {
 } from "../src/verifier.ts";
 
 describe("private source verifier", () => {
-  test("authenticates a canonical R2 bundle with the pinned Ed25519 key", async () => {
+  test("authenticates a canonical v3 bundle with pinned C2 and C4 keys", async () => {
     const fixture = await createSourceAuthenticationFixture();
     const bucket = new MemorySourceBucket(fixture);
     const proof = await authenticateTransitionSource(
@@ -28,6 +32,21 @@ describe("private source verifier", () => {
     });
     expect(proof.verifierIdentitySha256).toMatch(/^[0-9a-f]{64}$/);
     expect(proof.evidenceSha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(fixture.bundle.externalWormArchiveEvidence).toEqual(
+      fixture.externalWormArchiveEvidence,
+    );
+    expect(fixture.bundle.externalWormS3Closure).toEqual(
+      fixture.externalWormS3Closure,
+    );
+    expect(fixture.bundle.externalWormS3Closure.authorizesC2Closure)
+      .toBe(false);
+    expect(
+      fixture.bundle.immutableSourceArchiveReceipt.archivePolicySha256,
+    ).toBe(fixture.externalWormArchivePolicySha256);
+    expect(
+      fixture.bundle.immutableSourceArchiveReceipt
+        .externalWormS3ClosureSha256,
+    ).toBe(fixture.externalWormS3Closure.closureSha256);
     expect(bucket.counts).toEqual({ head: 3, get: 1 });
   });
 
@@ -154,6 +173,128 @@ describe("private source verifier", () => {
     });
     expect(identityBucket.counts).toEqual({ head: 0, get: 0 });
   });
+
+  test("rejects a C4 policy pinned to the wrong external WORM anchor", async () => {
+    const fixture = await createSourceAuthenticationFixture({
+      operationSeed: "unapproved-c2-policy-anchor",
+      invalidExternalWormPolicyAnchor: true,
+    });
+    const bucket = new MemorySourceBucket(fixture);
+    expect(fixture.sourceVerifierExternalWormArchivePolicySha256)
+      .not.toBe(fixture.externalWormArchivePolicySha256);
+    const proof = await authenticateTransitionSource(
+      verifierEnv(fixture, bucket),
+      fixture.sourceAuthenticationRequest,
+      { now: () => fixture.now },
+    );
+    expect(proof).toMatchObject({
+      classification: "rejected",
+      reasonCode: "external_worm_attestation_policy_anchor_mismatch",
+    });
+    expect(bucket.counts).toEqual({ head: 3, get: 1 });
+  });
+
+  test("fails closed on a zero C2 policy anchor before R2", async () => {
+    const fixture = await createSourceAuthenticationFixture();
+    const bucket = new MemorySourceBucket(fixture);
+    await expect(authenticateTransitionSource(
+      verifierEnv(fixture, bucket, {
+        JSON_COMPATIBILITY_SOURCE_VERIFIER_ENABLED: "true",
+        JSON_COMPATIBILITY_SOURCE_VERIFIER_R2_READ_ENABLED: "true",
+        JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256:
+          "0".repeat(64),
+      }),
+      fixture.sourceAuthenticationRequest,
+      { now: () => fixture.now },
+    )).rejects.toMatchObject({
+      code: "source_verifier_external_worm_policy_invalid",
+    });
+    expect(bucket.counts).toEqual({ head: 0, get: 0 });
+  });
+
+  test("rejects forged writer and independent-readback C2 attestations", async () => {
+    for (const [option, operationSeed] of [
+      ["invalidExternalWormWriterSignature", "forged-c2-writer"],
+      ["invalidExternalWormReadbackSignature", "forged-c2-readback"],
+    ]) {
+      const fixture = await createSourceAuthenticationFixture({
+        operationSeed,
+        [option]: true,
+      });
+      const bucket = new MemorySourceBucket(fixture);
+      await expect(authenticateTransitionSource(
+        verifierEnv(fixture, bucket),
+        fixture.sourceAuthenticationRequest,
+        { now: () => fixture.now },
+      )).resolves.toMatchObject({
+        classification: "rejected",
+        reasonCode: "external_worm_signature_invalid",
+      });
+      expect(bucket.counts).toEqual({ head: 3, get: 1 });
+    }
+  });
+
+  test("rejects terminal body/object-set substitution under a valid C4 receipt", async () => {
+    const fixture = await createSourceAuthenticationFixture({
+      operationSeed: "detached-capture-terminal-body",
+    });
+    const bundle = structuredClone(fixture.bundle);
+    bundle.collectionCaptureTerminal.rawObjects[0].contentSha256 =
+      "f".repeat(64);
+    const { bundleSha256: _oldBundleSha256, ...bundleSubject } = bundle;
+    bundle.bundleSha256 = sha256Canonical(bundleSubject);
+    const detached = {
+      ...fixture,
+      bundle,
+      bundleBody: `${canonicalJson(bundle)}\n`,
+    };
+    const bucket = new MemorySourceBucket(detached);
+    await expect(authenticateTransitionSource(
+      verifierEnv(detached, bucket),
+      detached.sourceAuthenticationRequest,
+      { now: () => detached.now },
+    )).resolves.toMatchObject({
+      classification: "rejected",
+      reasonCode: "source_archive_capture_terminal_invalid",
+    });
+    expect(bucket.counts).toEqual({ head: 1, get: 1 });
+  });
+
+  test("rejects raw S3 observation drift under a valid C4 receipt", async () => {
+    const fixture = await createSourceAuthenticationFixture({
+      operationSeed: "detached-s3-provider-observations",
+      driftExternalWormS3ProviderObservations: true,
+    });
+    const bucket = new MemorySourceBucket(fixture);
+    await expect(authenticateTransitionSource(
+      verifierEnv(fixture, bucket),
+      fixture.sourceAuthenticationRequest,
+      { now: () => fixture.now },
+    )).resolves.toMatchObject({
+      classification: "rejected",
+      reasonCode: "c2_writer_provider_observation_set_mismatch",
+    });
+    expect(bucket.counts).toEqual({ head: 3, get: 1 });
+  });
+
+  test("rejects C2 writer reuse of the active C4 signer", async () => {
+    const fixture = await createSourceAuthenticationFixture({
+      operationSeed: "reused-c2-c4-signer",
+      externalWormSignerReuseSource: "writer",
+    });
+    expect(fixture.externalWormWriterSpkiSha256)
+      .toBe(fixture.sourceSignerSpkiSha256);
+    const bucket = new MemorySourceBucket(fixture);
+    await expect(authenticateTransitionSource(
+      verifierEnv(fixture, bucket),
+      fixture.sourceAuthenticationRequest,
+      { now: () => fixture.now },
+    )).resolves.toMatchObject({
+      classification: "rejected",
+      reasonCode: "external_worm_cross_domain_signer_reuse",
+    });
+    expect(bucket.counts).toEqual({ head: 3, get: 1 });
+  });
 });
 
 class MemorySourceBucket {
@@ -194,7 +335,7 @@ class MemorySourceBucket {
       httpMetadata: { contentType: "application/json" },
       customMetadata: {
         contract:
-          "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v2",
+          "cinatoken-container-runtime-json-compatibility-source-authentication-bundle-v3",
         bundleSha256: this.fixture.bundle.bundleSha256,
         sourceSignatureEnvelopeSha256:
           this.fixture.sourceSignatureEnvelopeSha256,
@@ -214,11 +355,13 @@ function verifierEnv(fixture, bucket, overrides = {}) {
     JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME:
       "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
     JSON_COMPATIBILITY_SOURCE_BUNDLE_KEY_PREFIX:
-      "container-runtime/json-compatibility/source-authentication/v2/sha256",
+      "container-runtime/json-compatibility/source-authentication/v3/sha256",
     JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER:
       "cinatoken-json-compatibility-source-archive-authority-staging",
     JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE:
       "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
+    JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256:
+      fixture.sourceVerifierExternalWormArchivePolicySha256,
     JSON_COMPATIBILITY_SOURCE_CURRENT_KID:
       fixture.sourcePolicyCurrent.keyId,
     JSON_COMPATIBILITY_SOURCE_CURRENT_SPKI_SHA256:

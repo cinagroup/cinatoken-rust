@@ -15,8 +15,16 @@ import {
   sourceAuthenticationRevocationKey,
   sourceSignatureSigningPayload,
   validateJsonCompatibilitySourceAuthenticationBundle,
-  type JsonCompatibilitySourceAuthenticationBundleV1,
+  type JsonCompatibilitySourceAuthenticationBundleV3,
 } from "../../../tools/container_runtime_json_compatibility_source_authentication.mjs";
+import {
+  JsonCompatibilityExternalWormArchiveError,
+  verifyJsonCompatibilityExternalWormArchiveEvidence,
+} from "../../../tools/container_runtime_json_compatibility_external_worm_archive.mjs";
+import {
+  JsonCompatibilityExternalWormS3ClosureError,
+  validateJsonCompatibilityExternalWormS3Closure,
+} from "../../../tools/container_runtime_json_compatibility_external_worm_s3_closure.mjs";
 
 import {
   canonicalJson,
@@ -28,7 +36,7 @@ import {
 const EXPECTED_SERVICE_NAME =
   "cinatoken-container-runtime-json-compatibility-source-verifier-staging";
 const EXPECTED_KEY_PREFIX =
-  "container-runtime/json-compatibility/source-authentication/v2/sha256";
+  "container-runtime/json-compatibility/source-authentication/v3/sha256";
 const MAX_REQUEST_BYTES = 16 * 1024;
 const MAX_BUNDLE_BYTES = 12 * 1024 * 1024;
 const MAX_JSON_DEPTH = 64;
@@ -48,6 +56,7 @@ export interface JsonCompatibilitySourceVerifierEnv {
   readonly JSON_COMPATIBILITY_SOURCE_BUNDLE_KEY_PREFIX: string;
   readonly JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER: string;
   readonly JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE: string;
+  readonly JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256: string;
   readonly JSON_COMPATIBILITY_SOURCE_CURRENT_KID: string;
   readonly JSON_COMPATIBILITY_SOURCE_CURRENT_SPKI_SHA256: string;
   readonly JSON_COMPATIBILITY_SOURCE_PREVIOUS_KID: string;
@@ -75,12 +84,13 @@ interface VerifierConfiguration {
   readonly keyPrefix: string;
   readonly current: TrustKey;
   readonly previous: TrustKey | null;
+  readonly externalWormArchivePolicySha256: string;
   readonly sourceVerifierPolicySha256: string;
   readonly verifierIdentitySha256: string;
 }
 
 interface LoadedBundle {
-  readonly bundle: JsonCompatibilitySourceAuthenticationBundleV1;
+  readonly bundle: JsonCompatibilitySourceAuthenticationBundleV3;
   readonly bundleKey: string;
   readonly bodySha256: string;
   readonly bytes: number;
@@ -133,10 +143,11 @@ export async function authenticateTransitionSource(
       loaded,
       now,
     );
+    await verifyExternalWormArchive(configuration, loaded.bundle);
     const evidenceSha256 = await sha256Canonical({
       schemaVersion: 1,
       contract:
-        "cinatoken-container-runtime-json-compatibility-source-verification-evidence-v1",
+        "cinatoken-container-runtime-json-compatibility-source-verification-evidence-v2",
       classification: "authenticated",
       requestSha256: request.sourceAuthenticationRequestSha256,
       bundleKey: loaded.bundleKey,
@@ -149,6 +160,12 @@ export async function authenticateTransitionSource(
       objectVersionSha256: await sha256Bytes(
         new TextEncoder().encode(loaded.version),
       ),
+      externalWormArchivePolicySha256:
+        loaded.bundle.externalWormArchiveEvidence.archivePolicySha256,
+      externalWormArchiveEvidenceSha256:
+        loaded.bundle.externalWormArchiveEvidence.archiveEvidenceSha256,
+      externalWormS3ClosureSha256:
+        loaded.bundle.externalWormS3Closure.closureSha256,
       signerSpkiSha256,
       verifierIdentitySha256: configuration.verifierIdentitySha256,
     });
@@ -173,6 +190,10 @@ export async function authenticateTransitionSource(
       ? error.code
       : error instanceof JsonCompatibilitySourceAuthenticationProtocolError
         ? error.code
+        : error instanceof JsonCompatibilityExternalWormArchiveError
+          ? error.code
+        : error instanceof JsonCompatibilityExternalWormS3ClosureError
+          ? error.code
         : "source_bundle_invalid";
     return buildJsonCompatibilityDeploymentTransitionSourceAuthentication({
       sourceAuthenticationRequest: request,
@@ -277,6 +298,38 @@ async function loadBundle(
     etag: object.etag,
     version: object.version,
   };
+}
+
+async function verifyExternalWormArchive(
+  configuration: VerifierConfiguration,
+  bundle: JsonCompatibilitySourceAuthenticationBundleV3,
+): Promise<void> {
+  const credentialTrustPolicy = bundle.accountBindingEvidence
+    .collectionProfile.credentialProvenance.trustPolicy;
+  const forbiddenSignerSpkiSha256s = [
+    credentialTrustPolicy.current.spkiSha256,
+    configuration.current.spkiSha256,
+  ];
+  if (credentialTrustPolicy.previous !== null) {
+    forbiddenSignerSpkiSha256s.push(
+      credentialTrustPolicy.previous.spkiSha256,
+    );
+  }
+  if (configuration.previous !== null) {
+    forbiddenSignerSpkiSha256s.push(configuration.previous.spkiSha256);
+  }
+  verifyJsonCompatibilityExternalWormArchiveEvidence(
+    bundle.externalWormArchiveEvidence,
+    {
+      expectedArchivePolicySha256:
+        configuration.externalWormArchivePolicySha256,
+      forbiddenSignerSpkiSha256s,
+    },
+  );
+  await validateJsonCompatibilityExternalWormS3Closure(
+    bundle.externalWormArchiveEvidence,
+    bundle.externalWormS3Closure,
+  );
 }
 
 async function verifyBundleSignature(
@@ -397,6 +450,20 @@ async function requireConfiguration(
       "source_verifier_binding_invalid",
     );
   }
+  if (
+    typeof env.JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256
+      !== "string"
+    || !SHA256.test(
+      env.JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256,
+    )
+    || /^0{64}$/u.test(
+      env.JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256,
+    )
+  ) {
+    throw new JsonCompatibilitySourceVerifierWorkerError(
+      "source_verifier_external_worm_policy_invalid",
+    );
+  }
   const current = trustKey(
     env.JSON_COMPATIBILITY_SOURCE_CURRENT_KID,
     env.JSON_COMPATIBILITY_SOURCE_CURRENT_SPKI_SHA256,
@@ -437,6 +504,8 @@ async function requireConfiguration(
     keyPrefix: EXPECTED_KEY_PREFIX,
     issuer: JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER,
     audience: JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE,
+    externalWormArchivePolicySha256:
+      env.JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256,
     current: {
       keyId: current.keyId,
       spkiSha256: current.spkiSha256,
@@ -459,6 +528,8 @@ async function requireConfiguration(
     keyPrefix: EXPECTED_KEY_PREFIX,
     current,
     previous,
+    externalWormArchivePolicySha256:
+      env.JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256,
     sourceVerifierPolicySha256: policy.sourceVerifierPolicySha256,
     verifierIdentitySha256: identity.sourceVerifierIdentitySha256,
   };
@@ -499,7 +570,7 @@ function selectTrustKey(
 
 function validateObjectMetadata(
   object: R2Object,
-  bundle: JsonCompatibilitySourceAuthenticationBundleV1,
+  bundle: JsonCompatibilitySourceAuthenticationBundleV3,
   envelopeSha256: string,
 ): void {
   if (object.httpMetadata?.contentType !== "application/json") {

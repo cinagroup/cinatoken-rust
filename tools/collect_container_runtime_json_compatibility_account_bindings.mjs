@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, stat } from "node:fs/promises";
+import { mkdir, open, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
@@ -8,6 +8,7 @@ import {
 } from "./container_runtime_json_compatibility_campaign.mjs";
 import {
   validateJsonCompatibilityAccountBindingPageReceipt,
+  validateJsonCompatibilityAccountBindingCollectionArtifact,
   validateJsonCompatibilityAccountBindingCollectionProfile,
   validateJsonCompatibilityAccountBindingCollectorIdentity,
 } from "./container_runtime_json_compatibility_account_binding_evidence.mjs";
@@ -15,6 +16,19 @@ import {
   collectJsonCompatibilityAccountBindingArtifact,
   finalizeJsonCompatibilityAccountBindingEvidence,
 } from "./lib/container_runtime_json_compatibility_account_binding_collector.mjs";
+import { readBoundedUtf8File } from "./lib/bounded_json_file.mjs";
+import {
+  JSON_COMPATIBILITY_ACCOUNT_BINDING_RAW_CAPTURE_TERMINAL_CONTRACT,
+  validateJsonCompatibilityAccountBindingRawCaptureTerminal,
+} from "./container_runtime_json_compatibility_account_binding_raw_capture.mjs";
+
+export {
+  JSON_COMPATIBILITY_ACCOUNT_BINDING_RAW_CAPTURE_TERMINAL_CONTRACT,
+  validateJsonCompatibilityAccountBindingRawCaptureTerminal,
+};
+export {
+  JsonCompatibilityAccountBindingRawCaptureError,
+} from "./container_runtime_json_compatibility_account_binding_raw_capture.mjs";
 
 export const JSON_COMPATIBILITY_ACCOUNT_BINDING_FINALIZATION_CONTRACT =
   "cinatoken-container-runtime-json-compatibility-account-binding-finalization-v1";
@@ -316,6 +330,7 @@ export async function runAccountBindingCollectorCli({
         collectionProfileSha256: collectionProfile.collectionProfileSha256,
         collectorIdentitySha256: collectorIdentity.collectorIdentitySha256,
       },
+      { campaignPlan, statePlan, collectionProfile },
     );
   const artifact = await collectJsonCompatibilityAccountBindingArtifact({
     campaignPlan,
@@ -334,11 +349,19 @@ export async function runAccountBindingCollectorCli({
     ...(monotonicClock === undefined ? {} : { monotonicClock }),
   });
   await writeCanonicalCreateOnce(args.outputPath, artifact);
+  const captureTerminal = await rawPageSink.finalize(artifact);
   const result = {
     mode: args.mode,
     collectionArtifactSha256: artifact.collectionArtifactSha256,
     rawPageCount: artifact.snapshot.pageReceipts.length,
+    rawObjectCount: captureTerminal.rawObjectCount,
+    rawObjectSetSha256: captureTerminal.rawObjectSetSha256,
+    captureTerminalSha256: captureTerminal.captureTerminalSha256,
     rawPageDirectory: resolve(args.rawPageDirectory),
+    captureTerminalPath: resolve(
+      args.rawPageDirectory,
+      "capture-terminal.json",
+    ),
     outputPath: resolve(args.outputPath),
   };
   stdout.write(`${canonicalJson(result)}\n`);
@@ -348,6 +371,7 @@ export async function runAccountBindingCollectorCli({
 export async function createJsonCompatibilityAccountBindingRawPageSink(
   directoryInput,
   captureIdentity,
+  validationContext,
 ) {
   oneOf(
     captureIdentity?.mode,
@@ -355,14 +379,26 @@ export async function createJsonCompatibilityAccountBindingRawPageSink(
     "capture mode",
   );
   for (const [label, value] of [
-    ["capture account ID", captureIdentity.accountIdSha256],
-    ["capture collection profile", captureIdentity.collectionProfileSha256],
-    ["capture collector identity", captureIdentity.collectorIdentitySha256],
+    ["capture account ID", captureIdentity?.accountIdSha256],
+    ["capture collection profile", captureIdentity?.collectionProfileSha256],
+    ["capture collector identity", captureIdentity?.collectorIdentitySha256],
   ]) {
     if (typeof value !== "string" || !SHA256.test(value)) {
       fail(`${label.replaceAll(" ", "_")}_invalid`);
     }
   }
+  if (
+    validationContext === null || typeof validationContext !== "object"
+    || !("campaignPlan" in validationContext)
+    || !("statePlan" in validationContext)
+    || !("collectionProfile" in validationContext)
+  ) fail("raw_capture_validation_context_invalid");
+  const identity = {
+    mode: captureIdentity.mode,
+    accountIdSha256: captureIdentity.accountIdSha256,
+    collectionProfileSha256: captureIdentity.collectionProfileSha256,
+    collectorIdentitySha256: captureIdentity.collectorIdentitySha256,
+  };
   const directory = resolve(directoryInput);
   try {
     await mkdir(directory, { recursive: false, mode: 0o700 });
@@ -375,58 +411,241 @@ export async function createJsonCompatibilityAccountBindingRawPageSink(
     contract:
       "cinatoken-container-runtime-json-compatibility-account-binding-raw-capture-v1",
     environment: "staging",
-    mode: captureIdentity.mode,
-    accountIdSha256: captureIdentity.accountIdSha256,
-    collectionProfileSha256: captureIdentity.collectionProfileSha256,
-    collectorIdentitySha256: captureIdentity.collectorIdentitySha256,
+    mode: identity.mode,
+    accountIdSha256: identity.accountIdSha256,
+    collectionProfileSha256: identity.collectionProfileSha256,
+    collectorIdentitySha256: identity.collectorIdentitySha256,
+  };
+  const captureManifestOutput = {
+    ...captureManifest,
+    captureManifestSha256: sha256Canonical(captureManifest),
   };
   await writeCanonicalCreateOnce(
     resolve(directory, "capture-manifest.json"),
-    {
-      ...captureManifest,
-      captureManifestSha256: sha256Canonical(captureManifest),
-    },
+    captureManifestOutput,
   );
-  return async ({ sequence, resourceFamily, body, receipt: receiptInput }) => {
-    if (!(body instanceof Uint8Array)) fail("raw_page_body_invalid");
+
+  const capturedPages = [];
+  const rawObjects = [];
+  let writeInProgress = false;
+  let directoryConsumed = false;
+  let terminalAttempted = false;
+
+  const sink = async ({
+    sequence,
+    resourceFamily,
+    requestPathSha256,
+    responseBodySha256,
+    body,
+    receipt: receiptInput,
+  }) => {
+    if (directoryConsumed || terminalAttempted) {
+      fail("raw_capture_directory_consumed");
+    }
+    if (writeInProgress) fail("raw_capture_write_in_progress");
+    if (!(body instanceof Uint8Array) || body.byteLength < 1
+      || body.byteLength > MAX_INPUT_BYTES) {
+      fail("raw_page_body_invalid");
+    }
+    const bodyBytes = Uint8Array.from(body);
     const receipt = validateJsonCompatibilityAccountBindingPageReceipt(
       receiptInput,
     );
     if (
       receipt.sequence !== sequence
       || receipt.resourceFamily !== resourceFamily
-      || receipt.responseByteLength !== body.byteLength
-      || receipt.responseBodySha256 !== sha256Bytes(body)
+      || receipt.requestPathSha256 !== requestPathSha256
+      || receipt.responseBodySha256 !== responseBodySha256
+      || receipt.responseByteLength !== bodyBytes.byteLength
+      || receipt.responseBodySha256 !== sha256Bytes(bodyBytes)
     ) fail("raw_page_receipt_body_mismatch");
+    if (sequence !== capturedPages.length + 1) {
+      fail("raw_page_sequence_invalid");
+    }
+    const expectedPredecessor = capturedPages.length === 0
+      ? null
+      : capturedPages.at(-1).receipt.pageReceiptSha256;
+    if (receipt.predecessorSha256 !== expectedPredecessor) {
+      fail("raw_page_predecessor_mismatch");
+    }
+    if (capturedPages.some((page) =>
+      page.receipt.pageReceiptSha256 === receipt.pageReceiptSha256)) {
+      fail("raw_page_receipt_duplicate");
+    }
     const prefix = [
       String(sequence).padStart(6, "0"),
       resourceFamily,
       receipt.pageReceiptSha256,
     ].join("-");
-    await writeBytesCreateOnce(
-      resolve(directory, `${prefix}.body.json`),
-      body,
-    );
-    await writeCanonicalCreateOnce(
-      resolve(directory, `${prefix}.receipt.json`),
-      receipt,
-    );
+    const bodyFileName = `${prefix}.body.json`;
+    const receiptFileName = `${prefix}.receipt.json`;
+    const receiptBytes = canonicalBytes(receipt);
+    const pageObjects = [
+      rawObjectRecord({
+        sequence,
+        resourceFamily,
+        objectKind: "body",
+        fileName: bodyFileName,
+        bytes: bodyBytes,
+        receipt,
+      }),
+      rawObjectRecord({
+        sequence,
+        resourceFamily,
+        objectKind: "receipt",
+        fileName: receiptFileName,
+        bytes: receiptBytes,
+        receipt,
+      }),
+    ];
+    writeInProgress = true;
+    try {
+      await writeBytesCreateOnce(
+        resolve(directory, bodyFileName),
+        bodyBytes,
+      );
+      await writeBytesCreateOnce(
+        resolve(directory, receiptFileName),
+        receiptBytes,
+      );
+      if (directoryConsumed) fail("raw_capture_directory_consumed");
+      capturedPages.push({ receipt, rawObjects: pageObjects });
+      rawObjects.push(...pageObjects);
+    } catch (error) {
+      directoryConsumed = true;
+      throw error;
+    } finally {
+      writeInProgress = false;
+    }
   };
+
+  sink.finalize = async (artifactInput) => {
+    if (terminalAttempted) fail("raw_capture_terminal_already_attempted");
+    terminalAttempted = true;
+    if (writeInProgress) {
+      directoryConsumed = true;
+      fail("raw_capture_write_in_progress");
+    }
+    if (directoryConsumed) fail("raw_capture_directory_consumed");
+
+    // A terminal attempt consumes the directory even when validation or I/O
+    // fails, so an ambiguous capture can never be presented as a clean retry.
+    directoryConsumed = true;
+    const artifact = validateJsonCompatibilityAccountBindingCollectionArtifact(
+      validationContext.campaignPlan,
+      validationContext.statePlan,
+      validationContext.collectionProfile,
+      artifactInput,
+    );
+    if (
+      artifact.mode !== identity.mode
+      || artifact.accountIdSha256 !== identity.accountIdSha256
+      || artifact.collectionProfileSha256
+        !== identity.collectionProfileSha256
+      || artifact.collectorIdentity.collectorIdentitySha256
+        !== identity.collectorIdentitySha256
+    ) fail("raw_capture_artifact_identity_mismatch");
+
+    assertExactPageReceiptSequence(
+      capturedPages.map((page) => page.receipt),
+      artifact.snapshot.pageReceipts,
+    );
+    const pageChainHeadSha256 = capturedPages.at(-1)?.receipt
+      .pageReceiptSha256;
+    if (pageChainHeadSha256 !== artifact.snapshot.pageChainHeadSha256) {
+      fail("raw_capture_page_chain_head_mismatch");
+    }
+
+    const descriptors = rawObjects.map(({ expectedBytes: _bytes, ...value }) =>
+      value);
+    const expectedFiles = [
+      "capture-manifest.json",
+      ...descriptors.map((value) => value.fileName),
+    ];
+    await assertRawCaptureDirectory(directory, expectedFiles);
+    await assertRawCaptureReadback({
+      directory,
+      captureManifestOutput,
+      rawObjects,
+    });
+    await assertRawCaptureDirectory(directory, expectedFiles);
+
+    const rawObjectTotalBytes = descriptors.reduce(
+      (total, value) => total + value.byteLength,
+      0,
+    );
+    if (!Number.isSafeInteger(rawObjectTotalBytes)) {
+      fail("raw_capture_total_bytes_invalid");
+    }
+    const artifactBytes = canonicalBytes(artifact);
+    const terminalSubject = {
+      schemaVersion: 1,
+      contract:
+        JSON_COMPATIBILITY_ACCOUNT_BINDING_RAW_CAPTURE_TERMINAL_CONTRACT,
+      kind:
+        "container-runtime-json-compatibility-account-binding-raw-capture-terminal",
+      environment: "staging",
+      mode: identity.mode,
+      accountIdSha256: identity.accountIdSha256,
+      collectionProfileSha256: identity.collectionProfileSha256,
+      collectorIdentitySha256: identity.collectorIdentitySha256,
+      captureManifestSha256: captureManifestOutput.captureManifestSha256,
+      collectionArtifactSha256: artifact.collectionArtifactSha256,
+      collectionArtifactFileSha256: sha256Bytes(artifactBytes),
+      pageCount: capturedPages.length,
+      pageChainHeadSha256,
+      rawObjectCount: descriptors.length,
+      rawObjectTotalBytes,
+      rawObjectSetSha256: sha256Canonical(descriptors),
+      rawObjects: descriptors,
+    };
+    const terminal =
+      validateJsonCompatibilityAccountBindingRawCaptureTerminal({
+        ...terminalSubject,
+        captureTerminalSha256: sha256Canonical(terminalSubject),
+      });
+    const terminalPath = resolve(directory, "capture-terminal.json");
+    await writeCanonicalCreateOnce(terminalPath, terminal);
+    let terminalReadback;
+    try {
+      terminalReadback = await readBoundedUtf8File(
+        terminalPath,
+        MAX_INPUT_BYTES,
+        "raw capture terminal",
+      );
+    } catch {
+      fail("raw_capture_terminal_readback_failed");
+    }
+    if (terminalReadback !== `${canonicalJson(terminal)}\n`) {
+      fail("raw_capture_terminal_readback_mismatch");
+    }
+    await assertRawCaptureDirectory(directory, [
+      ...expectedFiles,
+      "capture-terminal.json",
+    ]);
+    return terminal;
+  };
+
+  return sink;
 }
 
 async function readCanonicalJson(pathInput, label) {
   const path = resolve(pathInput);
-  const metadata = await stat(path);
-  if (!metadata.isFile() || metadata.size < 2 || metadata.size > MAX_INPUT_BYTES) {
-    fail(`${label.replaceAll(" ", "_")}_file_invalid`);
-  }
-  const bytes = await readFile(path);
-  if (bytes.byteLength !== metadata.size) fail("input_file_changed_during_read");
   let text;
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    fail(`${label.replaceAll(" ", "_")}_utf8_invalid`);
+    text = await readBoundedUtf8File(path, MAX_INPUT_BYTES, label);
+  } catch (error) {
+    if (error?.message?.includes("changed while it was being read")) {
+      fail("input_file_changed_during_read");
+    }
+    if (
+      error?.message?.includes("valid UTF-8")
+      || error?.message?.includes("UTF-8 BOM")
+    ) fail(`${label.replaceAll(" ", "_")}_utf8_invalid`);
+    fail(`${label.replaceAll(" ", "_")}_file_invalid`);
+  }
+  if (new TextEncoder().encode(text).byteLength < 2) {
+    fail(`${label.replaceAll(" ", "_")}_file_invalid`);
   }
   let value;
   try {
@@ -443,8 +662,107 @@ async function readCanonicalJson(pathInput, label) {
 async function writeCanonicalCreateOnce(pathInput, value) {
   return writeBytesCreateOnce(
     resolve(pathInput),
-    new TextEncoder().encode(`${canonicalJson(value)}\n`),
+    canonicalBytes(value),
   );
+}
+
+function canonicalBytes(value) {
+  return new TextEncoder().encode(`${canonicalJson(value)}\n`);
+}
+
+function rawObjectRecord({
+  sequence,
+  resourceFamily,
+  objectKind,
+  fileName,
+  bytes,
+  receipt,
+}) {
+  return {
+    sequence,
+    resourceFamily,
+    objectKind,
+    fileName,
+    byteLength: bytes.byteLength,
+    contentSha256: sha256Bytes(bytes),
+    pageReceiptSha256: receipt.pageReceiptSha256,
+    requestPathSha256: receipt.requestPathSha256,
+    responseBodySha256: receipt.responseBodySha256,
+    expectedBytes: bytes,
+  };
+}
+
+function assertExactPageReceiptSequence(captured, artifact) {
+  if (captured.length !== artifact.length) {
+    fail("raw_capture_page_receipt_count_mismatch");
+  }
+  const capturedDigests = new Set();
+  const artifactDigests = new Set();
+  for (let index = 0; index < artifact.length; index += 1) {
+    const capturedReceipt = captured[index];
+    const artifactReceipt = artifact[index];
+    if (
+      capturedDigests.has(capturedReceipt.pageReceiptSha256)
+      || artifactDigests.has(artifactReceipt.pageReceiptSha256)
+    ) fail("raw_capture_page_receipt_duplicate");
+    capturedDigests.add(capturedReceipt.pageReceiptSha256);
+    artifactDigests.add(artifactReceipt.pageReceiptSha256);
+    if (canonicalJson(capturedReceipt) !== canonicalJson(artifactReceipt)) {
+      fail("raw_capture_page_receipt_order_mismatch");
+    }
+  }
+  if (
+    capturedDigests.size !== artifactDigests.size
+    || [...capturedDigests].some((digest) => !artifactDigests.has(digest))
+  ) fail("raw_capture_page_receipt_set_mismatch");
+}
+
+async function assertRawCaptureDirectory(directory, expectedFiles) {
+  const actual = (await readdir(directory)).sort();
+  const expected = [...expectedFiles].sort();
+  if (
+    actual.length !== expected.length
+    || actual.some((name, index) => name !== expected[index])
+  ) fail("raw_capture_directory_contents_mismatch");
+}
+
+async function assertRawCaptureReadback({
+  directory,
+  captureManifestOutput,
+  rawObjects,
+}) {
+  let manifestText;
+  try {
+    manifestText = await readBoundedUtf8File(
+      resolve(directory, "capture-manifest.json"),
+      MAX_INPUT_BYTES,
+      "raw capture manifest",
+    );
+  } catch {
+    fail("raw_capture_manifest_readback_failed");
+  }
+  if (manifestText !== `${canonicalJson(captureManifestOutput)}\n`) {
+    fail("raw_capture_manifest_readback_mismatch");
+  }
+  for (const rawObject of rawObjects) {
+    let text;
+    try {
+      text = await readBoundedUtf8File(
+        resolve(directory, rawObject.fileName),
+        MAX_INPUT_BYTES,
+        `raw capture object ${rawObject.fileName}`,
+      );
+    } catch {
+      fail("raw_capture_object_readback_failed");
+    }
+    const bytes = new TextEncoder().encode(text);
+    if (
+      bytes.byteLength !== rawObject.byteLength
+      || sha256Bytes(bytes) !== rawObject.contentSha256
+      || bytes.byteLength !== rawObject.expectedBytes.byteLength
+      || !bytes.every((value, index) => value === rawObject.expectedBytes[index])
+    ) fail("raw_capture_object_readback_mismatch");
+  }
 }
 
 async function writeBytesCreateOnce(path, bytes) {

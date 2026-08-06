@@ -4,6 +4,9 @@ import path from "node:path";
 import { describe, expect, test } from "vitest";
 
 const root = path.resolve(import.meta.dirname, "..");
+const placeholderExternalWormPolicySha256 = "0".repeat(64);
+const sourceAuthenticationV3KeyPrefix =
+  "container-runtime/json-compatibility/source-authentication/v3/sha256";
 
 describe("source verifier deployment boundary", () => {
   test.each(["wrangler.local.jsonc", "wrangler.staging.jsonc"])(
@@ -13,10 +16,26 @@ describe("source verifier deployment boundary", () => {
       expect(config.workers_dev).toBe(false);
       expect(config.preview_urls).toBe(false);
       expect(config.routes).toBeUndefined();
+      expect({
+        enabled: config.vars.JSON_COMPATIBILITY_SOURCE_VERIFIER_ENABLED,
+        externalWormPolicySha256:
+          config.vars
+            .JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256,
+      }).toEqual({
+        enabled: "false",
+        externalWormPolicySha256: placeholderExternalWormPolicySha256,
+      });
+      expect(config.vars.JSON_COMPATIBILITY_SOURCE_BUNDLE_KEY_PREFIX).toBe(
+        sourceAuthenticationV3KeyPrefix,
+      );
       expect(config.vars).toMatchObject({
         JSON_COMPATIBILITY_SOURCE_VERIFIER_ENABLED: "false",
         JSON_COMPATIBILITY_SOURCE_VERIFIER_R2_READ_ENABLED: "false",
+        JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256:
+          placeholderExternalWormPolicySha256,
         JSON_COMPATIBILITY_SOURCE_VERIFIER_PROFILE_VERSION: "1",
+        JSON_COMPATIBILITY_SOURCE_BUNDLE_KEY_PREFIX:
+          sourceAuthenticationV3KeyPrefix,
         JSON_COMPATIBILITY_SOURCE_CURRENT_KID: "",
         JSON_COMPATIBILITY_SOURCE_CURRENT_SPKI_SHA256: "",
         JSON_COMPATIBILITY_SOURCE_PREVIOUS_KID: "",

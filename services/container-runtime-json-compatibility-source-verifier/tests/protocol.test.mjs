@@ -38,6 +38,10 @@ describe("source authentication bundle protocol", () => {
     expect(release.bundle.artifactInventoryReadback.artifactCount).toBe(18);
     expect(release.bundle.accountBindingInventory.campaignServiceNames)
       .toHaveLength(7);
+    expect(release.bundle.externalWormArchiveEvidence.archiveManifest
+      .archiveObjectCount).toBeGreaterThan(0);
+    expect(release.bundle.immutableSourceArchiveReceipt.archivePolicySha256)
+      .toBe(release.externalWormArchivePolicySha256);
   });
 
   test("rejects operation substitution and nested inventory drift", async () => {
@@ -67,7 +71,7 @@ describe("source authentication bundle protocol", () => {
       fixture.sourceSignatureEnvelopeSha256,
     )).toBe(fixture.bundleKey);
     expect(fixture.bundleKey).toMatch(
-      /^container-runtime\/json-compatibility\/source-authentication\/v2\/sha256\/bundles\/[0-9a-f]{2}\/[0-9a-f]{64}\.json$/,
+      /^container-runtime\/json-compatibility\/source-authentication\/v3\/sha256\/bundles\/[0-9a-f]{2}\/[0-9a-f]{64}\.json$/,
     );
     expect(() => sourceAuthenticationBundleKey(
       fixture.sourceSignatureEnvelopeSha256,
@@ -75,13 +79,13 @@ describe("source authentication bundle protocol", () => {
     )).toThrow();
   });
 
-  test("rejects an archive locked before its evidence was observed", async () => {
+  test("rejects an archive locked before its C2 evidence was observed", async () => {
     const now = 1_786_000_000;
     await expect(createSourceAuthenticationFixture({
       now,
       operationSeed: "source-archive-causal-order",
       archiveLockedAt: now - 300,
-    })).rejects.toThrow(/source_archive_causal_order_mismatch/);
+    })).rejects.toThrow(/external_worm_write_time_order_invalid/);
   });
 
   test("rejects stale archive readback and insufficient remaining retention", async () => {

@@ -43,11 +43,13 @@ export default defineConfig({
           JSON_COMPATIBILITY_SOURCE_VERIFIER_SERVICE_NAME:
             "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
           JSON_COMPATIBILITY_SOURCE_BUNDLE_KEY_PREFIX:
-            "container-runtime/json-compatibility/source-authentication/v2/sha256",
+            "container-runtime/json-compatibility/source-authentication/v3/sha256",
           JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER:
             "cinatoken-json-compatibility-source-archive-authority-staging",
           JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE:
             "cinatoken-container-runtime-json-compatibility-source-verifier-staging",
+          JSON_COMPATIBILITY_EXTERNAL_WORM_ARCHIVE_POLICY_SHA256:
+            fixture.externalWormArchivePolicySha256,
           JSON_COMPATIBILITY_SOURCE_CURRENT_KID:
             fixture.sourcePolicyCurrent.keyId,
           JSON_COMPATIBILITY_SOURCE_CURRENT_SPKI_SHA256:

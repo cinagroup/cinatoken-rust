@@ -28781,17 +28781,17 @@ Cloudflare or Go/VPS state changed. Production remains **NO-GO**.
 This section refines the first open item in the pre-R1 sequence. It does not
 supersede the private Source Verifier checkpoint and does not claim a remote
 Cloudflare run. The current local implementation now includes a structured
-account-wide collector v2, three-mode CLI, and source-authentication bundle v2
+account-wide collector v2, three-mode CLI, and source-authentication bundle v3
 that carries and signs that evidence. An inventory containing only
 caller-supplied counts and set
 digests is no longer sufficient: the legacy inventory projection must be
 derived exactly from the retained structured evidence and any mismatch must
 fail closed.
 
-The external archive receipt v2 and Ed25519 signature subject/envelope v2 both
-bind the exact `accountBindingEvidenceSha256`; the signature uses a v2 domain
-separator. The legacy inventory digest alone is not treated as authorization
-for an unbound structured evidence attachment.
+The derived external archive receipt v3 and Ed25519 signature subject/envelope
+v2 both bind the exact `accountBindingEvidenceSha256`; the signature uses a v2
+domain separator. The legacy inventory digest alone is not treated as
+authorization for an unbound structured evidence attachment.
 
 The production evidence flow is:
 
@@ -28924,8 +28924,9 @@ now creates a new capture directory, syncs a create-once manifest bound to
 mode/account/profile/collector identity, validates each raw body's exact length
 and SHA-256 against its receipt, and syncs receipt-digest-named body/receipt
 files through `wx`. This closes only the local overwrite-resistant capture
-boundary. The external-WORM adapter, write receipt, independent reader, and
-retention evidence remain open.
+boundary. A local C2 contract and Amazon S3 Object Lock data plane now exist,
+but real writer and independent-reader evidence, signatures and retention
+remain open.
 
 ### Remaining P0 sequence
 
@@ -28933,9 +28934,9 @@ retention evidence remain open.
 | --- | --- | --- |
 | C0 collector contract | frozen identity, exact schedule, bounds, binding classifier, structured-evidence-to-inventory projection, negative/fault tests | local protocol/library/CLI and dedicated CI implemented; no remote evidence |
 | C1 credential ceremony | two signed creation receipts, distinct IDs/custody, least privilege, verify-to-receipt match, revocation path | local signed-receipt/trust/revocation protocol, stdin-only signer, profile assembler, and pre-inventory enforcement implemented; no real issuance ceremony or remote verify evidence |
-| C2 immutable raw source | create-once sink, external compliance WORM, 365-day retention, independent exact readback | local file capture implemented; external WORM and independent readback not implemented |
+| C2 immutable raw source | create-once sink, external compliance WORM, 365-day retention, independent exact readback | terminal local capture, provider-neutral C2 contract, S3 Object Lock data plane and Source Verifier replay implemented locally; no real external publication/readback |
 | C3 stable account proof | two complete traversals 5-900 seconds apart with identical service/version/zone/route/edge sets | not run |
-| C4 source publication | isolated Ed25519 ceremony, signed bundle v2, create-once R2 upload and independent body/version/ETag/metadata readback | not completed |
+| C4 source publication | isolated Ed25519 ceremony, signed bundle v3, create-once R2 upload and independent body/version/ETag/metadata readback | v3 bundle validation implemented locally; real signer and R2 ceremony not completed |
 | D0 deployment leaf | private all-seven-service leaf, physical read/mutate separation, exact owner/operation/plan/transition/service/version binding, one send, no retry, stable target proof | deployment mutation remains mocked locally |
 | D1 staging database | owner-approved create-once D1 provisioning, no blind retry after ambiguity, frozen returned database ID, immutable migration-set application and exact schema readback | remote D1 not created or proven |
 | D2 transition campaign | dark control plane, locked receipt archive, readback-only inflight resolution, all 18 artifacts, four transitions, fault campaign and rollback evidence | not started remotely |
@@ -29033,3 +29034,125 @@ retention. An uncertain local create-only write consumes its artifact path and
 must use a new identity rather than overwrite. C2-C4, deployment leaf, remote D1,
 campaign, rollback, and wider production gates remain open. No Cloudflare or
 Go/VPS state changed; production remains **NO-GO**.
+
+## 2026-08-06 C2 External Compliance WORM Foundation And V3 Source Bundle
+
+This increment replaces the former self-declared immutable archive receipt
+with a locally enforceable evidence protocol. It does not claim an Amazon S3
+bucket, object version, retention deadline, provider principal, or remote
+Cloudflare object exists. The external design and runbook are maintained in
+`docs/container-runtime-json-compatibility-external-worm-archive.md`.
+
+The account-binding collector now closes each newly created raw directory with
+one canonical `capture-terminal.json`. Finalization validates the exact
+artifact/page-receipt sequence, predecessor head, body and receipt bytes,
+directory membership, total bytes and ordered descriptor set. A terminal
+attempt consumes the directory even on validation or I/O uncertainty. The CLI
+reports success only after both the collection artifact and terminal closure
+have been written create-once and read back.
+
+The provider-neutral C2 v1 contract adds:
+
+- an externally pinned archive policy requiring version-specific object-lock
+  compliance and explicitly rejecting R2 Bucket Lock as the C2 authority;
+- separate writer and independent-reader principal, credential, permission and
+  Ed25519 key identities;
+- a bounded canonical object manifest over both raw passes, their terminal
+  closures, collection artifacts, all page bodies/receipts, plans, inventory,
+  account evidence, and transition/phase source manifests;
+- a 512-descriptor ceiling chosen to keep every contract-valid archive below
+  the Source Verifier's 12 MiB canonical-body and 200,000-node bounds;
+- exactly one capture manifest, capture terminal and collection artifact per
+  pass, paired contiguous page objects, and distinct pass roots;
+- writer observations over every version/ETag/body/length/retention/request
+  identity and an independent exact readback over the same set, with each
+  signed subject binding the canonical raw S3 provider-observation-set digest;
+- 365-day minimum retention and a five-to-900-second readback window;
+- separate domain-separated writer/readback Ed25519 envelopes; and
+- a final evidence digest that verifies both signatures against the external
+  policy anchor and rejects C1/C2/C4 signer reuse.
+
+The first data-plane adapter targets Amazon S3 Object Lock. It uses explicit
+short-lived role credentials, rejects generic AWS, Cloudflare, Wrangler and
+opposite-role credential contamination, disables SDK retries, and performs one
+`PutObject` with `If-None-Match: *`, `ObjectLockMode=COMPLIANCE`, an exact
+retain-until date and SHA-256 checksum. A publisher records only facts that the
+actual SDK response provides: HTTP 200, `VersionId`, ETag, checksum and request
+ID. It never invents retention readback from the write response.
+
+The separate reader checks bucket versioning and Object Lock, then performs an
+exact-version bounded `GetObject` plus `GetObjectRetention`. It compares full
+streamed bytes, length, checksum, ETag, metadata, COMPLIANCE mode and the exact
+non-shortened deadline. Timeout, response loss and provider uncertainty are
+`ambiguous`; deterministic drift is `mismatch`; neither result retries or
+authorizes C2. Every raw provider observation retains
+`authorizesC2Closure=false`. A Worker-compatible closure binds the exact S3
+region/bucket-owner/object-key identities, all raw writer/reader observations,
+their short-lived credential IDs and provider request IDs to every C2 object
+observation. The dual-signed C2 subjects, not the raw adapter output or the
+closure alone, remain the authority presented to C4.
+
+The create-once S3 CLI accepts canonical request/publication files and bounded
+binary bodies, rejects ambient or mixed credentials before file/network work,
+binds the adapter to the exact request region, records ambiguous/mismatch
+results without retry, and exposes credential-free `--describe` plus both mode
+dry-runs. The CLI still produces provider observations only; it is not a C2
+finalizer or signer.
+
+Source authentication is now bundle v3 under the digest-derived
+`source-authentication/v3/sha256` prefix. The bundle carries the complete C2
+evidence, both terminal capture bodies and the complete S3 observation
+closure. Its immutable archive receipt is derived only from those documents.
+The receipt binds policy, manifest, evidence, closure, object/identity sets,
+writer/readback envelopes, chronology, minimum deadline, account evidence and
+transition source roots. The C4 signature subject remains v2 and transitively
+signs the v3 receipt digest, avoiding a signature-domain change unrelated to
+the receipt upgrade.
+
+The private Source Verifier has a new non-secret external C2 policy anchor.
+That anchor is included in the verifier-policy digest and therefore in the
+Version Metadata identity expected by the transition request. Tracked local
+and staging configurations use an all-zero placeholder and keep both gates
+false; enabling the Worker with the placeholder is rejected. After canonical
+R2 retrieval and C4 verification, the Worker replays both C2 signatures,
+requires the externally configured policy digest, and rejects C2 keys that
+reuse the embedded C1 credential-authority current/previous SPKI or configured
+C4 current/previous SPKI. It then reconstructs every S3-to-C2 object binding
+and rejects provider-observation substitution even when the outer C4 bundle
+is otherwise valid. It remains R2 `head`/`get` only and has no S3,
+Cloudflare mutation, signer or deployment credential.
+
+Local focused evidence for the implemented boundary includes 42 account-
+binding tests with 219 expectations, 29 C2/S3/CLI/closure tests with 354
+expectations,
+strict declarations and credential-free CLI describe/dry-runs, Source Verifier
+local/staging Wrangler dry-runs, 19 Node tests and three Workerd/R2 tests. The
+154-object synthetic source bundle is about 1.87 MiB, below the 12 MiB input
+limit; the Worker dry-run is 545.32 KiB upload / 88.85 KiB gzip. These
+results are synthetic contract and runtime evidence. No real credential or
+network mutation was performed. The complete repository `bun run check`
+passed with exit code 0 in 1,444.1 seconds on 2026-08-06.
+
+Production C2 remains open until all of the following are retained and
+independently replayed:
+
+1. an approved external bucket created with versioning and Object Lock enabled,
+   exact owner/region/namespace identities, and retention-admin readback;
+2. distinct OIDC-issued, short-lived writer and reader sessions with reviewed
+   least-privilege policies and no static access key;
+3. real create-only publication of the complete terminally closed archive and
+   unambiguous exact `VersionId` receipts;
+4. independent exact-version byte, metadata and `GetObjectRetention` readback
+   within the approved window;
+5. provider control-plane/audit records proving the expected principals and no
+   retention reduction or forbidden mutation;
+6. independently held writer/readback attestation keys and signed receipts;
+7. credential-free finalization against an externally approved C2 policy
+   digest and cross-domain signer denylist;
+8. isolated C4 review/signing, create-once R2 publication, exact R2 readback and
+   dark Source Verifier deployment/readback; and
+9. the remaining deployment leaf, D1 provisioning, four-transition campaign,
+   fault, rollback, security, privacy, SLO and cutover gates.
+
+Amazon S3 and Cloudflare were not called by this implementation increment.
+Go/VPS remains authoritative and production remains **NO-GO**.

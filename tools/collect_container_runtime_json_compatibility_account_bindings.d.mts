@@ -1,12 +1,28 @@
 import type {
+  JsonCompatibilityAccountBindingCollectionArtifactV1,
+  JsonCompatibilityAccountBindingCollectionProfileV1,
   JsonCompatibilityAccountBindingEvidenceV1,
 } from "./container_runtime_json_compatibility_account_binding_evidence.mjs";
 import type {
-  JsonCompatibilityAccountBindingRawPageSink,
+  JsonCompatibilityAccountBindingRawPageV1,
 } from "./lib/container_runtime_json_compatibility_account_binding_collector.mjs";
 import type {
   JsonCompatibilitySourceAccountBindingInventoryV1,
 } from "./container_runtime_json_compatibility_source_authentication.mjs";
+import type {
+  JsonCompatibilityAccountBindingRawCaptureTerminalV1,
+} from "./container_runtime_json_compatibility_account_binding_raw_capture.mjs";
+
+export {
+  JSON_COMPATIBILITY_ACCOUNT_BINDING_RAW_CAPTURE_TERMINAL_CONTRACT,
+  JsonCompatibilityAccountBindingRawCaptureError,
+  validateJsonCompatibilityAccountBindingRawCaptureTerminal,
+} from "./container_runtime_json_compatibility_account_binding_raw_capture.mjs";
+export type {
+  JsonCompatibilityAccountBindingRawCaptureResourceFamily,
+  JsonCompatibilityAccountBindingRawCaptureTerminalV1,
+  JsonCompatibilityAccountBindingRawObjectDescriptorV1,
+} from "./container_runtime_json_compatibility_account_binding_raw_capture.mjs";
 
 export const JSON_COMPATIBILITY_ACCOUNT_BINDING_FINALIZATION_CONTRACT:
   "cinatoken-container-runtime-json-compatibility-account-binding-finalization-v1";
@@ -28,6 +44,20 @@ export interface JsonCompatibilityAccountBindingCaptureIdentityV1 {
   readonly accountIdSha256: string;
   readonly collectionProfileSha256: string;
   readonly collectorIdentitySha256: string;
+}
+
+export interface JsonCompatibilityAccountBindingRawCaptureValidationContextV1 {
+  readonly campaignPlan: unknown;
+  readonly statePlan: unknown;
+  readonly collectionProfile:
+    JsonCompatibilityAccountBindingCollectionProfileV1;
+}
+
+export interface JsonCompatibilityAccountBindingRawCaptureSinkV1 {
+  (page: JsonCompatibilityAccountBindingRawPageV1): void | Promise<void>;
+  readonly finalize: (
+    artifact: JsonCompatibilityAccountBindingCollectionArtifactV1,
+  ) => Promise<JsonCompatibilityAccountBindingRawCaptureTerminalV1>;
 }
 
 export interface JsonCompatibilityAccountBindingCliPlanV1 {
@@ -91,7 +121,9 @@ export function parseAccountBindingCollectorArgs(
 export function createJsonCompatibilityAccountBindingRawPageSink(
   directory: string,
   captureIdentity: JsonCompatibilityAccountBindingCaptureIdentityV1,
-): Promise<JsonCompatibilityAccountBindingRawPageSink>;
+  validationContext:
+    JsonCompatibilityAccountBindingRawCaptureValidationContextV1,
+): Promise<JsonCompatibilityAccountBindingRawCaptureSinkV1>;
 
 export function runAccountBindingCollectorCli(options?: {
   readonly argv?: readonly string[];

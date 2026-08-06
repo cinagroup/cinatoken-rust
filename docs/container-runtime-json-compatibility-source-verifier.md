@@ -30,14 +30,14 @@ offline-approved collection profile and two credential-creation receipts
   -> private Deployment Transition Worker
 ```
 
-The account-wide collector v2 protocol, bounded Cloudflare transport, three-mode
-CLI, local create-once capture directory, structured evidence, and exact legacy
-inventory projection are implemented and locally tested. No production
-credential ceremony, remote collection, external-WORM raw-page archive, or
-independent archive readback has completed.
-The isolated signer ceremony, external archive integration, create-once R2
-uploader, and remote verifier readback also remain open. The diagram is the
-required production topology, not a deployment claim.
+The account-wide collector v2 protocol, bounded Cloudflare transport,
+three-mode CLI, terminally closed local capture directory, provider-neutral C2
+contract, Amazon S3 Object Lock data plane, structured evidence, and exact
+legacy inventory projection are implemented and locally tested. No production
+credential ceremony, remote collection, external-WORM publication, or real
+independent archive readback has completed. The isolated signer ceremony,
+create-once R2 uploader, and remote verifier readback also remain open. The
+diagram is the required production topology, not a deployment claim.
 
 ## Transition-Bound Request
 
@@ -81,7 +81,7 @@ that can only be produced after the four-phase campaign.
 The fixed, digest-derived R2 key is:
 
 ```text
-container-runtime/json-compatibility/source-authentication/v2/sha256/
+container-runtime/json-compatibility/source-authentication/v3/sha256/
   bundles/<first-two-hex>/<source-envelope-sha256>.json
 ```
 
@@ -95,9 +95,11 @@ The canonical UTF-8 JSON body ends in exactly one LF and contains:
 5. structured account-wide service, zone, route, cross-script edge, page-chain,
    authentication, and independent-readback evidence;
 6. the exact legacy account-binding inventory projected from item 5;
-7. an external-WORM archive receipt;
-8. an Ed25519 source-signature envelope; and
-9. the canonical bundle digest.
+7. the complete C2 archive policy, exact manifest, writer-signed observations,
+   and independently signed exact-version readback closure;
+8. a v3 immutable-archive receipt derived only from item 7;
+9. an Ed25519 source-signature envelope; and
+10. the canonical bundle digest.
 
 The account inventory explicitly binds a complete endpoint-schedule and
 pagination assertion, collector identity, two authentication identities,
@@ -107,13 +109,15 @@ service names. A production v2 collector run must obtain and retain the real
 values before the bundle is admissible; fixture or synthetic values are not
 remote evidence.
 
-The archive receipt v2 requires `external-worm`, compliance mode, at least 365
-days of retention, object version and ETag digests, retention evidence, an
-independent readback timestamp, and the exact structured account-binding
-evidence digest. Signature subject/envelope v2 also directly bind that digest
-under the v2 domain separator. Cloudflare R2 is only the verifier's bounded
-retrieval cache. R2 is not represented as WORM, and an R2 object cannot satisfy
-the external immutable-retention requirement by itself.
+The archive receipt v3 is not caller-authored storage metadata. It is derived
+from the complete C2 evidence and binds its externally pinned policy, manifest,
+object/identity sets, writer/readback envelopes, compliance deadline,
+chronology, and exact structured account evidence. The Source Verifier policy
+hash also binds the external C2 policy digest. Signature subject/envelope v2
+then transitively bind the v3 receipt under the v2 C4 domain separator.
+Cloudflare R2 is only the verifier's bounded retrieval cache. R2 Bucket Lock is
+not accepted as S3 Object Lock compliance evidence and cannot satisfy C2 by
+itself.
 
 ## Account-Wide Collector V2 Contract
 
@@ -290,41 +294,59 @@ The CLI now creates a previously absent capture directory, syncs a canonical
 manifest binding mode/account/profile/collector identity, names each body and
 receipt pair by the full page-receipt digest, checks exact body length and
 SHA-256, uses create-once file opens, and syncs each file before returning to
-the collector. This is a local overwrite-resistant capture boundary, not WORM.
+the collector. After the terminal artifact is written, it verifies the exact
+page-receipt sequence and raw directory contents, writes one create-once
+`capture-terminal.json`, reads it back, and reports success only after both the
+artifact and terminal closure exist. This is a local overwrite-resistant
+capture boundary, not WORM.
 
 Both traversals' raw pages, page receipts, collector/profile identities, and
 terminal artifacts must then be placed in an external compliance-mode WORM
-archive with at least 365 days retention. A separately authorized reader must
-verify object version, retention mode/deadline, ETag and SHA-256, byte length,
-and canonical manifest closure before source signing. The collector library's
-`rawPageSink` callback remains an integration boundary. Until the local capture
-is transferred through a reviewed external-WORM adapter and independently read
-back under retention, it is not production immutable-storage evidence.
+archive with at least 365 days retention. The local C2 contract now requires
+one terminal per pass, an exact object set capped at 512 descriptors,
+separate writer/reader principals, credentials and Ed25519 keys, and a
+five-to-900-second exact-version readback. The cap keeps every valid C2 bundle
+within the Worker's 12 MiB/200,000-node verifier envelope. Its first data-plane
+adapter and create-once CLI issue one create-only Amazon S3 request with
+COMPLIANCE retention and separately check versioning, Object Lock, bytes,
+metadata and `GetObjectRetention`. A successful adapter observation explicitly
+does not authorize C2 by itself. The writer and reader subjects sign the exact
+canonical raw provider-observation-set digests, and a credential-free closure
+maps every retained raw observation to its C2 object observation. Neither the
+raw observations nor that closure authorize C2 without both valid C2
+signatures. Until a real
+external bucket and independent principals produce that closure, the evidence
+is not production immutable-storage proof.
 
 ## Verification Pipeline
 
 The Worker fails closed in this order:
 
-1. require exact staging service/profile/key-prefix/issuer/audience and both
+1. require exact staging service/profile/v3 key-prefix/issuer/audience and both
    default-off gates;
-2. validate Version Metadata, R2 binding, current key, and optional bounded
-   previous-key window;
-3. recompute the verifier-policy and Version Metadata identity digests and
-   reject a non-approved policy or code version before any R2 read;
+2. validate Version Metadata, R2 binding, current key, optional bounded
+   previous-key window, and a non-placeholder external C2 policy digest;
+3. recompute the verifier policy, including the C2 policy anchor, and Version
+   Metadata identity digests; reject a non-approved policy or code version
+   before any R2 read;
 4. accept at most 16 KiB of strict canonical request input;
 5. derive one bundle key from the approved envelope digest and perform only
    R2 `head` and `get`;
 6. require stable version/ETag/size, a body of at most 12 MiB, fatal UTF-8,
    bounded JSON depth/node/string sizes, canonical JSON plus one LF, exact
    content type, and exact custom metadata;
-7. validate every nested plan, manifest, inventory, archive, timing, account,
-   transition, and digest relationship;
-8. select only the configured current key or an unexpired previous key;
-9. check the SPKI-digest revocation marker before Ed25519 verification;
-10. verify the pinned SPKI and domain-separated Ed25519 signature, then check
-    revocation again; and
-11. return a canonical authenticated, rejected, or ambiguous proof bound to
-    the exact request and verifier identity.
+7. validate every nested plan, manifest, inventory, C2 evidence, derived v3
+   archive receipt, timing, account, transition, and digest relationship;
+8. select only the configured current C4 key or an unexpired previous key;
+9. check the C4 SPKI-digest revocation marker, verify its domain-separated
+   Ed25519 signature, then check revocation again;
+10. verify the writer and independent-reader C2 signatures against the pinned
+    policy, rejecting reuse of any C1 credential-authority or C4 signer SPKI;
+11. replay the S3 observation closure, binding target, credential, version,
+    ETag, checksum, bytes, metadata, retention, chronology and all provider
+    request IDs to the signed C2 observation-set digests; and
+12. return a canonical authenticated, rejected, or ambiguous proof bound to
+    the exact request, C2 closure and verifier identity.
 
 Deterministic absence, drift, malformed evidence, policy mismatch, untrusted
 key, invalid signature, and revocation are `rejected`. R2 read uncertainty,
@@ -347,6 +369,7 @@ Run:
 ```text
 bun run check:container-runtime:json-compatibility-deployment-transition
 bun run check:container-runtime:json-compatibility-account-binding-collector
+bun run check:container-runtime:json-compatibility-external-worm
 bun run check:container-runtime:json-compatibility-source-verifier
 bun run check:container-runtime:json-compatibility-deployment-transition-worker
 ```
@@ -355,15 +378,16 @@ Current focused evidence on 2026-08-06 is:
 
 | Gate | Result |
 | --- | --- |
-| Account-binding credentials/evidence/collector/CLI | 37 tests, 155 expectations; strict declaration check; process-level DER/PEM stdin/tail/size/ambient-credential probes; anchored signer/profile descriptions; four credential-free collector self-test/dry-run plans |
+| Account-binding credentials/evidence/collector/CLI | 42 tests, 219 expectations; strict declaration check; terminal raw-capture closure; process-level DER/PEM stdin/tail/size/ambient-credential probes; anchored signer/profile descriptions; four credential-free collector self-test/dry-run plans |
+| External WORM contract, S3 data plane, CLI and closure | 29 tests, 354 expectations; strict declarations; credential-free describe/two-mode dry-runs; no provider call; exact C2 policy/manifest/dual-signature closure, raw observation-set binding and S3 COMPLIANCE/readback fault classification |
 | Transition protocol | 13 tests, 150 expectations; includes exact v2 request/proof replay, cross-operation/plan binding, and proof-time rejection |
 | Generated types and TypeScript | pass |
-| Source verifier dry-runs | local and staging pass; 383.00 KiB upload / 62.14 KiB gzip; both gates false |
-| Source verifier Node tests | 3 files, 13 tests |
+| Source verifier dry-runs | local and staging pass; 545.32 KiB upload / 88.85 KiB gzip; both gates false |
+| Source verifier Node tests | 3 files, 19 tests; includes pre-R2 zero-anchor rejection, pinned C2 policy, forged writer/readback, terminal substitution, raw S3 observation substitution and C2/C4 signer-reuse rejection |
 | Source verifier Workerd/R2 tests | 1 file, 3 tests; canonical read-only verification, missing object, and revocation |
 | Transition Worker Node tests | 2 files, 8 tests |
 | Transition Worker Workerd integration | 1 file, 2 tests; real secondary verifier Worker plus shared R2 and real D1 |
-| Complete repository | `bun run check` passed with exit code 0 in 1,186.7 seconds |
+| Complete repository | `bun run check` passed with exit code 0 in 1,444.1 seconds |
 
 The integrated Workerd test seeds a canonical R2 bundle, routes the transition
 through the actual verifier named entrypoint, proves exactly one verifier call,
@@ -430,11 +454,12 @@ Before any isolated staging transition:
     readbacks, D1 creation/migration evidence, and deployment receipts for
     independent offline replay.
 
-The source verifier, collector v2, and credential-provenance v1 protocol close
-local implementation gaps but have not produced admissible remote evidence.
-Real signed credential-issuance receipts and managed-key ceremony evidence,
-the create-once raw-page/WORM sink, independent archive reader, source-bundle
-signer, R2 uploader, remote bucket/verifier readback,
+The source verifier, collector v2, credential-provenance v1, terminal raw
+capture, C2 contract and Amazon S3 data plane close local implementation gaps
+but have not produced admissible remote evidence. Real signed
+credential-issuance receipts and managed-key ceremony evidence, external WORM
+publication/readback attestations, source-bundle signer, R2 uploader, remote
+bucket/verifier readback,
 deployment leaf, D1 create-once provisioner and immutable remote schema,
 inflight resolver, fault campaign, and wider provider/billing/settlement/
 storage/SLO/cost/security/privacy/rollback/cutover evidence remain open. The

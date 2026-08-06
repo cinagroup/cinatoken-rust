@@ -8,6 +8,10 @@ on:
       - "package.json"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
       - "tests/container-runtime-json-compatibility-bounded-file.test.mjs"
+      - "tests/container-runtime-json-compatibility-external-worm-archive.test.mjs"
+      - "tests/container-runtime-json-compatibility-external-worm-s3-cli.test.mjs"
+      - "tests/container-runtime-json-compatibility-external-worm-s3-closure.test.mjs"
+      - "tests/container-runtime-json-compatibility-external-worm-s3.test.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-deployment-transition.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs"
       - "tools/assemble_container_runtime_json_compatibility_account_binding_profile.*"
@@ -15,11 +19,17 @@ on:
       - "tools/sign_container_runtime_json_compatibility_account_binding_credential.*"
       - "tools/container_runtime_json_compatibility_account_binding_credentials.*"
       - "tools/container_runtime_json_compatibility_account_binding_evidence.*"
+      - "tools/container_runtime_json_compatibility_account_binding_raw_capture.*"
       - "tools/container_runtime_json_compatibility_campaign.mjs"
       - "tools/container_runtime_json_compatibility_deployment_states.mjs"
+      - "tools/container_runtime_json_compatibility_external_worm_archive.*"
+      - "tools/container_runtime_json_compatibility_external_worm_s3_closure.*"
+      - "tools/container_runtime_json_compatibility_external_worm_s3_observation.*"
       - "tools/container_runtime_json_compatibility_source_authentication.*"
       - "tools/lib/container_runtime_json_compatibility_account_binding_collector.*"
       - "tools/lib/container_runtime_json_compatibility_account_binding_credentials.*"
+      - "tools/lib/container_runtime_json_compatibility_external_worm_s3.*"
+      - "tools/run_container_runtime_json_compatibility_external_worm_s3.*"
       - "tools/lib/bounded_json_file.mjs"
   push:
     branches:
@@ -30,6 +40,10 @@ on:
       - "package.json"
       - "tests/container-runtime-json-compatibility-account-binding-*.test.mjs"
       - "tests/container-runtime-json-compatibility-bounded-file.test.mjs"
+      - "tests/container-runtime-json-compatibility-external-worm-archive.test.mjs"
+      - "tests/container-runtime-json-compatibility-external-worm-s3-cli.test.mjs"
+      - "tests/container-runtime-json-compatibility-external-worm-s3-closure.test.mjs"
+      - "tests/container-runtime-json-compatibility-external-worm-s3.test.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-deployment-transition.mjs"
       - "tests/fixtures/container-runtime-json-compatibility-source-authentication.mjs"
       - "tools/assemble_container_runtime_json_compatibility_account_binding_profile.*"
@@ -37,11 +51,17 @@ on:
       - "tools/sign_container_runtime_json_compatibility_account_binding_credential.*"
       - "tools/container_runtime_json_compatibility_account_binding_credentials.*"
       - "tools/container_runtime_json_compatibility_account_binding_evidence.*"
+      - "tools/container_runtime_json_compatibility_account_binding_raw_capture.*"
       - "tools/container_runtime_json_compatibility_campaign.mjs"
       - "tools/container_runtime_json_compatibility_deployment_states.mjs"
+      - "tools/container_runtime_json_compatibility_external_worm_archive.*"
+      - "tools/container_runtime_json_compatibility_external_worm_s3_closure.*"
+      - "tools/container_runtime_json_compatibility_external_worm_s3_observation.*"
       - "tools/container_runtime_json_compatibility_source_authentication.*"
       - "tools/lib/container_runtime_json_compatibility_account_binding_collector.*"
       - "tools/lib/container_runtime_json_compatibility_account_binding_credentials.*"
+      - "tools/lib/container_runtime_json_compatibility_external_worm_s3.*"
+      - "tools/run_container_runtime_json_compatibility_external_worm_s3.*"
       - "tools/lib/bounded_json_file.mjs"
   workflow_dispatch:
 
@@ -70,6 +90,9 @@ jobs:
 
       - name: Install frozen JavaScript dependencies
         run: bun install --frozen-lockfile
+
+      - name: Verify external WORM archive contract and S3 data plane
+        run: bun run check:container-runtime:json-compatibility-external-worm
 
       - name: Verify account binding evidence and collector safety
         run: bun run check:container-runtime:json-compatibility-account-binding-collector

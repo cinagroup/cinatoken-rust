@@ -33,6 +33,28 @@ import {
   sourceSignatureSigningPayload,
 } from "../../tools/container_runtime_json_compatibility_source_authentication.mjs";
 import {
+  buildJsonCompatibilityExternalWormArchiveEvidence,
+  buildJsonCompatibilityExternalWormArchiveManifest,
+  buildJsonCompatibilityExternalWormArchiveObjectDescriptor,
+  buildJsonCompatibilityExternalWormArchiveObjectObservation,
+  buildJsonCompatibilityExternalWormArchivePassRoot,
+  buildJsonCompatibilityExternalWormArchivePolicy,
+  buildJsonCompatibilityExternalWormAttestationEnvelope,
+  buildJsonCompatibilityExternalWormReadbackObservationSubject,
+  buildJsonCompatibilityExternalWormWriteObservationSubject,
+  externalWormArchiveAttestationSigningPayload,
+} from "../../tools/container_runtime_json_compatibility_external_worm_archive.mjs";
+import {
+  buildJsonCompatibilityExternalWormS3Closure,
+  deriveJsonCompatibilityExternalWormS3ArchiveIdentities,
+} from "../../tools/container_runtime_json_compatibility_external_worm_s3_closure.mjs";
+import {
+  JSON_COMPATIBILITY_EXTERNAL_WORM_S3_DECISION_SCOPE,
+  JSON_COMPATIBILITY_EXTERNAL_WORM_S3_OBSERVATION_CONTRACT,
+  JSON_COMPATIBILITY_EXTERNAL_WORM_S3_PROVIDER,
+  deriveJsonCompatibilityExternalWormS3ReadbackRequestSetSha256,
+} from "../../tools/container_runtime_json_compatibility_external_worm_s3_observation.mjs";
+import {
   JSON_COMPATIBILITY_ACCOUNT_BINDING_RESOURCE_FAMILIES,
   accountBindingInventoryInputFromEvidence,
   buildJsonCompatibilityAccountBindingAuthenticationIdentity,
@@ -73,6 +95,11 @@ export async function createSourceAuthenticationFixture({
   transitionId = TRANSITION_IDS[0],
   operationSeed = "source-authentication-operation",
   invalidSourceSignature = false,
+  invalidExternalWormPolicyAnchor = false,
+  invalidExternalWormWriterSignature = false,
+  invalidExternalWormReadbackSignature = false,
+  driftExternalWormS3ProviderObservations = false,
+  externalWormSignerReuseSource = null,
   sourceSignerTrustSlot = "current",
   sourceVerifierVersionId = "source-verifier-version-001",
   evidenceObservedAt = now - 120,
@@ -96,6 +123,18 @@ export async function createSourceAuthenticationFixture({
     });
     const transitionSpkiSha256 = createHash("sha256")
       .update(transitionKeys.publicKey.export({ format: "der", type: "spki" }))
+      .digest("hex");
+    const sourceKeys = generateKeyPairSync("ed25519");
+    sourcePrivateKey = sourceKeys.privateKey.export({
+      format: "der",
+      type: "pkcs8",
+    });
+    const sourceSpki = sourceKeys.publicKey.export({
+      format: "der",
+      type: "spki",
+    });
+    const sourceSignerSpkiSha256 = createHash("sha256")
+      .update(sourceSpki)
       .digest("hex");
     const statePlan = buildStatePlan(sha256Canonical(controllerConfig));
     const campaignPlan = buildCampaignPlan(
@@ -157,54 +196,48 @@ export async function createSourceAuthenticationFixture({
         statePlan,
         ...accountBindingInventoryInputFromEvidence(accountBindingEvidence),
       });
-    const immutableSourceArchiveSha256 = sha256Canonical({
-      transitionSourceManifestSha256:
-        transitionSourceManifest.transitionSourceManifestSha256,
-      phaseSourceManifestSha256:
-        phaseSourceManifest?.sourceManifestSha256 ?? null,
-      artifactInventoryReadbackSha256:
-        artifactInventoryReadback.artifactInventoryReadbackSha256,
-      accountBindingEvidenceSha256:
-        accountBindingEvidence.accountBindingEvidenceSha256,
-      accountBindingInventorySha256:
-        accountBindingInventory.accountBindingInventorySha256,
-      archiveFormat: "tar.zst",
+    const operationIdSha256 = digest(operationSeed);
+    const externalWormArchive = await buildExternalWormArchiveEvidenceFixture({
+      campaignPlan,
+      statePlan,
+      accountIdSha256,
+      transitionSourceManifest,
+      phaseSourceManifest,
+      artifactInventoryReadback,
+      accountBindingEvidence,
+      accountBindingInventory,
+      operationSeed,
+      sourceKeys,
+      externalWormSignerReuseSource,
+      invalidWriterSignature: invalidExternalWormWriterSignature,
+      invalidReadbackSignature: invalidExternalWormReadbackSignature,
+      archiveLockedAt,
+      archiveReadbackAt,
+      archiveRetainUntil,
     });
+    const externalWormArchiveEvidence = externalWormArchive.evidence;
+    const externalWormS3Closure = driftExternalWormS3ProviderObservations
+      ? driftExternalWormS3ProviderObservationMetadata(
+        externalWormArchive.s3Closure,
+      )
+      : externalWormArchive.s3Closure;
+    const collectionCaptureTerminal =
+      externalWormArchive.collectionCaptureTerminal;
+    const independentReadbackCaptureTerminal =
+      externalWormArchive.independentReadbackCaptureTerminal;
+    const externalWormArchivePolicySha256 =
+      externalWormArchive.policy.archivePolicySha256;
+    const sourceVerifierExternalWormArchivePolicySha256 =
+      invalidExternalWormPolicyAnchor
+        ? differentSha256(externalWormArchivePolicySha256)
+        : externalWormArchivePolicySha256;
     const immutableSourceArchiveReceipt =
       buildJsonCompatibilitySourceImmutableArchiveReceipt({
-        accountIdSha256,
-        transitionSourceManifestSha256:
-          transitionSourceManifest.transitionSourceManifestSha256,
-        phaseSourceManifestSha256:
-          phaseSourceManifest?.sourceManifestSha256 ?? null,
-        artifactInventoryReadbackSha256:
-          artifactInventoryReadback.artifactInventoryReadbackSha256,
-        accountBindingEvidenceSha256:
-          accountBindingEvidence.accountBindingEvidenceSha256,
-        accountBindingInventorySha256:
-          accountBindingInventory.accountBindingInventorySha256,
-        immutableSourceArchiveSha256,
-        archiveObjectVersionSha256: digest("source-archive-object-version"),
-        archiveObjectEtagSha256: digest("source-archive-object-etag"),
-        archiveByteLength: 4_194_304,
-        lockedAt: archiveLockedAt,
-        retainUntil: archiveRetainUntil,
-        independentlyReadBackAt: archiveReadbackAt,
-        retentionEvidenceSha256: digest("source-archive-retention-evidence"),
+        externalWormArchiveEvidence,
+        externalWormS3Closure,
+        collectionCaptureTerminal,
+        independentReadbackCaptureTerminal,
       });
-    const operationIdSha256 = digest(operationSeed);
-    const sourceKeys = generateKeyPairSync("ed25519");
-    sourcePrivateKey = sourceKeys.privateKey.export({
-      format: "der",
-      type: "pkcs8",
-    });
-    const sourceSpki = sourceKeys.publicKey.export({
-      format: "der",
-      type: "spki",
-    });
-    const sourceSignerSpkiSha256 = createHash("sha256")
-      .update(sourceSpki)
-      .digest("hex");
     let sourcePolicyCurrent = {
       keyId: SOURCE_SIGNATURE_KEY_ID,
       spkiSha256: sourceSignerSpkiSha256,
@@ -229,9 +262,11 @@ export async function createSourceAuthenticationFixture({
       serviceName: JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE,
       profileVersion: 1,
       keyPrefix:
-        "container-runtime/json-compatibility/source-authentication/v2/sha256",
+        "container-runtime/json-compatibility/source-authentication/v3/sha256",
       issuer: JSON_COMPATIBILITY_SOURCE_SIGNATURE_ISSUER,
       audience: JSON_COMPATIBILITY_SOURCE_SIGNATURE_AUDIENCE,
+      externalWormArchivePolicySha256:
+        sourceVerifierExternalWormArchivePolicySha256,
       current: sourcePolicyCurrent,
       previous: sourcePolicyPrevious,
     });
@@ -344,6 +379,10 @@ export async function createSourceAuthenticationFixture({
       artifactInventoryReadback,
       accountBindingEvidence,
       accountBindingInventory,
+      externalWormArchiveEvidence,
+      externalWormS3Closure,
+      collectionCaptureTerminal,
+      independentReadbackCaptureTerminal,
       immutableSourceArchiveReceipt,
       sourceSignatureEnvelope,
     });
@@ -366,12 +405,727 @@ export async function createSourceAuthenticationFixture({
       sourcePolicyPrevious,
       sourceVerifierVersionId,
       sourceVerifierIdentity,
+      externalWormArchiveEvidence,
+      externalWormS3Closure,
+      collectionCaptureTerminal,
+      independentReadbackCaptureTerminal,
+      externalWormArchivePolicySha256,
+      sourceVerifierExternalWormArchivePolicySha256,
+      externalWormWriterSpkiSha256:
+        externalWormArchive.writer.policy.spkiSha256,
+      externalWormReadbackSpkiSha256:
+        externalWormArchive.readback.policy.spkiSha256,
     };
   } finally {
     transitionPrivateKey?.fill(0);
     sourcePrivateKey?.fill(0);
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+async function buildExternalWormArchiveEvidenceFixture({
+  campaignPlan,
+  statePlan,
+  accountIdSha256,
+  transitionSourceManifest,
+  phaseSourceManifest,
+  artifactInventoryReadback,
+  accountBindingEvidence,
+  accountBindingInventory,
+  operationSeed,
+  sourceKeys,
+  externalWormSignerReuseSource,
+  invalidWriterSignature,
+  invalidReadbackSignature,
+  archiveLockedAt,
+  archiveReadbackAt,
+  archiveRetainUntil,
+}) {
+  if (
+    externalWormSignerReuseSource !== null
+    && externalWormSignerReuseSource !== "writer"
+    && externalWormSignerReuseSource !== "independent-readback"
+  ) throw new Error("external WORM signer reuse fixture mode is invalid");
+  const writer = externalWormActor(
+    "writer",
+    externalWormSignerReuseSource === "writer" ? sourceKeys : null,
+  );
+  const readback = externalWormActor(
+    "independent-readback",
+    externalWormSignerReuseSource === "independent-readback"
+      ? sourceKeys
+      : null,
+  );
+  const collectionPass = externalWormPassFixture(
+    accountBindingEvidence.collection,
+  );
+  const readbackPass = externalWormPassFixture(
+    accountBindingEvidence.independentReadback,
+  );
+  const globalObjects = [
+    externalWormGlobalObject(
+      "campaign-plan",
+      campaignPlan,
+      campaignPlan.planDigestSha256,
+    ),
+    externalWormGlobalObject(
+      "state-plan",
+      statePlan,
+      statePlan.planDigestSha256,
+    ),
+    externalWormGlobalObject(
+      "collector-identity",
+      accountBindingEvidence.collection.collectorIdentity,
+      accountBindingEvidence.collectionProfile.collectorIdentitySha256,
+    ),
+    externalWormGlobalObject(
+      "collection-profile",
+      accountBindingEvidence.collectionProfile,
+      accountBindingEvidence.collectionProfile.collectionProfileSha256,
+    ),
+    externalWormGlobalObject(
+      "account-binding-evidence",
+      accountBindingEvidence,
+      accountBindingEvidence.accountBindingEvidenceSha256,
+    ),
+    externalWormGlobalObject(
+      "account-binding-inventory",
+      accountBindingInventory,
+      accountBindingInventory.accountBindingInventorySha256,
+    ),
+    externalWormGlobalObject(
+      "transition-source-manifest",
+      transitionSourceManifest,
+      transitionSourceManifest.transitionSourceManifestSha256,
+    ),
+    externalWormGlobalObject(
+      "artifact-inventory-readback",
+      artifactInventoryReadback,
+      artifactInventoryReadback.artifactInventoryReadbackSha256,
+    ),
+  ];
+  if (phaseSourceManifest !== null) {
+    globalObjects.push(externalWormGlobalObject(
+      "phase-source-manifest",
+      phaseSourceManifest,
+      phaseSourceManifest.sourceManifestSha256,
+    ));
+  }
+  const objects = [
+    ...collectionPass.objects,
+    ...readbackPass.objects,
+    ...globalObjects,
+  ];
+  const s3Target = {
+    provider: JSON_COMPATIBILITY_EXTERNAL_WORM_S3_PROVIDER,
+    region: "ap-southeast-1",
+    bucketNameSha256: digest("external-worm-s3-bucket:staging"),
+    expectedBucketOwnerSha256:
+      digest("external-worm-s3-owner:staging"),
+    objectKeySha256s: objects.map((value) => value.objectKeySha256),
+  };
+  const s3Identity =
+    await deriveJsonCompatibilityExternalWormS3ArchiveIdentities(s3Target);
+  const policy = buildJsonCompatibilityExternalWormArchivePolicy({
+    backendIdentitySha256: s3Identity.backendIdentitySha256,
+    namespaceIdentitySha256: s3Identity.namespaceIdentitySha256,
+    effectiveAt: Math.min(
+      collectionPass.rootInput.observedAt,
+      readbackPass.rootInput.observedAt,
+    ) - 60,
+    writer: writer.policy,
+    readback: readback.policy,
+  });
+  const collection = buildJsonCompatibilityExternalWormArchivePassRoot({
+    ...collectionPass.rootInput,
+    objects,
+  });
+  const independentReadback =
+    buildJsonCompatibilityExternalWormArchivePassRoot({
+      ...readbackPass.rootInput,
+      objects,
+    });
+  const manifest = buildJsonCompatibilityExternalWormArchiveManifest({
+    archivePolicy: policy,
+    archiveOperationIdSha256:
+      digest(`${operationSeed}:external-worm-archive`),
+    accountIdSha256,
+    campaignPlanDigestSha256: campaignPlan.planDigestSha256,
+    statePlanDigestSha256: statePlan.planDigestSha256,
+    collectionProfileSha256:
+      accountBindingEvidence.collectionProfile.collectionProfileSha256,
+    collectorIdentitySha256:
+      accountBindingEvidence.collectionProfile.collectorIdentitySha256,
+    collection,
+    independentReadback,
+    accountBindingEvidenceSha256:
+      accountBindingEvidence.accountBindingEvidenceSha256,
+    accountBindingInventorySha256:
+      accountBindingInventory.accountBindingInventorySha256,
+    transitionSourceManifestSha256:
+      transitionSourceManifest.transitionSourceManifestSha256,
+    phaseSourceManifestSha256:
+      phaseSourceManifest?.sourceManifestSha256 ?? null,
+    artifactInventoryReadbackSha256:
+      artifactInventoryReadback.artifactInventoryReadbackSha256,
+    objects,
+    createdAt: Math.max(
+      collectionPass.rootInput.observedAt,
+      readbackPass.rootInput.observedAt,
+    ),
+  });
+  const writeCompletedAt = archiveLockedAt + 1;
+  const s3Observations = await externalWormS3Observations({
+    objects: manifest.objects,
+    operationSeed,
+    target: s3Target,
+    writerCredentialIdSha256: writer.policy.credentialIdSha256,
+    readerCredentialIdSha256: readback.policy.credentialIdSha256,
+    writerObservedAt: writeCompletedAt,
+    readbackObservedAt: archiveReadbackAt,
+    retainUntil: archiveRetainUntil,
+  });
+  const writeSubject =
+    buildJsonCompatibilityExternalWormWriteObservationSubject({
+      archivePolicy: policy,
+      archiveManifest: manifest,
+      writeOperationIdSha256: digest(`${operationSeed}:external-worm-write`),
+      providerObservationSetSha256:
+        s3Observations.writerObservationSetSha256,
+      observations: s3Observations.c2WriteObservations,
+      startedAt: archiveLockedAt - 1,
+      lockedAt: archiveLockedAt,
+      completedAt: writeCompletedAt,
+    });
+  const validWriteEnvelope = externalWormSignedEnvelope(
+    writeSubject,
+    writer,
+    false,
+  );
+  const validReadbackSubject =
+    buildJsonCompatibilityExternalWormReadbackObservationSubject({
+      archivePolicy: policy,
+      archiveManifest: manifest,
+      writeObservationEnvelope: validWriteEnvelope,
+      readbackOperationIdSha256:
+        digest(`${operationSeed}:external-worm-readback`),
+      providerObservationSetSha256:
+        s3Observations.readbackObservationSetSha256,
+      observations: s3Observations.c2ReadbackObservations,
+      startedAt: archiveReadbackAt - 1,
+      completedAt: archiveReadbackAt,
+    });
+  const validReadbackEnvelope = externalWormSignedEnvelope(
+    validReadbackSubject,
+    readback,
+    false,
+  );
+  const validEvidence = buildJsonCompatibilityExternalWormArchiveEvidence({
+    archivePolicy: policy,
+    archiveManifest: manifest,
+    writeObservationEnvelope: validWriteEnvelope,
+    independentReadbackEnvelope: validReadbackEnvelope,
+  });
+  const validS3Closure = await buildJsonCompatibilityExternalWormS3Closure({
+    archiveEvidence: validEvidence,
+    target: s3Target,
+    writerObservations: s3Observations.rawWriterObservations,
+    readbackObservations: s3Observations.rawReadbackObservations,
+  });
+  const writeEnvelope = invalidWriterSignature
+    ? externalWormSignedEnvelope(writeSubject, writer, true)
+    : validWriteEnvelope;
+  const readbackSubject = invalidWriterSignature
+    ? buildJsonCompatibilityExternalWormReadbackObservationSubject({
+      archivePolicy: policy,
+      archiveManifest: manifest,
+      writeObservationEnvelope: writeEnvelope,
+      readbackOperationIdSha256:
+        digest(`${operationSeed}:external-worm-readback`),
+      providerObservationSetSha256:
+        s3Observations.readbackObservationSetSha256,
+      observations: s3Observations.c2ReadbackObservations,
+      startedAt: archiveReadbackAt - 1,
+      completedAt: archiveReadbackAt,
+    })
+    : validReadbackSubject;
+  const readbackEnvelope = invalidWriterSignature || invalidReadbackSignature
+    ? externalWormSignedEnvelope(
+      readbackSubject,
+      readback,
+      invalidReadbackSignature,
+    )
+    : validReadbackEnvelope;
+  const evidence = invalidWriterSignature || invalidReadbackSignature
+    ? buildJsonCompatibilityExternalWormArchiveEvidence({
+      archivePolicy: policy,
+      archiveManifest: manifest,
+      writeObservationEnvelope: writeEnvelope,
+      independentReadbackEnvelope: readbackEnvelope,
+    })
+    : validEvidence;
+  const s3Closure = evidence === validEvidence
+    ? validS3Closure
+    : rebindExternalWormS3ClosureEvidence(validS3Closure, evidence);
+  return {
+    writer,
+    readback,
+    policy,
+    manifest,
+    evidence,
+    s3Closure,
+    collectionCaptureTerminal: collectionPass.captureTerminal,
+    independentReadbackCaptureTerminal: readbackPass.captureTerminal,
+  };
+}
+
+function externalWormActor(role, keyPair) {
+  const keys = keyPair ?? generateKeyPairSync("ed25519");
+  const spki = keys.publicKey.export({ format: "der", type: "spki" });
+  const spkiBase64url = Buffer.from(spki).toString("base64url");
+  return {
+    privateKey: keys.privateKey,
+    policy: {
+      keyId: `external-worm-${role}-key`,
+      spkiSha256: createHash("sha256").update(spki).digest("hex"),
+      spkiBase64url,
+      principalIdentitySha256: digest(`external-worm-${role}-principal`),
+      credentialIdSha256: digest(`external-worm-${role}-credential`),
+      permissionSetSha256: digest(`external-worm-${role}-permission-set`),
+    },
+  };
+}
+
+function externalWormPassFixture(artifact) {
+  const mode = artifact.mode;
+  const captureManifestSubject = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-account-binding-raw-capture-v1",
+    environment: "staging",
+    mode,
+    accountIdSha256: artifact.accountIdSha256,
+    collectionProfileSha256: artifact.collectionProfileSha256,
+    collectorIdentitySha256:
+      artifact.collectorIdentity.collectorIdentitySha256,
+  };
+  const captureManifest = {
+    ...captureManifestSubject,
+    captureManifestSha256: sha256Canonical(captureManifestSubject),
+  };
+  const rawObjects = [];
+  const pageObjects = [];
+  for (const receipt of artifact.snapshot.pageReceipts) {
+    const prefix = [
+      String(receipt.sequence).padStart(6, "0"),
+      receipt.resourceFamily,
+      receipt.pageReceiptSha256,
+    ].join("-");
+    const receiptMetrics = canonicalDocumentMetrics(receipt);
+    rawObjects.push(
+      externalWormRawObject({
+        receipt,
+        objectKind: "body",
+        fileName: `${prefix}.body.json`,
+        byteLength: receipt.responseByteLength,
+        contentSha256: receipt.responseBodySha256,
+      }),
+      externalWormRawObject({
+        receipt,
+        objectKind: "receipt",
+        fileName: `${prefix}.receipt.json`,
+        byteLength: receiptMetrics.byteLength,
+        contentSha256: receiptMetrics.bodySha256,
+      }),
+    );
+    pageObjects.push(
+      externalWormObjectDescriptor({
+        logicalRole: "raw-response-body",
+        mode,
+        sequence: receipt.sequence,
+        resourceFamily: receipt.resourceFamily,
+        contentIdentitySha256: receipt.responseBodySha256,
+        bodySha256: receipt.responseBodySha256,
+        byteLength: receipt.responseByteLength,
+        pageReceiptSha256: receipt.pageReceiptSha256,
+      }),
+      externalWormObjectDescriptor({
+        logicalRole: "page-receipt",
+        mode,
+        sequence: receipt.sequence,
+        resourceFamily: receipt.resourceFamily,
+        contentIdentitySha256: receipt.pageReceiptSha256,
+        bodySha256: receiptMetrics.bodySha256,
+        byteLength: receiptMetrics.byteLength,
+        pageReceiptSha256: receipt.pageReceiptSha256,
+      }),
+    );
+  }
+  const artifactMetrics = canonicalDocumentMetrics(artifact);
+  const rawObjectTotalBytes = rawObjects.reduce(
+    (total, value) => total + value.byteLength,
+    0,
+  );
+  const captureTerminalSubject = {
+    schemaVersion: 1,
+    contract:
+      "cinatoken-container-runtime-json-compatibility-account-binding-raw-capture-terminal-v1",
+    kind:
+      "container-runtime-json-compatibility-account-binding-raw-capture-terminal",
+    environment: "staging",
+    mode,
+    accountIdSha256: artifact.accountIdSha256,
+    collectionProfileSha256: artifact.collectionProfileSha256,
+    collectorIdentitySha256:
+      artifact.collectorIdentity.collectorIdentitySha256,
+    captureManifestSha256: captureManifest.captureManifestSha256,
+    collectionArtifactSha256: artifact.collectionArtifactSha256,
+    collectionArtifactFileSha256: artifactMetrics.bodySha256,
+    pageCount: artifact.snapshot.pageReceipts.length,
+    pageChainHeadSha256: artifact.snapshot.pageChainHeadSha256,
+    rawObjectCount: rawObjects.length,
+    rawObjectTotalBytes,
+    rawObjectSetSha256: sha256Canonical(rawObjects),
+    rawObjects,
+  };
+  const captureTerminal = {
+    ...captureTerminalSubject,
+    captureTerminalSha256: sha256Canonical(captureTerminalSubject),
+  };
+  const captureManifestMetrics = canonicalDocumentMetrics(captureManifest);
+  const captureTerminalMetrics = canonicalDocumentMetrics(captureTerminal);
+  return {
+    captureManifest,
+    captureTerminal,
+    rootInput: {
+      mode,
+      credentialReceiptSha256:
+        artifact.authenticationIdentity.credentialReceiptSha256,
+      custodianIdentitySha256:
+        artifact.authenticationIdentity.custodianIdentitySha256,
+      authenticationIdentitySha256:
+        artifact.authenticationIdentity.authenticationIdentitySha256,
+      collectionArtifactSha256: artifact.collectionArtifactSha256,
+      snapshotSha256: artifact.snapshot.snapshotSha256,
+      pageChainHeadSha256: artifact.snapshot.pageChainHeadSha256,
+      captureManifestSha256: captureManifest.captureManifestSha256,
+      captureTerminalSha256: captureTerminal.captureTerminalSha256,
+      observedAt: artifact.observedAt,
+    },
+    objects: [
+      externalWormObjectDescriptor({
+        logicalRole: "capture-manifest",
+        mode,
+        contentIdentitySha256: captureManifest.captureManifestSha256,
+        ...captureManifestMetrics,
+      }),
+      externalWormObjectDescriptor({
+        logicalRole: "capture-terminal",
+        mode,
+        contentIdentitySha256: captureTerminal.captureTerminalSha256,
+        ...captureTerminalMetrics,
+      }),
+      externalWormObjectDescriptor({
+        logicalRole: "collection-artifact",
+        mode,
+        contentIdentitySha256: artifact.collectionArtifactSha256,
+        ...artifactMetrics,
+      }),
+      ...pageObjects,
+    ],
+  };
+}
+
+function externalWormRawObject({
+  receipt,
+  objectKind,
+  fileName,
+  byteLength,
+  contentSha256,
+}) {
+  return {
+    sequence: receipt.sequence,
+    resourceFamily: receipt.resourceFamily,
+    objectKind,
+    fileName,
+    byteLength,
+    contentSha256,
+    pageReceiptSha256: receipt.pageReceiptSha256,
+    requestPathSha256: receipt.requestPathSha256,
+    responseBodySha256: receipt.responseBodySha256,
+  };
+}
+
+function externalWormGlobalObject(logicalRole, value, identitySha256) {
+  return externalWormObjectDescriptor({
+    logicalRole,
+    mode: null,
+    contentIdentitySha256: identitySha256,
+    ...canonicalDocumentMetrics(value),
+  });
+}
+
+function externalWormObjectDescriptor({
+  logicalRole,
+  mode,
+  sequence = null,
+  resourceFamily = null,
+  contentIdentitySha256,
+  bodySha256,
+  byteLength,
+  pageReceiptSha256 = null,
+}) {
+  return buildJsonCompatibilityExternalWormArchiveObjectDescriptor({
+    logicalRole,
+    mode,
+    sequence,
+    resourceFamily,
+    objectKeySha256: digest([
+      "external-worm-object",
+      mode ?? "global",
+      logicalRole,
+      sequence ?? 0,
+      contentIdentitySha256,
+    ].join(":")),
+    contentIdentitySha256,
+    bodySha256,
+    byteLength,
+    pageReceiptSha256,
+  });
+}
+
+async function externalWormS3Observations({
+  objects,
+  operationSeed,
+  target,
+  writerCredentialIdSha256,
+  readerCredentialIdSha256,
+  writerObservedAt,
+  readbackObservedAt,
+  retainUntil,
+}) {
+  const writerObservedAtIso = epochSecondsToIso(writerObservedAt);
+  const readbackObservedAtIso = epochSecondsToIso(readbackObservedAt);
+  const retainUntilIso = epochSecondsToIso(retainUntil);
+  const rawWriterObservations = objects.map((object) => {
+    const objectTarget = {
+      region: target.region,
+      bucketNameSha256: target.bucketNameSha256,
+      objectKeySha256: object.objectKeySha256,
+      expectedBucketOwnerSha256: target.expectedBucketOwnerSha256,
+    };
+    const versionId = `version-${object.objectKeySha256}`;
+    const eTag = `\"${object.bodySha256}\"`;
+    const checksumSha256Base64 = Buffer.from(
+      object.bodySha256,
+      "hex",
+    ).toString("base64");
+    const metadata = {
+      "cinatoken-content-length": String(object.byteLength),
+      "cinatoken-content-sha256": object.bodySha256,
+      "cinatoken-retain-until": retainUntilIso,
+    };
+    const requested = {
+      contentLength: object.byteLength,
+      contentSha256: object.bodySha256,
+      checksumSha256Base64,
+      contentType: object.mediaType,
+      metadata,
+      metadataSha256: sha256Canonical(metadata),
+      objectLockMode: "COMPLIANCE",
+      retainUntil: retainUntilIso,
+    };
+    return {
+      schemaVersion: 1,
+      contract: JSON_COMPATIBILITY_EXTERNAL_WORM_S3_OBSERVATION_CONTRACT,
+      provider: JSON_COMPATIBILITY_EXTERNAL_WORM_S3_PROVIDER,
+      decisionScope: JSON_COMPATIBILITY_EXTERNAL_WORM_S3_DECISION_SCOPE,
+      authorizesC2Closure: false,
+      operation: "put-object",
+      observedAt: writerObservedAtIso,
+      target: objectTarget,
+      credential: {
+        role: "writer",
+        credentialIdSha256: writerCredentialIdSha256,
+        expiresAt: epochSecondsToIso(writerObservedAt + 30 * 60),
+      },
+      requested: { ifNoneMatch: "*", ...requested },
+      providerResponse: {
+        versionId,
+        versionIdSha256: digest(versionId),
+        eTag,
+        eTagSha256: digest(eTag),
+        checksumSha256Base64,
+        httpStatusCode: 200,
+        providerRequestIdSha256: digest(
+          `${operationSeed}:s3:put:${object.objectKeySha256}`,
+        ),
+      },
+      providerReadback: null,
+      classification: "observed",
+      providerCallsAttempted: 1,
+      retryPerformed: false,
+    };
+  });
+  const rawReadbackObservations = rawWriterObservations.map((writerValue) => {
+    const objectKeySha256 = writerValue.target.objectKeySha256;
+    const requested = {
+      versionId: writerValue.providerResponse.versionId,
+      versionIdSha256: writerValue.providerResponse.versionIdSha256,
+      eTag: writerValue.providerResponse.eTag,
+      eTagSha256: writerValue.providerResponse.eTagSha256,
+      checksumMode: "ENABLED",
+      ...withoutProperty(writerValue.requested, "ifNoneMatch"),
+    };
+    const objectReadback = {
+      ...withoutProperty(requested, "checksumMode"),
+      providerRequestIdSha256: digest(
+        `${operationSeed}:s3:get-object:${objectKeySha256}`,
+      ),
+    };
+    return {
+      schemaVersion: 1,
+      contract: JSON_COMPATIBILITY_EXTERNAL_WORM_S3_OBSERVATION_CONTRACT,
+      provider: JSON_COMPATIBILITY_EXTERNAL_WORM_S3_PROVIDER,
+      decisionScope: JSON_COMPATIBILITY_EXTERNAL_WORM_S3_DECISION_SCOPE,
+      authorizesC2Closure: false,
+      operation: "independent-readback",
+      observedAt: readbackObservedAtIso,
+      target: writerValue.target,
+      credential: {
+        role: "reader",
+        credentialIdSha256: readerCredentialIdSha256,
+        expiresAt: epochSecondsToIso(readbackObservedAt + 30 * 60),
+      },
+      writerCredentialIdSha256,
+      requested,
+      providerReadback: {
+        bucket: {
+          versioning: "Enabled",
+          objectLock: "Enabled",
+          versioningRequestIdSha256: digest(
+            `${operationSeed}:s3:bucket-versioning:${objectKeySha256}`,
+          ),
+          objectLockRequestIdSha256: digest(
+            `${operationSeed}:s3:bucket-object-lock:${objectKeySha256}`,
+          ),
+        },
+        object: objectReadback,
+        retention: {
+          objectLockMode: "COMPLIANCE",
+          retainUntil: retainUntilIso,
+          providerRequestIdSha256: digest(
+            `${operationSeed}:s3:get-retention:${objectKeySha256}`,
+          ),
+        },
+      },
+      classification: "observed",
+      providerCallsAttempted: 4,
+      retryPerformed: false,
+    };
+  });
+  const c2WriteObservations = rawWriterObservations.map((value, index) =>
+    buildJsonCompatibilityExternalWormArchiveObjectObservation({
+      objectDescriptor: objects[index],
+      objectVersionSha256: value.providerResponse.versionIdSha256,
+      objectEtagSha256: value.providerResponse.eTagSha256,
+      retainUntil,
+      providerRequestIdSha256:
+        value.providerResponse.providerRequestIdSha256,
+      observedAt: writerObservedAt,
+    }));
+  const c2ReadbackObservations = await Promise.all(
+    rawReadbackObservations.map(async (value, index) =>
+      buildJsonCompatibilityExternalWormArchiveObjectObservation({
+        objectDescriptor: objects[index],
+        objectVersionSha256: value.requested.versionIdSha256,
+        objectEtagSha256: value.requested.eTagSha256,
+        retainUntil,
+        providerRequestIdSha256:
+          await deriveJsonCompatibilityExternalWormS3ReadbackRequestSetSha256(
+            value,
+          ),
+        observedAt: readbackObservedAt,
+      })),
+  );
+  return {
+    rawWriterObservations,
+    rawReadbackObservations,
+    writerObservationSetSha256: sha256Canonical(rawWriterObservations),
+    readbackObservationSetSha256: sha256Canonical(rawReadbackObservations),
+    c2WriteObservations,
+    c2ReadbackObservations,
+  };
+}
+
+function rebindExternalWormS3ClosureEvidence(closure, evidence) {
+  const { closureSha256: _oldClosureSha256, ...subject } = closure;
+  const rebound = {
+    ...subject,
+    archiveEvidenceSha256: evidence.archiveEvidenceSha256,
+  };
+  return { ...rebound, closureSha256: sha256Canonical(rebound) };
+}
+
+function driftExternalWormS3ProviderObservationMetadata(input) {
+  const closure = structuredClone(input);
+  const writerMetadata = {
+    ...closure.rawWriterObservations[0].requested.metadata,
+    "fixture-drift": "true",
+  };
+  const readbackMetadata = {
+    ...closure.rawReadbackObservations[0].requested.metadata,
+    "fixture-drift": "true",
+  };
+  closure.rawWriterObservations[0].requested.metadata = writerMetadata;
+  closure.rawWriterObservations[0].requested.metadataSha256 =
+    sha256Canonical(writerMetadata);
+  closure.rawReadbackObservations[0].requested.metadata = readbackMetadata;
+  closure.rawReadbackObservations[0].requested.metadataSha256 =
+    sha256Canonical(readbackMetadata);
+  closure.rawReadbackObservations[0].providerReadback.object.metadata =
+    readbackMetadata;
+  closure.rawReadbackObservations[0].providerReadback.object.metadataSha256 =
+    sha256Canonical(readbackMetadata);
+  const { closureSha256: _oldClosureSha256, ...subject } = closure;
+  return { ...subject, closureSha256: sha256Canonical(subject) };
+}
+
+function epochSecondsToIso(value) {
+  return new Date(value * 1000).toISOString();
+}
+
+function withoutProperty(value, property) {
+  const clone = { ...value };
+  delete clone[property];
+  return clone;
+}
+
+function externalWormSignedEnvelope(subject, actor, invalidSignature) {
+  const signature = invalidSignature
+    ? Buffer.alloc(64, subject.attestationRole === "writer" ? 0x31 : 0x32)
+    : sign(
+      null,
+      externalWormArchiveAttestationSigningPayload(subject),
+      actor.privateKey,
+    );
+  return buildJsonCompatibilityExternalWormAttestationEnvelope({
+    subject,
+    signerSpkiBase64url: actor.policy.spkiBase64url,
+    signatureBase64url: signature.toString("base64url"),
+  });
+}
+
+function canonicalDocumentMetrics(value) {
+  const body = `${canonicalJson(value)}\n`;
+  return {
+    bodySha256: createHash("sha256").update(body, "utf8").digest("hex"),
+    byteLength: Buffer.byteLength(body, "utf8"),
+  };
+}
+
+function differentSha256(value) {
+  return `${value.startsWith("0") ? "1" : "0"}${value.slice(1)}`;
 }
 
 export function createAccountBindingCredentialProvenanceFixture({
